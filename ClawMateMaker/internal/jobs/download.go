@@ -17,12 +17,23 @@ import (
 type DownloadJob struct {
 	boardID, jobID, attemptID string
 	cacheDir                  string
+	channel                   catalog.ReleaseChannel
 	trust                     firmware.TrustStore
 	log                       *logging.Writer
 }
 
 func NewDownloadJob(logRoot, cacheDir, boardID string, trust firmware.TrustStore, emit func(logging.Event)) (*DownloadJob, error) {
+	return NewDownloadJobForChannel(logRoot, cacheDir, boardID, catalog.StableChannel, trust, emit)
+}
+
+// NewDownloadJobForChannel explicitly carries the user's selected release
+// channel through discovery, mirrors, diagnostics and package verification.
+func NewDownloadJobForChannel(logRoot, cacheDir, boardID string, channel catalog.ReleaseChannel, trust firmware.TrustStore, emit func(logging.Event)) (*DownloadJob, error) {
 	if _, err := catalog.Profile(boardID); err != nil {
+		return nil, err
+	}
+	canonicalChannel, err := catalog.NormalizeReleaseChannel(channel)
+	if err != nil {
 		return nil, err
 	}
 	jobID, err := id("job")
@@ -37,13 +48,13 @@ func NewDownloadJob(logRoot, cacheDir, boardID string, trust firmware.TrustStore
 	if err != nil {
 		return nil, err
 	}
-	return &DownloadJob{boardID: boardID, jobID: jobID, attemptID: attemptID, cacheDir: cacheDir, trust: trust, log: w}, nil
+	return &DownloadJob{boardID: boardID, jobID: jobID, attemptID: attemptID, cacheDir: cacheDir, channel: canonicalChannel, trust: trust, log: w}, nil
 }
 
 func (j *DownloadJob) Run(ctx context.Context) (result catalog.DownloadedRelease, retErr error) {
 	started := time.Now()
 	result.JobID = j.jobID
-	j.log.Event(logging.Info, "download", "job", "JOB_CREATED", "job.created", "Starting official firmware download job.", map[string]any{"boardId": j.boardID})
+	j.log.Event(logging.Info, "download", "job", "JOB_CREATED", "job.created", "Starting official firmware download job.", map[string]any{"boardId": j.boardID, "channel": j.channel})
 	defer func() {
 		if retErr != nil {
 			j.log.Event(logging.Error, "download", "job", "JOB_FAILED", "job.failed", retErr.Error(), map[string]any{"boardId": j.boardID})
@@ -57,7 +68,12 @@ func (j *DownloadJob) Run(ctx context.Context) (result catalog.DownloadedRelease
 	emit := func(event logging.Event) {
 		j.log.Event(event.Severity, event.Stage, event.Component, event.Code, event.MessageKey, event.Detail, event.Fields)
 	}
-	result, retErr = catalog.NewClient(j.cacheDir).DownloadLatest(ctx, j.boardID, emit)
+	client, clientErr := catalog.NewClientForChannel(j.cacheDir, j.channel)
+	if clientErr != nil {
+		retErr = clientErr
+		return result, retErr
+	}
+	result, retErr = client.DownloadLatest(ctx, j.boardID, emit)
 	result.JobID = j.jobID
 	if retErr != nil {
 		return result, retErr
@@ -77,16 +93,21 @@ func (j *DownloadJob) Run(ctx context.Context) (result catalog.DownloadedRelease
 		retErr = fmt.Errorf("official firmware catalog binding: %w", err)
 		return result, retErr
 	}
+	if verified.Manifest.Channel != string(j.channel) {
+		retErr = fmt.Errorf("official firmware channel mismatch: selected %s but signed package declares %s", j.channel, verified.Manifest.Channel)
+		return result, retErr
+	}
 	plan, err := firmware.InstallPlanFor(verified.Manifest)
 	if err != nil {
 		retErr = fmt.Errorf("official firmware install plan: %w", err)
 		return result, retErr
 	}
 	result.InstallStatus = "verified_ready"
+	result.FirmwareVersion = verified.Manifest.AppIdentity.ReleaseSequence
 	result.InstallPlan = plan.Mode
 	result.PreservesUserData = plan.PreservesUserData
 	result.RequiresRecovery = plan.RequiresRecovery
 	result.SafetyNote = plan.Summary + " " + plan.Warning
-	j.log.Event(logging.Info, "download", "firmware", "RELEASE_SIGNATURE_VERIFIED", "release.signature.verified", "Firmware archive integrity, official signature, and install impact were verified.", map[string]any{"boardId": j.boardID, "asset": result.AssetName, "sha256": result.SHA256})
+	j.log.Event(logging.Info, "download", "firmware", "RELEASE_SIGNATURE_VERIFIED", "release.signature.verified", "Firmware archive integrity, official signature, and install impact were verified.", map[string]any{"boardId": j.boardID, "asset": result.AssetName, "sha256": result.SHA256, "firmwareVersion": result.FirmwareVersion})
 	return result, nil
 }

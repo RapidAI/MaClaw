@@ -15,9 +15,9 @@ import (
 // factory partition during preflight; it is not a claim made by the firmware
 // currently running on the serial console.
 type ESPAppDescription struct {
-	ProjectName string
-	Version     string
-	ELFSHA256   string
+	ProjectName string `json:"projectName"`
+	Version     string `json:"version"`
+	ELFSHA256   string `json:"elfSha256"`
 }
 
 const (

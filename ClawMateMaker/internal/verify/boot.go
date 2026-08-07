@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"clawmatemaker/internal/device"
+	"clawmatemaker/internal/firmware"
 	"go.bug.st/serial"
 )
 
@@ -31,20 +32,24 @@ type Expectation struct {
 }
 
 type Status struct {
-	Type                  string            `json:"type"`
-	Protocol              int               `json:"protocol"`
-	Nonce                 string            `json:"nonce"`
-	Ready                 bool              `json:"ready"`
-	FirmwareTargetBoardID string            `json:"firmware_target_board_id"`
-	LayoutID              string            `json:"layout_id"`
-	ReleaseSequence       int64             `json:"release_sequence"`
-	ProjectName           string            `json:"project_name"`
-	AppVersion            string            `json:"app_version"`
-	AppELFSHA256          string            `json:"app_elf_sha256"`
-	Chip                  string            `json:"chip"`
-	FlashBytes            int64             `json:"flash_size_bytes"`
-	PSRAMBytes            int64             `json:"psram_size_bytes"`
-	SelfTest              map[string]string `json:"self_test"`
+	Type                  string `json:"type"`
+	Protocol              int    `json:"protocol"`
+	Nonce                 string `json:"nonce"`
+	Ready                 bool   `json:"ready"`
+	FirmwareTargetBoardID string `json:"firmware_target_board_id"`
+	LayoutID              string `json:"layout_id"`
+	ReleaseSequence       int64  `json:"release_sequence"`
+	// FirmwareVersion is the user-facing alias for the same monotonic integer.
+	// Protocol-v2 boot verification requires it so a device cannot advertise a
+	// different update version after the irreversible write has completed.
+	FirmwareVersion int64             `json:"firmware_version"`
+	ProjectName     string            `json:"project_name"`
+	AppVersion      string            `json:"app_version"`
+	AppELFSHA256    string            `json:"app_elf_sha256"`
+	Chip            string            `json:"chip"`
+	FlashBytes      int64             `json:"flash_size_bytes"`
+	PSRAMBytes      int64             `json:"psram_size_bytes"`
+	SelfTest        map[string]string `json:"self_test"`
 }
 
 type Result struct {
@@ -87,7 +92,9 @@ func ParseFrame(line string, expectedNonce string, expected Expectation) (Status
 	if s.Type != "BOOT_STATUS" || s.Protocol != 2 || s.Nonce != expectedNonce || !s.Ready {
 		return Status{}, errors.New("event is not a ready matching BOOT_STATUS v2")
 	}
-	if s.FirmwareTargetBoardID != expected.BoardID || s.LayoutID != expected.LayoutID || s.ReleaseSequence != expected.ReleaseSequence || s.ProjectName != expected.ProjectName || s.AppVersion != expected.AppVersion || s.AppELFSHA256 != expected.AppELFSHA256 || !strings.EqualFold(s.Chip, expected.Chip) || s.FlashBytes != expected.FlashBytes {
+	expectedELF, expectedELFValid := firmware.NormalizeSHA256(expected.AppELFSHA256)
+	reportedELF, reportedELFValid := firmware.NormalizeSHA256(s.AppELFSHA256)
+	if !expectedELFValid || !reportedELFValid || s.FirmwareTargetBoardID != expected.BoardID || s.LayoutID != expected.LayoutID || s.ReleaseSequence != expected.ReleaseSequence || s.FirmwareVersion != expected.ReleaseSequence || s.ProjectName != expected.ProjectName || s.AppVersion != expected.AppVersion || reportedELF != expectedELF || !strings.EqualFold(s.Chip, expected.Chip) || s.FlashBytes != expected.FlashBytes {
 		return Status{}, errors.New("boot status identity does not match the frozen firmware plan")
 	}
 	if expected.PSRAMBytes > 0 && s.PSRAMBytes < expected.PSRAMBytes {

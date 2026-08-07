@@ -35,8 +35,16 @@ type ExpertDefinition struct {
 	Tools        []string `json:"tools"`         // tool allow-list; empty = all tools
 	Skills       []string `json:"skills"`        // skill allow-list; empty = all active skills
 	Builtin      bool     `json:"builtin"`       // true only for in-binary definitions
-	CreatedAt    string   `json:"created_at"`    // RFC3339
-	UpdatedAt    string   `json:"updated_at"`    // RFC3339, last-writer-wins key
+	// OptimizedFromID records lineage: non-empty means this expert was distilled
+	// from the session of the referenced source expert ("专家优化"). Each source
+	// expert has at most one direct optimized expert; optimized experts are
+	// independent and may themselves be optimized (chained lineage).
+	OptimizedFromID string `json:"optimized_from_id,omitempty"`
+	// About is free-form "关于" text (author, copyright, notes) shown from the
+	// expert card's About button.
+	About     string `json:"about,omitempty"`
+	CreatedAt string `json:"created_at"` // RFC3339
+	UpdatedAt string `json:"updated_at"` // RFC3339, last-writer-wins key
 }
 
 // expertStoreFile is the on-disk JSON shape.
@@ -288,6 +296,35 @@ func (s *expertStore) Get(id string) (ExpertDefinition, bool, error) {
 		}
 	}
 	return ExpertDefinition{}, false, nil
+}
+
+// FindOptimizedFor returns the stored expert whose OptimizedFromID points at
+// originID. Each source expert is expected to have at most one direct
+// optimized expert; when duplicates somehow exist the most recently updated
+// one wins.
+func (s *expertStore) FindOptimizedFor(originID string) (ExpertDefinition, bool, error) {
+	originID = strings.TrimSpace(originID)
+	if originID == "" {
+		return ExpertDefinition{}, false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.loadLocked()
+	if err != nil {
+		return ExpertDefinition{}, false, err
+	}
+	var best ExpertDefinition
+	found := false
+	for _, e := range f.Experts {
+		if e.OptimizedFromID != originID {
+			continue
+		}
+		if !found || e.UpdatedAt > best.UpdatedAt {
+			best = e
+			found = true
+		}
+	}
+	return best, found, nil
 }
 
 // Save upserts by id and clears any tombstone for that id (a re-saved expert

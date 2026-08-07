@@ -21,6 +21,8 @@ import (
 const SchemaVersion = 1
 const maxDetailBytes = 4096
 const maxRawLogBytes int64 = 5 * 1024 * 1024
+const maxFilterValueBytes = 128
+const rawLogFlushInterval = time.Second
 
 type Severity string
 
@@ -32,7 +34,12 @@ const (
 )
 
 type Event struct {
-	Timestamp   time.Time      `json:"timestamp"`
+	// EventID is deterministic within an attempt and makes repeated live
+	// delivery harmless. It is not a device identifier and contains no host
+	// filesystem data.
+	EventID     string         `json:"eventId"`
+	Generation  uint64         `json:"generation"`
+	Timestamp   time.Time      `json:"timestamp" ts_type:"string"`
 	MonotonicMs int64          `json:"monotonicMs"`
 	Sequence    uint64         `json:"sequence"`
 	JobID       string         `json:"jobId"`
@@ -60,15 +67,27 @@ type Meta struct {
 // still active can recover the latest state before replaying events.jsonl.
 // Detailed output deliberately remains in the separately paged log stream.
 type Snapshot struct {
-	SchemaVersion  int       `json:"schemaVersion"`
-	JobID          string    `json:"jobId"`
-	AttemptID      string    `json:"attemptId"`
+	SchemaVersion int    `json:"schemaVersion"`
+	JobID         string `json:"jobId"`
+	AttemptID     string `json:"attemptId"`
+	// Generation identifies the state stream incarnation. A new FlashJob has
+	// a new attempt and stream; a client must discard events from any other
+	// generation rather than inferring a transition across attempts.
+	Generation     uint64    `json:"generation"`
 	Status         string    `json:"status"`
 	LatestSequence uint64    `json:"latestSequence"`
 	LastEvent      *Event    `json:"lastEvent,omitempty"`
 	ErrorCode      string    `json:"errorCode,omitempty"`
 	ErrorMessage   string    `json:"errorMessage,omitempty"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	UpdatedAt      time.Time `json:"updatedAt" ts_type:"string"`
+}
+
+// WatchSnapshot combines the compact durable state with the event cursor for a
+// particular job attempt. NextSequence is the last durably observed sequence,
+// so callers request a log page strictly after it.
+type WatchSnapshot struct {
+	Snapshot
+	NextSequence uint64 `json:"nextSequence"`
 }
 
 type Writer struct {
@@ -78,10 +97,12 @@ type Writer struct {
 	attemptID    string
 	started      time.Time
 	sequence     uint64
+	generation   uint64
 	file         *os.File
 	emit         func(Event)
 	closed       bool
 	rawTruncated map[string]bool
+	rawLastFlush map[string]time.Time
 	snapshot     Snapshot
 }
 
@@ -106,7 +127,7 @@ func New(root, jobID, attemptID string, emit func(Event)) (*Writer, error) {
 		return nil, fmt.Errorf("open event log: %w", err)
 	}
 	started := time.Now()
-	w := &Writer{root: dir, jobID: jobID, attemptID: attemptID, started: started, file: f, emit: emit, rawTruncated: make(map[string]bool), snapshot: Snapshot{SchemaVersion: SchemaVersion, JobID: jobID, AttemptID: attemptID, Status: "running", UpdatedAt: started.UTC()}}
+	w := &Writer{root: dir, jobID: jobID, attemptID: attemptID, started: started, generation: 1, file: f, emit: emit, rawTruncated: make(map[string]bool), rawLastFlush: make(map[string]time.Time), snapshot: Snapshot{SchemaVersion: SchemaVersion, JobID: jobID, AttemptID: attemptID, Generation: 1, Status: "running", UpdatedAt: started.UTC()}}
 	if err := w.writeMeta(false); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -122,7 +143,7 @@ func (w *Writer) Event(severity Severity, stage, component, code, messageKey, de
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.sequence++
-	e := Event{Timestamp: time.Now().UTC(), MonotonicMs: time.Since(w.started).Milliseconds(), Sequence: w.sequence, JobID: w.jobID, AttemptID: w.attemptID, Severity: severity, Stage: stage, Component: component, Code: code, MessageKey: messageKey, Detail: Redact(detail), Fields: SafeFields(fields)}
+	e := w.newEventLocked(severity, stage, component, code, messageKey, detail, fields)
 	if w.closed {
 		return e
 	}
@@ -144,6 +165,25 @@ func (w *Writer) Event(severity Severity, stage, component, code, messageKey, de
 		w.emit(e)
 	}
 	return e
+}
+
+func (w *Writer) newEventLocked(severity Severity, stage, component, code, messageKey, detail string, fields map[string]any) Event {
+	return Event{
+		EventID:     fmt.Sprintf("%s:%d", w.attemptID, w.sequence),
+		Generation:  w.generation,
+		Timestamp:   time.Now().UTC(),
+		MonotonicMs: time.Since(w.started).Milliseconds(),
+		Sequence:    w.sequence,
+		JobID:       w.jobID,
+		AttemptID:   w.attemptID,
+		Severity:    severity,
+		Stage:       stage,
+		Component:   component,
+		Code:        code,
+		MessageKey:  messageKey,
+		Detail:      Redact(detail),
+		Fields:      SafeFields(fields),
+	}
 }
 
 func (w *Writer) Close() error {
@@ -191,7 +231,7 @@ func (w *Writer) WriteSummary(summary any) error {
 		ErrorCode    string `json:"errorCode"`
 		ErrorMessage string `json:"errorMessage"`
 	}
-	if json.Unmarshal(clean, &terminal) == nil && (terminal.Status == "succeeded" || terminal.Status == "failed") {
+	if json.Unmarshal(clean, &terminal) == nil && isTerminalSnapshotStatus(terminal.Status) {
 		w.snapshot.Status = terminal.Status
 		w.snapshot.ErrorCode = Redact(terminal.ErrorCode)
 		w.snapshot.ErrorMessage = Redact(terminal.ErrorMessage)
@@ -199,6 +239,19 @@ func (w *Writer) WriteSummary(summary any) error {
 		return w.writeSnapshotLocked()
 	}
 	return nil
+}
+
+// isTerminalSnapshotStatus contains the durable states a renderer may retain
+// after reconnecting. recovery_required is deliberately distinct from a
+// generic failure: an interrupted single-slot write must not be presented as
+// safely retryable before the user completes ROM recovery.
+func isTerminalSnapshotStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "recovery_required":
+		return true
+	default:
+		return false
+	}
 }
 
 func (w *Writer) writeSnapshotLocked() error {
@@ -263,7 +316,7 @@ func (w *Writer) AppendRaw(name, text string) error {
 		}
 		w.rawTruncated[name] = true
 		w.sequence++
-		e := Event{Timestamp: time.Now().UTC(), MonotonicMs: time.Since(w.started).Milliseconds(), Sequence: w.sequence, JobID: w.jobID, AttemptID: w.attemptID, Severity: Warn, Stage: "logging", Component: "logging", Code: "LOG_TRUNCATED", MessageKey: "log.truncated", Fields: map[string]any{"bytes": maxRawLogBytes}}
+		e := w.newEventLocked(Warn, "logging", "logging", "LOG_TRUNCATED", "log.truncated", "", map[string]any{"bytes": maxRawLogBytes})
 		b, err := json.Marshal(e)
 		if err != nil {
 			return err
@@ -286,7 +339,20 @@ func (w *Writer) AppendRaw(name, text string) error {
 		}
 		return nil
 	}
-	return appendPrivate(filePath, clean)
+	if err := appendPrivate(filePath, clean); err != nil {
+		return err
+	}
+	// Raw serial/sidecar output can arrive continuously during transfers. Keep
+	// bounded diagnostic recovery useful after a crash without forcing a sync
+	// per block, which would unnecessarily slow flashing.
+	now := time.Now()
+	if w.rawLastFlush[name].IsZero() || now.Sub(w.rawLastFlush[name]) >= rawLogFlushInterval {
+		if err := syncFile(filePath); err != nil {
+			return err
+		}
+		w.rawLastFlush[name] = now
+	}
+	return nil
 }
 
 func appendPrivate(name string, bytes []byte) error {
@@ -297,6 +363,15 @@ func appendPrivate(name string, bytes []byte) error {
 	defer f.Close()
 	_, err = f.Write(bytes)
 	return err
+}
+
+func syncFile(name string) error {
+	f, err := os.OpenFile(name, os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
 
 func (w *Writer) writeMeta(final bool) error {
@@ -338,7 +413,7 @@ func SafeFields(fields map[string]any) map[string]any {
 	if len(fields) == 0 {
 		return nil
 	}
-	allowed := map[string]bool{"port": true, "chip": true, "revision": true, "flashBytes": true, "tool": true, "toolVersion": true, "exitCode": true, "durationMs": true, "command": true, "bytes": true, "attempt": true, "os": true, "vendorId": true, "productId": true, "boardId": true, "asset": true, "release": true, "sha256": true, "cached": true, "baud": true, "fromBaud": true, "toBaud": true, "project": true, "version": true}
+	allowed := map[string]bool{"port": true, "chip": true, "revision": true, "flashBytes": true, "tool": true, "toolVersion": true, "exitCode": true, "durationMs": true, "command": true, "bytes": true, "attempt": true, "os": true, "vendorId": true, "productId": true, "boardId": true, "asset": true, "release": true, "sha256": true, "cached": true, "baud": true, "fromBaud": true, "toBaud": true, "project": true, "version": true, "source": true, "endpoint": true, "failedSource": true, "failedEndpoint": true, "image": true, "region": true, "offset": true, "size": true}
 	out := make(map[string]any)
 	for k, v := range fields {
 		if allowed[k] {
@@ -351,6 +426,47 @@ func SafeFields(fields map[string]any) map[string]any {
 type Page struct {
 	Events []Event `json:"events"`
 	Next   uint64  `json:"next"`
+}
+
+// Filter is the deliberately small, structured query surface exposed to the
+// desktop UI. It cannot name a log file or carry a free-form expression; the
+// caller can only reduce a single job's already-authorized event stream.
+type Filter struct {
+	Severity  Severity `json:"severity,omitempty"`
+	Stage     string   `json:"stage,omitempty"`
+	Component string   `json:"component,omitempty"`
+	Code      string   `json:"code,omitempty"`
+}
+
+// Validate keeps the Wails-exposed filter a compact, exact-match query. This
+// prevents a caller from turning log paging into an unbounded text-search
+// endpoint while preserving the diagnostic filters shown in the UI.
+func (f Filter) Validate() error {
+	if f.Severity != "" && f.Severity != Debug && f.Severity != Info && f.Severity != Warn && f.Severity != Error {
+		return errors.New("invalid log severity filter")
+	}
+	for _, value := range []string{f.Stage, f.Component, f.Code} {
+		if len(value) > maxFilterValueBytes || strings.ContainsAny(value, "\x00\r\n") {
+			return errors.New("invalid log filter value")
+		}
+	}
+	return nil
+}
+
+func (f Filter) matches(e Event) bool {
+	if f.Severity != "" && e.Severity != f.Severity {
+		return false
+	}
+	if f.Stage != "" && e.Stage != f.Stage {
+		return false
+	}
+	if f.Component != "" && e.Component != f.Component {
+		return false
+	}
+	if f.Code != "" && e.Code != f.Code {
+		return false
+	}
+	return true
 }
 
 // ReadSnapshot validates and returns one job snapshot without exposing an
@@ -375,7 +491,7 @@ func ReadSnapshot(root, jobID string) (Snapshot, error) {
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
 		return Snapshot{}, err
 	}
-	if snapshot.SchemaVersion != SchemaVersion || snapshot.JobID != jobID || snapshot.AttemptID == "" || (snapshot.Status != "running" && snapshot.Status != "succeeded" && snapshot.Status != "failed") {
+	if snapshot.SchemaVersion != SchemaVersion || snapshot.JobID != jobID || snapshot.AttemptID == "" || snapshot.Generation == 0 || (snapshot.LastEvent != nil && (snapshot.LastEvent.Generation != snapshot.Generation || snapshot.LastEvent.EventID == "")) || (snapshot.Status != "running" && !isTerminalSnapshotStatus(snapshot.Status)) {
 		return Snapshot{}, errors.New("invalid job snapshot")
 	}
 	snapshot.ErrorMessage = Redact(snapshot.ErrorMessage)
@@ -384,6 +500,19 @@ func ReadSnapshot(root, jobID string) (Snapshot, error) {
 		snapshot.LastEvent.Fields = SafeFields(snapshot.LastEvent.Fields)
 	}
 	return snapshot, nil
+}
+
+// ReadWatchSnapshot gives a WebView a single authoritative resynchronization
+// point. Snapshot writes are atomic and happen after every persisted event.
+func ReadWatchSnapshot(root, jobID string) (WatchSnapshot, error) {
+	snapshot, err := ReadSnapshot(root, jobID)
+	if err != nil {
+		return WatchSnapshot{}, err
+	}
+	if snapshot.LastEvent != nil && snapshot.LastEvent.Sequence != snapshot.LatestSequence {
+		return WatchSnapshot{}, errors.New("invalid snapshot event sequence")
+	}
+	return WatchSnapshot{Snapshot: snapshot, NextSequence: snapshot.LatestSequence}, nil
 }
 
 // ReadRecentSnapshots includes both running and terminal jobs. It is used by
@@ -423,8 +552,8 @@ type JobSummary struct {
 	Status       string    `json:"status,omitempty"`
 	ErrorCode    string    `json:"errorCode,omitempty"`
 	ErrorMessage string    `json:"errorMessage,omitempty"`
-	StartedAt    time.Time `json:"startedAt,omitempty"`
-	FinishedAt   time.Time `json:"finishedAt,omitempty"`
+	StartedAt    time.Time `json:"startedAt,omitempty" ts_type:"string"`
+	FinishedAt   time.Time `json:"finishedAt,omitempty" ts_type:"string"`
 }
 
 // SafeJobID accepts only the generated job identifier grammar. It is used by
@@ -442,6 +571,16 @@ func SafeJobID(jobID string) bool {
 }
 
 func ReadPage(dir string, after uint64, limit int) (Page, error) {
+	return ReadPageFiltered(dir, after, limit, Filter{})
+}
+
+// ReadPageFiltered is the persisted-log equivalent of the live log filter.
+// Filtering happens before page sizing so pages remain bounded even when a
+// job has many unrelated debug events.
+func ReadPageFiltered(dir string, after uint64, limit int, filter Filter) (Page, error) {
+	if err := filter.Validate(); err != nil {
+		return Page{}, err
+	}
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
@@ -458,8 +597,13 @@ func ReadPage(dir string, after uint64, limit int) (Page, error) {
 		if json.Unmarshal(s.Bytes(), &e) != nil || e.Sequence <= after {
 			continue
 		}
-		page.Events = append(page.Events, e)
+		// Advance across rejected records too. Otherwise a filter with no
+		// matches would replay the same tail forever when the UI polls again.
 		page.Next = e.Sequence
+		if !filter.matches(e) {
+			continue
+		}
+		page.Events = append(page.Events, e)
 		if len(page.Events) == limit {
 			break
 		}

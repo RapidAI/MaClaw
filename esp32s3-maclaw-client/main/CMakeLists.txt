@@ -1,6 +1,16 @@
 set(BOARD_PORT_SOURCE "board_port.c")
-if(CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD OR CONFIG_MACLAW_BOARD_FANGTANG_4G)
+set(BOARD_PROFILE_SOURCE "boards/echoear_2st/board_profile.c")
+if(CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD)
     set(BOARD_PORT_SOURCE "board_port_bread_compact.c")
+    set(BOARD_PROFILE_SOURCE "boards/bread_compact/board_profile.c")
+elseif(CONFIG_MACLAW_BOARD_FANGTANG_4G)
+    # Keep Fangtang's board implementation selectable as its own profile
+    # artifact.  The initial adapter deliberately includes the legacy shared
+    # implementation while its NV3023, single-key, cellular and power seams
+    # are moved out in small ownership-preserving steps; new Fangtang-only
+    # code must land below boards/fangtang_4g rather than in Bread's source.
+    set(BOARD_PORT_SOURCE "boards/fangtang_4g/board_port_fangtang_4g.c")
+    set(BOARD_PROFILE_SOURCE "boards/fangtang_4g/board_profile.c")
 endif()
 
 # Keep the cellular implementation entirely out of the established EchoEar and
@@ -32,7 +42,7 @@ if(CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD)
 endif()
 
 idf_component_register(
-    SRCS "main.c" "app_ui.c" "alarm_manager.c" "mp3_player.c" "firmware_identity.c" "${BOARD_PORT_SOURCE}" ${MACLAW_BOARD_SRCS}
+    SRCS "main.c" "app_ui.c" "alarm_manager.c" "update_service.c" "mp3_player.c" "firmware_identity.c" "device_api.c" "connectivity_service.c" "input_service.c" "power_service.c" "${BOARD_PROFILE_SOURCE}" "${BOARD_PORT_SOURCE}" ${MACLAW_BOARD_SRCS}
     INCLUDE_DIRS "."
     EMBED_FILES ${MACLAW_EMBED_FILES}
     REQUIRES ${MACLAW_COMPONENT_REQUIRES}

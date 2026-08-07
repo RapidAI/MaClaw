@@ -156,16 +156,18 @@ func (s *Store) Upsert(ctx context.Context, tenantID string, in CreateInput) (*E
 		return nil, false, err
 	}
 	ex := &Expert{
-		ID:           id,
-		TenantID:     tenantID,
-		Name:         name,
-		Description:  strings.TrimSpace(in.Description),
-		Icon:         strings.TrimSpace(in.Icon),
-		SystemPrompt: in.SystemPrompt,
-		Tools:        normalizeList(in.Tools),
-		Skills:       normalizeList(in.Skills),
-		CreatedAt:    createdAt,
-		UpdatedAt:    updatedAt,
+		ID:              id,
+		TenantID:        tenantID,
+		Name:            name,
+		Description:     strings.TrimSpace(in.Description),
+		Icon:            strings.TrimSpace(in.Icon),
+		SystemPrompt:    in.SystemPrompt,
+		Tools:           normalizeList(in.Tools),
+		Skills:          normalizeList(in.Skills),
+		OptimizedFromID: strings.TrimSpace(in.OptimizedFromID),
+		About:           strings.TrimSpace(in.About),
+		CreatedAt:       createdAt,
+		UpdatedAt:       updatedAt,
 	}
 
 	// 墓碑裁决：updated_at <= deleted_at 的重放写静默忽略（applied=false）；

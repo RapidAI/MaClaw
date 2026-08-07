@@ -128,7 +128,7 @@ describe('UtilitiesPage AI expert section', () => {
         await waitFor(() => expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy());
         const cardButton = screen.getByRole('button', { name: '论文润色' });
         expect(cardButton).toBeTruthy();
-        expect(cardButton.getAttribute('title')).toBe('学术语言润色，保持原意');
+        expect(cardButton.getAttribute('title')).toBe('双击打开');
     });
 
     it('keeps expert-management actions keyboard-reachable', async () => {
@@ -150,11 +150,11 @@ describe('UtilitiesPage AI expert section', () => {
         await waitFor(() => expect(screen.getByTestId('expert-editor-overlay')).toBeTruthy());
     });
 
-    it('clicking an expert card invokes onOpenExpert with the full definition', async () => {
+    it('double-clicking an expert card invokes onOpenExpert with the full definition', async () => {
         const onOpenExpert = vi.fn();
         render(<UtilitiesPage lang="zh-Hans" onOpenExpert={onOpenExpert} />);
         await waitFor(() => expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy());
-        fireEvent.click(screen.getByText('论文润色'));
+        fireEvent.doubleClick(screen.getByText('论文润色'));
         expect(onOpenExpert).toHaveBeenCalledTimes(1);
         expect(onOpenExpert.mock.calls[0][0].id).toBe('builtin-paper-polish');
     });

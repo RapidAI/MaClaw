@@ -20,11 +20,6 @@ const maxSidecarManifestBytes = 256 * 1024
 
 var ErrSidecarInvalid = errors.New("packaged esptool sidecar is unavailable or invalid")
 
-// ConfigureSidecarTrust binds the independently packaged helper to the same
-// public release identity as the desktop executable.  A sidecar hash by
-// itself only detects accidental changes after install; its manifest must be
-// signed before an official build can trust that the helper came from the
-// protected release pipeline.
 func ConfigureSidecarTrust(keyID, publicKeyBase64 string) {
 	configuredSidecar.Lock()
 	defer configuredSidecar.Unlock()
@@ -63,10 +58,6 @@ type sidecarRecord struct {
 	Version string `json:"version"`
 }
 
-// ConfigureSidecar is called by the desktop bootstrap. Official builds set
-// production=true and therefore accept only the sidecar shipped beside the
-// application. Development builds retain the explicit CLAWMATE_ESPTOOL/PATH
-// fallback so contributors can work with an ESP-IDF installation.
 func ConfigureSidecar(executable string, production bool) {
 	configuredSidecar.Lock()
 	defer configuredSidecar.Unlock()

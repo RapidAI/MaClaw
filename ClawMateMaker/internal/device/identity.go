@@ -16,16 +16,15 @@ import (
 
 const maxIdentityFrameBytes = 4096
 
-// ProtocolVersion is shared by every official release profile.  Keeping the
-// value exported lets release CI assert that its build-time identity contract
-// still matches the desktop parser before it publishes a package.
+// ProtocolVersion is shared by every official release profile. Keeping the
+// value exported lets release CI assert its build-time identity contract.
 const ProtocolVersion = 2
 
 // AppIdentity is untrusted application-state evidence. It improves automatic
-// board matching on a booting device, but it can never prove physical board
-// identity because the application image is itself replaceable.
+// board matching on a booting device, but cannot prove physical board identity.
 type AppIdentity struct {
 	Protocol              int    `json:"protocol"`
+	FirmwareVersion       int64  `json:"firmwareVersion,omitempty"`
 	FirmwareTargetBoardID string `json:"firmwareTargetBoardId"`
 	LayoutID              string `json:"layoutId"`
 	ProjectName           string `json:"projectName"`
@@ -36,18 +35,19 @@ type AppIdentity struct {
 }
 
 type identityFrame struct {
-	Type                  string `json:"type"`
-	Protocol              int    `json:"protocol"`
-	Nonce                 string `json:"nonce"`
-	FirmwareTargetBoardID string `json:"firmware_target_board_id"`
-	LegacyBoardID         string `json:"board_id"`
-	LayoutID              string `json:"layout_id"`
-	ProjectName           string `json:"project_name"`
-	AppVersion            string `json:"app_version"`
-	LegacyFirmwareVersion string `json:"firmware_version"`
-	Chip                  string `json:"chip"`
-	FlashBytes            int64  `json:"flash_size_bytes"`
-	PSRAMBytes            int64  `json:"psram_size_bytes"`
+	Type                  string          `json:"type"`
+	Protocol              int             `json:"protocol"`
+	ReleaseSequence       int64           `json:"release_sequence"`
+	FirmwareVersion       json.RawMessage `json:"firmware_version"`
+	Nonce                 string          `json:"nonce"`
+	FirmwareTargetBoardID string          `json:"firmware_target_board_id"`
+	LegacyBoardID         string          `json:"board_id"`
+	LayoutID              string          `json:"layout_id"`
+	ProjectName           string          `json:"project_name"`
+	AppVersion            string          `json:"app_version"`
+	Chip                  string          `json:"chip"`
+	FlashBytes            int64           `json:"flash_size_bytes"`
+	PSRAMBytes            int64           `json:"psram_size_bytes"`
 }
 
 func ProbeApplicationIdentity(ctx context.Context, port string) (AppIdentity, error) {
@@ -59,10 +59,6 @@ func ProbeApplicationIdentity(ctx context.Context, port string) (AppIdentity, er
 		return AppIdentity{}, fmt.Errorf("open application serial: %w", err)
 	}
 	defer p.Close()
-	// Use the serial driver's timeout rather than spawning a goroutine for each
-	// blocking ReadString call. A goroutine left behind after a timeout can
-	// consume the next nonce-bound reply and make a later operation appear to
-	// fail randomly; it also retains the port until a byte eventually arrives.
 	if err := p.SetReadTimeout(300 * time.Millisecond); err != nil {
 		return AppIdentity{}, fmt.Errorf("set application serial timeout: %w", err)
 	}
@@ -74,9 +70,6 @@ func ProbeApplicationIdentity(ctx context.Context, port string) (AppIdentity, er
 	if _, err := p.Write([]byte(query)); err != nil {
 		return AppIdentity{}, fmt.Errorf("send identity query: %w", err)
 	}
-	// A ROM probe hard-resets the target immediately before this call. Give the
-	// application enough time to boot, bring up USB Serial/JTAG and run its
-	// identity task before declaring automatic recognition unavailable.
 	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
@@ -115,26 +108,34 @@ func parseIdentityFrame(line, nonce string) (AppIdentity, error) {
 	if frame.Type != "IDENTITY" || frame.Nonce != nonce {
 		return AppIdentity{}, errors.New("identity event does not match nonce-bound query")
 	}
-	// Protocol v1 names the target board and version differently. It remains
-	// nonce-bound, so it is useful for automatically selecting a download for
-	// existing field devices; it is never manufacturing identity and never
-	// substitutes for the explicit pre-write confirmation or ROM checks.
 	boardID := frame.FirmwareTargetBoardID
 	appVersion := frame.AppVersion
 	if frame.Protocol == 1 {
 		boardID = frame.LegacyBoardID
-		appVersion = frame.LegacyFirmwareVersion
+		_ = json.Unmarshal(frame.FirmwareVersion, &appVersion)
 	}
 	if (frame.Protocol != 1 && frame.Protocol != ProtocolVersion) || boardID == "" {
 		return AppIdentity{}, errors.New("identity event uses an unsupported protocol or lacks a board target")
 	}
-	return AppIdentity{Protocol: frame.Protocol, FirmwareTargetBoardID: boardID, LayoutID: frame.LayoutID, ProjectName: frame.ProjectName, AppVersion: appVersion, Chip: frame.Chip, FlashBytes: frame.FlashBytes, PSRAMBytes: frame.PSRAMBytes}, nil
+	firmwareVersion := frame.ReleaseSequence
+	var reportedFirmwareVersion int64
+	if len(frame.FirmwareVersion) != 0 && string(frame.FirmwareVersion) != "null" {
+		if err := json.Unmarshal(frame.FirmwareVersion, &reportedFirmwareVersion); err != nil && frame.Protocol != 1 {
+			return AppIdentity{}, errors.New("identity event has a non-integer firmware version")
+		}
+	}
+	if firmwareVersion == 0 {
+		firmwareVersion = reportedFirmwareVersion
+	}
+	if frame.ReleaseSequence > 0 && reportedFirmwareVersion > 0 && frame.ReleaseSequence != reportedFirmwareVersion {
+		return AppIdentity{}, errors.New("identity event has conflicting firmware version fields")
+	}
+	if firmwareVersion < 0 || reportedFirmwareVersion < 0 {
+		return AppIdentity{}, errors.New("identity event has an invalid firmware version")
+	}
+	return AppIdentity{Protocol: frame.Protocol, FirmwareVersion: firmwareVersion, FirmwareTargetBoardID: boardID, LayoutID: frame.LayoutID, ProjectName: frame.ProjectName, AppVersion: appVersion, Chip: frame.Chip, FlashBytes: frame.FlashBytes, PSRAMBytes: frame.PSRAMBytes}, nil
 }
 
-// eventPayload tolerates an ESP-IDF log fragment preceding a single event.
-// USB serial output is a byte stream, so a logger that does not end its line
-// before printf() must not make a valid, nonce-bound event undiscoverable.
-// The complete JSON value is still required to be the final non-space content.
 func eventPayload(line, wantType string) ([]byte, error) {
 	const prefix = "CLAWMATE_EVT "
 	line = strings.TrimSpace(line)
@@ -146,15 +147,10 @@ func eventPayload(line, wantType string) ([]byte, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("event has no JSON payload")
 	}
-	// Type is checked again after strict duplicate-key validation below. Keep
-	// wantType in this helper to make callers document their expected event.
 	_ = wantType
 	return raw, nil
 }
 
-// rejectDuplicateKeys prevents a malformed line from relying on JSON's
-// implementation-specific duplicate-key behaviour. Device identity is only a
-// convenience signal, but accepting an ambiguous identity is still unsafe.
 func rejectDuplicateKeys(raw []byte) error {
 	d := json.NewDecoder(strings.NewReader(string(raw)))
 	if err := walkJSON(d); err != nil {

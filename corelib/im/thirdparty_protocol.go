@@ -289,6 +289,53 @@ type ThirdPartyGatewayHandshakeResponse struct {
 	MaxBatchSize         int                       `json:"maxBatchSize"`
 	Features             map[string]bool           `json:"features"`
 	CapabilitiesAccepted *agent.ClientCapabilities `json:"capabilitiesAccepted,omitempty"`
+	// Update is advisory metadata only.  It intentionally has no firmware URL,
+	// asset name, download token, or install action: constrained devices must
+	// never download or flash release bytes themselves.
+	Update *FirmwareUpdateMetadata `json:"update,omitempty"`
+}
+
+// FirmwareIdentity is a bounded description of the application currently
+// running on a hardware terminal.  It is carried inside the existing flexible
+// handshake capabilities map, rather than becoming a new top-level request
+// field, so old Hub deployments continue to accept newer devices.
+//
+// The Hub treats every field as an assertion until it has checked it against a
+// durable pairing binding and a signed release manifest.  In particular, this
+// is not a substitute for ROM/manufacturing identity used by the desktop
+// flasher before it writes Flash.
+type FirmwareIdentity struct {
+	DeviceID        string `json:"deviceId"`
+	ProductID       string `json:"productId"`
+	BoardID         string `json:"boardId"`
+	HardwareRev     string `json:"hardwareRev"`
+	LayoutID        string `json:"layoutId"`
+	CompatibilityID string `json:"compatibilityId"`
+	ReleaseSequence int64  `json:"releaseSequence"`
+	AppVersion      string `json:"appVersion"`
+	ELFSHA256       string `json:"elfSha256"`
+}
+
+// FirmwareUpdateMetadata is the only update-related payload a device can
+// receive.  The user must connect a computer and use the official ClawMate
+// Maker, which independently obtains and verifies the signed .clawfw bundle.
+type FirmwareUpdateMetadata struct {
+	Available           bool   `json:"available"`
+	RequiresComputer    bool   `json:"requiresComputer"`
+	ReleaseSequence     int64  `json:"releaseSequence,omitempty"`
+	DisplayVersion      string `json:"displayVersion,omitempty"`
+	ReleaseTag          string `json:"releaseTag,omitempty"`
+	Channel             string `json:"channel,omitempty"`
+	PublishedAt         int64  `json:"publishedAt,omitempty"`
+	Severity            string `json:"severity,omitempty"`
+	Critical            bool   `json:"critical,omitempty"`
+	MinimumMakerVersion string `json:"minimumMakerVersion,omitempty"`
+	PackageID           string `json:"packageId,omitempty"`
+	ManifestSHA256      string `json:"manifestSha256,omitempty"`
+	NotesSummary        string `json:"notesSummary,omitempty"`
+	NotesSHA256         string `json:"notesSha256,omitempty"`
+	CheckAfterSeconds   int    `json:"checkAfterSeconds,omitempty"`
+	Withdrawn           bool   `json:"withdrawn,omitempty"`
 }
 
 type ThirdPartyGatewayHealthResponse struct {

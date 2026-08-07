@@ -6,6 +6,15 @@ CONFIG_ESP_COEX_ENABLED=n
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# The ESP32-S3 Bread Compact intermittently faults in the hardware-MPI
+# interrupt path while verifying the Hub's ECDSA certificate chain.  The
+# failure is a Cache/MMU exception during the first TLS handshake, which traps
+# the device in a boot loop.  Keep the crypto peripheral available for normal
+# operations, but perform MPI/AES work synchronously until the IDF driver path
+# is validated on this board revision.  This affects only handshake latency,
+# not TLS verification or transport security.
+CONFIG_MBEDTLS_MPI_USE_INTERRUPT=n
+CONFIG_MBEDTLS_AES_USE_INTERRUPT=n
 CONFIG_ESP_TLS_USE_DS_PERIPHERAL=n
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # The firmware identity task serves nonce-bound IDENTIFY and BOOT_STATUS

@@ -38,3 +38,18 @@ func TestParseRejectsOverlap(t *testing.T) {
 		t.Fatal("expected overlap")
 	}
 }
+
+func TestEncodeRoundTripPreservesLabels(t *testing.T) {
+	raw, err := Encode([]Entry{{Label: "factory", Type: 0, Subtype: 0, Offset: 0x10000, Size: 0x3a0000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := Parse(raw, 16*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, found := Find(table.Entries, "factory")
+	if !found || entry.Offset != 0x10000 || entry.Size != 0x3a0000 {
+		t.Fatalf("round-trip entry = %#v, found=%v", entry, found)
+	}
+}

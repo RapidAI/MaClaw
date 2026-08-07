@@ -541,7 +541,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 920],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 6150],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 6200],
   ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1550],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 700],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],

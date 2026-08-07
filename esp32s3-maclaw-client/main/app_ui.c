@@ -3,9 +3,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "board_port.h"
+#include "device_api.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+
+#define APP_UI_DISPLAY_OFF_IDLE_MS (30u * 60u * 1000u)
+#define APP_UI_READY_PROMPT_IDLE_MS (APP_UI_DISPLAY_OFF_IDLE_MS + 60u * 1000u)
 
 static app_ui_model_t s_model;
 static portMUX_TYPE s_model_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -53,6 +57,19 @@ static void replay_unlock(void) {
     if (s_replay_mutex) xSemaphoreGiveRecursive(s_replay_mutex);
 }
 
+static void arm_ambient_display_off(uint32_t delay_ms) {
+    device_status_t status = device_power_schedule_display_off(delay_ms);
+    if (status != DEVICE_STATUS_OK) {
+        /* Power scheduling is an energy optimization; it must not make a
+         * foreground transaction fail on an otherwise usable device. */
+        ESP_LOGW("maclaw_ui", "cannot arm DISPLAY_OFF: status=%d", status);
+    }
+}
+
+static void cancel_ambient_display_off(void) {
+    device_power_cancel_display_off();
+}
+
 static void replay_release_dynamic_locked(void) {
     free(s_replay.image_pixels);
     free(s_replay.qr_modules);
@@ -79,13 +96,13 @@ static void replay_render_locked(void) {
     app_ui_model_t model = app_ui_snapshot();
     switch (s_replay.kind) {
         case APP_UI_REPLAY_STARTUP:
-            board_port_set_command_display_lock(true);
-            board_port_show_startup_screen();
+            device_display_set_command_lock(true);
+            device_display_show_startup();
             break;
         case APP_UI_REPLAY_RECORDING:
-            board_port_set_command_display_lock(model.command_display_locked);
-            board_port_set_recording_mode(model.meeting_recording);
-            board_port_set_recording_visual(model.recording_active,
+            device_display_set_command_lock(model.command_display_locked);
+            device_display_set_recording_mode(model.meeting_recording);
+            device_display_set_recording_visual(model.recording_active,
                                             model.recording_paused,
                                             model.elapsed_seconds);
             // A replay restores the already composed recording scene after an
@@ -97,42 +114,43 @@ static void replay_render_locked(void) {
             // real capture block owns that update, exactly as on Bread Compact.
             break;
         case APP_UI_REPLAY_MESSAGE:
-            board_port_set_command_display_lock(model.command_display_locked);
-            board_port_show_text(s_replay.title, s_replay.text);
+            device_display_set_command_lock(model.command_display_locked);
+            device_display_show_text(s_replay.title, s_replay.text);
             break;
         case APP_UI_REPLAY_UPLOAD:
-            board_port_set_command_display_lock(model.command_display_locked);
-            board_port_show_upload_progress(s_replay.completed_bytes,
-                                            s_replay.total_bytes,
+            device_display_set_command_lock(model.command_display_locked);
+            device_display_show_upload_progress((uint32_t)s_replay.completed_bytes,
+                                            (uint32_t)s_replay.total_bytes,
                                             s_replay.stage);
             break;
         case APP_UI_REPLAY_RESPONSE_TEXT:
-            board_port_set_command_display_lock(model.command_display_locked);
-            board_port_show_response(s_replay.title, s_replay.text);
-            (void)board_port_restore_response_page(s_replay.response_page);
+            device_display_set_command_lock(model.command_display_locked);
+            device_display_show_response(s_replay.title, s_replay.text);
+            (void)device_display_restore_response_page((uint32_t)s_replay.response_page);
             break;
         case APP_UI_REPLAY_RESPONSE_IMAGE:
-            board_port_set_command_display_lock(model.command_display_locked);
-            board_port_show_response_image(s_replay.title, s_replay.text,
+            device_display_set_command_lock(model.command_display_locked);
+            device_display_show_response_image(s_replay.title, s_replay.text,
                                            s_replay.image_pixels,
-                                           s_replay.width, s_replay.height);
+                                           (uint32_t)s_replay.width,
+                                           (uint32_t)s_replay.height);
             break;
         case APP_UI_REPLAY_SETUP_QR:
-            board_port_set_command_display_lock(model.command_display_locked);
-            board_port_show_qrcode_matrix(s_replay.qr_modules,
-                                          s_replay.qr_module_count,
+            device_display_set_command_lock(model.command_display_locked);
+            device_display_show_qrcode_modules(s_replay.qr_modules,
+                                          (uint32_t)s_replay.qr_module_count,
                                           s_replay.ssid);
             break;
         case APP_UI_REPLAY_READY_PROMPT:
-            board_port_set_command_display_lock(false);
-            board_port_show_ready_prompt(s_replay.title, s_replay.text);
+            device_display_set_command_lock(false);
+            device_display_show_ready_prompt(s_replay.title, s_replay.text);
             break;
         case APP_UI_REPLAY_PET:
         default:
-            board_port_set_command_display_lock(model.command_display_locked);
-            board_port_set_command_stage(model.command_stage);
-            board_port_set_command_cancel_enabled(model.command_cancel_enabled);
-            board_port_set_pet_state(model.pet_state);
+            device_display_set_command_lock(model.command_display_locked);
+            device_display_set_command_stage(model.command_stage);
+            device_display_set_command_cancel_enabled(model.command_cancel_enabled);
+            device_display_set_pet_state(model.pet_state);
             break;
     }
 }
@@ -146,7 +164,7 @@ static void stop_recording_if_needed(void) {
     s_model.recording_paused = false;
     alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (was_recording && !alarm_active) board_port_set_recording_visual(false, false, 0);
+    if (was_recording && !alarm_active) device_display_set_recording_visual(false, false, 0);
 }
 
 void app_ui_init(void) {
@@ -176,6 +194,7 @@ app_ui_model_t app_ui_snapshot(void) {
 }
 
 void app_ui_show_startup_screen(void) {
+    cancel_ambient_display_off();
     replay_lock();
     taskENTER_CRITICAL(&s_model_lock);
     s_model.surface = APP_UI_SURFACE_STARTUP;
@@ -190,8 +209,8 @@ void app_ui_show_startup_screen(void) {
         replay_unlock();
         return;
     }
-    board_port_set_command_display_lock(true);
-    board_port_show_startup_screen();
+    device_display_set_command_lock(true);
+    device_display_show_startup();
     replay_unlock();
 }
 
@@ -215,7 +234,13 @@ void app_ui_set_pet_state(const char *state) {
     // During recording the requested pet state is retained in the shared model
     // and becomes visible when the recorder closes. It cannot overwrite the
     // waveform midway through a capture.
-    if (!recording && !suppress_ambient && !alarm_active) board_port_set_pet_state(state);
+    if (!recording && !suppress_ambient && !alarm_active) device_display_set_pet_state(state);
+    if (!recording && !suppress_ambient && !alarm_active &&
+        (!strcmp(next_state, "idle") || !strcmp(next_state, "quiet"))) {
+        arm_ambient_display_off(APP_UI_DISPLAY_OFF_IDLE_MS);
+    } else if (!recording && !suppress_ambient) {
+        cancel_ambient_display_off();
+    }
     replay_unlock();
 }
 
@@ -226,7 +251,7 @@ void app_ui_set_command_stage(const char *stage) {
             sizeof(s_model.command_stage));
     alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (!alarm_active) board_port_set_command_stage(stage);
+    if (!alarm_active) device_display_set_command_stage(stage);
 }
 
 void app_ui_set_command_display_lock(bool locked) {
@@ -235,7 +260,7 @@ void app_ui_set_command_display_lock(bool locked) {
     s_model.command_display_locked = locked;
     alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (!alarm_active) board_port_set_command_display_lock(locked);
+    if (!alarm_active) device_display_set_command_lock(locked);
 }
 
 void app_ui_set_command_cancel_enabled(bool enabled) {
@@ -244,21 +269,25 @@ void app_ui_set_command_cancel_enabled(bool enabled) {
     s_model.command_cancel_enabled = enabled;
     alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (!alarm_active) board_port_set_command_cancel_enabled(enabled);
+    if (!alarm_active) device_display_set_command_cancel_enabled(enabled);
 }
 
 void app_ui_set_pet_profile(const char *skin, bool motion_enabled) {
     // Board ports already separate model mutation from painting through their
     // foreground-display guard. Always apply the new profile so the first ready
     // frame is current; the startup artwork remains pixel-stable while locked.
-    board_port_set_pet_profile(skin, motion_enabled);
+    device_display_set_pet_profile(skin, motion_enabled);
 }
 
 esp_err_t app_ui_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
                                size_t width, size_t height, uint32_t frame_ms) {
     // Install the asset now without painting over startup. Both board ports
     // defer presentation while the foreground-display guard is active.
-    return board_port_set_pet_asset(frames, frame_count, width, height, frame_ms);
+    if (frame_count > UINT32_MAX || width > UINT32_MAX || height > UINT32_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return device_status_to_platform_error(device_display_set_pet_asset(
+        frames, (uint32_t)frame_count, (uint32_t)width, (uint32_t)height, frame_ms));
 }
 
 void app_ui_set_recording_mode(bool meeting) {
@@ -268,7 +297,7 @@ void app_ui_set_recording_mode(bool meeting) {
     s_model.elapsed_seconds = 0;
     alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (!alarm_active) board_port_set_recording_mode(meeting);
+    if (!alarm_active) device_display_set_recording_mode(meeting);
 }
 
 void app_ui_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds) {
@@ -294,6 +323,9 @@ void app_ui_set_recording_visual(bool active, bool paused, uint32_t elapsed_seco
     taskEXIT_CRITICAL(&s_model_lock);
     replay_begin_locked(active ? APP_UI_REPLAY_RECORDING : APP_UI_REPLAY_PET);
 
+    if (active || command_locked) cancel_ambient_display_off();
+    else arm_ambient_display_off(APP_UI_DISPLAY_OFF_IDLE_MS);
+
     if (alarm_active) {
         replay_unlock();
         return;
@@ -301,9 +333,9 @@ void app_ui_set_recording_visual(bool active, bool paused, uint32_t elapsed_seco
 
     // Always re-assert the mode before rendering. This makes mode and visual a
     // single shared transition even when different tasks updated the UI.
-    board_port_set_recording_mode(meeting);
-    board_port_set_recording_visual(active, paused, elapsed_seconds);
-    if (!active && !command_locked) board_port_set_pet_state(next_pet);
+    device_display_set_recording_mode(meeting);
+    device_display_set_recording_visual(active, paused, elapsed_seconds);
+    if (!active && !command_locked) device_display_set_pet_state(next_pet);
     replay_unlock();
 }
 
@@ -319,7 +351,7 @@ void app_ui_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
     }
     alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (active && !alarm_active) board_port_set_audio_level(level, elapsed_seconds);
+    if (active && !alarm_active) device_display_set_audio_level(level, elapsed_seconds);
 }
 
 void app_ui_push_recording_pcm(const int16_t *samples, size_t count) {
@@ -330,6 +362,7 @@ void app_ui_push_recording_pcm(const int16_t *samples, size_t count) {
 }
 
 void app_ui_show_text(const char *title, const char *text) {
+    cancel_ambient_display_off();
     stop_recording_if_needed();
     replay_lock();
     taskENTER_CRITICAL(&s_model_lock);
@@ -339,12 +372,13 @@ void app_ui_show_text(const char *title, const char *text) {
     replay_begin_locked(APP_UI_REPLAY_MESSAGE);
     strlcpy(s_replay.title, title ? title : "", sizeof(s_replay.title));
     strlcpy(s_replay.text, text ? text : "", sizeof(s_replay.text));
-    if (!alarm_active) board_port_show_text(title, text);
+    if (!alarm_active) device_display_show_text(title, text);
     replay_unlock();
 }
 
 void app_ui_show_upload_progress(size_t completed_bytes, size_t total_bytes,
                                  const char *stage) {
+    cancel_ambient_display_off();
     stop_recording_if_needed();
     replay_lock();
     // Meeting recordings may approach the Hub's 512 MiB quota. Multiplying a
@@ -375,12 +409,14 @@ void app_ui_show_upload_progress(size_t completed_bytes, size_t total_bytes,
     s_replay.total_bytes = total_bytes;
     strlcpy(s_replay.stage, visible_stage, sizeof(s_replay.stage));
     if (!unchanged && !alarm_active) {
-        board_port_show_upload_progress(completed_bytes, total_bytes, stage);
+        device_display_show_upload_progress((uint32_t)completed_bytes,
+                                            (uint32_t)total_bytes, stage);
     }
     replay_unlock();
 }
 
 void app_ui_show_response(const char *title, const char *text) {
+    cancel_ambient_display_off();
     stop_recording_if_needed();
     replay_lock();
     taskENTER_CRITICAL(&s_model_lock);
@@ -390,12 +426,13 @@ void app_ui_show_response(const char *title, const char *text) {
     replay_begin_locked(APP_UI_REPLAY_RESPONSE_TEXT);
     strlcpy(s_replay.title, title ? title : "", sizeof(s_replay.title));
     strlcpy(s_replay.text, text ? text : "", sizeof(s_replay.text));
-    if (!alarm_active) board_port_show_response(title, text);
+    if (!alarm_active) device_display_show_response(title, text);
     replay_unlock();
 }
 
 void app_ui_show_response_image(const char *title, const char *caption,
                                 const uint16_t *pixels, size_t width, size_t height) {
+    cancel_ambient_display_off();
     stop_recording_if_needed();
     if (!pixels || width < 1 || width > 64 || height < 1 || height > 64) return;
     replay_lock();
@@ -416,7 +453,9 @@ void app_ui_show_response_image(const char *title, const char *caption,
     s_replay.height = height;
     strlcpy(s_replay.title, title ? title : "", sizeof(s_replay.title));
     strlcpy(s_replay.text, caption ? caption : "", sizeof(s_replay.text));
-    if (!alarm_active) board_port_show_response_image(title, caption, pixels, width, height);
+    if (!alarm_active) device_display_show_response_image(title, caption, pixels,
+                                                           (uint32_t)width,
+                                                           (uint32_t)height);
     replay_unlock();
 }
 
@@ -435,17 +474,13 @@ bool app_ui_navigate_response(int page_delta) {
         replay_unlock();
         return true;
     }
-    if (response_visible) handled = board_port_navigate_response(page_delta);
-#if CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD || CONFIG_MACLAW_BOARD_FANGTANG_4G
-    // The compact LCD HAL is the source of truth for a reply that is visibly
-    // on the panel. Bread uses this for its physical page keys; Fangtang also
-    // needs it so its always-running six-second pager survives a late
-    // model-only state update that raced the outgoing-result draw.
-    if (!handled) handled = board_port_navigate_response(page_delta);
-#endif
+    // The active renderer is the source of truth for reply pagination on
+    // every profile.  It may implement manual pages, auto-pages, or neither;
+    // the shared UI coordinator must not know which hardware selected it.
+    if (response_visible) handled = device_display_navigate_response(page_delta);
     if (handled && s_replay.kind == APP_UI_REPLAY_RESPONSE_TEXT) {
-        unsigned page = 0;
-        if (board_port_get_response_page(&page)) s_replay.response_page = page;
+        uint32_t page = 0;
+        if (device_display_get_response_page(&page)) s_replay.response_page = page;
     }
     replay_unlock();
     return handled;
@@ -472,8 +507,9 @@ bool app_ui_dismiss_response(void) {
         // Release the HAL's foreground guard before requesting the ambient
         // repaint. EchoEar keeps response_active as a stale-frame barrier;
         // Bread Compact uses the same lock to reject late idle updates.
-        board_port_set_command_display_lock(false);
-        board_port_set_pet_state(pet_state);
+        device_display_set_command_lock(false);
+        device_display_set_pet_state(pet_state);
+        arm_ambient_display_off(APP_UI_DISPLAY_OFF_IDLE_MS);
     }
     replay_unlock();
     return response_visible;
@@ -503,18 +539,20 @@ void app_ui_restore_standby(void) {
     // guards, then paint idle. Both board ports reject stale ambient frames
     // while the guard is set, so reversing this order would leave the cancel
     // message visible even though the application model already says PET.
-    board_port_set_command_cancel_enabled(false);
-    board_port_set_command_display_lock(false);
-    board_port_set_recording_mode(false);
-    board_port_set_pet_state("idle");
+    device_display_set_command_cancel_enabled(false);
+    device_display_set_command_lock(false);
+    device_display_set_recording_mode(false);
+    device_display_set_pet_state("idle");
+    arm_ambient_display_off(APP_UI_DISPLAY_OFF_IDLE_MS);
     replay_unlock();
 }
 
 int app_ui_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]) {
-    return board_port_cache_glyph(codepoint, bitmap);
+    return device_display_cache_glyph(codepoint, bitmap);
 }
 
 void app_ui_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
+    cancel_ambient_display_off();
     if (!qrcode) return;
     int size = esp_qrcode_get_size(qrcode);
     if (size <= 0 || size > 177) return;
@@ -536,11 +574,12 @@ void app_ui_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
     s_replay.qr_modules = modules;
     s_replay.qr_module_count = (size_t)size;
     strlcpy(s_replay.ssid, ssid ? ssid : "", sizeof(s_replay.ssid));
-    if (!alarm_active) board_port_show_qrcode_matrix(modules, (size_t)size, ssid);
+    if (!alarm_active) device_display_show_qrcode_modules(modules, (uint32_t)size, ssid);
     replay_unlock();
 }
 
 void app_ui_show_ready_prompt(const char *title, const char *text) {
+    cancel_ambient_display_off();
     replay_lock();
     taskENTER_CRITICAL(&s_model_lock);
     bool was_recording = s_model.recording_active;
@@ -555,14 +594,21 @@ void app_ui_show_ready_prompt(const char *title, const char *text) {
     strlcpy(s_replay.title, title ? title : "", sizeof(s_replay.title));
     strlcpy(s_replay.text, text ? text : "", sizeof(s_replay.text));
     if (!alarm_active) {
-        if (was_recording) board_port_set_recording_visual(false, false, 0);
-        board_port_set_command_display_lock(false);
-        board_port_show_ready_prompt(title, text);
+        if (was_recording) device_display_set_recording_visual(false, false, 0);
+        device_display_set_command_lock(false);
+        device_display_show_ready_prompt(title, text);
+        /* The old renderer held the ready prompt for one minute and then
+         * started its 30-minute ambient timer. Preserve that user-visible
+         * timing while moving the actual deadline ownership to Power Service. */
+        arm_ambient_display_off(APP_UI_READY_PROMPT_IDLE_MS);
     }
     replay_unlock();
 }
 
 void app_ui_cancel_ready_prompt(void) {
+    // A new interaction consumes the prompt before it has a foreground scene.
+    // Disarm here rather than relying on a later recorder/message transition.
+    cancel_ambient_display_off();
     replay_lock();
     bool alarm_active;
     if (s_replay.kind == APP_UI_REPLAY_READY_PROMPT) {
@@ -571,12 +617,12 @@ void app_ui_cancel_ready_prompt(void) {
     taskENTER_CRITICAL(&s_model_lock);
     alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (!alarm_active) board_port_cancel_ready_prompt();
+    if (!alarm_active) device_display_cancel_ready_prompt();
     replay_unlock();
 }
 
 bool app_ui_wake_from_idle(void) {
-    return board_port_wake_from_idle();
+    return device_power_wake_display_from_user();
 }
 
 void app_ui_set_wifi_status(const char *ssid, bool connected) {
@@ -587,7 +633,7 @@ void app_ui_set_wifi_status(const char *ssid, bool connected) {
     // cosmetic repaint while a response, recording, setup QR, or alarm owns
     // the screen, but must retain the transport state for the next standby
     // composition (the same ownership contract used for service readiness).
-    board_port_set_wifi_status(ssid, connected);
+    device_display_set_wifi_status(ssid, connected);
 }
 
 void app_ui_set_service_ready(bool ready) {
@@ -597,7 +643,7 @@ void app_ui_set_service_ready(bool ready) {
     // Always forward the model mutation. The board port defers repainting when
     // a command/setup/alarm owns the display, but must still remember an outage
     // that occurred behind that foreground surface.
-    board_port_set_service_ready(ready);
+    device_display_set_service_ready(ready);
 }
 
 void app_ui_set_ambient(const char *time, const char *location, const char *date,
@@ -618,7 +664,7 @@ void app_ui_set_ambient(const char *time, const char *location, const char *date
     // foreground guard as Bread Compact and stores an update received behind a
     // result/upload/setup screen for the first restored standby frame.  Dropping
     // it here used to leave date/weather stale until the next server tick.
-    board_port_set_ambient(time, location, date, weekday, weather_summary,
+    device_display_set_ambient(time, location, date, weekday, weather_summary,
                            temperature_c, weather_valid, weather_stale);
 }
 
@@ -628,13 +674,13 @@ void app_ui_set_alarm_scheduled(bool scheduled) {
     taskEXIT_CRITICAL(&s_model_lock);
     // The board port stores this model state even while a startup or command
     // foreground owns the LCD, then includes it in the next standby frame.
-    board_port_set_alarm_scheduled(scheduled);
+    device_display_set_alarm_scheduled(scheduled);
 }
 
 void app_ui_set_alarm_visual(bool active, unsigned frame, const char *time_text,
                              const char *label, unsigned attempt, unsigned max_attempts) {
     replay_lock();
-    unsigned interrupted_response_page = 0;
+    uint32_t interrupted_response_page = 0;
     bool have_interrupted_response_page = false;
     taskENTER_CRITICAL(&s_model_lock);
     bool was_active = s_model.alarm_visual_active;
@@ -644,14 +690,15 @@ void app_ui_set_alarm_visual(bool active, unsigned frame, const char *time_text,
     s_model.alarm_visual_active = active;
     taskEXIT_CRITICAL(&s_model_lock);
     if (active) {
+        cancel_ambient_display_off();
         if (text_response_visible) {
             have_interrupted_response_page =
-                board_port_get_response_page(&interrupted_response_page);
+                device_display_get_response_page(&interrupted_response_page);
             if (have_interrupted_response_page) {
                 s_replay.response_page = interrupted_response_page;
             }
         }
-        board_port_set_alarm_visual(true, frame, time_text, label, attempt, max_attempts);
+        device_display_set_alarm_visual(true, frame, time_text, label, attempt, max_attempts);
         replay_unlock();
         return;
     }
@@ -662,7 +709,10 @@ void app_ui_set_alarm_visual(bool active, unsigned frame, const char *time_text,
     // Board-local alarm ownership is released without drawing an interim idle
     // page. The latest scene published while the alarm was ringing is then
     // replayed atomically, including copied image or QR payloads.
-    board_port_set_alarm_visual(false, frame, time_text, label, attempt, max_attempts);
+    device_display_set_alarm_visual(false, frame, time_text, label, attempt, max_attempts);
     replay_render_locked();
+    if (s_replay.kind == APP_UI_REPLAY_PET) {
+        arm_ambient_display_off(APP_UI_DISPLAY_OFF_IDLE_MS);
+    }
     replay_unlock();
 }

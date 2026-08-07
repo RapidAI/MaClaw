@@ -64,21 +64,24 @@ type adminRiskEvent struct {
 }
 
 type HTTPServer struct {
-	svc             *agentservice.Service
-	adminSecret     string
-	mux             *http.ServeMux
-	authLimiter     *authLimiter
-	launchTokens    *launchTokenStore
-	weixinQRTokens  *weixinQRTokenStore
-	weixinRuntime   *srvWeixinGatewayManager
-	imRuntime       *srvIMGatewayManager
-	thirdPartyIM    *srvThirdPartyGatewayManager
-	devicePairings  *srvDevicePairingStore
-	devicePairLimit *authLimiter
-	jobs            *asyncJobManager
-	knowledgeMgr    *knowledgeStoreManager
-	skillSourceSvc  *cskill.SourceControlService
-	aiModels        *srvAIModelManager
+	svc                  *agentservice.Service
+	adminSecret          string
+	mux                  *http.ServeMux
+	authLimiter          *authLimiter
+	launchTokens         *launchTokenStore
+	weixinQRTokens       *weixinQRTokenStore
+	weixinRuntime        *srvWeixinGatewayManager
+	imRuntime            *srvIMGatewayManager
+	thirdPartyIM         *srvThirdPartyGatewayManager
+	devicePairings       *srvDevicePairingStore
+	devicePairLimit      *authLimiter
+	deviceUpdateBindings *srvDeviceUpdateBindingStore
+	deviceUpdateCatalog  *srvDeviceUpdateCatalog
+	githubReleaseCatalog *srvGitHubReleaseCatalog
+	jobs                 *asyncJobManager
+	knowledgeMgr         *knowledgeStoreManager
+	skillSourceSvc       *cskill.SourceControlService
+	aiModels             *srvAIModelManager
 }
 
 type weixinQRTokenRecord struct {
@@ -156,7 +159,16 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
 	}
 	wireSkillSourceFilter(svc, sourceSvc)
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot())}
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), deviceUpdateBindings: newSrvDeviceUpdateBindingStore(svc.DataRoot()), deviceUpdateCatalog: newSrvDeviceUpdateCatalog(svc.DataRoot()), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot())}
+	if releaseCatalog, err := newSrvGitHubReleaseCatalogFromEnv(s.deviceUpdateCatalog); err != nil {
+		// An invalid trust anchor must disable this optional provider rather than
+		// silently accepting an unsigned/local substitute. Existing local
+		// metadata remains bounded by its own expiry policy.
+		fmt.Printf("[release-catalog] disabled: %v\n", err)
+	} else if releaseCatalog != nil {
+		s.githubReleaseCatalog = releaseCatalog
+		releaseCatalog.start()
+	}
 	s.aiModels.setDownloadConfigProvider(func() corelib.AppConfig {
 		return s.defaultConfigForAIModels(context.Background())
 	})
@@ -189,6 +201,9 @@ func (s *HTTPServer) Close() {
 	}
 	if s.thirdPartyIM != nil {
 		s.thirdPartyIM.StopAll()
+	}
+	if s.githubReleaseCatalog != nil {
+		s.githubReleaseCatalog.close()
 	}
 	if s.aiModels != nil {
 		s.aiModels.Close()

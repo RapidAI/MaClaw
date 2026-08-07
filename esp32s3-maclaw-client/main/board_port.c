@@ -57,9 +57,20 @@
 #define AUDIO_PA_ENABLE GPIO_NUM_18
 #define ES7210_ADDRESS  0x40
 #define ES8311_ADDRESS  0x18
+#define ES8311_DAC_MUTE_REG 0x31
 #define ES8311_DAC_VOLUME_REG 0x32
 #define OUTPUT_VOLUME_DEFAULT 70
 #define AUDIO_RATE      16000
+/* ES8311's 16 kHz coefficient set is derived for a 256fs master clock.
+ * Keep the hardware clock relation stated here because the microphone and
+ * DAC share the same I2S controller on EchoEar-2ST:
+ *   MCLK = 16,000 * 256 = 4.096 MHz
+ *   DAC BCLK = 16,000 * 2 channels * 32-bit slots = 1.024 MHz
+ *
+ * PCM samples remain 16-bit.  The ES8311 coefficient's BCLK divider, however,
+ * is for 32-bit stereo slots (64 BCLKs per LRCK), not packed 16-bit slots.
+ */
+#define ECHOEAR_AUDIO_MCLK_MULTIPLE I2S_MCLK_MULTIPLE_256
 // End a command after a natural pause instead of a fixed recording window.
 // Thirty seconds leaves room for multi-step requests while keeping the maximum
 // 16 kHz PCM WAV allocation below 1 MiB on the current in-memory upload path.
@@ -139,8 +150,8 @@ static const char *const s_wake_word_cn_phonetics[] = {
 #define RESPONSE_LINES_PER_PAGE 5
 #define RESPONSE_FOOTER_Y 278
 #define RESPONSE_TEXT_CAPACITY 768
-#define AMBIENT_TOP_W   336
-#define AMBIENT_TOP_H   80
+#define AMBIENT_TOP_W   360
+#define AMBIENT_TOP_H   128
 #define AMBIENT_BOTTOM_W 316
 #define AMBIENT_BOTTOM_H 90
 // Use a slightly tighter common circle for the two information bands.  With
@@ -148,6 +159,13 @@ static const char *const s_wake_word_cn_phonetics[] = {
 // both arcs, so the date/time and weather no longer read as two unrelated,
 // almost-flat curves.  The taller transparent overlays leave room for the
 // visibly rounder ends without clipping glyphs.
+// The upper status string can contain date, weekday, time, service state and
+// alarm marker together. A 150px radius dropped its first and last glyphs
+// below the 80px transparent overlay, so leading zeroes (for example "08")
+// and the final CJK glyph in "在线" were clipped. Keep the lower information
+// ring unchanged, but give the upper status ring a gentler, fully-contained
+// arc.
+#define AMBIENT_TOP_RING_RADIUS 240
 #define AMBIENT_RING_RADIUS 150
 #define AMBIENT_TRANSPARENT_KEY 0x0001u
 #define LCD_FRAMEBUFFER_PIXELS ((size_t)LCD_WIDTH * LCD_HEIGHT)
@@ -172,6 +190,13 @@ static const char *const s_wake_word_cn_phonetics[] = {
 #define INPUT_LONG_HOLD_US      (2500LL * 1000)
 #define PET_HALO_CENTER_Y 175
 #define PET_HALO_RADIUS   106
+// The default procedural cat is shown on the permanent circular standby
+// surface before a remotely selected pet has loaded.  Keep its head noticeably
+// inside the top date/status ring: the former 103px face plus 55px ears reached
+// into the header and visually collided with the date.  The local fallback is
+// intentionally more compact than a downloaded full-frame pet.
+#define STANDBY_CAT_SCALE_NUM 7
+#define STANDBY_CAT_SCALE_DEN 8
 
 static const char *TAG = "maclaw_board";
 static esp_lcd_panel_handle_t s_panel;
@@ -305,11 +330,14 @@ static bool s_pet_animation_started;
 // Status text gets an immutable DMA buffer. Color transfers are queued by the
 // LCD IO driver, so reusing s_line immediately can otherwise modify pixels
 // that have not reached the panel yet and leave specks around the text rows.
-// Dedicated immutable buffers are required for the two ambient dirty regions.
-// Reusing s_line while the LCD transaction is still queued is what produced
-// the short white/purple fragments visible at the top of the round screen.
-static DMA_ATTR uint16_t s_ambient_top[AMBIENT_TOP_W * AMBIENT_TOP_H];
-static DMA_ATTR uint16_t s_ambient_bottom[AMBIENT_BOTTOM_W * AMBIENT_BOTTOM_H];
+// The status and weather overlays are presented synchronously, one after the
+// other; they never have pixels in flight at the same time.  A single immutable
+// DMA buffer is therefore sufficient for both regions.  Keeping two separate
+// arrays consumed another 57 KiB of precious internal RAM on EchoEar, leaving
+// too little contiguous memory for the first TLS handshake even though PSRAM
+// was mostly unused.  Do not reuse s_line here: it is much smaller and is also
+// used by full-frame stripe presentation.
+static DMA_ATTR uint16_t s_ambient_overlay[AMBIENT_TOP_W * AMBIENT_TOP_H];
 static uint16_t s_draw_transactions;
 static volatile uint32_t s_skipped_pet_frames;
 static i2c_master_bus_handle_t s_audio_i2c_bus;
@@ -604,6 +632,14 @@ static esp_err_t es8311_set_output_volume(unsigned percent) {
     return es8311_write(ES8311_DAC_VOLUME_REG, es8311_volume_register(percent));
 }
 
+/* PA shutdown alone does not stop the ES8311 DAC/reference path. Mute the
+ * codec whenever no playback owns the PA, then unmute after the first queued
+ * PCM block. This prevents DAC floor/reference ramp noise being mixed into
+ * every voice reply on the EchoEar analogue path. */
+static esp_err_t es8311_set_dac_muted(bool muted) {
+    return es8311_write(ES8311_DAC_MUTE_REG, muted ? 0x60 : 0x00);
+}
+
 static esp_err_t es8311_init(void) {
     // EchoEar-2ST uses the ES8311 at 0x18 as I2S slave. This sequence is
     // Espressif's BSP initialization for 16-bit, 16 kHz playback with the
@@ -615,11 +651,15 @@ static esp_err_t es8311_init(void) {
         // and the codec must receive 0x03. Programming 0x04 makes the DAC
         // consume the wrong bit-clock ratio: data is audible but speech is
         // severely distorted, like a weak two-way radio.
-        {0x01, 0x7F}, {0x02, 0x00}, {0x03, 0x10}, {0x04, 0x10},
+        /* For 4.096 MHz/16 kHz the official ES8311 coefficients are
+         * ADC OSR=0x10 and DAC OSR=0x20.  Programming 0x10 into REG04
+         * clocks the DAC at the ADC oversampling ratio, which preserves
+         * rough tones but corrupts broadband speech with radio-like noise. */
+        {0x01, 0x7F}, {0x02, 0x00}, {0x03, 0x10}, {0x04, 0x20},
         {0x05, 0x00}, {0x06, 0x03}, {0x07, 0x00}, {0x08, 0xFF},
         {0x09, 0x0C}, {0x0A, 0x0C}, {0x0D, 0x01}, {0x0E, 0x02},
-        {0x12, 0x00}, {0x13, 0x10}, {0x1C, 0x6A}, {0x37, 0x08},
-        {0x31, 0x00},
+        {0x12, 0x00}, {0x13, 0x10}, {0x14, 0x1A}, {0x15, 0x40},
+        {0x1C, 0x6A}, {0x37, 0x08}, {0x44, 0x58}, {0x31, 0x60},
     };
     ESP_RETURN_ON_ERROR(es8311_write(init[0][0], init[0][1]), TAG, "ES8311 reset");
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -762,6 +802,12 @@ static esp_err_t audio_init(void) {
     // 16-bit samples left-aligned in the Philips slots; relying on the IDF
     // default leaves speech data offset although simple tones remain audible.
     tx_cfg.slot_cfg.left_align = true;
+    // The ES8311 16 kHz / 4.096 MHz coefficient table requires 64 BCLKs per
+    // frame.  Sending 16-bit stereo slots here produces only 32 BCLKs and
+    // makes the DAC decode speech as intense broadband noise.  Keep 16-bit
+    // PCM data, but transport it left-aligned in 32-bit stereo slots.
+    tx_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+    tx_cfg.clk_cfg.mclk_multiple = ECHOEAR_AUDIO_MCLK_MULTIPLE;
     err = i2s_channel_init_std_mode(s_audio_tx, &tx_cfg);
     if (err != ESP_OK) goto fail;
     // EchoEar's ES7210/ES8311 share this full-duplex I2S clock domain.  Unlike
@@ -784,7 +830,9 @@ static esp_err_t audio_init(void) {
     err = es8311_init();
     if (err != ESP_OK) goto fail;
     s_audio_ready = true;
-    ESP_LOGI(TAG, "EchoEar audio ready: ES7210 mic + ES8311 speaker at 16kHz");
+    ESP_LOGI(TAG, "EchoEar audio ready: ES7210 mic + ES8311 speaker at %dHz "
+             "(MCLK=%dHz, DAC BCLK=%dHz, 16-bit PCM in 32-bit stereo slots)",
+             AUDIO_RATE, AUDIO_RATE * 256, AUDIO_RATE * 2 * 32);
     return ESP_OK;
 fail:
     ESP_LOGE(TAG, "EchoEar audio initialization failed: %s; rolling back for retry",
@@ -1562,12 +1610,13 @@ static void draw_clock_calendar(uint16_t bg) {
     // is available in that path.
     const bool keyed_overlay = s_render_target != NULL;
     const uint16_t overlay_bg = keyed_overlay ? AMBIENT_TRANSPARENT_KEY : bg;
-    for (size_t i = 0; i < sizeof(s_ambient_top) / sizeof(s_ambient_top[0]); ++i) {
-        s_ambient_top[i] = overlay_bg;
+    for (size_t i = 0; i < sizeof(s_ambient_overlay) / sizeof(s_ambient_overlay[0]); ++i) {
+        s_ambient_overlay[i] = overlay_bg;
     }
     bool clock_valid = ambient_time[0] && strcmp(ambient_time, "--:--:--");
     if (clock_valid) {
-        char ring[96];
+        char date_ring[48];
+        char status_ring[48];
         // Upper ring is time context only. It ends above y=62 so the pet's
         // ears and head always remain completely untouched.
         // Keep the compact service and alarm state on the same upper ring as
@@ -1579,22 +1628,27 @@ static void draw_clock_calendar(uint16_t bg) {
         // ambient frame, so a subsequent pet animation cannot erase it.
         const char *connection = service_ready ? "在线" :
                                  (wifi_connected ? "服务中" : "联网中");
-        snprintf(ring, sizeof(ring), "%s %s %s %s%s", ambient_date,
-                 ambient_weekday, ambient_time, connection,
-                 alarm_scheduled ? " AL" : "");
-        // Keep this on the tighter shared ring.  The expanded transparent
-        // overlay below preserves its outer glyphs at the stronger curvature.
-        compose_text16_curve(s_ambient_top, AMBIENT_TOP_W, AMBIENT_TOP_W, AMBIENT_TOP_H,
-                             AMBIENT_TOP_W / 2, 7, AMBIENT_RING_RADIUS, ring, primary);
+        snprintf(date_ring, sizeof(date_ring), "%s %s%s", ambient_date,
+                 ambient_weekday, alarm_scheduled ? " AL" : "");
+        snprintf(status_ring, sizeof(status_ring), "%s %s", ambient_time, connection);
+        // Both upper strings use the weather ring's native 24px glyphs. They
+        // are split into two arcs so neither end is forced into the circular
+        // bezel when a full date and service label are present.
+        compose_text24_curve(s_ambient_overlay, AMBIENT_TOP_W, AMBIENT_TOP_W, AMBIENT_TOP_H,
+                             AMBIENT_TOP_W / 2, 16, AMBIENT_TOP_RING_RADIUS,
+                             status_ring, primary);
+        compose_text24_curve(s_ambient_overlay, AMBIENT_TOP_W, AMBIENT_TOP_W, AMBIENT_TOP_H,
+                             AMBIENT_TOP_W / 2, 56, AMBIENT_TOP_RING_RADIUS,
+                             date_ring, primary);
     }
-    draw_or_compose_bitmap(12, 13, 12 + AMBIENT_TOP_W, 13 + AMBIENT_TOP_H,
-                           s_ambient_top, keyed_overlay);
+    draw_or_compose_bitmap(0, 0, AMBIENT_TOP_W, AMBIENT_TOP_H,
+                           s_ambient_overlay, keyed_overlay);
 
     // City precedes weather on the matching lower arc. Its physical region
     // starts below the native pet's 96..272 drawing area, so neither text nor
     // background clearing can cut into the pet circle.
-    for (size_t i = 0; i < sizeof(s_ambient_bottom) / sizeof(s_ambient_bottom[0]); ++i) {
-        s_ambient_bottom[i] = overlay_bg;
+    for (size_t i = 0; i < sizeof(s_ambient_overlay) / sizeof(s_ambient_overlay[0]); ++i) {
+        s_ambient_overlay[i] = overlay_bg;
     }
     if (ambient_weather_valid && ambient_weather[0]) {
         char location[16];
@@ -1617,7 +1671,7 @@ static void draw_clock_calendar(uint16_t bg) {
         // temperature) rise toward the pet, while the middle (weather) sits
         // lower. Splitting it into two independent arcs made the direction
         // look reversed even when each individual curve had the right sign.
-        compose_text24_curve(s_ambient_bottom, AMBIENT_BOTTOM_W, AMBIENT_BOTTOM_W, AMBIENT_BOTTOM_H,
+        compose_text24_curve(s_ambient_overlay, AMBIENT_BOTTOM_W, AMBIENT_BOTTOM_W, AMBIENT_BOTTOM_H,
                              // Mirror the upper rim exactly, reversing the
                              // sign for the lower half of the external circle.
                              AMBIENT_BOTTOM_W / 2, 52, -AMBIENT_RING_RADIUS,
@@ -1628,7 +1682,7 @@ static void draw_clock_calendar(uint16_t bg) {
         // the two ends of the tighter lower arc remain visible.  It only
         // paints foreground glyphs; the pet pixels underneath are preserved.
         22, 268, 22 + AMBIENT_BOTTOM_W, 268 + AMBIENT_BOTTOM_H,
-                           s_ambient_bottom, keyed_overlay);
+                           s_ambient_overlay, keyed_overlay);
 }
 
 // The boot surface is intentionally separate from standby: while the selected
@@ -1638,15 +1692,15 @@ static void draw_clock_calendar(uint16_t bg) {
 static void draw_startup_brand_arc(uint16_t bg) {
     const bool keyed_overlay = s_render_target != NULL;
     const uint16_t overlay_bg = keyed_overlay ? AMBIENT_TRANSPARENT_KEY : bg;
-    for (size_t i = 0; i < sizeof(s_ambient_bottom) / sizeof(s_ambient_bottom[0]); ++i) {
-        s_ambient_bottom[i] = overlay_bg;
+    for (size_t i = 0; i < sizeof(s_ambient_overlay) / sizeof(s_ambient_overlay[0]); ++i) {
+        s_ambient_overlay[i] = overlay_bg;
     }
-    compose_text24_curve(s_ambient_bottom, AMBIENT_BOTTOM_W, AMBIENT_BOTTOM_W,
+    compose_text24_curve(s_ambient_overlay, AMBIENT_BOTTOM_W, AMBIENT_BOTTOM_W,
                          AMBIENT_BOTTOM_H, AMBIENT_BOTTOM_W / 2, 48,
                          -AMBIENT_RING_RADIUS, "MaClaw Mate",
                          rgb565(244, 249, 253));
     draw_or_compose_bitmap(22, 268, 22 + AMBIENT_BOTTOM_W,
-                           268 + AMBIENT_BOTTOM_H, s_ambient_bottom,
+                           268 + AMBIENT_BOTTOM_H, s_ambient_overlay,
                            keyed_overlay);
 }
 
@@ -1681,6 +1735,51 @@ static void fill_circle_vertical_gradient(int cx, int cy, int radius,
             uint16_t lower_amount = (uint16_t)((radius + abs_dy) * 255 / (radius * 2));
             fill_rect(cx - dx, cy + abs_dy, cx + dx + 1, cy + abs_dy + 1,
                       rgb565_lerp(top, bottom, lower_amount));
+        }
+    }
+}
+
+static int scale_standby_cat_coordinate(int value, int center) {
+    return center + (value - center) * STANDBY_CAT_SCALE_NUM / STANDBY_CAT_SCALE_DEN;
+}
+
+static int scale_standby_cat_radius(int value) {
+    return value * STANDBY_CAT_SCALE_NUM / STANDBY_CAT_SCALE_DEN;
+}
+
+static void draw_standby_cat_eye(int x, int y, uint16_t dark, uint16_t shine) {
+    const int cx = scale_standby_cat_coordinate(x, LCD_WIDTH / 2);
+    const int cy = scale_standby_cat_coordinate(y, PET_HALO_CENTER_Y);
+    fill_circle_vertical_gradient(cx, cy, scale_standby_cat_radius(25),
+                                  rgb565(31, 67, 101), dark);
+    fill_circle_vertical_gradient(cx, cy + scale_standby_cat_radius(2),
+                                  scale_standby_cat_radius(16),
+                                  rgb565(67, 207, 225), rgb565(21, 91, 145));
+    fill_circle(cx, cy + scale_standby_cat_radius(5), scale_standby_cat_radius(9),
+                rgb565(10, 24, 42));
+    fill_circle(cx + scale_standby_cat_radius(8), cy - scale_standby_cat_radius(8),
+                scale_standby_cat_radius(7), shine);
+    fill_circle(cx - scale_standby_cat_radius(5), cy + scale_standby_cat_radius(8),
+                scale_standby_cat_radius(3), rgb565(135, 235, 245));
+    fill_rect(cx - scale_standby_cat_radius(18), cy + scale_standby_cat_radius(20),
+              cx + scale_standby_cat_radius(19), cy + scale_standby_cat_radius(24), dark);
+}
+
+static void draw_standby_cat_ear(int x, int y, int dir,
+                                 uint16_t outer, uint16_t inner) {
+    const int base_x = scale_standby_cat_coordinate(x, LCD_WIDTH / 2);
+    const int base_y = scale_standby_cat_coordinate(y, PET_HALO_CENTER_Y);
+    const int rows = scale_standby_cat_radius(55);
+    for (int row = 0; row < rows; ++row) {
+        const int source_row = row * STANDBY_CAT_SCALE_DEN / STANDBY_CAT_SCALE_NUM;
+        const int w = scale_standby_cat_radius(20 + source_row / 2);
+        const int left = dir > 0 ? base_x : base_x - w;
+        fill_rect(left, base_y + row, left + w, base_y + row + 1, outer);
+        if (source_row > 13) {
+            const int inner_w = scale_standby_cat_radius(20 + source_row / 2 - 15);
+            const int inner_left = dir > 0 ? base_x + scale_standby_cat_radius(7)
+                                            : base_x - inner_w - scale_standby_cat_radius(7);
+            fill_rect(inner_left, base_y + row, inner_left + inner_w, base_y + row + 1, inner);
         }
     }
 }
@@ -1920,48 +2019,71 @@ static void draw_pet_frame_contents(bool redraw_background) {
         if (ambient_visible_for_state()) draw_clock_calendar(bg);
         return;
     }
-    // Keep the pet silhouette beneath the curved time band.  The previous
-    // 64 px ear anchor let the animated upward bob enter the header's clear
-    // region and visually shave the tops of both ears.
+    // Keep the pet silhouette beneath the curved time band. The local cat is
+    // deliberately 7/8 scale on the standby surface: before a selected pet
+    // pack appears, its ears and head must leave a clear visual gap below the
+    // date/status ring.
     const int pet_y_offset = 18;
     // The ambient header owns y=8..62 and the lower ring owns y=288..359.
     // Center/radius are shared with the ragdoll renderer so the whole circle
     // remains rounded across every selected pet and every bobbing frame.
-    fill_circle_vertical_gradient(180, PET_HALO_CENTER_Y + bob, PET_HALO_RADIUS,
+    fill_circle_vertical_gradient(180, PET_HALO_CENTER_Y + bob,
+                                  scale_standby_cat_radius(PET_HALO_RADIUS),
                                   halo_top, halo_bottom);
     // Offset inner light produces a soft dimensional halo without storing or
     // decoding any bitmap asset.
-    fill_circle_vertical_gradient(180, PET_HALO_CENTER_Y - 12 + bob, 92,
+    fill_circle_vertical_gradient(180, PET_HALO_CENTER_Y - scale_standby_cat_radius(12) + bob,
+                                  scale_standby_cat_radius(92),
                                   rgb565(153, 229, 255), rgb565(53, 126, 224));
-    draw_ear(88, 64 + pet_y_offset, 1, face_shadow, ear);
-    draw_ear(272, 64 + pet_y_offset, -1, face_shadow, ear);
-    fill_circle_vertical_gradient(180, 170 + pet_y_offset + bob, 103,
+    draw_standby_cat_ear(88, 64 + pet_y_offset, 1, face_shadow, ear);
+    draw_standby_cat_ear(272, 64 + pet_y_offset, -1, face_shadow, ear);
+    fill_circle_vertical_gradient(180,
+                                  scale_standby_cat_coordinate(170 + pet_y_offset + bob,
+                                                               PET_HALO_CENTER_Y),
+                                  scale_standby_cat_radius(103),
                                   face_shadow, face_deep);
-    fill_circle_vertical_gradient(180, 164 + pet_y_offset + bob, 100,
+    fill_circle_vertical_gradient(180,
+                                  scale_standby_cat_coordinate(164 + pet_y_offset + bob,
+                                                               PET_HALO_CENTER_Y),
+                                  scale_standby_cat_radius(100),
                                   face_light, face);
     // A restrained forehead sheen and lower-face shade add volume while
     // leaving the time and calendar rings visually dominant.
-    fill_circle_vertical_gradient(180, 120 + pet_y_offset + bob, 54,
+    fill_circle_vertical_gradient(180,
+                                  scale_standby_cat_coordinate(120 + pet_y_offset + bob,
+                                                               PET_HALO_CENTER_Y),
+                                  scale_standby_cat_radius(54),
                                   rgb565_lerp(face_light, shine, 110), face_light);
     uint8_t blink_stage = s_pet_motion_enabled ? pet_blink_stage(s_pet_motion_tick) : 0u;
     if (blink_stage == 2u) {
-        fill_rect(116, 151 + pet_y_offset + bob, 164, 157 + pet_y_offset + bob, ink);
-        fill_rect(196, 151 + pet_y_offset + bob, 244, 157 + pet_y_offset + bob, ink);
+        fill_rect(scale_standby_cat_coordinate(116, 180), scale_standby_cat_coordinate(151 + pet_y_offset + bob, PET_HALO_CENTER_Y), scale_standby_cat_coordinate(164, 180), scale_standby_cat_coordinate(157 + pet_y_offset + bob, PET_HALO_CENTER_Y), ink);
+        fill_rect(scale_standby_cat_coordinate(196, 180), scale_standby_cat_coordinate(151 + pet_y_offset + bob, PET_HALO_CENTER_Y), scale_standby_cat_coordinate(244, 180), scale_standby_cat_coordinate(157 + pet_y_offset + bob, PET_HALO_CENTER_Y), ink);
     } else if (blink_stage == 1u) {
-        fill_rect(116, 147 + pet_y_offset + bob, 164, 157 + pet_y_offset + bob, ink);
-        fill_rect(196, 147 + pet_y_offset + bob, 244, 157 + pet_y_offset + bob, ink);
+        fill_rect(scale_standby_cat_coordinate(116, 180), scale_standby_cat_coordinate(147 + pet_y_offset + bob, PET_HALO_CENTER_Y), scale_standby_cat_coordinate(164, 180), scale_standby_cat_coordinate(157 + pet_y_offset + bob, PET_HALO_CENTER_Y), ink);
+        fill_rect(scale_standby_cat_coordinate(196, 180), scale_standby_cat_coordinate(147 + pet_y_offset + bob, PET_HALO_CENTER_Y), scale_standby_cat_coordinate(244, 180), scale_standby_cat_coordinate(157 + pet_y_offset + bob, PET_HALO_CENTER_Y), ink);
     } else {
-        draw_eye(140, 151 + pet_y_offset + bob, ink, shine);
-        draw_eye(220, 151 + pet_y_offset + bob, ink, shine);
+        draw_standby_cat_eye(140, 151 + pet_y_offset + bob, ink, shine);
+        draw_standby_cat_eye(220, 151 + pet_y_offset + bob, ink, shine);
     }
-    fill_circle_vertical_gradient(180, 190 + pet_y_offset + bob, 15,
+    fill_circle_vertical_gradient(180,
+                                  scale_standby_cat_coordinate(190 + pet_y_offset + bob,
+                                                               PET_HALO_CENTER_Y),
+                                  scale_standby_cat_radius(15),
                                   rgb565(62, 79, 104), ink);
-    fill_circle(176, 186 + pet_y_offset + bob, 4, rgb565(180, 205, 222));
-    fill_rect(174, 204 + pet_y_offset + bob, 187, 211 + pet_y_offset + bob, ink);
-    fill_rect(160, 210 + pet_y_offset + bob, 200, 216 + pet_y_offset + bob, ink);
-    fill_circle_vertical_gradient(118, 191 + pet_y_offset + bob, 14,
+    fill_circle(scale_standby_cat_coordinate(176, 180),
+                scale_standby_cat_coordinate(186 + pet_y_offset + bob, PET_HALO_CENTER_Y),
+                scale_standby_cat_radius(4), rgb565(180, 205, 222));
+    fill_rect(scale_standby_cat_coordinate(174, 180), scale_standby_cat_coordinate(204 + pet_y_offset + bob, PET_HALO_CENTER_Y),
+              scale_standby_cat_coordinate(187, 180), scale_standby_cat_coordinate(211 + pet_y_offset + bob, PET_HALO_CENTER_Y), ink);
+    fill_rect(scale_standby_cat_coordinate(160, 180), scale_standby_cat_coordinate(210 + pet_y_offset + bob, PET_HALO_CENTER_Y),
+              scale_standby_cat_coordinate(200, 180), scale_standby_cat_coordinate(216 + pet_y_offset + bob, PET_HALO_CENTER_Y), ink);
+    fill_circle_vertical_gradient(scale_standby_cat_coordinate(118, 180),
+                                  scale_standby_cat_coordinate(191 + pet_y_offset + bob, PET_HALO_CENTER_Y),
+                                  scale_standby_cat_radius(14),
                                   rgb565(255, 180, 164), blush);
-    fill_circle_vertical_gradient(242, 191 + pet_y_offset + bob, 14,
+    fill_circle_vertical_gradient(scale_standby_cat_coordinate(242, 180),
+                                  scale_standby_cat_coordinate(191 + pet_y_offset + bob, PET_HALO_CENTER_Y),
+                                  scale_standby_cat_radius(14),
                                   rgb565(255, 180, 164), blush);
     if (!strcmp(s_pet_state, "thinking")) {
         // A restrained orbit above the head is visible without competing with
@@ -1974,7 +2096,10 @@ static void draw_pet_frame_contents(bool redraw_background) {
             fill_circle(dot_x[i], 82, i == active ? 5 : 3, dot);
         }
     }
-    fill_circle_vertical_gradient(180, 236 + pet_y_offset + bob, 39,
+    fill_circle_vertical_gradient(180,
+                                  scale_standby_cat_coordinate(236 + pet_y_offset + bob,
+                                                               PET_HALO_CENTER_Y),
+                                  scale_standby_cat_radius(39),
                                   rgb565_lerp(face, face_light, 90), face_shadow);
     // The pack identifier is implementation metadata, not the pet visual.
     // Do not show it as a substitute for the selected pet's appearance.
@@ -2435,9 +2560,6 @@ static void pet_animation_task(void *arg) {
             s_idle_pet_visible = true;
             s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
             draw_pet();
-        } else if (s_idle_pet_visible &&
-                   esp_timer_get_time() >= s_idle_pet_sleep_expires_us) {
-            (void)board_port_enter_display_off();
         } else if (!s_display_sleeping && s_pet_motion_enabled &&
                    (s_idle_pet_visible || !strcmp(s_pet_state, "thinking"))) {
             s_pet_frame = (uint8_t)((s_pet_frame + 1u) % 8u);
@@ -3560,7 +3682,14 @@ void board_port_cancel_ready_prompt(void) {
 bool board_port_enter_display_off(void) {
     if (!s_lcd_mutex || !s_panel) return false;
     if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
-    if (s_display_sleeping) {
+    // A Power Service deadline can become due just as a foreground transition
+    // is being published. The display adapter is the final arbiter of its
+    // local scene, so it refuses stale ambient deadlines instead of blanking
+    // an alarm, response, recorder, setup QR, or status page.
+    if (s_display_sleeping || !s_idle_pet_visible || s_message_active ||
+        s_recording_active || s_response_active || s_response_image_active ||
+        s_setup_qrcode_visible || s_alarm_visual_active ||
+        s_command_display_locked) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
         return false;
     }
@@ -3572,6 +3701,14 @@ bool board_port_enter_display_off(void) {
     xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "display HAL entered DISPLAY_OFF");
     return true;
+}
+
+bool board_port_display_is_off(void) {
+    if (!s_lcd_mutex) return false;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
+    bool display_off = s_display_sleeping;
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+    return display_off;
 }
 
 bool board_port_wake_from_idle(void) {
@@ -4939,8 +5076,9 @@ esp_err_t board_port_audio_playback_begin(void) {
         return ESP_ERR_INVALID_STATE;
     }
     esp_err_t err = audio_init();
+    if (err == ESP_OK) err = es8311_set_dac_muted(true);
     if (err == ESP_OK) err = gpio_set_level(AUDIO_PA_ENABLE, 1);
-    // Let the external amplifier leave shutdown before the first PCM frames.
+    // Let the external amplifier and DAC reference settle while muted.
     if (err == ESP_OK) vTaskDelay(pdMS_TO_TICKS(10));
     if (err == ESP_OK) {
         s_audio_playback_stop_requested = false;
@@ -4980,6 +5118,12 @@ esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
                                           pdMS_TO_TICKS(1000));
         if (err != ESP_OK) return err;
         if (written != expected) return ESP_ERR_TIMEOUT;
+        if (offset == 0) {
+            // The first block was accepted by DMA while the PA/reference was
+            // settling. Reveal audio only after it has a valid PCM source.
+            err = es8311_set_dac_muted(false);
+            if (err != ESP_OK) return err;
+        }
         offset += count;
     }
     return ESP_OK;
@@ -4995,9 +5139,11 @@ esp_err_t board_port_audio_playback_end(esp_err_t playback_err) {
     // channel, but EchoEar's shared full-duplex clock requires that channel
     // to remain enabled for the ES7210 microphone.
     vTaskDelay(pdMS_TO_TICKS(20));
-    int16_t silence[128] = {0};
-    esp_err_t silence_err = board_port_audio_playback_write(silence, 128, 1);
+    int16_t silence[256] = {0};
+    esp_err_t silence_err = board_port_audio_playback_write(silence, 256, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
+    esp_err_t mute_err = es8311_set_dac_muted(true);
+    vTaskDelay(pdMS_TO_TICKS(5));
     esp_err_t pa_err = gpio_set_level(AUDIO_PA_ENABLE, 0);
     s_audio_playback_owner = NULL;
     s_audio_playback_stop_requested = false;
@@ -5005,6 +5151,7 @@ esp_err_t board_port_audio_playback_end(esp_err_t playback_err) {
     board_port_pause_wake_word(false);
     if (playback_err != ESP_OK) return playback_err;
     if (silence_err != ESP_OK) return silence_err;
+    if (mute_err != ESP_OK) return mute_err;
     return pa_err;
 }
 

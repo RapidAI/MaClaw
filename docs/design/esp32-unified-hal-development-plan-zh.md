@@ -2,8 +2,8 @@
 
 ## 1. 文档信息
 
-- 状态：待实施
-- 日期：2026-08-06
+- 状态：实施中（仅完成兼容 facade 的局部收敛；完整 Device API/HAL/Platform 分层尚未完成）
+- 日期：2026-08-07
 - 系统名称：MaClaw AgentOS
 - 评审轮次：第二十一轮产品决策审查（固定 16 MiB Flash 放弃设备端 OTA，改为 GitHub Release→Hub 版本检查/提醒→用户使用受校验刷机工具更新）
 - 适用工程：`esp32s3-maclaw-client`
@@ -12,6 +12,35 @@
 - 唯一功能与业务行为基线：Bread Compact 当前已经验证的完整功能集合及处理方式。EchoEar-2ST 与 Fangtang-4G 必须逐项对齐 Bread Compact；除通过硬件适配表达的屏幕、输入、音频、连接与电源差异外，不得自行定义另一套功能或业务行为。
 - 发布目标：三种硬件的用户可见业务功能完全一致。硬件差异只能影响交互映射、布局、性能预算、反馈通道和连接实现，不能形成三套业务、删减功能或长期 capability 缺口。
 - 基线继承规则：所有当前及未来进入 MaClaw AgentOS 正式支持集合的硬件，都必须实现完整 Bread Compact 功能母版；不设置按硬件删减功能的“精简版”正式 profile。无法以适配或替代入口承载全部公共功能的硬件，只能停留在实验/Fake 状态或先修订硬件，不能进入正式支持集合。
+
+### 1.1 实施快照（2026-08-07）
+
+本节只记录已经由源码和构建验证证明的增量，不以局部改动替代本计划的最终退出条件。
+
+- 兼容 facade `board_port_*` 已新增“主交互来源”语义：EchoEar-2ST 将触屏、Bread Compact/Fangtang-4G 将激活键映射为同一共享业务意图。闹钟解除、启动/失败/配对提示和回复导航不再在 `main.c`、`app_ui.c` 以板型宏区分交互方式。
+- 已新增不依赖 ESP-IDF/FreeRTOS 的 `main/device_api.h` 基础契约：稳定 `device_status_t`、单调 deadline 类型以及输入 action/source 语义。`main.c` 的输入回调和处理逻辑已不再使用 `BOARD_INPUT_*`/`board_input_*` 名称；显示、音频、存储、连接和事件队列 API 仍待逐项迁入，`board_port.h` 暂未成为纯公共头文件。
+- `main.c` 已移除把 `board_port_*` 文本替换为 UI 调用的预处理宏。所有 pet、录音、消息、上传、回复、配网二维码、待机天气与闹钟显示均直接调用 `app_ui_*` 的共享 UI 状态机；Fangtang 的启动窗口网络传输选择和待机 uplink 提示也已经 `device_connectivity_*` 进入 Device API，`main.c` 不再直接调用 `board_port_*`。该 API 目前只是 Connectivity adapter 的最小迁移 seam，并未实现 ML307/Wi-Fi 的完整 Connectivity Service、策略、健康快照或生命周期治理。
+- `app_ui.c` 已不再包含或调用 `board_port.h`/`board_port_*`。其完整的共享场景状态机（启动、待机宠物、录音、上传、文字/图片回复、配网二维码、就绪提示、天气和闹钟）经 `device_display_*` 进入 Device API；三种 profile 仅在 adapter 内决定矩形或圆形显示、控制器 GRAM 偏移、字体、像素格式、背光及触屏/实体键后的呈现。该实现仍是同步 compatibility facade，而非独立 Display Service/Display Task；它不改变既有 scene 先后、payload 深拷贝或 alarm 前景抢占行为。
+- Connectivity Service 现同时拥有 Wi‑Fi 与蜂窝链路的 readiness 观察，业务路径只调用无参数的 `device_connectivity_is_active_uplink_ready()`，不再读取 Wi‑Fi event group 后把结果传入 API。Wi‑Fi 的 DHCP 获取/断开与同步启动成功路径发布 readiness，ML307 的启动/恢复路径发布蜂窝 readiness；每次 Wi‑Fi start 会先使旧 observation 失效。这仍不是完整的 transport 生命周期、健康退避、连接策略或网关请求 Service，但消除了共享业务对 `WIFI_CONNECTED_BIT` 的直接依赖。
+- Connectivity Service 的 uplink 选择切换现会使“新选中”一侧的旧 readiness 立即失效：4G→Wi‑Fi 不会沿用旧 DHCP 结果，Wi‑Fi→4G 不会沿用旧 modem session；只有该适配器随后发布的新 start/recovery 成功观察才会重新使 `device_connectivity_is_active_uplink_ready()` 为真。该修复避免启动切换窗口或恢复路径把过期链路状态误交给共享业务。
+- Connectivity Service 另提供按值 `device_connectivity_snapshot_t`（已选 uplink、Wi‑Fi/蜂窝各自 readiness 与所选链路 readiness）。USB 诊断与 Gateway handshake 都从同一个 `firmware_identity_info_t` 快照序列化该观察，不暴露 SSID、token、APN、IP 或 modem 原始状态，也不把“链路可用”误报为 Hub 已认证/请求必然成功。该字段仅供诊断，当前不参与 Hub capability 或远端授权裁决。
+- `device_power_get_telemetry()` 已为公共业务/诊断提供不含 ADC/GPIO 细节的可选 `device_power_telemetry_t` 快照：Fangtang 可透出其既有电量/充电采样，Bread Compact/EchoEar 明确返回 `available=false`，而不是伪造 0% 或按 board ID 判断。它仅是 Power HAL telemetry seam，尚未实现校准来源、滤波滞回、低电量限载/checkpoint、charger wake 或 Battery Policy，不能作为低电量保护已发布的证据。
+- Fangtang-4G 已实现 0–100% direct-I2S 软件音量并通过 GUI 下发路径使用；这只是 Audio HAL facade 的行为补差，尚未完成 Audio Service/HAL 生命周期拆分。
+- Bread Compact 待机天气由 Display adapter 负责版式适配：使用原生 24px 字形；城市展示名最多四个 Unicode 字形，直辖市展示名（例如“北京市”）归一为“北京”，天气摘要过长时优先裁短摘要以保留温度和 `°C`。该规则不修改 Hub 天气数据；普通城市名（例如“东莞市”）保留原始“市”字，不采用通用“去市”。本次 Bread profile 构建产物为 `0x310920`（约 76.6% 的 4 MiB app 分区），尚未写入 COM4。
+- 已新增内部 `power_service`，并经 `device_api.h` 收口应用侧的 DISPLAY_OFF 定时、取消与本地用户唤屏：面板/背光关闭时 MCU、网络、闹钟和离线唤醒词继续运行；前景 UI、录音、回复和闹钟会在板级提交前再次拒绝过期熄屏请求。该实现不是 LIGHT_SLEEP/DEEP_SLEEP，暂由既有 board-port mutex 串行物理显示操作，尚未达到计划中 Display Task、power lease、wake matrix 或睡眠事务的最终架构。
+- `device_power_get_snapshot()` 现将 Power Service 的 idle-deadline 状态与 adapter 实际观察到的 panel/backlight 状态合并为按值快照，避免前景 Renderer 自行点亮屏幕后仍错误上报“已熄屏”。USB `IDENTITY`/`BOOT_STATUS`/`SERVICE_STATUS` 以及 Gateway handshake 的 `firmware.deviceProfile` 均携带同一份 `power` 观察；其中只包含 `ACTIVE`/`DISPLAY_OFF`，不宣称 LIGHT_SLEEP/DEEP_SLEEP。该诊断字段不改变 Hub 的 capability/授权，也不能替代三板功耗和唤醒 HIL。
+- Bread Compact 的 GPIO42 背光现在由其 profile adapter 使用 5 kHz、10-bit LEDC PWM 驱动；正常显示、唤醒与启动统一使用 `665/1023`（约 65%）占空比，较此前约 80% 再降低一档，DISPLAY_OFF 时归零。该常量只作用于 Bread，不改变 Fangtang 的直接背光驱动；已完成构建，尚未写入 COM4，亮度的人眼验收仍待实机确认。
+- 三种正式 profile 均已完成本轮构建：Bread Compact `0x31c460`（余 `0x83ba0`，14%）、EchoEar-2ST `0x2f8cb0`（余 `0xa7350`，18%）、Fangtang-4G `0x318490`（余 `0x87b70`，15%）。构建只证明当前 profile 选择、链接及 Flash 容量通过；并不构成三硬件实机行为等价、功耗、睡眠或唤醒验收证据。
+- Fangtang 的 CMake 已改为选择 `boards/fangtang_4g/board_port_fangtang_4g.c` 这一独立 profile 入口。该入口在编译期校验 `CONFIG_MACLAW_BOARD_FANGTANG_4G`，当前以单一 ownership bridge 包含 legacy compact adapter，避免切换期间重复初始化 LCD、I2S、GPIO/input 或 power sampling；它不是“已完成拆分”的声明。NV3023/Y offset、GPIO0 启动选择、方糖 Renderer、电池和 ML307 presentation 仍须按唯一副作用 owner 的小步迁移计划从 legacy 文件移出。
+- `main.c` 已不再直接包含 `driver/gpio.h` 或配置 Fangtang 的 modem guard/power GPIO。新增 `device_connectivity_prepare_cellular_transport()`：共享启动编排只请求“为蜂窝 transport 做硬件准备”，Fangtang adapter 在 profile capability 门禁后完成 UART 配置有效性检查、guard/power 时序；它不启动 ML307、不选择 uplink，也不包含 gateway 业务。Bread/EchoEar 返回 `UNAVAILABLE`。这是 ML307 Connectivity port 拆分的第一条物理 ownership seam，ML307 请求/恢复生命周期仍在后续迁移范围。
+- Fangtang 的 GPIO0 启动双击网络选择已移至其 profile adapter：adapter 在 legacy normal-input scanner 创建前独占执行 1.8 秒的同步选择窗口，并在窗口结束的 quiescent point 交回同一 GPIO；legacy scanner 保留正常短/双/长按手势。这样不会产生两条 scanner 同时观察 GPIO0 的双副作用或事件泄漏。`main.c` 仍通过无 GPIO 细节的 `device_connectivity_take_startup_transport_toggle()` 取得已锁存的意图。该项尚待 COM5 的 startup 双击与窗口边界 HIL 验收。
+- `app_main()` 的 NVS 初始化已删除对 `ESP_ERR_NVS_NO_FREE_PAGES`/`ESP_ERR_NVS_NEW_VERSION_FOUND` 的自动 `nvs_flash_erase()`。此类启动现在保留分区内容、记录诊断并在任何 NVS writer/Wi-Fi/音频启动前停止；显式的受认证恢复和版本化迁移流程仍待实现。
+- 已完成 Bread、EchoEar-2ST、Fangtang-4G 的隔离构建验证；近期 app 使用量分别为 Bread `0x311460`（余 `0x8eba0`，15%）、EchoEar `0x305e50`（余 `0x9a1b0`，17%）、Fangtang `0x3177a0`（余 `0x88860`，15%）。构建成功不构成实机、功耗、睡眠或三硬件功能等价的验收证据。
+- Hub 端已实现 `RapidAI/MaClaw` GitHub Release 的可信 metadata catalog：必须同时验证三份官方 `.clawfw`、manifest 原始字节 Ed25519 签名、asset/文件 hash、profile/chip/16 MiB/layout/app identity 和发布后 asset 不变性；Hub 只保存已验证 metadata，handshake 不返回 firmware URL 或字节。该能力仍待用真实 GitHub Release 和 ClawMate Maker 做端到端演练。
+- 设备端已接入同一个 metadata-only `update_service`：仅接受 `requiresComputer=true` 的更高 `releaseSequence` 与 SHA-256 manifest digest，持久化去重/稍后/限期忽略状态；digest 变化会失效旧忽略，critical 只能短周期延后，时间不可信时拒绝把提醒静默为已过期。工具只注册 `update_check`、`update_status`、`update_remind_later`、`update_dismiss_version`，明确没有下载、安装、刷写或重启入口。提醒显示仍由现有各 profile Renderer 适配，尚未完成三硬件提醒操作的实机验收。
+- ClawMate Maker 正常 `appUpdate/full` 写入在风险窗口前已追加 fresh nonce-bound protocol:2 application identity 门禁：运行中设备报告的 firmware target、chip、16 MiB Flash 与最低 PSRAM 必须同时匹配用户已确认的 catalog profile 和已签名 bundle；identity 不可读、协议不符或字段不符一律拒绝写入。只有用户明确进入、且仅接受完整签名包的 `RECOVERY_REQUIRED` ROM 恢复流程可跳过该运行中 App 证据，因为受损 App 本身可能无法回应；恢复仍受 ROM chip/Flash/security、签名、profile、layout 与刷后 BOOT_STATUS 门禁约束。该桌面端门禁已由 `ClawMateMaker` Go 测试覆盖；真实三板刷写/断电 HIL 尚未完成。
+- `firmware_identity` 的 USB Serial/JTAG 查询任务已从隐式永久循环收敛为可停止生命周期：重复 start 不再创建第二个 reader，stop 使用 cooperative stop flag 与有界 join，超时 fail-closed 且不会强制删除可能仍在解析 host 请求的任务。当前 `app_main()` 仍在全生命周期启动它以支撑刷机/恢复诊断；Power/Manufacturing Coordinator 接入其 quiesce/stop 顺序和三板实机验证仍待完成。
+- 仍未完成：纯 C 的 Device/Platform API、独立 `boards/<board>` profile、Fangtang ML307 Connectivity port、真实 LIGHT/DEEP_SLEEP/Sleep Schedule、保数据 NVS 恢复、受校验 ClawMate Maker 刷机的完整闭环、版本检查/提醒实机端到端、事件队列与 Resource Manager。不得把现有 display-off、Kconfig 配置或可构建状态宣称为这些能力已发布。
 
 ## 2. 背景与目标
 
@@ -36,6 +65,37 @@
 - `partitions.csv`：硬件固定为 16 MiB，当前仅有约 3.625 MiB `factory` app、3 MiB model 和约 9.3 MiB storage；无 `otadata/ota_0/ota_1`。本地 app image 已观察到约 3.08 MiB。若同时加入 A/B 和完整 staging，storage 只剩约 1.7 MiB，无法可靠承载会议录音与资源，因此产品决策是保留现有单 app/model/storage 资源格局，放弃设备端 OTA。
 - `main/main.c`/`main/CMakeLists.txt`：当前 `storage` 是 SPIFFS，会议录音、宠物素材和资源缓存共用；现有代码已记录 SPIFFS GC 在碎片化分区上可能持续很久。版本检查只能存储很小的 release metadata/提醒状态，不下载固件、不借用或清理会议存储。
 - `MaClawSrv/thirdparty_gateway.go`：当前 bearer token 解析到 tenant/user principal，但 token 本身不是设备身份；Hub 版本检查 endpoint 必须再绑定已配对的 `clientId + deviceId + profile/hw/layout + credential_generation`，以免跨设备泄漏错误 profile 的发布信息。
+
+### 1.2 2026-08-07：独立 profile 描述的实施证据
+
+- 已新增 `main/boards/bread_compact/board_profile.c`、`main/boards/echoear_2st/board_profile.c` 与 `main/boards/fangtang_4g/board_profile.c`。CMake 按选中的 profile 只链接其中一个实现；它们不再通过同一个 `board_port_bread_compact.c` 的条件分支来定义设备身份。
+- `main/device_api.h` 新增 ISO-C 的 `device_profile_t`、版本/长度字段和只读 capability flags；`device_profile_get()` 按值返回描述，避免业务层长期持有板级可变指针。描述的是物理适配事实而非业务功能裁剪开关，正式三 profile 仍必须实现完整 Bread 公共业务基线。
+- `app_main()` 在任何板级驱动初始化前校验 profile ABI、结构大小与 `CONFIG_MACLAW_BOARD_ID` 一致性。该检查只能阻止构建源与 profile ID 错配；尚不等同于 PCB revision、电气安全 manifest、运行时健康或 effective capability 校验。
+- 三 profile 已以 ESP-IDF 6.0.2 重新完成隔离构建：Bread `0x319dc0`（余 `0x86240`，14%）、EchoEar `0x304590`（余 `0x9ba70`，17%）、Fangtang `0x315e80`（余 `0x8a180`，15%）。未进行实机刷写；构建不构成睡眠、功耗或功能等价验收。
+
+### 1.3 2026-08-07：Audio Device API 渐进收口
+
+- `device_audio_set_output_volume()` 与 `device_audio_adjust_output_volume()` 已成为 `main.c` 的唯一音量硬件入口，统一 0–100 的语义和 `device_status_t` 错误映射。Codec（EchoEar）与 direct-I2S 软件增益（Bread/Fangtang）仍留在各自 board adapter；GUI 下发、实体音量键和启动恢复均不再直接调用 `board_port_*` 音量 API。
+- 此项仅完成 Audio Device API 的一小段迁移，不意味着已完成 Audio Service、播放/采集会话所有权、wake-word 仲裁、持久化 Service 或 error/degradation reason 的完整分层。三 profile 在本次接入后重新构建：Bread `0x319e70`（余 `0x86190`，14%）、EchoEar `0x304640`（余 `0x9b9c0`，17%）、Fangtang `0x315f20`（余 `0x8a0e0`，15%）。
+
+### 1.4 2026-08-07：采集、播放与离线唤醒的 Device API 接入
+
+- `main.c` 的 WAV 播放、一次指令采集、会议 PCM stream 和离线唤醒词的 start/stop/pause 已统一改经 `device_audio_*` / `device_wake_word_*` 调用。MP3 解码器的 PCM begin/write/end 事务，以及闹钟抢占播放、指令录音的 cooperative stop/reset，也已改由 `device_audio_*` 进入同一个硬件边界；`mp3_player.c` 不再包含或调用 `board_port.h`。`board_port_*` 保留为此阶段唯一硬件 adapter owner；原有命令、会议、配网的业务状态机和时序不因板型变化而分叉。
+- 迁移 seam 把旧领域代码需要的 `esp_err_t` 只在 `main.c` 的私有转换点处理；Device API 本身不包含会议、固定录音时长、闹钟或 Gateway 概念。当前仍不是完整 Audio Service：没有独立资源仲裁器、lease、停止/join 生命周期、事件队列或运行时 health/capability snapshot，不能据此宣称已经完成音频资源治理。
+- 本次增量的三 profile 构建结果：Bread `0x319ff0`（余 `0x86010`，14%）、EchoEar `0x304730`（余 `0x9b8d0`，17%）、Fangtang `0x316020`（余 `0x89fe0`，15%）。未刷写任何串口设备。
+
+### 1.5 2026-08-07：输入事件跨任务边界
+
+- 新增 `main/input_service.c`。板级 port 仍只负责 GPIO/触控控制器扫描、去抖与手势识别，并把标准 `device_input_action_t/device_input_source_t` 发布到服务；业务回调不再由 board 的扫描任务直接执行。服务采用独立的有界 control/auxiliary 队列和单一消费任务，`CONTACT_DOWN`、主/次/配置等控制事件优先于音量翻页事件，满队列会计数与记录，不会阻塞输入扫描。
+- `app_main()` 已从 `board_port_init(on_user_input, ...)` 改为只调用 `device_input_start(on_user_input, ...)`。因此 `main.c` 只订阅规范化输入，不再注册板级 callback；闹钟解除所需的 contact edge、EchoEar CST816 的原生双击与重复 contact 过滤、Bread/Fangtang 的实体键手势均保持在各自 adapter 内，并原样交给既有共享业务处理函数。
+- 此次只建立了 Device API 的最小输入 handoff，尚未完成计划中的完整 versioned `device_event_envelope_t`、operation/generation、ISR 发布 API、显式 stop/join 生命周期、Input Binding table 及 `on_app_intent()` 业务意图层。两条队列也不是整个系统的统一 Device Event Queue；不得把该增量宣称为全部事件队列/输入 HAL 工作完成。
+- 本次重建：Bread `0x31a510`（余 `0x85af0`，14%）、EchoEar `0x304b40`（余 `0x9b4c0`，17%）、Fangtang `0x316430`（余 `0x89bd0`，15%）。构建使用 ESP-IDF 6.0.2；未刷写 COM3/COM4/COM5，未做实机交互验收。
+
+### 1.6 2026-08-07：输入派发服务的有界停止
+
+- `device_input_stop(timeout_ms)` 现已进入 Device API，并实现了 Input Service 的停止 admission gate、在途发布者归零等待、停止哨兵和有界 consumer join。停止首先使已经注册的板级 publisher 成为 no-op，确认没有 callback 正在使用队列后才释放 queue/queue-set，避免 GPIO/触屏扫描任务与队列释放并发而造成 use-after-free。
+- 当前三种 board adapter 的扫描任务仍是 boot-lifetime，尚未具备 `board_port_deinit()`/join。因此服务停止后显式拒绝再次 `device_input_start()`，而不是重复创建 GPIO/触屏扫描任务；这提供了可安全协调关闭的应用事件层，但不将它误报为完整可重启 Input HAL。完整 `device_event_envelope_t`、ISR publisher、profile binding table 与 `on_app_intent()` 仍待实现。
+- 三 profile 已构建：Bread `0x3108b0`（余 `0x8f750`，15%）、EchoEar `0x2f8470`（余 `0xa7b90`，18%）、Fangtang `0x317c00`（余 `0x88400`，15%）。构建仅验证链接与容量，未刷写 COM3/COM4/COM5，尚无 input stop 的三板 HIL 证据。
 
 ### 2.1 当前三硬件支持矩阵
 

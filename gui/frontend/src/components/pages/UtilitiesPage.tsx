@@ -350,6 +350,7 @@ export const UtilitiesPage = ({
     const [expertMarketOpen, setExpertMarketOpen] = useState(false);
     const [expertMarketIntent, setExpertMarketIntent] = useState<'market' | 'library'>('market');
     const [expertShareTarget, setExpertShareTarget] = useState<ExpertDefinition | null>(null);
+    const [expertAboutTarget, setExpertAboutTarget] = useState<ExpertDefinition | null>(null);
     const [expertMarketUploads, setExpertMarketUploads] = useState<Record<string, { id: string; status: string }>>({});
     const meetingStartingRef = useRef(false);
     const vscodeStartingRef = useRef(false);
@@ -443,6 +444,13 @@ export const UtilitiesPage = ({
         if (!active || view !== 'home') return;
         void loadExperts();
     }, [active, view, loadExperts]);
+
+    /** id → name lookup for the "优化自" lineage line on expert cards. */
+    const expertNameById = useMemo(() => {
+        const map = new Map<string, string>();
+        for (const expert of experts) map.set(expert.id, expert.name);
+        return map;
+    }, [experts]);
 
     const loadExpertMarketUploads = useCallback(async () => {
         const requestID = ++expertMarketUploadsRequestRef.current;
@@ -931,6 +939,15 @@ export const UtilitiesPage = ({
         expertDeleteTitle: lang === 'zh-Hant' ? '刪除專家' : isZh ? '删除专家' : 'Delete expert',
         expertResetTitle: lang === 'zh-Hant' ? '恢復預設專家' : isZh ? '恢复默认专家' : 'Reset builtin expert',
         expertOpen: lang === 'zh-Hant' ? '開始對話' : isZh ? '开始对话' : 'Start chat',
+        expertOpenHint: lang === 'zh-Hant' ? '雙擊打開' : isZh ? '双击打开' : 'Double-click to open',
+        expertAbout: lang === 'zh-Hant' ? '關於' : isZh ? '关于' : 'About',
+        expertAboutClose: lang === 'zh-Hant' ? '關閉' : isZh ? '关闭' : 'Close',
+        expertOptimizedFrom: (sourceName: string) => lang === 'zh-Hant'
+            ? `優化自：${sourceName}`
+            : isZh
+                ? `优化自：${sourceName}`
+                : `Optimized from: ${sourceName}`,
+        expertOptimizedFromDeleted: lang === 'zh-Hant' ? '優化自：已刪除專家' : isZh ? '优化自：已删除专家' : 'Optimized from: deleted expert',
     }), [isZh, lang]);
 
     const handleMeetingRecord = useCallback(async () => {
@@ -1763,13 +1780,20 @@ export const UtilitiesPage = ({
                                     type="button"
                                     className="utilities-expert-card__main"
                                     aria-label={expert.name}
-                                    title={expert.description}
-                                    onClick={() => onOpenExpert?.(expert)}
+                                    title={t.expertOpenHint}
+                                    onDoubleClick={() => onOpenExpert?.(expert)}
                                 >
                                     <div className="utilities-expert-card__icon" aria-hidden>{expert.icon || DEFAULT_EXPERT_ICON}</div>
                                     <div className="utilities-expert-card__body">
                                         <div className="utilities-expert-card__title">{expert.name}</div>
                                         <div className="utilities-expert-card__desc">{expert.description}</div>
+                                        {expert.optimized_from_id ? (
+                                            <div className="utilities-expert-card__lineage" data-testid={`utilities-expert-lineage-${expert.id}`}>
+                                                {expertNameById.get(expert.optimized_from_id)
+                                                    ? t.expertOptimizedFrom(expertNameById.get(expert.optimized_from_id) as string)
+                                                    : t.expertOptimizedFromDeleted}
+                                            </div>
+                                        ) : null}
                                     </div>
                                     <span className="utilities-expert-card__cta">{t.expertOpen}</span>
                                 </button>
@@ -1780,6 +1804,14 @@ export const UtilitiesPage = ({
                                         className="utilities-expert-card__action"
                                         onClick={() => setExpertEditor({ mode: 'edit', expert })}
                                     >{t.expertEdit}</button>
+                                    {expert.about ? (
+                                        <button
+                                            type="button"
+                                            data-testid={`utilities-expert-about-${expert.id}`}
+                                            className="utilities-expert-card__action"
+                                            onClick={() => setExpertAboutTarget(expert)}
+                                        >{t.expertAbout}</button>
+                                    ) : null}
                                     {expert.builtin ? (
                                         <button
                                             type="button"
@@ -1898,6 +1930,19 @@ export const UtilitiesPage = ({
                     setExperts(current => current.filter(expert => expert.id !== expertID));
                     window.dispatchEvent(new CustomEvent('maclaw:expert-deleted', { detail: { expertId: expertID } }));
                 }} onMarketChanged={() => { void loadExpertMarketUploads(); }} /> : null}
+                {expertAboutTarget ? (
+                    <div className="expert-share-overlay" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setExpertAboutTarget(null); }}>
+                        <section className="expert-share-shell utilities-expert-about" role="dialog" aria-modal="true" aria-label={t.expertAbout}>
+                            <header className="expert-share-header">
+                                <div><h2>{expertAboutTarget.icon || DEFAULT_EXPERT_ICON} {expertAboutTarget.name}</h2><p>{t.expertAbout}</p></div>
+                                <button className="expert-share-close" type="button" aria-label={t.expertAboutClose} onClick={() => setExpertAboutTarget(null)}>×</button>
+                            </header>
+                            <main className="expert-share-body">
+                                <p className="utilities-expert-about__text" data-testid={`utilities-expert-about-text-${expertAboutTarget.id}`}>{expertAboutTarget.about}</p>
+                            </main>
+                        </section>
+                    </div>
+                ) : null}
                 {expertShareTarget ? <ExpertShareDialog lang={lang || 'zh-Hans'} expert={expertShareTarget} onClose={() => setExpertShareTarget(null)} onSubmitted={(listing) => {
                     const localID = expertShareTarget.id;
                     const listingID = String(listing.id || '').trim();

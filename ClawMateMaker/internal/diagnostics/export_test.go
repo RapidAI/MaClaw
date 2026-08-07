@@ -10,7 +10,8 @@ import (
 
 func TestExportUsesAllowListAndRedactsAgain(t *testing.T) {
 	root, out := t.TempDir(), t.TempDir()
-	dir := filepath.Join(root, "job-1")
+	const jobID = "job-0123456789abcdef"
+	dir := filepath.Join(root, jobID)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +21,7 @@ func TestExportUsesAllowListAndRedactsAgain(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "private.txt"), []byte("must not export"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := ExportJob(root, "job-1", out)
+	bundle, err := ExportJob(root, jobID, out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,5 +42,23 @@ func TestExportUsesAllowListAndRedactsAgain(t *testing.T) {
 	_ = r.Close()
 	if strings.Contains(string(data[:n]), "secret") {
 		t.Fatal("secret was exported")
+	}
+}
+
+func TestExportRejectsNonRegularAllowListedFile(t *testing.T) {
+	root, out := t.TempDir(), t.TempDir()
+	const jobID = "job-0123456789abcdef"
+	dir := filepath.Join(root, jobID)
+	if err := os.MkdirAll(filepath.Join(dir, "serial.log"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExportJob(root, jobID, out); err == nil {
+		t.Fatal("directory named as an allow-listed log was exported")
+	}
+}
+
+func TestExportRejectsUnsafeJobID(t *testing.T) {
+	if _, err := ExportJob(t.TempDir(), "../job-0123456789abcdef", t.TempDir()); err == nil {
+		t.Fatal("unsafe job ID was accepted")
 	}
 }

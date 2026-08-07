@@ -17,15 +17,28 @@ import (
 // Unlike a snapshot-based adapter, this reads LLM config lazily via cfgFn
 // on each call, so mid-session LLM provider changes are picked up automatically.
 type SkillEvolutionLLMAdapter struct {
-	cfgFn  func() corelib.MaclawLLMConfig
-	client *http.Client
+	cfgFn   func() corelib.MaclawLLMConfig
+	client  *http.Client
+	timeout time.Duration
 }
 
 // NewSkillEvolutionLLMAdapter creates an adapter that reads config lazily.
 func NewSkillEvolutionLLMAdapter(cfgFn func() corelib.MaclawLLMConfig) *SkillEvolutionLLMAdapter {
 	return &SkillEvolutionLLMAdapter{
-		cfgFn:  cfgFn,
-		client: &http.Client{Timeout: 90 * time.Second},
+		cfgFn:   cfgFn,
+		client:  &http.Client{Timeout: 90 * time.Second},
+		timeout: 90 * time.Second,
+	}
+}
+
+// WithTimeout returns a copy of the adapter using a shorter request timeout,
+// for auxiliary calls (e.g. skill-recording metadata) where a long stall
+// hurts UX and a fast heuristic fallback exists.
+func (a *SkillEvolutionLLMAdapter) WithTimeout(d time.Duration) *SkillEvolutionLLMAdapter {
+	return &SkillEvolutionLLMAdapter{
+		cfgFn:   a.cfgFn,
+		client:  &http.Client{Timeout: d},
+		timeout: d,
 	}
 }
 
@@ -36,7 +49,7 @@ func (a *SkillEvolutionLLMAdapter) ChatCall(messages []map[string]string) (strin
 		ifaces[i] = m
 	}
 	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "skill-evolution"})
-	resp, err := doSimpleLLMRequest(ctx, cfg, ifaces, a.client, 90*time.Second)
+	resp, err := doSimpleLLMRequest(ctx, cfg, ifaces, a.client, a.timeout)
 	if err != nil {
 		return "", err
 	}

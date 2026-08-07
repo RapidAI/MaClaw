@@ -4,8 +4,12 @@ package jobs
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +17,7 @@ import (
 	"clawmatemaker/internal/device"
 	"clawmatemaker/internal/flash"
 	"clawmatemaker/internal/logging"
+	"clawmatemaker/internal/partition"
 )
 
 type ProbeJob struct {
@@ -21,20 +26,27 @@ type ProbeJob struct {
 }
 
 type ProbeResult struct {
-	JobID            string              `json:"jobId"`
-	AttemptID        string              `json:"attemptId"`
-	Port             string              `json:"port"`
-	Status           string              `json:"status"`
-	Tool             string              `json:"tool,omitempty"`
-	Chip             flash.ChipInfo      `json:"chip"`
-	Flash            flash.FlashInfo     `json:"flash"`
-	BoardRecognition catalog.Recognition `json:"boardRecognition"`
-	AppIdentity      device.AppIdentity  `json:"appIdentity,omitempty"`
-	Warnings         []string            `json:"warnings,omitempty"`
-	ErrorCode        string              `json:"errorCode,omitempty"`
-	ErrorMessage     string              `json:"errorMessage,omitempty"`
-	StartedAt        time.Time           `json:"startedAt"`
-	FinishedAt       time.Time           `json:"finishedAt"`
+	JobID     string         `json:"jobId"`
+	AttemptID string         `json:"attemptId"`
+	Port      string         `json:"port"`
+	Status    string         `json:"status"`
+	Tool      string         `json:"tool,omitempty"`
+	Chip      flash.ChipInfo `json:"chip"`
+	// DeviceBinding is a one-way digest of the ROM MAC. It lets the desktop
+	// bind the later write to this physical device without persisting or
+	// exposing the raw hardware address.
+	DeviceBinding    string                   `json:"deviceBinding,omitempty"`
+	Flash            flash.FlashInfo          `json:"flash"`
+	Security         flash.SecurityInfo       `json:"security"`
+	Layout           *partition.Table         `json:"layout,omitempty"`
+	AppDescription   *flash.ESPAppDescription `json:"appDescription,omitempty"`
+	BoardRecognition catalog.Recognition      `json:"boardRecognition"`
+	AppIdentity      device.AppIdentity       `json:"appIdentity,omitempty"`
+	Warnings         []string                 `json:"warnings,omitempty"`
+	ErrorCode        string                   `json:"errorCode,omitempty"`
+	ErrorMessage     string                   `json:"errorMessage,omitempty"`
+	StartedAt        time.Time                `json:"startedAt" ts_type:"string"`
+	FinishedAt       time.Time                `json:"finishedAt" ts_type:"string"`
 }
 
 func NewProbeJob(logRoot, port string, emit func(logging.Event)) (*ProbeJob, error) {
@@ -83,6 +95,7 @@ func (j *ProbeJob) Run(ctx context.Context) (result ProbeResult, retErr error) {
 		return j.fail(&result, "BOOTLOADER_SYNC_FAILED", err)
 	}
 	result.Chip = flash.ParseChipID(chipRun.Output)
+	result.DeviceBinding = deviceBinding(result.Chip.MAC)
 	if result.Chip.Chip == "" {
 		result.Warnings = append(result.Warnings, "Chip text could not be fully parsed; a production write must reconfirm it using the formal ROM protocol.")
 	}
@@ -95,6 +108,26 @@ func (j *ProbeJob) Run(ctx context.Context) (result ProbeResult, retErr error) {
 	}
 	result.Flash = flash.ParseFlashID(flashRun.Output)
 	j.log.Event(logging.Info, "probe", "engine", "FLASH_OBSERVED", "flash.observed", "", map[string]any{"flashBytes": result.Flash.SizeBytes})
+	securityRun, securityErr := tool.RunReadOnly(ctx, j.port, "get-security-info")
+	j.recordSidecar("get-security-info", securityRun, securityErr)
+	if securityErr != nil {
+		result.Warnings = append(result.Warnings, "Security eFuse state could not be read; production installation will fail closed.")
+		j.log.Event(logging.Warn, "probe", "security", "SECURITY_STATE_UNAVAILABLE", "security.unavailable", securityErr.Error(), nil)
+	} else {
+		result.Security = flash.ParseSecurityInfo(securityRun.Output)
+		if securityBaseline(result.Security) {
+			j.log.Event(logging.Info, "probe", "security", "SECURITY_BASELINE_OBSERVED", "security.baseline.observed", "Read-only eFuse probe found the supported security baseline.", nil)
+		} else {
+			result.Warnings = append(result.Warnings, "Security eFuse state is enabled or could not be safely determined; production installation will fail closed.")
+			j.log.Event(logging.Warn, "probe", "security", "SECURITY_STATE_UNSUPPORTED", "security.unsupported", "Security eFuse state is enabled or could not be safely determined.", nil)
+		}
+	}
+	if result.Flash.SizeBytes > 0 {
+		if err := j.probeInstalledLayout(ctx, tool, &result); err != nil {
+			result.Warnings = append(result.Warnings, "Installed partition/application metadata could not be read; a production write will re-check it.")
+			j.log.Event(logging.Warn, "probe", "partition", "LAYOUT_UNAVAILABLE", "layout.unavailable", err.Error(), nil)
+		}
+	}
 	identity, identityErr := device.ProbeApplicationIdentity(ctx, j.port)
 	if identityErr != nil {
 		j.log.Event(logging.Warn, "probe", "identity", "IDENTITY_UNAVAILABLE", "identity.unavailable", identityErr.Error(), nil)
@@ -103,9 +136,74 @@ func (j *ProbeJob) Run(ctx context.Context) (result ProbeResult, retErr error) {
 		result.BoardRecognition = catalog.RecognizeApplicationIdentityEvidence(identity)
 		j.log.Event(logging.Info, "probe", "identity", "IDENTITY_OBSERVED", "identity.observed", "Received nonce-bound application identity.", map[string]any{"chip": identity.Chip, "flashBytes": identity.FlashBytes})
 	}
-	result.Warnings = append(result.Warnings, "Security eFuse / anti-rollback state is not decided by this development probe; production installation must fail closed.")
 	j.log.Event(logging.Info, "probe", "engine", "STAGE_COMPLETED", "stage.completed", "", map[string]any{"durationMs": time.Since(result.StartedAt).Milliseconds()})
 	return result, nil
+}
+
+func deviceBinding(mac string) string {
+	mac = strings.ToLower(strings.TrimSpace(mac))
+	if mac == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(mac))
+	return hex.EncodeToString(sum[:])
+}
+
+func securityBaseline(value flash.SecurityInfo) bool {
+	return value.SecureBoot != nil && !*value.SecureBoot &&
+		value.FlashEncryption != nil && !*value.FlashEncryption &&
+		value.SecureVersion != nil && *value.SecureVersion == 0
+}
+
+// probeInstalledLayout reads only the fixed ESP-IDF partition-table location
+// and the factory app descriptor. It is diagnostic evidence for matching an
+// already running board; FlashJob repeats these checks before a write.
+func (j *ProbeJob) probeInstalledLayout(ctx context.Context, tool flash.Tool, result *ProbeResult) error {
+	if result == nil || result.Flash.SizeBytes <= 0 {
+		return errors.New("flash capacity is unavailable")
+	}
+	dir, err := os.MkdirTemp("", "clawmate-probe-")
+	if err != nil {
+		return fmt.Errorf("create probe workspace: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	partitionPath := filepath.Join(dir, "partition-table.bin")
+	run, err := tool.ReadFlash(ctx, j.port, 0x8000, 4096, partitionPath)
+	j.recordSidecar("read_flash_partition_table", run, err)
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(partitionPath)
+	if err != nil {
+		return fmt.Errorf("read partition table: %w", err)
+	}
+	table, err := partition.Parse(raw, uint64(result.Flash.SizeBytes))
+	if err != nil {
+		return err
+	}
+	result.Layout = &table
+	j.log.Event(logging.Info, "probe", "partition", "LAYOUT_OBSERVED", "layout.observed", "Read and validated the installed ESP-IDF partition table.", map[string]any{"bytes": len(table.Entries)})
+	factory, ok := partition.Find(table.Entries, "factory")
+	if !ok || factory.Size < 4096 {
+		return errors.New("installed layout has no readable factory application partition")
+	}
+	descriptorPath := filepath.Join(dir, "app-descriptor.bin")
+	run, err = tool.ReadFlash(ctx, j.port, uint64(factory.Offset), 4096, descriptorPath)
+	j.recordSidecar("read_flash_app_descriptor", run, err)
+	if err != nil {
+		return err
+	}
+	raw, err = os.ReadFile(descriptorPath)
+	if err != nil {
+		return fmt.Errorf("read app descriptor: %w", err)
+	}
+	description, err := flash.ParseESPAppDescription(raw)
+	if err != nil {
+		return err
+	}
+	result.AppDescription = &description
+	j.log.Event(logging.Info, "probe", "firmware", "APP_DESCRIPTOR_OBSERVED", "app_descriptor.observed", "Read the installed ESP-IDF application descriptor.", map[string]any{"project": description.ProjectName, "version": description.Version})
+	return nil
 }
 
 func (j *ProbeJob) recordSidecar(action string, r flash.Result, err error) {

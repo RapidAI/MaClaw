@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ExpertDefinition, GeneratedExpertProfile } from '../ai/expertTypes';
+import type { ExpertDefinition, ExpertOptimizeDraft, GeneratedExpertProfile } from '../ai/expertTypes';
+import './UtilitiesPage.css';
 import {
     CAPABILITY_TIER_ORDER,
     EXPERT_STARTER_TEMPLATES,
@@ -64,6 +65,12 @@ type ExpertEditorDialogProps = {
     lang?: string;
     /** null/undefined = create a new expert; otherwise edit (saving a builtin stores a user override). */
     expert?: ExpertDefinition | null;
+    /**
+     * "专家优化" draft from OptimizeExpertFromSession. When present the form is
+     * prefilled from the draft; `update_existing` + `id` means saving updates
+     * the source expert's existing optimized expert (edit-mode semantics).
+     */
+    optimizeDraft?: ExpertOptimizeDraft | null;
     onClose: () => void;
     onSaved: (saved: ExpertDefinition) => void;
 };
@@ -113,7 +120,7 @@ function riskClass(risk: ToolRisk): string {
  * - Tool/skill pickers live under Advanced; empty = no restriction.
  * - AI suggestions are reference-only unless "Adopt as whitelist" is checked.
  */
-export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEditorDialogProps) => {
+export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSaved }: ExpertEditorDialogProps) => {
     const isZh = !lang || lang.startsWith('zh');
     const t = useMemo(() => ({
         titleNew: lang === 'zh-Hant' ? '新建專家' : isZh ? '新建专家' : 'New expert',
@@ -140,6 +147,13 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
         saving: lang === 'zh-Hant' ? '保存中…' : isZh ? '保存中…' : 'Saving…',
         cancel: lang === 'zh-Hant' ? '取消' : isZh ? '取消' : 'Cancel',
         nameRequired: lang === 'zh-Hant' ? '請填寫名稱' : isZh ? '请填写名称' : 'Name is required',
+        nameMustDifferFromSource: (sourceName: string) => lang === 'zh-Hant'
+            ? `優化後的專家不能與來源專家「${sourceName}」同名，請換一個名稱`
+            : isZh
+                ? `优化后的专家不能与来源专家「${sourceName}」同名，请换一个名称`
+                : `The optimized expert cannot keep the source name "${sourceName}" — pick a different name`,
+        aboutLabel: lang === 'zh-Hant' ? '關於' : isZh ? '关于' : 'About',
+        aboutPlaceholder: lang === 'zh-Hant' ? '作者、版權、備註等' : isZh ? '作者、版权、备注等' : 'Author, copyright, notes, etc.',
         deferredTag: lang === 'zh-Hant' ? '（按需發現）' : isZh ? '（按需发现）' : ' (on-demand)',
         ignoredSuggestions: (n: number) => lang === 'zh-Hant'
             ? `${n} 項 AI 建議未匹配到可用工具/技能，已忽略`
@@ -227,18 +241,24 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
         accessCardOpenAdvanced: lang === 'zh-Hant' ? '查看白名單' : isZh ? '查看白名单' : 'Review whitelist',
     }), [isZh, lang]);
 
-    const editing = !!expert?.id;
-    const initialTools = expert?.tools || [];
-    const initialSkills = expert?.skills || [];
+    /** Update mode for an optimize draft: reuse the existing optimized expert's id. */
+    const draftUpdateId = optimizeDraft?.update_existing ? String(optimizeDraft?.id || '').trim() : '';
+    const editing = !!expert?.id || !!draftUpdateId;
+    const initialTools = expert?.tools || (Array.isArray(optimizeDraft?.tools) ? optimizeDraft.tools : []);
+    const initialSkills = expert?.skills || (Array.isArray(optimizeDraft?.skills) ? optimizeDraft.skills : []);
     const hadInitialRestrictions = !!(initialTools.length || initialSkills.length);
+    /** Lineage carried into the save payload (专家优化). */
+    const optimizedFromId = String(expert?.optimized_from_id || optimizeDraft?.optimized_from_id || '').trim();
+    const draftSourceName = String(optimizeDraft?.source_name || '').trim();
 
     const [idea, setIdea] = useState('');
     const [generating, setGenerating] = useState(false);
     const [generateError, setGenerateError] = useState('');
-    const [name, setName] = useState(expert?.name || '');
-    const [icon, setIcon] = useState(expert?.icon || '');
-    const [description, setDescription] = useState(expert?.description || '');
-    const [systemPrompt, setSystemPrompt] = useState(expert?.system_prompt || '');
+    const [name, setName] = useState(expert?.name || optimizeDraft?.name || '');
+    const [icon, setIcon] = useState(expert?.icon || optimizeDraft?.icon || '');
+    const [description, setDescription] = useState(expert?.description || optimizeDraft?.description || '');
+    const [systemPrompt, setSystemPrompt] = useState(expert?.system_prompt || optimizeDraft?.system_prompt || '');
+    const [about, setAbout] = useState(expert?.about || optimizeDraft?.about || '');
     const [tools, setTools] = useState<string[]>(initialTools);
     const [skills, setSkills] = useState<string[]>(initialSkills);
     const [availableTools, setAvailableTools] = useState<ToolNameEntry[]>([]);
@@ -545,6 +565,10 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
             setSaveError(t.nameRequired);
             return;
         }
+        if (draftSourceName && name.trim() === draftSourceName) {
+            setSaveError(t.nameMustDifferFromSource(draftSourceName));
+            return;
+        }
         if (savingRef.current) return;
         const seq = ++saveSeq.current;
         savingRef.current = true;
@@ -561,8 +585,12 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                 system_prompt: systemPrompt,
                 tools: dedupePreserveOrder(intersectKnown(tools, knownToolSet)),
                 skills: dedupePreserveOrder(intersectKnown(skills, knownSkillSet)),
+                // Always include lineage/about so edits never silently drop them.
+                optimized_from_id: optimizedFromId,
+                about: about.trim(),
             };
-            if (editing && expert?.id) payload.id = expert.id;
+            const editId = expert?.id || draftUpdateId;
+            if (editing && editId) payload.id = editId;
             const raw = await mod.SaveExpert(JSON.stringify(payload));
             let saved: ExpertDefinition;
             try {
@@ -776,6 +804,22 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                         onChange={(e) => {
                             cancelPendingGeneration();
                             setDescription(e.target.value);
+                        }}
+                    />
+                </div>
+
+                <div className="expert-editor__field">
+                    <label className="expert-editor__label" htmlFor="expert-about-input">{t.aboutLabel}</label>
+                    <textarea
+                        id="expert-about-input"
+                        data-testid="expert-about-input"
+                        className="expert-editor__textarea expert-editor__textarea--description"
+                        rows={3}
+                        value={about}
+                        placeholder={t.aboutPlaceholder}
+                        onChange={(e) => {
+                            cancelPendingGeneration();
+                            setAbout(e.target.value);
                         }}
                     />
                 </div>

@@ -1,18 +1,15 @@
 // Package catalog defines the official board and Release-asset allow-list.
-// It deliberately does not decide that an ESP32-S3 USB port identifies a
-// particular product: that would make a wrong-board flash look safe.
 package catalog
 
 import (
-	"clawmatemaker/internal/device"
-	"clawmatemaker/internal/flash"
 	"fmt"
 	"strings"
+
+	"clawmatemaker/internal/device"
+	"clawmatemaker/internal/flash"
 )
 
 // Repository is the canonical GitHub repository that owns Release assets.
-// The former RapidAI/CodeClaw endpoint currently redirects here, but the
-// downloader must not depend on that redirect for automatic installation.
 const Repository = "RapidAI/MaClaw"
 
 type BoardProfile struct {
@@ -34,6 +31,7 @@ func Profiles() []BoardProfile {
 	copy(result, officialProfiles)
 	return result
 }
+
 func Profile(id string) (BoardProfile, error) {
 	for _, profile := range officialProfiles {
 		if profile.ID == id {
@@ -43,11 +41,6 @@ func Profile(id string) (BoardProfile, error) {
 	return BoardProfile{}, fmt.Errorf("unsupported board profile: %q", id)
 }
 
-// ProfileForFirmwareBoardID resolves the immutable firmware-target identifier
-// carried by a FlashRequest back to its sole local catalog entry. Flash jobs
-// use it to repeat the same full binding validation performed when a package
-// was downloaded or imported; a package capability alone is never enough to
-// skip write-time policy checks.
 func ProfileForFirmwareBoardID(firmwareBoardID string) (BoardProfile, error) {
 	for _, profile := range officialProfiles {
 		if strings.EqualFold(profile.FirmwareBoardID, firmwareBoardID) {
@@ -57,11 +50,6 @@ func ProfileForFirmwareBoardID(firmwareBoardID string) (BoardProfile, error) {
 	return BoardProfile{}, fmt.Errorf("unsupported firmware board target: %q", firmwareBoardID)
 }
 
-// ValidateManifestBinding enforces the local catalog contract after signature
-// verification. A valid signature alone must not allow a release package for
-// one supported board to be selected under another board's exact Release
-// asset name. The profile hash is intentionally a stable, locally-derived
-// marker until a versioned profile-signing format is introduced.
 func ValidateManifestBinding(profile BoardProfile, firmwareBoardID, profileHash, chipFamily string, flashBytes int64) error {
 	if profile.ID == "" || profile.FirmwareBoardID == "" {
 		return fmt.Errorf("invalid board profile")
@@ -81,8 +69,6 @@ func ValidateManifestBinding(profile BoardProfile, firmwareBoardID, profileHash,
 	return nil
 }
 
-// Recognition is intentionally evidence-based and fail-closed. ROM exposes
-// chip/flash information, but not the product SKU for these three boards.
 type Recognition struct {
 	Status          string   `json:"status"`
 	Reason          string   `json:"reason"`
@@ -101,10 +87,6 @@ func RecognizeApplicationIdentity(identity string) Recognition {
 	return recognizeApplicationIdentity(identity, 2)
 }
 
-// RecognizeApplicationIdentityEvidence maps a nonce-bound application report
-// to a catalog entry. It does not prove physical board identity: application
-// firmware is replaceable. Protocol v1 is accepted strictly to migrate
-// existing devices into the signed protocol-v2 update path.
 func RecognizeApplicationIdentityEvidence(identity device.AppIdentity) Recognition {
 	return recognizeApplicationIdentity(identity.FirmwareTargetBoardID, identity.Protocol)
 }

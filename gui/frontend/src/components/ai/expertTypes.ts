@@ -20,8 +20,35 @@ export interface ExpertDefinition {
     /** Skill name allow-list; empty = no restriction. */
     skills: string[];
     builtin: boolean;
+    /**
+     * Lineage ("专家优化"): non-empty means this expert was distilled from the
+     * referenced source expert's session. Each source has at most one direct
+     * optimized expert; optimized experts may themselves be optimized (chained).
+     */
+    optimized_from_id?: string;
+    /** Free-form "关于" text (author, copyright, notes) shown via the card's About button. */
+    about?: string;
     created_at: string;
     updated_at: string;
+}
+
+/** Shape returned by OptimizeExpertFromSession: an editor-prefillable draft. */
+export interface ExpertOptimizeDraft {
+    /** Non-empty when updating the source's existing optimized expert. */
+    id?: string;
+    name?: string;
+    description?: string;
+    icon?: string;
+    system_prompt?: string;
+    tools?: string[];
+    skills?: string[];
+    optimized_from_id?: string;
+    /** Carried over from the existing optimized expert when updating. */
+    about?: string;
+    /** True when the draft updates the existing optimized expert (id set). */
+    update_existing?: boolean;
+    /** Name of the source expert (for the different-name validation). */
+    source_name?: string;
 }
 
 /** Shape returned by GenerateExpertProfile (fields are suggestions, editable before save). */
@@ -78,6 +105,8 @@ export function parseExpertListJSON(raw: string | null | undefined): ExpertDefin
             tools: Array.isArray(item.tools) ? item.tools : [],
             skills: Array.isArray(item.skills) ? item.skills : [],
             builtin: !!item.builtin,
+            optimized_from_id: String(item.optimized_from_id || ""),
+            about: String(item.about || ""),
             created_at: String(item.created_at || ""),
             updated_at: String(item.updated_at || ""),
         }));

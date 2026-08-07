@@ -54,6 +54,8 @@ void app_ui_set_pet_state(const char *state);
 void app_ui_set_command_stage(const char *stage);
 void app_ui_set_command_display_lock(bool locked);
 void app_ui_set_command_cancel_enabled(bool enabled);
+/* These generic presentation updates are intentionally owned by the shared UI
+ * model. The selected renderer decides how a profile/asset is displayed. */
 void app_ui_set_pet_profile(const char *skin, bool motion_enabled);
 esp_err_t app_ui_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
                                size_t width, size_t height, uint32_t frame_ms);

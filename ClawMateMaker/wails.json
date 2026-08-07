@@ -1,11 +1,27 @@
 {
-  "name": "ClawMateMaker",
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "ClawMate Maker",
   "outputfilename": "ClawMateMaker",
   "frontend:dir": "frontend",
-  "frontend:install": "",
+  "assetdir": "frontend/dist",
+  "wailsjsdir": "frontend/wailsjs",
   "frontend:build": "",
+  "frontend:dev:build": "",
   "frontend:dev:watcher": "",
-  "frontend:dev:serverUrl": "",
-  "author": {"name": "ClawMate"},
-  "info": {"companyName": "ClawMate", "productName": "ClawMate Maker", "productVersion": "0.1.0-dev"}
+  "author": {
+    "name": "ClawMate",
+    "email": "support@clawmate.ai"
+  },
+  "info": {
+    "companyName": "ClawMate",
+    "productName": "ClawMate Maker",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright © 2026 ClawMate",
+    "comments": "Secure ESP32 firmware installation and diagnostics"
+  },
+  "bindings": {
+    "ts_generation": {
+      "outputType": "classes"
+    }
+  }
 }

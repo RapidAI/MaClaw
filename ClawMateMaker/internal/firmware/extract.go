@@ -8,20 +8,21 @@ import (
 	"path/filepath"
 )
 
-// ExtractVerifiedImages extracts only files declared by a verified archive into
-// an application-owned temporary directory. It never trusts archive paths.
+// ExtractVerifiedImages copies only files named by a package that has already
+// passed signature and manifest validation. Both ZIP entry and destination
+// paths remain checked so the later write path never trusts archive metadata.
 func ExtractVerifiedImages(archive, destination string, verified Verified) ([]FileSpec, error) {
-	r, err := zip.OpenReader(archive)
+	reader, err := zip.OpenReader(archive)
 	if err != nil {
 		return nil, err
 	}
-	defer r.Close()
+	defer reader.Close()
 	if err := os.MkdirAll(destination, 0700); err != nil {
 		return nil, err
 	}
-	entries := make(map[string]*zip.File, len(r.File))
-	for _, f := range r.File {
-		entries[f.Name] = f
+	entries := make(map[string]*zip.File, len(reader.File))
+	for _, entry := range reader.File {
+		entries[entry.Name] = entry
 	}
 	for _, spec := range verified.Manifest.Files {
 		entry := entries[spec.Path]
@@ -33,38 +34,38 @@ func ExtractVerifiedImages(archive, destination string, verified Verified) ([]Fi
 			return nil, err
 		}
 		output := filepath.Join(destination, filepath.FromSlash(clean))
-		rel, err := filepath.Rel(destination, output)
-		if err != nil || rel == ".." || len(rel) >= 3 && rel[:3] == ".."+string(os.PathSeparator) {
+		relative, err := filepath.Rel(destination, output)
+		if err != nil || relative == ".." || len(relative) >= 3 && relative[:3] == ".."+string(os.PathSeparator) {
 			return nil, fmt.Errorf("unsafe output path: %s", clean)
 		}
 		if err := os.MkdirAll(filepath.Dir(output), 0700); err != nil {
 			return nil, err
 		}
-		in, err := entry.Open()
+		input, err := entry.Open()
 		if err != nil {
 			return nil, err
 		}
-		out, err := os.OpenFile(output, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		outputFile, err := os.OpenFile(output, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
-			in.Close()
+			_ = input.Close()
 			return nil, err
 		}
-		n, copyErr := io.Copy(out, io.LimitReader(in, spec.Size+1))
-		closeOut := out.Close()
-		closeIn := in.Close()
+		written, copyErr := io.Copy(outputFile, io.LimitReader(input, spec.Size+1))
+		closeOutput := outputFile.Close()
+		closeInput := input.Close()
 		if copyErr != nil {
 			return nil, copyErr
 		}
-		if closeOut != nil {
-			return nil, closeOut
+		if closeOutput != nil {
+			return nil, closeOutput
 		}
-		if closeIn != nil {
-			return nil, closeIn
+		if closeInput != nil {
+			return nil, closeInput
 		}
-		if n != spec.Size {
+		if written != spec.Size {
 			return nil, fmt.Errorf("extracted size mismatch: %s", spec.Path)
 		}
-		if sum, err := fileHash(output); err != nil || !hashEqual("sha256:"+sum, spec.SHA256) {
+		if digest, err := fileHash(output); err != nil || !hashEqual("sha256:"+digest, spec.SHA256) {
 			if err != nil {
 				return nil, err
 			}

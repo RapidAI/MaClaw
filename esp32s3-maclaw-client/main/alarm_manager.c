@@ -5,7 +5,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "board_port.h"
+#include "device_api.h"
 #include "app_ui.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -240,7 +240,7 @@ static void alarm_task(void *arg) {
                 format_local_time(current.trigger_at_ms, display);
                 app_ui_set_alarm_visual(true, frame++, display, current.label,
                                         attempt, ALARM_MAX_ATTEMPTS);
-                (void)board_port_play_alarm_burst();
+                (void)device_audio_play_alarm_burst();
                 vTaskDelay(pdMS_TO_TICKS(120));
             }
             taskENTER_CRITICAL(&s_state_lock);

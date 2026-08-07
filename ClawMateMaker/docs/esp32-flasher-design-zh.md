@@ -280,11 +280,24 @@ profile ID 本身不作为物理身份；它是客户端选择探测/校验策�
 下载器与缓存还必须明确以下行为：
 
 - 支持系统代理以及 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`；代理认证凭据只交给系统网络栈，不写入日志或诊断包。
-- 断点续传仅在服务端返回匹配的 ETag/Last-Modified、正确 `Content-Range` 且已下载前缀仍属于同一对象时继续；否则删除临时片段重新下载。
+- 断点续传仅在客户端已把原下载 URL 与 ETag/Last-Modified 原子保存为 partial metadata、续传请求携带 `If-Range`、服务端返回匹配验证器和正确 `Content-Range` 且已下载前缀仍属于同一对象时继续；缺失 metadata、URL/验证器变化、Range 被忽略或范围不正确时，删除临时片段和 metadata 后从零下载。
 - 以内容 SHA-256 作为缓存主键，下载锁以 hash 为粒度；多个窗口/进程请求同一对象时共享一个下载者，其他请求等待并复验结果。
 - 临时文件与最终缓存位于同一文件系统，完成长度和 SHA-256 校验后原子 rename；失败、取消或崩溃不能暴露为可用缓存。
 - 缓存设置总容量上限和 LRU 清理策略；正在使用、已固定的离线包和当前 job 引用对象不能被清理。
 - 在线目录不可用时可以使用已完整验证的缓存或本地导入包；UI 必须显示目录新鲜度、包签名时间以及“无法取得最新撤回状态”，不得把离线状态误报为最新。
+
+### 6.4 Release 镜像发现、测速与回退
+
+正式 Release workflow 会将同一份精确命名的 `.clawfw` 资产、长度、SHA-256 和 `latest.json` 同步到 GitHub Release、Cloudflare R2 与腾讯云 COS。正式公共 origin 固定为桌面端内置 allow-list 中的 R2 与 COS 域名；CI 不允许用 Secret 把它替换为另一个 CDN、代理或 bucket，以免生成桌面端无法安全发现的 release index。每个固件 entry 的 `urls` 必须按固定顺序包含 `R2/{latest|beta}/<exact asset>` 和 `COS/{latest|beta}/<exact asset>`，`url` 必须是后者。每个 `.clawfw` 的 Ed25519 签名 manifest 还必须声明精确 `channel: stable|beta`；打包器、发布 workflow 和桌面端都比较所选 channel、对象路径与已签名 channel，任一不一致即拒绝，避免把 beta 对象误标为 stable 或反向降级。桌面端以 GitHub Release API 的精确 asset 名、tag、大小和 GitHub digest 为发布权威；R2/COS 的 manifest 仅用于发现镜像和选择下载节点，绝不替代包内 Ed25519 签名、catalog binding、分区与芯片兼容性校验。
+
+发布门禁先生成 `latest.json`/`beta.json`，上传 R2 和 COS 后重新下载两份公开 manifest，并逐个下载 EchoEar 2ST、Bread Compact、Fangtang 4G 三个 `.clawfw` 校验长度与 SHA-256。任一凭据、上传、公开读取或校验失败都会使 workflow 失败，且 GitHub Release 在镜像门禁通过后才创建；镜像同步不能使用 `continue-on-error` 或“缺少密钥则跳过”。
+
+- 对每个板卡只接受与 catalog 完全相等的资产名；镜像 URL 必须为 HTTPS、无 userinfo、无显式端口，且 host 严格属于 GitHub Release、指定 R2 或指定 COS 白名单。下载重定向必须逐跳重验这一 allow-list，最多 5 跳。客户端和发布门禁都会校验镜像 URL 的 channel path 和双镜像拓扑：stable 为 `R2/latest/<asset>`、`COS/latest/<asset>`，beta 为 `R2/beta/<asset>`、`COS/beta/<asset>`；`urls` 必须按该顺序精确出现，`url` 必须为后者。不允许只上传一个 mirror 或把 entry 指向其他 allow-listed 路径。客户端默认只使用 stable；用户在界面主动选择 beta 后，才会读取 `beta.json` 并使用 beta 路径，且仍执行相同的镜像元数据、包签名和兼容性校验。日志只记录 host，不记录可能含签名或凭据的 query。
+- 并行读取 R2/COS manifest；若 tag、size、SHA-256 与 GitHub Release 不一致，或两个镜像彼此冲突，镜像元数据整体 fail-closed，回退为 GitHub，不得静默挑选其中一个。
+- 若 GitHub Release API 在本次请求中不可达或未返回精确 asset，客户端可仅在 R2 与 COS 两份独立 workflow manifest 都可达、且对 exact asset 的 tag、size、SHA-256 完全一致时，以该一致元数据继续发现和下载；任一镜像缺失或不一致即拒绝。该高可用回退不放宽最终 GitHub digest（若可得）、`.clawfw` Ed25519 签名和 catalog binding 校验。
+- 对通过元数据校验的 URL 与 GitHub URL 并行执行无副作用的 `HEAD`；服务器拒绝 HEAD 时才使用 `GET Range: bytes=0-0`。测速有严格超时，只校验响应首部/一个字节，不预取固件主体；按可用性和响应时间排序，选择最快节点。
+- 实际下载仍按原有大小、断点续传、SHA-256、GitHub digest 和 `.clawfw` 签名/兼容性规则验证。最快节点发生网络、长度或 digest 错误时，删除该临时片段后按已测速候选顺序回退；任何一个镜像都不能因“测速成功”而被视为可信固件。
+- 日志必须覆盖 `MIRROR_DISCOVERY_*`、`MIRROR_MANIFEST_*`、`MIRROR_METADATA_CONFLICT`、`MIRROR_PROBE_*`、`MIRROR_SELECTED` 与 `MIRROR_FALLBACK`，从而可以判断是 metadata、测速、传输还是最终包校验失败。
 
 ### 6.3 驱动策略
 
@@ -389,7 +402,9 @@ bread-compact-3.1.0.clawfw # ZIP 容器，固定 UTF-8 文件名
 }
 ```
 
-示例只表达格式；所有 offset、实际 `size`、区域上限、擦除范围、layout fingerprint 和 hash 应由 ESP-IDF 构建产物自动提取。尤其不能把日志中曾出现过的旧分区偏移带入新版本。`releaseVersion` 是面向用户的版本；`releaseSequence` 是同一产品发布线单调递增的比较值，用于明确升级/降级，不能从任意版本字符串猜测；`appIdentity.appVersion` 必须与本次构建的 `esp_app_desc.version` 原始字符串完全一致，不能把发布版本人工复制到这里；`elfSha256` 必须与固件运行时报告及构建产物一致。当前实机记录是 `V6.6.3...-dirty`，只能作为开发测试证据；stable/beta 发布流水线必须拒绝源码工作树 dirty、未标记 commit 或构建输入无法复现的产物。启动验证的期望身份直接引用 `board`、`layout`、`releaseSequence` 和 `appIdentity`，避免在 `required` 中复制后产生漂移；`bootVerification` 只声明传输参数和必需自检集合。`hwRevisions` 使用字符串 allow-list，不使用可能错误覆盖 `A2` 等修订号的数值区间。
+示例只表达格式；所有 offset、实际 `size`、区域上限、擦除范围、layout fingerprint 和 hash 应由 ESP-IDF 构建产物自动提取。尤其不能把日志中曾出现过的旧分区偏移带入新版本。`releaseVersion` 是面向用户的版本；`releaseSequence` 是同一产品发布线单调递增的比较值，用于明确升级/降级，不能从任意版本字符串猜测。发布 CI 的每一次固件构建使用同一个正整数作为 `CONFIG_MACLAW_RELEASE_SEQUENCE` 与已签名 manifest 的 `appIdentity.releaseSequence`；运行时 `IDENTITY` 与 `BOOT_STATUS` 必须同时以 JSON 整数上报 `release_sequence` 和更易读的同值别名 `firmware_version`。桌面端只比较这个整数，并拒绝两个字段同时存在但不相等的设备；缺失或非正值只显示“无法比较”，绝不从 `app_version` 或 release tag 推断更新顺序。`appIdentity.appVersion` 必须与本次构建的 `esp_app_desc.version` 原始字符串完全一致，不能把发布版本人工复制到这里；`elfSha256` 必须由 `project_description.json` 的 `app_elf_sha256` 自动提取，固定为 **64 位小写十六进制裸 SHA-256**（不带 `sha256:` 前缀）。打包器拒绝空值、非 SHA-256 值或非规范形式；设备运行时可采用大小写不同的十六进制表示，但桌面端会规范化后严格比较其字节值。当前实机记录是 `V6.6.3...-dirty`，只能作为开发测试证据；stable/beta 发布流水线必须拒绝源码工作树 dirty、未标记 commit 或构建输入无法复现的产物。启动验证的期望身份直接引用 `board`、`layout`、`releaseSequence` 和 `appIdentity`，避免在 `required` 中复制后产生漂移；`bootVerification` 只声明传输参数和必需自检集合。`hwRevisions` 使用字符串 allow-list，不使用可能错误覆盖 `A2` 等修订号的数值区间。
+
+当前正式工作流不再把 `merge-bin` 的单个 `full-flash.bin` 当作唯一刷写计划。它从 ESP-IDF 同一次构建输出的 `flasher_args.json` 提取 bootloader、partition table、App 以及 `FLASH_IN_PROJECT` 数据分区，分别计算 hash 并打入签名包；`writeOrder` 必须精确枚举所有非 metadata 镜像一次。当前单 factory 布局固定为“数据分区 → App → partition-table → bootloader”，其中 partition table/bootloader 只能位于最后两个位置；客户端忽略 ZIP entry 和 offset 的自然排序，只执行该签名顺序。对拆分包，它会在 ROM 下载模式中逐个执行 `write_flash --after no_reset`，每个镜像紧接一次 `verify_flash --after no_reset`，只在最后一份镜像完成读回后以 `verify_flash --after hard_reset` 启动 App；因此断电、传输错误或读回失败会精确停在一个可诊断的镜像边界。为兼容已经发布的旧包，只有一个 offset `0` 的完整镜像且未声明 `writeOrder` 时才走旧兼容路径；新 CI 产物必须使用拆分计划。
 
 `recovery` 是包对当前布局可提供的真实恢复能力声明，并由 profile/CI 约束，不能由发布人员乐观填写。当前单 factory App 布局必须声明 `powerLossBootable=false`；只有未来采用双 OTA slot、有效 otadata 事务及硬件在环断电测试后，才可声明刷写中断后仍能启动旧版本。该字段影响 UI 风险提示和取消策略，但不能降低写前校验。
 
@@ -431,11 +446,13 @@ bread-compact-3.1.0.clawfw # ZIP 容器，固定 UTF-8 文件名
 5. 验证当前客户端 profile ID/hash 被 manifest 允许，同时 manifest 的 layout/tool/reset 能力也在 profile allow-list 内；任一侧不认识另一侧均 fail-closed。
 6. 优先比较只读制造身份 `factory_board_id` / `factory_hw_rev`；运行时 `firmware_target_board_id` 只作交叉证据。没有制造身份时，即使 VID/PID 与固件自报均匹配，也只能降级为需用户确认。
 7. 优先读取并解析当前 partition table，生成 `layoutFingerprint`；运行中固件报告的 `layout_id` 只作为交叉证据。布局相同才允许 App-only；无法读取、解析失败或布局不同则必须完整刷写或拒绝。
-8. 独立解析包内 partition-table 镜像并重算其 fingerprint；确认 manifest layout、包内表、每个镜像 offset/区域上限三者完全一致，不能只信任 manifest 对自身的描述。
-9. 验证每个文件实际长度等于 `size`、不超过 `regionMaxSize`，目标偏移/长度不越过 Flash 且写入区域互不重叠；非刷写文件不得携带 offset。`eraseRegions` 必须完整落在同名分区内、不接触制造身份保留区，并与 `modes.*.erases` 一一对应。
-10. 使用 `releaseSequence`、安全撤回级别和设备当前 App identity 判断升级/降级；普通版本字符串仅展示，不参与猜测排序。
-11. 检查主机磁盘空间、串口稳定性和缓存完整性；USB 无标准方法可靠测量供电裕量，因此只能根据掉线/欠压日志预警，不能声称刷写前已经验证电源安全。
-12. 生成用户可读的“将写入/将保留/将清除”计划，用户确认后锁定 job plan。
+8. 独立解析包内 partition-table 镜像并重算其 fingerprint；确认 manifest layout、包内表、每个镜像 offset/区域上限三者完全一致，不能只信任 manifest 对自身的描述。完整刷写包还必须逐字节验证 `images/full-flash.bin` 在 `0x8000` 的内容等于签名 metadata 分区表；CI 打包时和桌面导入时都执行该门禁，防止元数据表与实际将写入的完整镜像不一致。
+9. 验证每个文件实际长度等于 `size`、不超过 `regionMaxSize`，目标偏移/长度不越过**实测** Flash 容量且写入区域互不重叠；此门禁必须在风险窗口/任何 `write_flash` 调用之前再次执行。非刷写文件不得携带 offset。`eraseRegions` 必须完整落在同名分区内、不接触制造身份保留区，并与 `modes.*.erases` 一一对应。
+
+10. 当前官方 profile 的签名 `securityBaseline` 必须严格等于 Secure Boot=`false`、Flash Encryption=`false`、Secure Version=`0`；包在下载/导入阶段即拒绝其他值。下载/离线导入在 Ed25519 验签后还必须立即拒绝缺少 releaseVersion、板型/profile、芯片/Flash 容量、分区布局及其 metadata、App identity、启动验证策略或显式 securityBaseline 的 release manifest；不能把这类语义缺失延迟到实际写入前才发现。写前重新读取 eFuse，三项必须与签名基线逐项相同；未知、已启用或不匹配均 fail-closed，不得由 UI 覆盖。
+11. 使用 `releaseSequence`、安全撤回级别和设备当前 App identity 判断升级/降级；普通版本字符串仅展示，不参与猜测排序。
+12. 检查主机磁盘空间、串口稳定性和缓存完整性；USB 无标准方法可靠测量供电裕量，因此只能根据掉线/欠压日志预警，不能声称刷写前已经验证电源安全。
+13. 生成用户可读的“将写入/将保留/将清除”计划，用户确认后锁定 job plan。
 
 校验结论与用户确认都绑定到冻结的 `deviceBinding`：至少包含 USB 物理位置、USB serial（如有）、ROM MAC 的脱敏摘要、chip/revision、Flash 容量和安全状态摘要。进入写入前必须再次进入 ROM Bootloader 并复核该绑定；端口路径变化本身不导致失败，但任何强属性变化都必须中止，不能把已确认计划套用到新接入设备。
 
@@ -517,7 +534,7 @@ stateDiagram-v2
 
 ### 10.1 刷写参数
 
-参数完全来自已签名 manifest 和板卡 profile：chip、baud、reset strategy、flash mode/frequency/size、offset-image 对。首版默认 460800；连接不稳定时自动降级 230400/115200，并记录原因。
+参数完全来自已签名 manifest 和板卡 profile：chip、baud、reset strategy、flash mode/frequency/size、offset-image 对。首版当前实现按 921600、460800、115200 依次尝试；只有确定 ROM 尚未接受写入时才降速，并记录原因。
 
 flash mode/frequency/size 必须同时与 bootloader 镜像头、profile 和实测 Flash 能力一致。App-only 不修改 bootloader 参数；完整刷写若改变这些参数必须由硬件在环覆盖。波特率回退只在重新同步 session 边界发生，不能在同一 block 传输中静默切换。每级设置连接/命令/block 超时和最大重试次数；连续 CRC/timeout 达阈值后降速，超过总重试预算停止并提示换线/供电检查，避免无限重试磨损 Flash。
 
@@ -536,7 +553,7 @@ flash mode/frequency/size 必须同时与 bootloader 镜像头、profile 和实�
 
 完整刷写必须使用 manifest 中由发布 CI 生成并经硬件在环验证的 `modes.fullInstall.writeOrder`，不能按 ZIP 顺序写入。默认原则是先写非启动数据镜像，再写 App，最后才提交会改变启动解释方式的 partition table/bootloader；但只有新旧 bootloader、partition table 和 App 的兼容矩阵证明该顺序在每个断电点均可通过 ROM 恢复时才能采用。每写完一个镜像立即校验并记录证据；失败或应用重启后从镜像边界重新判断，不在未知的压缩传输块中间续写。MVP 不承诺断电后仍能正常启动，只承诺 ROM 下载路径可恢复；验收必须验证这一边界。
 
-若任意时刻写过 bootloader 或 partition table，job 必须进入 `BootCriticalModified` 标记。此后取消、断线或验证失败时不得自动 hard reset；工具先尝试重新同步 ROM Bootloader、导出诊断并给出针对该包的恢复计划。只有启动关键镜像及其依赖 App 均验证通过后才允许复位。
+若任意时刻写过 bootloader 或 partition table，job 必须进入 `BootCriticalModified` 标记。此后取消、断线或验证失败时不得自动 hard reset；工具先尝试重新同步 ROM Bootloader、导出诊断并给出针对该包的恢复计划。只有启动关键镜像及其依赖 App 均验证通过后才允许复位。具体时序固定为：`write_flash --after no_reset` 保持 ROM 下载模式，完成全部 `verify_flash` 读回校验后才执行唯一的 `verify_flash --after hard_reset`；不得在读回前让设备跳转到 App。
 
 ### 10.3 自动启动与成功证明
 
@@ -547,7 +564,7 @@ flash mode/frequency/size 必须同时与 bootloader 镜像头、profile 和实�
 
 ```text
 CLAWMATE_QUERY {"type":"BOOT_STATUS","nonce":"7c3e..."}
-CLAWMATE_EVT {"type":"BOOT_STATUS","protocol":2,"nonce":"7c3e...","ready":true,"display_name":"ClawMate / Bread Compact Wi-Fi LCD","product_id":"maclaw-clawmate","firmware_target_board_id":"bread-compact-wifi-lcd-v1","hw_rev":"1","layout_id":"maclaw-s3-16m-factory-v2","compat_id":"maclaw-clawmate:bread-compact-wifi-lcd-v1:maclaw-s3-16m-factory-v2","release_sequence":30100,"project_name":"maclaw_esp32s3_client","app_version":"V6.6.3.11756-4-g04f2582f","app_elf_sha256":"...","chip":"esp32s3","flash_size_bytes":16777216,"psram_size_bytes":8388608,"self_test":{"flash":"ok","psram":"ok","display_bus":"ok"}}
+CLAWMATE_EVT {"type":"BOOT_STATUS","protocol":2,"nonce":"7c3e...","ready":true,"display_name":"ClawMate / Bread Compact Wi-Fi LCD","product_id":"maclaw-clawmate","firmware_target_board_id":"bread-compact-wifi-lcd-v1","hw_rev":"1","layout_id":"maclaw-s3-16m-factory-v2","compat_id":"maclaw-clawmate:bread-compact-wifi-lcd-v1:maclaw-s3-16m-factory-v2","release_sequence":30100,"firmware_version":30100,"project_name":"maclaw_esp32s3_client","app_version":"V6.6.3.11756-4-g04f2582f","app_elf_sha256":"...","chip":"esp32s3","flash_size_bytes":16777216,"psram_size_bytes":8388608,"self_test":{"flash":"ok","psram":"ok","display_bus":"ok"}}
 CLAWMATE_QUERY {"type":"SERVICE_STATUS","nonce":"91a2..."}
 CLAWMATE_EVT {"type":"SERVICE_STATUS","protocol":2,"nonce":"91a2...","ready":true,"wifi":"ready","hub":"ready"}
 ```
@@ -790,8 +807,8 @@ CancelJob(jobId)
 WatchJob(jobId) -> JobEvent stream
 GetJobSnapshot(jobId) -> {generation, sequence, state, progress, terminal}
 WatchJobLogs(jobId, afterSequence, filter) -> LogEvent stream
-GetJobLogPage(jobId, beforeSequence, limit, filter) -> LogEvent[]
-RetryJob(jobId) -> jobId
+GetJobLogPageFiltered(jobId, afterSequence, limit, {severity, stage, component, code}) -> {events, next}
+RetryJob(requestId, originalJobId, port, boardId, packageRef, confirmationRef) -> jobId
 VerifyBoot(jobId) -> BootVerification
 ExportDiagnostics(jobId, destination)
 ExportJobLogs(jobId, destination, filter)
@@ -806,9 +823,9 @@ RestoreBackup(deviceId, backupId, authorization) -> FlashPlan
 
 所有 Watch 流都采用“snapshot + 单调 sequence 的增量事件”模型：客户端先取得 snapshot 的 `generation/sequence`，再订阅 `sequence+1`；重连或检测到缺口时丢弃本地推断状态并重新取 snapshot。事件至少包含 `eventId`、`generation`、`sequence`、`occurredAt` 和完整状态转换原因；同一 eventId 重复投递必须幂等。终态持久化且可查询，前端刷新、WebView 重载或 Wails 绑定短暂断开不能把 Succeeded/RecoveryRequired 退回处理中。
 
-日志流与状态流使用独立 sequence 空间和背压策略。`WatchJobLogs` 只用于实时尾随，客户端断线或落后时通过 `GetJobLogPage` 从落盘日志分页补齐；后端不能为慢前端无限缓存。filter 只能选择 severity/stage/component/code 和是否包含 raw 文本，不能由前端构造任意文件路径或查询表达式。日志读取 API 仅允许当前用户访问自己的 job，并对单次页大小、查询频率和返回字段设上限。
+日志流与状态流使用独立 sequence 空间和背压策略。`WatchJobLogs` 只用于实时尾随，客户端断线或落后时通过 `GetJobLogPageFiltered` 从落盘日志分页补齐；后端不能为慢前端无限缓存。当前桌面实现的 filter 只允许 `severity`、`stage`、`component` 和 `code` 四个结构化字段：severity 必须是固定枚举，其他值最长 128 字节且拒绝换行/NUL；`code` 为精确错误码匹配，不能由前端构造任意文件路径、正则或查询表达式。raw 串口/sidecar 文本不通过该 API 返回。筛选时 `next` 仍推进到最后扫描的持久化 sequence，避免无匹配记录造成重复轮询。单次页大小固定上限 500；桌面端仅能读取经严格 job ID 校验后映射出的本机 job 目录。
 
-`StartJob(planId, planHash)` 使用 planId 作为幂等键：重复调用返回同一 jobId；一个 plan 最多创建一个写 job。`CancelJob`、`RetryJob` 和 `VerifyBoot` 同样要求 request ID，并定义“请求已接受但响应丢失”后的安全重试语义。后端状态机是唯一事实来源，前端事件只负责展示，不能自行推进阶段或合成成功。
+`StartJob(planId, planHash)` 使用 planId 作为幂等键：重复调用返回同一 jobId；一个 plan 最多创建一个写 job。`CancelJob`、`RetryJob` 和 `VerifyBoot` 同样要求 request ID，并定义“请求已接受但响应丢失”后的安全重试语义。`RetryJob` 不是断点续写：它仅接受持久化状态为 `failed` 且没有 `writing`/`recovery_required` journal 证据的原任务，并要求重新提供未过期的已验证包能力和物理板型确认；后端重新执行全部 preflight，并创建新 jobId/attemptId。若原任务为 `RecoveryRequired`，已有完整逐镜像 ROM 读回证据时只能调用不写 Flash 的 `VerifyBoot`；否则只能执行显式的完整 ROM 恢复。后端状态机是唯一事实来源，前端事件只负责展示，不能自行推进阶段或合成成功。
 
 ### 15.2 Flash Engine 接口
 

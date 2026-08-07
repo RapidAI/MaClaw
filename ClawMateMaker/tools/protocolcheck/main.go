@@ -32,11 +32,38 @@ func main() {
 	if len(match) != 2 || match[1] != fmt.Sprint(*wantProtocol) {
 		fail("firmware identity protocol is not %d", *wantProtocol)
 	}
-	if !strings.Contains(string(source), `"firmware_target_board_id"`) || !strings.Contains(string(source), `"release_sequence"`) || !strings.Contains(string(source), `"app_elf_sha256"`) {
-		fail("firmware identity source is missing required protocol-v2 fields")
+	for _, field := range []string{
+		`"firmware_target_board_id"`,
+		`"layout_id"`,
+		`"release_sequence"`,
+		`"firmware_version"`,
+		`"project_name"`,
+		`"app_version"`,
+		`"app_elf_sha256"`,
+		`"chip"`,
+		`"flash_size_bytes"`,
+		`"psram_size_bytes"`,
+		`"self_test"`,
+		`"ready"`,
+	} {
+		if !strings.Contains(string(source), field) {
+			fail("firmware identity source is missing required protocol-v2 field %s", field)
+		}
+	}
+	if !strings.Contains(string(source), `esp_app_get_elf_sha256`) {
+		fail("firmware identity source does not derive app_elf_sha256 from ESP-IDF app metadata")
+	}
+	if !strings.Contains(string(source), `strcmp(type, "SERVICE_STATUS")`) {
+		fail("firmware identity source does not keep local BOOT_STATUS readiness separate from SERVICE_STATUS")
+	}
+	if !strings.Contains(string(source), `"local_ready"`) || !strings.Contains(string(source), `"flash"`) || !strings.Contains(string(source), `"psram"`) {
+		fail("firmware identity source is missing required local self-test evidence")
 	}
 	if !strings.Contains(string(source), `strcmp(type, "IDENTIFY")`) || !strings.Contains(string(source), `strcmp(type, "BOOT_STATUS")`) {
 		fail("firmware identity source is missing query-bound IDENTIFY or BOOT_STATUS handling")
+	}
+	if !strings.Contains(string(source), `"firmware_version", CONFIG_MACLAW_RELEASE_SEQUENCE`) {
+		fail("firmware_version is not bound to CONFIG_MACLAW_RELEASE_SEQUENCE")
 	}
 	if err := requireSDKConfig(*sdkconfigHeader, "CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG"); err != nil {
 		fail("identity transport unavailable: %v", err)

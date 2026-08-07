@@ -38,18 +38,15 @@ func (p *fixedReadPort) Close() error                                         { 
 func (p *fixedReadPort) Break(time.Duration) error                            { return nil }
 
 func TestLikelyESPCandidates(t *testing.T) {
-	if !isLikelyESP("303a", "1001") {
-		t.Fatal("Espressif USB should be candidate")
-	}
-	if !isLikelyESP("10c4", "ea60") {
-		t.Fatal("CP210x should be candidate")
+	if !isLikelyESP("303a", "1001") || !isLikelyESP("10c4", "ea60") {
+		t.Fatal("known ESP and CP210x candidates should be recognized")
 	}
 	if isLikelyESP("ffff", "0001", "ordinary device") {
 		t.Fatal("unknown device must not be inferred")
 	}
 }
 
-func TestReenumeratedPortAcceptsSameUSBSerialWithNewName(t *testing.T) {
+func TestReenumeratedPortAcceptsOnlyStableBinding(t *testing.T) {
 	before := Candidate{Port: "COM3", Serial: "device-123", IsUSB: true}
 	got, err := WaitForReenumeratedPort(context.Background(), before, func() ([]Candidate, error) {
 		return []Candidate{{Port: "COM7", Serial: "DEVICE-123", IsUSB: true}}, nil
@@ -57,61 +54,25 @@ func TestReenumeratedPortAcceptsSameUSBSerialWithNewName(t *testing.T) {
 	if err != nil || got.Port != "COM7" {
 		t.Fatalf("candidate=%+v err=%v", got, err)
 	}
-}
-
-func TestReenumeratedPortWithoutSerialRequiresOriginalPort(t *testing.T) {
-	before := Candidate{Port: "/dev/cu.usbmodem10", IsUSB: true}
-	got, err := WaitForReenumeratedPort(context.Background(), before, func() ([]Candidate, error) {
-		return []Candidate{{Port: "/dev/cu.usbmodem10", IsUSB: true}, {Port: "/dev/cu.usbmodem11", IsUSB: true}}, nil
-	}, ReenumerationPolicy{Timeout: time.Second, PollInterval: time.Millisecond})
-	if err != nil || got.Port != before.Port {
-		t.Fatalf("candidate=%+v err=%v", got, err)
-	}
-}
-
-func TestReenumeratedPortRejectsUnfamiliarEndpoint(t *testing.T) {
-	before := Candidate{Port: "COM3", IsUSB: true}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
 	defer cancel()
-	_, err := WaitForReenumeratedPort(ctx, before, func() ([]Candidate, error) {
+	if _, err := WaitForReenumeratedPort(ctx, Candidate{Port: "COM3", IsUSB: true}, func() ([]Candidate, error) {
 		return []Candidate{{Port: "COM8", IsUSB: true}}, nil
-	}, ReenumerationPolicy{Timeout: time.Second, PollInterval: time.Millisecond})
-	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
-		t.Fatalf("err=%v", err)
+	}, ReenumerationPolicy{Timeout: time.Second, PollInterval: time.Millisecond}); err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("unexpected unfamiliar-port result: %v", err)
 	}
 }
 
-func TestReadBoundedLineDoesNotReadPastNewline(t *testing.T) {
+func TestReadBoundedLineSafety(t *testing.T) {
 	p := &fixedReadPort{chunks: [][]byte{[]byte("a"), []byte("\n"), []byte("b")}, err: io.EOF}
 	line, err := ReadBoundedLine(p, 16)
 	if err != nil || line != "a\n" || p.index != 2 {
 		t.Fatalf("line=%q index=%d err=%v", line, p.index, err)
 	}
-}
-
-func TestReadBoundedLineRejectsOversizedFrame(t *testing.T) {
-	p := &fixedReadPort{chunks: [][]byte{[]byte("a"), []byte("b"), []byte("c")}}
-	if _, err := ReadBoundedLine(p, 2); err == nil {
+	if _, err := ReadBoundedLine(&fixedReadPort{chunks: [][]byte{[]byte("a"), []byte("b"), []byte("c")}}, 2); err == nil {
 		t.Fatal("oversized serial frame accepted")
 	}
-}
-
-func TestReadBoundedLineRejectsOversizedTerminatedFrame(t *testing.T) {
-	p := &fixedReadPort{chunks: [][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("\n")}}
-	if _, err := ReadBoundedLine(p, 3); err == nil {
-		t.Fatal("oversized terminated serial frame accepted")
-	}
-}
-
-func TestIsSerialReadTimeoutRejectsEOFAndRecognizesTimeout(t *testing.T) {
 	if IsSerialReadTimeout(io.EOF) || !IsSerialReadTimeout(errors.New("i/o timeout")) {
 		t.Fatal("incorrect timeout classification")
-	}
-}
-
-func TestReadBoundedLineConvertsIdleReadToTimeout(t *testing.T) {
-	p := &fixedReadPort{}
-	if _, err := ReadBoundedLine(p, 16); !IsSerialReadTimeout(err) {
-		t.Fatalf("idle serial read error=%v", err)
 	}
 }

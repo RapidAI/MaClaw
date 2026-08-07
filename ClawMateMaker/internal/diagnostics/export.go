@@ -9,13 +9,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"clawmatemaker/internal/logging"
 )
 
 var allowed = []string{"summary.json", "events.jsonl", "serial.log", "sidecar.log", "log-meta.json", "journal.json"}
+
+const (
+	maxDiagnosticFileBytes   int64 = 5 * 1024 * 1024
+	maxDiagnosticBundleBytes       = 20 * 1024 * 1024
+)
 
 type Bundle struct {
 	Path   string `json:"path"`
@@ -30,7 +34,14 @@ func ExportJob(logRoot, jobID, destinationDir string) (Bundle, error) {
 	if info, err := os.Stat(destinationDir); err != nil || !info.IsDir() {
 		return Bundle{}, fmt.Errorf("export directory is unavailable")
 	}
-	source := filepath.Join(logRoot, jobID)
+	root, err := filepath.Abs(logRoot)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("resolve log root: %w", err)
+	}
+	source := filepath.Join(root, jobID)
+	if filepath.Dir(source) != root {
+		return Bundle{}, fmt.Errorf("invalid job log path")
+	}
 	if info, err := os.Stat(source); err != nil || !info.IsDir() {
 		return Bundle{}, fmt.Errorf("job log does not exist")
 	}
@@ -40,9 +51,17 @@ func ExportJob(logRoot, jobID, destinationDir string) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
+	completed := false
+	defer func() {
+		if !completed {
+			_ = os.Remove(temp)
+		}
+	}()
 	z := zip.NewWriter(f)
+	var written int64
 	for _, name := range allowed {
-		data, err := os.ReadFile(filepath.Join(source, name))
+		path := filepath.Join(source, name)
+		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {
 			continue
 		}
@@ -51,17 +70,38 @@ func ExportJob(logRoot, jobID, destinationDir string) (Bundle, error) {
 			_ = f.Close()
 			return Bundle{}, err
 		}
+		if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxDiagnosticFileBytes {
+			_ = z.Close()
+			_ = f.Close()
+			return Bundle{}, fmt.Errorf("diagnostic file %s is not an allowed regular file", name)
+		}
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			_ = z.Close()
+			_ = f.Close()
+			return Bundle{}, err
+		}
+		redacted := []byte(logging.Redact(string(data)))
+		if written+int64(len(redacted)) > maxDiagnosticBundleBytes {
+			_ = z.Close()
+			_ = f.Close()
+			return Bundle{}, fmt.Errorf("diagnostic bundle exceeds size limit")
+		}
 		entry, err := z.Create(name)
 		if err != nil {
 			_ = z.Close()
 			_ = f.Close()
 			return Bundle{}, err
 		}
-		if _, err := io.WriteString(entry, logging.Redact(string(data))); err != nil {
+		if _, err := entry.Write(redacted); err != nil {
 			_ = z.Close()
 			_ = f.Close()
 			return Bundle{}, err
 		}
+		written += int64(len(redacted))
 	}
 	if err := z.Close(); err != nil {
 		_ = f.Close()
@@ -73,13 +113,22 @@ func ExportJob(logRoot, jobID, destinationDir string) (Bundle, error) {
 	if err := os.Rename(temp, final); err != nil {
 		return Bundle{}, err
 	}
-	data, err := os.ReadFile(final)
+	completed = true
+	info, err := os.Stat(final)
 	if err != nil {
 		return Bundle{}, err
 	}
-	sum := sha256.Sum256(data)
-	return Bundle{Path: final, SHA256: "sha256:" + hex.EncodeToString(sum[:]), Bytes: int64(len(data))}, nil
+	archive, err := os.Open(final)
+	if err != nil {
+		return Bundle{}, err
+	}
+	defer archive.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, archive); err != nil {
+		return Bundle{}, err
+	}
+	return Bundle{Path: final, SHA256: "sha256:" + hex.EncodeToString(h.Sum(nil)), Bytes: info.Size()}, nil
 }
 func safeID(v string) bool {
-	return v != "" && !strings.ContainsAny(v, `\\/:`) && v != "." && v != ".."
+	return logging.SafeJobID(v)
 }

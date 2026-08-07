@@ -6,6 +6,9 @@
 #include <string.h>
 
 #include "driver/gpio.h"
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+#include "driver/ledc.h"
+#endif
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
 #include "esp_adc/adc_oneshot.h"
 #endif
@@ -96,6 +99,17 @@ static const nv3023_lcd_init_cmd_t s_fangtang_nv3023_init_cmds[] = {
 #define LCD_RST GPIO_NUM_45
 #define LCD_CS GPIO_NUM_41
 #define LCD_BACKLIGHT GPIO_NUM_42
+/* This panel's backlight is wired to an LEDC-capable GPIO.  Full DC drive is
+ * uncomfortably bright in normal indoor use, so retain a modest, fixed PWM
+ * headroom for the Bread Compact profile.  Fangtang keeps its original direct
+ * drive below because its smaller panel has different optical characteristics. */
+#define BREAD_BACKLIGHT_LEDC_TIMER LEDC_TIMER_0
+#define BREAD_BACKLIGHT_LEDC_CHANNEL LEDC_CHANNEL_0
+#define BREAD_BACKLIGHT_LEDC_RESOLUTION LEDC_TIMER_10_BIT
+// Bread uses 65% as its normal indoor brightness.  This is one fixed step
+// below the previous 80% setting while retaining enough headroom for legible
+// standby content in ordinary room lighting.
+#define BREAD_BACKLIGHT_DUTY 665u
 
 #define BUTTON_BOOT GPIO_NUM_0
 #define BUTTON_ACTIVATE GPIO_NUM_0
@@ -185,6 +199,12 @@ static const char *const s_wake_word_phonetics[] = {
 #define REMOTE_PET_DEFAULT_KEYFRAME_MS 450
 #define IDLE_PET_SLEEP_TIMEOUT_US (30LL * 60 * 1000 * 1000)
 #define AMBIENT_WEATHER_TEXT_Y 66
+// Weather is a primary standby datum on Bread Compact. Use the native 24px
+// CJK raster so it remains legible at normal viewing distance. The formatter
+// contracts only the non-essential condition text, preserving the city and
+// temperature within the 240px panel.
+#define AMBIENT_WEATHER_SCALE_NUM 1
+#define AMBIENT_WEATHER_SCALE_DEN 1
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
 // Fangtang has only two compact status rows. Give the selected pet every row
 // below them on the 240x240 viewport; a square 256px source becomes 178x178.
@@ -277,7 +297,9 @@ static bool s_alarm_scheduled;
 static bool s_wifi_connected;
 static bool s_gateway_ready;
 static bool s_network_transport_cellular;
-static unsigned s_output_volume = 70;
+// Direct-I2S has no codec gain register. This software gain is shared by Bread and Fangtang;
+// GUI updates can arrive while audio is active.
+static volatile unsigned s_output_volume = 70;
 
 #define RESPONSE_TEXT_CAPACITY 2048
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
@@ -333,7 +355,10 @@ static void draw_text24_centered(int y, const char *text,
                                  uint16_t fg, uint16_t bg, int max_glyphs);
 static void draw_text24_scaled_centered(int y, const char *text,
                                         uint16_t fg, uint16_t bg, int max_glyphs,
-                                        int scale);
+                                        int scale_num, int scale_den);
+static void format_ambient_weather_line(char *out, size_t out_size,
+                                        const char *city, const char *summary,
+                                        int temperature_c, bool stale);
 static void fill_rect_solid(int x, int y, int width, int height, uint16_t fill);
 static bool draw_remote_pet_frame(uint16_t bg);
 static void show_state_screen(const char *state);
@@ -448,7 +473,15 @@ static void wake_display_for_draw_locked(void) {
     // even when its pixels happen to match the last pre-sleep ambient frame.
     s_front_frame_valid = false;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, true));
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+#else
+    ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_set_duty(LEDC_LOW_SPEED_MODE,
+                                                BREAD_BACKLIGHT_LEDC_CHANNEL,
+                                                BREAD_BACKLIGHT_DUTY));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_update_duty(LEDC_LOW_SPEED_MODE,
+                                                   BREAD_BACKLIGHT_LEDC_CHANNEL));
+#endif
 }
 
 static void enter_ambient_awake_locked(void) {
@@ -731,7 +764,7 @@ static bool dynamic_glyph_copy(uint32_t codepoint, uint8_t bitmap[DYNAMIC_GLYPH_
 }
 
 static bool glyph24_pixel(uint32_t codepoint, const uint32_t *rows,
-                          const uint8_t *dynamic, int row, int col) {
+                           const uint8_t *dynamic, int row, int col) {
 	int source_row = row;
 	// Simplified-Chinese horizontal typography places comma/period at the lower
 	// left of the ideographic cell. The host font rasterizer can produce a
@@ -741,12 +774,21 @@ static bool glyph24_pixel(uint32_t codepoint, const uint32_t *rows,
 	if (source_row < 0 || source_row >= 24) return false;
     if (rows) return (rows[source_row] & (1u << (23 - col))) != 0;
     if (dynamic) return (dynamic[source_row * 3 + col / 8] & (1u << (7 - col % 8))) != 0;
+    // Keep the temperature unit readable without needing a downloaded glyph.
+    // The compact ring sits above the baseline so the following C forms °C.
+    if (codepoint == 0x00B0) {
+        int dx = col - 4;
+        int dy = source_row - 3;
+        int distance = dx * dx + dy * dy;
+        return distance >= 6 && distance <= 13;
+    }
     return codepoint < 0x80 && row < 14 && col < 10 &&
            (glyph5x7((char)codepoint)[col / 2] & (1u << (row / 2)));
 }
 
 static int text24_advance(uint32_t codepoint) {
     if (codepoint == ' ') return 7;
+    if (codepoint == 0x00B0) return 10;
     return codepoint < 0x80 ? 11 : 25;
 }
 
@@ -1089,16 +1131,142 @@ static void draw_text24_centered(int y, const char *text, uint16_t fg, uint16_t 
     draw_text24_clipped((LCD_WIDTH - width) / 2, y, text, fg, bg, max_glyphs);
 }
 
-// The weather row is deliberately denser than response copy. Scaling the
-// existing 24px CJK raster to 3/4 preserves all dynamic city/weather glyphs
-// without adding another font asset, while allowing four-character locations
-// to coexist with weather and temperature on Bread Compact's 240px panel.
+// Weather providers commonly return municipality names such as "北京市",
+// while the rest of the device UI identifies the same place as "北京".  Keep
+// that presentation rule in the display adapter. Do not strip every final
+// "市": labels such as "东莞市" are real city names and must remain intact.
+static void copy_ambient_city_label(char *out, size_t out_size, const char *location) {
+    if (!out || out_size == 0) return;
+    strlcpy(out, location ? location : "", out_size);
+    size_t len = strlen(out);
+    // Some weather providers include a trailing space in the administrative
+    // label. Trim it before recognizing the suffix, otherwise "北京市 " would
+    // bypass the presentation normalization below.
+    while (len > 0 && (out[len - 1] == ' ' || out[len - 1] == '\t' ||
+                       out[len - 1] == '\r' || out[len - 1] == '\n')) {
+        out[--len] = '\0';
+    }
+    static const struct {
+        const char *provider_label;
+        const char *display_label;
+    } municipalities[] = {
+        { "\xE5\x8C\x97\xE4\xBA\xAC\xE5\xB8\x82", "\xE5\x8C\x97\xE4\xBA\xAC" }, // 北京市 -> 北京
+        { "\xE4\xB8\x8A\xE6\xB5\xB7\xE5\xB8\x82", "\xE4\xB8\x8A\xE6\xB5\xB7" }, // 上海市 -> 上海
+        { "\xE5\xA4\xA9\xE6\xB4\xA5\xE5\xB8\x82", "\xE5\xA4\xA9\xE6\xB4\xA5" }, // 天津市 -> 天津
+        { "\xE9\x87\x8D\xE5\xBA\x86\xE5\xB8\x82", "\xE9\x87\x8D\xE5\xBA\x86" }, // 重庆市 -> 重庆
+    };
+    for (size_t i = 0; i < sizeof(municipalities) / sizeof(municipalities[0]); ++i) {
+        if (!strcmp(out, municipalities[i].provider_label)) {
+            strlcpy(out, municipalities[i].display_label, out_size);
+            break;
+        }
+
+        // Providers may append a district, country, or another administrative
+        // suffix after a municipality (for example "北京市市辖区" or
+        // "北京市朝阳区"). The standby slot is a city label, so any value whose
+        // leading component is one of the four municipality names normalizes
+        // to its familiar short form. Do not apply this to ordinary
+        // prefecture-level city names such as "东莞市".
+        const size_t provider_len = strlen(municipalities[i].provider_label);
+        if (strncmp(out, municipalities[i].provider_label, provider_len) != 0) {
+            continue;
+        }
+        strlcpy(out, municipalities[i].display_label, out_size);
+        break;
+    }
+
+    /* A terminal 市 is part of the official/common label of many ordinary
+     * cities (for example 东莞市).  Only the explicitly listed municipalities
+     * above have a compact standby presentation rule; all other provider
+     * labels remain byte-for-byte intact after whitespace trimming.
+     *
+     * Every weather presentation, including the "天气同步中" state, uses this
+     * helper.  Bound the label here rather than only in the completed-weather
+     * formatter so an administrative provider label can never consume more
+     * than four CJK glyph slots on the 240px standby panel. */
+    const char *cursor = out;
+    for (int glyphs = 0; *cursor && glyphs < 4; ++glyphs) {
+        (void)utf8_next(&cursor);
+    }
+    out[cursor - out] = '\0';
+}
+
+static int text24_scaled_width(const char *text, int max_glyphs,
+                               int scale_num, int scale_den) {
+    int width = 0;
+    const char *cursor = text ? text : "";
+    for (int count = 0; *cursor && count < max_glyphs; ++count) {
+        width += (text24_advance(utf8_next(&cursor)) * scale_num + scale_den / 2) /
+                 scale_den;
+    }
+    return width;
+}
+
+static size_t utf8_prefix_bytes(const char *text, int glyphs) {
+    const char *cursor = text ? text : "";
+    const char *start = cursor;
+    for (int count = 0; *cursor && count < glyphs; ++count) {
+        (void)utf8_next(&cursor);
+    }
+    return (size_t)(cursor - start);
+}
+
+// Keep the temperature as the non-negotiable tail of the weather row.  A
+// provider can return a long compound condition (for example "小雨转中雨"),
+// so a fixed whole-line glyph limit can otherwise cut the temperature off even
+// though the compact renderer has room for a shorter condition label.
+static void format_ambient_weather_line(char *out, size_t out_size,
+                                        const char *city, const char *summary,
+                                        int temperature_c, bool stale) {
+    if (!out || out_size == 0) return;
+    const char *safe_city = city ? city : "";
+    // The standby weather slot reserves room for the condition and the
+    // non-negotiable temperature.  A provider city label can contain district
+    // or administrative suffixes, so render at most four Unicode glyphs here
+    // even after municipality normalization (for example, \"北京市朝阳区\").
+    char city_label[24];
+    const size_t city_bytes = utf8_prefix_bytes(safe_city, 4);
+    snprintf(city_label, sizeof(city_label), "%.*s", (int)city_bytes, safe_city);
+    safe_city = city_label;
+    const char *safe_summary = summary ? summary : "";
+    const char *stale_marker = stale ? " *" : "";
+    const int summary_glyphs = (int)strlen(safe_summary); // upper bound for UTF-8 glyph count
+
+    for (int visible = summary_glyphs; visible >= 0; --visible) {
+        const size_t summary_bytes = utf8_prefix_bytes(safe_summary, visible);
+        snprintf(out, out_size, "%s%s%.*s %d\xC2\xB0" "C%s",
+                 safe_city, safe_city[0] ? " " : "", (int)summary_bytes,
+                 safe_summary, temperature_c, stale_marker);
+        if (text24_scaled_width(out, 64, AMBIENT_WEATHER_SCALE_NUM,
+                                AMBIENT_WEATHER_SCALE_DEN) <= LCD_WIDTH - 4) {
+            return;
+        }
+    }
+
+    // A pathological location must still not hide the temperature.
+    snprintf(out, out_size, "%d\xC2\xB0" "C%s", temperature_c, stale_marker);
+}
+
+// The weather row uses the native 24px CJK raster. Long provider conditions
+// contract before the city or temperature is omitted, keeping the 240px Bread
+// panel's right edge safe.
 static void draw_text24_scaled_centered(int y, const char *text, uint16_t fg,
-                                        uint16_t bg, int max_glyphs, int scale) {
-    if (!text || !*text || scale < 1 || scale > 4 || y < 0 || y + 24 * scale / 4 > LCD_HEIGHT) return;
-    const int source_width = text24_width(text, max_glyphs);
-    const int width = (source_width * scale + 3) / 4;
-    const int height = 24 * scale / 4;
+                                        uint16_t bg, int max_glyphs,
+                                        int scale_num, int scale_den) {
+    if (!text || !*text || scale_num < 1 || scale_den < 1 ||
+        scale_num > scale_den || y < 0) return;
+    const int height = (24 * scale_num + scale_den / 2) / scale_den;
+    if (height <= 0 || y + height > LCD_HEIGHT) return;
+    // Sum the rounded scaled advances rather than scaling the original total.
+    // At this fractional scale the latter underestimates a four-CJK weather
+    // line by a few pixels, so the final temperature glyph can be clipped by
+    // the DMA bitmap.
+    int width = 0;
+    const char *measure = text;
+    for (int count = 0; *measure && count < max_glyphs; ++count) {
+        width += (text24_advance(utf8_next(&measure)) * scale_num + scale_den / 2) /
+                 scale_den;
+    }
     if (width <= 0 || height <= 0 || width > LCD_WIDTH) return;
     uint16_t *bitmap = heap_caps_malloc((size_t)width * height * sizeof(uint16_t), MALLOC_CAP_DMA);
     if (!bitmap) return;
@@ -1113,17 +1281,17 @@ static void draw_text24_scaled_centered(int y, const char *text, uint16_t fg,
             (dynamic_glyph_copy(cp, dynamic_bitmap) || full_cjk24_copy(cp, dynamic_bitmap))
                 ? dynamic_bitmap : NULL;
         const int advance = text24_advance(cp);
-        const int glyph_width = (advance * scale + 3) / 4;
+        const int glyph_width = (advance * scale_num + scale_den / 2) / scale_den;
         for (int dy = 0; dy < height; ++dy) {
-            const int source_y = dy * 4 / scale;
+            const int source_y = dy * scale_den / scale_num;
             for (int dx = 0; dx < glyph_width; ++dx) {
-                const int source_x = dx * 4 / scale;
+                const int source_x = dx * scale_den / scale_num;
                 if (source_x >= 24 || !glyph24_pixel(cp, rows, dynamic, source_y, source_x)) continue;
-                const int px = (pen * scale + 3) / 4 + dx;
+                const int px = pen + dx;
                 if (px >= 0 && px < width) bitmap[(size_t)dy * width + px] = fg;
             }
         }
-        pen += advance;
+        pen += glyph_width;
     }
     const int x = (LCD_WIDTH - width) / 2;
     draw_bitmap_sync(x, y, x + width, y + height, bitmap);
@@ -2255,19 +2423,23 @@ static void show_state_screen(const char *state) {
         } else {
             draw_text24_centered(38, calendar, calendar_color, bg, 10);
         }
+        char city_label[sizeof(s_ambient_location)];
+        copy_ambient_city_label(city_label, sizeof(city_label), s_ambient_location);
         char weather[96];
         if (s_ambient_weather_valid) {
-            snprintf(weather, sizeof(weather), "%s %s %dC%s", s_ambient_location,
-                     s_ambient_weather, s_ambient_temperature,
-                     s_ambient_weather_stale ? " *" : "");
+            format_ambient_weather_line(weather, sizeof(weather), city_label,
+                                        s_ambient_weather, s_ambient_temperature,
+                                        s_ambient_weather_stale);
         } else {
-            snprintf(weather, sizeof(weather), "%s 天气同步中", s_ambient_location);
+            snprintf(weather, sizeof(weather), "%s 天气同步中", city_label);
         }
-        // Weather is informational, so use the compact 18px-equivalent style
-        // and retain all 13 glyphs. This keeps four-character city names,
-        // weather and temperature visible instead of truncating the latter.
+        // Weather uses the native 24px standby style. The line formatter
+        // preserves city and temperature before shortening a long weather
+        // description.
         draw_text24_scaled_centered(AMBIENT_WEATHER_TEXT_Y, weather,
-                                    color(121, 210, 224), bg, 13, 3);
+                                    color(121, 210, 224), bg, 64,
+                                    AMBIENT_WEATHER_SCALE_NUM,
+                                    AMBIENT_WEATHER_SCALE_DEN);
 
         // Everything below the three compact information rows belongs to the
         // pet. There is deliberately no ready/tagline row or bottom status
@@ -2442,12 +2614,6 @@ static void remote_pet_animation_task(void *arg) {
         }
 #endif
         bool ambient = !strcmp(s_state, "idle") || !strcmp(s_state, "quiet");
-        if (!s_display_sleeping && s_idle_pet_sleep_expires_us > 0 && ambient &&
-            !s_foreground_surface && !s_recording_active && !s_response_active &&
-            !s_alarm_visual_active &&
-            esp_timer_get_time() >= s_idle_pet_sleep_expires_us) {
-            (void)board_port_enter_display_off();
-        }
         if (s_remote_pet_frame_count > 1 && s_remote_pet_frame_ms && ambient &&
             !s_display_sleeping && !s_foreground_surface && !s_recording_active &&
             !s_alarm_visual_active) {
@@ -2634,6 +2800,13 @@ static esp_err_t read_mono(int16_t *mono, size_t capacity, size_t *read, uint16_
 }
 
 static uint16_t command_capture_mean_level(const int16_t *samples, size_t count);
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G && \
+    defined(MACLAW_FANGTANG_EXTERNAL_BOOT_SELECTOR)
+/* Implemented by the selected Fangtang profile translation unit.  It runs
+ * before this legacy scanner exists, so GPIO0 never has concurrent gesture
+ * owners during the startup transport-selection window. */
+void fangtang_board_run_boot_network_selector(void);
+#endif
 
 static void button_task(void *arg) {
     (void)arg;
@@ -2788,9 +2961,30 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     if (!s_lcd_mutex) return ESP_ERR_NO_MEM;
     s_lcd_transfer_done = xSemaphoreCreateBinary();
     if (!s_lcd_transfer_done) return ESP_ERR_NO_MEM;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     gpio_config_t backlight = {.pin_bit_mask = 1ULL << LCD_BACKLIGHT, .mode = GPIO_MODE_OUTPUT};
     ESP_ERROR_CHECK(gpio_config(&backlight));
     ESP_ERROR_CHECK(gpio_set_level(LCD_BACKLIGHT, 0));
+#else
+    ledc_timer_config_t backlight_timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = BREAD_BACKLIGHT_LEDC_RESOLUTION,
+        .timer_num = BREAD_BACKLIGHT_LEDC_TIMER,
+        .freq_hz = 5000,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ledc_channel_config_t backlight_channel = {
+        .gpio_num = LCD_BACKLIGHT,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = BREAD_BACKLIGHT_LEDC_CHANNEL,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = BREAD_BACKLIGHT_LEDC_TIMER,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&backlight_timer));
+    ESP_ERROR_CHECK(ledc_channel_config(&backlight_channel));
+#endif
     spi_bus_config_t bus = {.mosi_io_num = LCD_MOSI, .miso_io_num = GPIO_NUM_NC,
                             .sclk_io_num = LCD_CLK, .quadwp_io_num = GPIO_NUM_NC,
                             .quadhd_io_num = GPIO_NUM_NC,
@@ -2847,7 +3041,15 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     ESP_LOGI(TAG, "NV3023 viewport ready: 240x240, GRAM Y=%d..%d",
              LCD_Y_OFFSET, LCD_Y_OFFSET + LCD_HEIGHT - 1);
 #endif
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     ESP_ERROR_CHECK(gpio_set_level(LCD_BACKLIGHT, 1));
+#else
+    ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE,
+                                  BREAD_BACKLIGHT_LEDC_CHANNEL,
+                                  BREAD_BACKLIGHT_DUTY));
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE,
+                                     BREAD_BACKLIGHT_LEDC_CHANNEL));
+#endif
     for (size_t i = 0; i < 2; ++i) {
         s_framebuffers[i] = heap_caps_malloc(LCD_FRAME_BYTES,
                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -2897,6 +3099,10 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
     ESP_RETURN_ON_ERROR(fangtang_power_init(), TAG, "power monitor init");
 #endif
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G && \
+    defined(MACLAW_FANGTANG_EXTERNAL_BOOT_SELECTOR)
+    fangtang_board_run_boot_network_selector();
+#endif
     if (xTaskCreate(button_task, "bread_button", 3072, NULL, 4, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
@@ -2914,6 +3120,8 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     return ESP_OK;
 }
 
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G || \
+    !defined(MACLAW_FANGTANG_EXTERNAL_BOOT_SELECTOR)
 bool board_port_wait_for_boot_network_toggle(uint32_t window_ms) {
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
     s_boot_network_toggle_requested = false;
@@ -2935,6 +3143,46 @@ bool board_port_wait_for_boot_network_toggle(uint32_t window_ms) {
     return false;
 #endif
 }
+#endif
+
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G || \
+    !defined(MACLAW_FANGTANG_EXTERNAL_CELLULAR_PREPARATION)
+esp_err_t board_port_prepare_cellular_transport(void) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    if (CONFIG_MACLAW_FANGTANG_MODEM_UART_TX_GPIO < 0 ||
+        CONFIG_MACLAW_FANGTANG_MODEM_UART_RX_GPIO < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (CONFIG_MACLAW_FANGTANG_MODEM_GUARD_GPIO >= 0) {
+        gpio_config_t guard = {
+            .pin_bit_mask = 1ULL << CONFIG_MACLAW_FANGTANG_MODEM_GUARD_GPIO,
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        };
+        esp_err_t err = gpio_config(&guard);
+        if (err != ESP_OK) return err;
+        err = gpio_set_level(CONFIG_MACLAW_FANGTANG_MODEM_GUARD_GPIO,
+                             CONFIG_MACLAW_FANGTANG_MODEM_GUARD_LEVEL);
+        if (err != ESP_OK) return err;
+    }
+    if (CONFIG_MACLAW_FANGTANG_MODEM_POWER_GPIO >= 0) {
+        gpio_config_t power = {
+            .pin_bit_mask = 1ULL << CONFIG_MACLAW_FANGTANG_MODEM_POWER_GPIO,
+            .mode = GPIO_MODE_OUTPUT,
+        };
+        esp_err_t err = gpio_config(&power);
+        if (err != ESP_OK) return err;
+        err = gpio_set_level(CONFIG_MACLAW_FANGTANG_MODEM_POWER_GPIO,
+                             CONFIG_MACLAW_FANGTANG_MODEM_POWER_ACTIVE_LEVEL);
+        if (err != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    return ESP_OK;
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+#endif
 
 void board_port_show_startup_screen(void) {
     if (!s_panel || !s_lcd_mutex) return;
@@ -2951,17 +3199,19 @@ void board_port_show_startup_screen(void) {
 }
 
 esp_err_t board_port_adjust_output_volume(int delta_percent, unsigned *out_percent) {
-    int next = (int)s_output_volume + delta_percent;
+    unsigned current = __atomic_load_n(&s_output_volume, __ATOMIC_RELAXED);
+    int next = (int)current + delta_percent;
     if (next < 0) next = 0;
     if (next > 100) next = 100;
-    s_output_volume = (unsigned)next;
-    if (out_percent) *out_percent = s_output_volume;
-    return ESP_OK;
+    esp_err_t err = board_port_set_output_volume((unsigned)next);
+    if (err == ESP_OK && out_percent) *out_percent = (unsigned)next;
+    return err;
 }
 
 esp_err_t board_port_set_output_volume(unsigned percent) {
     if (percent > 100) return ESP_ERR_INVALID_ARG;
-    s_output_volume = percent;
+    __atomic_store_n(&s_output_volume, percent, __ATOMIC_RELAXED);
+    ESP_LOGI(TAG, "direct-I2S output volume applied: %u%%", percent);
     return ESP_OK;
 }
 
@@ -3634,17 +3884,38 @@ void board_port_cancel_ready_prompt(void) {}
 bool board_port_enter_display_off(void) {
     if (!s_lcd_mutex || !s_panel) return false;
     if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
-    if (s_display_sleeping) {
+    // Reject a stale timer expiry that races a new foreground render.  The
+    // Power Service owns timing; this adapter remains the only authority for
+    // deciding whether its actual scene can safely lose panel/backlight.
+    bool ambient = !strcmp(s_state, "idle") || !strcmp(s_state, "quiet");
+    if (s_display_sleeping || !ambient || s_foreground_surface ||
+        s_recording_active || s_response_active || s_alarm_visual_active) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
         return false;
     }
     s_display_sleeping = true;
     s_idle_pet_sleep_expires_us = 0;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, false));
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
+#else
+    ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_set_duty(LEDC_LOW_SPEED_MODE,
+                                                BREAD_BACKLIGHT_LEDC_CHANNEL,
+                                                0));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_update_duty(LEDC_LOW_SPEED_MODE,
+                                                   BREAD_BACKLIGHT_LEDC_CHANNEL));
+#endif
     xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "display HAL entered DISPLAY_OFF");
     return true;
+}
+
+bool board_port_display_is_off(void) {
+    if (!s_lcd_mutex) return false;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
+    bool display_off = s_display_sleeping;
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+    return display_off;
 }
 
 bool board_port_wake_from_idle(void) {
@@ -4269,16 +4540,20 @@ void board_port_request_audio_playback_stop(void) {
 
 static esp_err_t write_stereo(const int16_t *source, size_t frames, unsigned channels) {
     int16_t stereo[512];
+    // Take one coherent gain snapshot per DMA block. A GUI hardware_config
+    // update is then visible on the next block without partially scaling a
+    // stereo frame or racing an optimizer-cached ordinary variable.
     size_t done = 0;
     while (done < frames) {
         if (s_audio_playback_stop_requested) return ESP_ERR_INVALID_STATE;
         size_t count = frames - done;
         if (count > 256) count = 256;
+        const unsigned volume = __atomic_load_n(&s_output_volume, __ATOMIC_RELAXED);
         for (size_t i = 0; i < count; ++i) {
             int32_t left = source[(done + i) * channels];
             int32_t right = channels == 2 ? source[(done + i) * 2 + 1] : left;
-            stereo[i * 2] = (int16_t)(left * (int32_t)s_output_volume / 100);
-            stereo[i * 2 + 1] = (int16_t)(right * (int32_t)s_output_volume / 100);
+            stereo[i * 2] = (int16_t)(left * (int32_t)volume / 100);
+            stereo[i * 2 + 1] = (int16_t)(right * (int32_t)volume / 100);
         }
         size_t written = 0;
         size_t expected = count * 2 * sizeof(int16_t);

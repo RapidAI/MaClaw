@@ -8,8 +8,6 @@ import (
 	"syscall"
 )
 
-// Give every sidecar its own process group. A negative PID sent to kill(2)
-// addresses that group and therefore reaches Python/helper descendants too.
 func prepareProcessTree(cmd *exec.Cmd) error {
 	if cmd == nil {
 		return fmt.Errorf("nil sidecar command")

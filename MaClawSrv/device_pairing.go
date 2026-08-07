@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
 // A spoken pairing code is a short-lived, single-use bootstrap secret. It is
@@ -27,6 +28,15 @@ type srvDevicePairingRecord struct {
 	Principal agentservice.Principal
 	Code      string
 	ExpiresAt time.Time
+}
+
+type srvDevicePairingRequest struct {
+	ClientID string `json:"clientId"`
+	PairCode string `json:"pairCode"`
+	// Code preserves interoperability with already-flashed clients that
+	// predate the explicit pairCode field. New clients send pairCode.
+	Code             string                   `json:"code"`
+	FirmwareIdentity *coreim.FirmwareIdentity `json:"firmwareIdentity,omitempty"`
 }
 
 type srvDevicePairingStore struct {
@@ -108,13 +118,7 @@ func (s *HTTPServer) handleDeviceGatewayPair(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
-	var in struct {
-		ClientID string `json:"clientId"`
-		PairCode string `json:"pairCode"`
-		// Code preserves interoperability with already-flashed clients that
-		// predate the explicit pairCode field. New clients send pairCode.
-		Code string `json:"code"`
-	}
+	var in srvDevicePairingRequest
 	if !decodeThirdPartyGatewayJSON(w, r, &in) {
 		return
 	}
@@ -127,7 +131,7 @@ func (s *HTTPServer) handleDeviceGatewayPair(w http.ResponseWriter, r *http.Requ
 		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", "clientId and a 6-digit pairCode are required")
 		return
 	}
-	out, err := s.pairHardwareDevice(r.Context(), clientID, pairCode)
+	out, err := s.pairHardwareDevice(r.Context(), clientID, pairCode, in.FirmwareIdentity)
 	if err != nil {
 		if s.devicePairLimit != nil {
 			if retryAfter := s.devicePairLimit.RegisterFailure(limitKey, now); retryAfter > 0 {
@@ -186,7 +190,10 @@ func (s *HTTPServer) handleDeviceGatewayVoicePair(w http.ResponseWriter, r *http
 		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_pair_code", "please speak exactly six digits")
 		return
 	}
-	out, err := s.pairHardwareDevice(r.Context(), clientID, code)
+	// Voice pairing predates the identity envelope. Keep it available for
+	// legacy hardware, but such clients cannot receive update metadata until a
+	// later identity-bearing handshake binds them durably.
+	out, err := s.pairHardwareDevice(r.Context(), clientID, code, nil)
 	if err != nil {
 		if s.devicePairLimit != nil {
 			if retryAfter := s.devicePairLimit.RegisterFailure(limitKey, now); retryAfter > 0 {
@@ -203,7 +210,7 @@ func (s *HTTPServer) handleDeviceGatewayVoicePair(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusCreated, out)
 }
 
-func (s *HTTPServer) pairHardwareDevice(ctx context.Context, clientID, code string) (map[string]any, error) {
+func (s *HTTPServer) pairHardwareDevice(ctx context.Context, clientID, code string, identity *coreim.FirmwareIdentity) (map[string]any, error) {
 	rec, ok := s.devicePairings.consume(code, time.Now().UTC())
 	if !ok || subtle.ConstantTimeCompare([]byte(rec.Code), []byte(code)) != 1 {
 		return nil, fmt.Errorf("invalid or expired pairing code")
@@ -220,8 +227,29 @@ func (s *HTTPServer) pairHardwareDevice(ctx context.Context, clientID, code stri
 		}
 	}
 	cfg.AppConfig.ThirdPartyGatewayEnabled = true
+	principal := srvThirdPartyPrincipal{Principal: rec.Principal, Config: cfg.AppConfig}
+	// Persist the gateway configuration before creating a durable hardware
+	// binding.  If configuration persistence fails, no binding is left behind
+	// for an unusable credential.  A later binding failure is compensated by
+	// restoring the exact prior configuration below.
 	if _, err := s.svc.UpdateUserConfig(ctx, rec.Principal, cfg.AppConfig); err != nil {
 		return nil, fmt.Errorf("could not activate device gateway")
+	}
+	var bindingErr error
+	if identity != nil {
+		if identity.DeviceID != clientID {
+			bindingErr = fmt.Errorf("device identity does not match clientId")
+		} else {
+			bindingErr = s.bindHardwareDeviceForPairing(ctx, principal, *identity)
+		}
+	} else {
+		bindingErr = s.reserveHardwareDeviceForPairing(principal, clientID)
+	}
+	if bindingErr != nil {
+		if _, rollbackErr := s.svc.UpdateUserConfig(ctx, rec.Principal, before); rollbackErr != nil {
+			return nil, fmt.Errorf("could not bind device (%v); gateway configuration rollback failed: %v", bindingErr, rollbackErr)
+		}
+		return nil, bindingErr
 	}
 	s.syncThirdPartyIMConfigTransition(rec.Principal, before, cfg.AppConfig)
 	return map[string]any{"ok": true, "clientId": clientID, "gatewayToken": cfg.AppConfig.ThirdPartyGatewayToken, "protocolVersion": srvThirdPartyProtocolVersion}, nil

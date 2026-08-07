@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -65,14 +67,175 @@ func TestDeveloperBuildRejectsInstallOperationsAtBackendBoundary(t *testing.T) {
 	if _, err := a.GetLatestFirmware("bread-compact"); err != errOfficialBuildRequired {
 		t.Fatalf("developer download error = %v, want official build requirement", err)
 	}
-	if _, err := a.ImportFirmwarePackage("bread-compact"); err != errOfficialBuildRequired {
+	if _, err := a.ImportFirmwarePackage("bread-compact", "zh-CN"); err != errOfficialBuildRequired {
 		t.Fatalf("developer import error = %v, want official build requirement", err)
 	}
-	if _, err := a.FlashFirmware("request-0123456789", "COM3", "bread-compact", "fwref-test"); err != errOfficialBuildRequired {
+	if _, err := a.FlashFirmware("request-0123456789", "COM3", "bread-compact", "fwref-test", "boardref-test"); err != errOfficialBuildRequired {
 		t.Fatalf("developer flash error = %v, want official build requirement", err)
 	}
-	if _, err := a.RecoverFirmware("request-0123456789", "job-0123456789abcdef", "COM3", "bread-compact", "fwref-test"); err != errOfficialBuildRequired {
+	if _, err := a.RecoverFirmware("request-0123456789", "job-0123456789abcdef", "COM3", "bread-compact", "fwref-test", "boardref-test"); err != errOfficialBuildRequired {
 		t.Fatalf("developer recovery error = %v, want official build requirement", err)
+	}
+	if _, err := a.VerifyBoot("request-0123456789", "job-0123456789abcdef", "COM3", "fwref-test"); err != errOfficialBuildRequired {
+		t.Fatalf("developer boot verification error = %v, want official build requirement", err)
+	}
+	if _, err := a.RetryJob("request-0123456789", "job-0123456789abcdef", "COM3", "bread-compact", "fwref-test", "boardref-test"); err != errOfficialBuildRequired {
+		t.Fatalf("developer retry error = %v, want official build requirement", err)
+	}
+}
+
+func TestRetryJobRejectsRecoveryRequiredJobsBeforeConfirmationIsConsumed(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	if err := jobs.WriteJournal(a.logRoot, jobs.Journal{JobID: jobID, PackageID: "package", PackageSHA256: "sha256:deadbeef", State: jobs.JournalRecoveryRequired}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := logging.New(a.logRoot, jobID, "attempt-original", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteSummary(map[string]any{"status": "recovery_required", "errorCode": "FLASH_WRITE_FAILED"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a.confirmations["boardref-test"] = boardConfirmation{port: "COM3", boardID: "bread-compact", deviceBinding: "binding", issuedAt: time.Now().UTC()}
+	_, err = a.RetryJob("request-0123456789", jobID, "COM3", "bread-compact", "fwref-test", "boardref-test")
+	if err == nil || !strings.Contains(err.Error(), "explicit complete ROM recovery") {
+		t.Fatalf("retry recovery job error = %v", err)
+	}
+	if _, ok := a.confirmations["boardref-test"]; !ok {
+		t.Fatal("retry rejection consumed a physical board confirmation")
+	}
+}
+
+func TestRetryJobRejectsReadbackVerifiedRecoveryInFavorOfVerifyBoot(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	images := []jobs.JournalImage{{Name: "image-001", Region: "app", Offset: 0x10000, Size: 4096, SHA256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", State: jobs.JournalImageReadbackVerified}}
+	plan, err := jobs.JournalPlanSHA256(images)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.WriteJournal(a.logRoot, jobs.Journal{JobID: jobID, PackageID: "package", PackageSHA256: "sha256:deadbeef", PlanSHA256: plan, Images: images, State: jobs.JournalRecoveryRequired, FlashVerified: true}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := logging.New(a.logRoot, jobID, "attempt-original", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteSummary(map[string]any{"status": "recovery_required", "errorCode": "BOOT_NOT_VERIFIED"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.RetryJob("request-0123456789", jobID, "COM3", "bread-compact", "fwref-test", "boardref-test")
+	if err == nil || !strings.Contains(err.Error(), "use VerifyBoot") {
+		t.Fatalf("retry with readback evidence error = %v", err)
+	}
+}
+
+func TestRetryJobReturnsStoredResultForIdenticalRequest(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	requestID := "request-0123456789"
+	a.writeRequests[requestID] = &writeRequest{
+		fingerprint: "retry\x00COM3\x00bread-compact\x00fwref-test\x00boardref-test\x00job-0123456789abcdef",
+		done:        make(chan struct{}),
+		result:      jobs.FlashResult{JobID: "job-retry", Status: "succeeded"},
+	}
+	close(a.writeRequests[requestID].done)
+	result, err := a.RetryJob(requestID, "job-0123456789abcdef", "COM3", "bread-compact", "fwref-test", "boardref-test")
+	if err != nil || result.JobID != "job-retry" || result.Status != "succeeded" {
+		t.Fatalf("stored retry result=%#v err=%v", result, err)
+	}
+	if _, err := a.RetryJob(requestID, "job-0123456789abcdef", "COM4", "bread-compact", "fwref-test", "boardref-test"); err == nil {
+		t.Fatal("retry request ID reuse with different inputs was accepted")
+	}
+}
+
+func TestVerifyBootRequiresReadbackVerifiedRecoveryJournal(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	if err := jobs.WriteJournal(a.logRoot, jobs.Journal{JobID: "job-0123456789abcdef", PackageID: "package", PackageSHA256: "sha256:deadbeef", State: jobs.JournalRecoveryRequired}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "release.clawfw")
+	contents := []byte("package")
+	if err := os.WriteFile(path, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	a.verifiedPackage["fwref-test"] = verifiedPackage{path: path, boardID: "bread-compact", archiveSHA256: hex.EncodeToString(sum[:]), issuedAt: time.Now().UTC()}
+	_, err := a.VerifyBoot("request-0123456789", "job-0123456789abcdef", "COM3", "fwref-test")
+	if err == nil || !strings.Contains(err.Error(), "readback verification") {
+		t.Fatalf("VerifyBoot error = %v, want readback-evidence rejection", err)
+	}
+}
+
+func TestVerifyBootRetryReturnsStoredResultAfterRecoveryWasResolved(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	requestID := "request-0123456789"
+	a.bootVerifies[requestID] = &bootVerifyRequest{
+		fingerprint: "job-0123456789abcdef\x00COM3\x00fwref-test",
+		done:        make(chan struct{}),
+		result:      jobs.BootVerificationResult{JobID: "job-verified", Status: "succeeded", Attempts: 1},
+	}
+	close(a.bootVerifies[requestID].done)
+	// No recovery journal or firmware capability is left after the original
+	// successful call. The exact RPC retry must still return its stored result.
+	result, err := a.VerifyBoot(requestID, "job-0123456789abcdef", "COM3", "fwref-test")
+	if err != nil || result.Status != "succeeded" || result.JobID != "job-verified" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if _, err := a.VerifyBoot(requestID, "job-0123456789abcdef", "COM4", "fwref-test"); err == nil {
+		t.Fatal("request ID reuse with a changed port was accepted")
+	}
+}
+
+func TestOfficialBuildRejectsUnsupportedFirmwareChannel(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	if _, err := NewApp().GetLatestFirmwareForChannel("bread-compact", "dev"); err == nil {
+		t.Fatal("unsupported firmware channel was accepted")
+	}
+}
+
+func TestDialogCopyUsesSupportedLocaleAndDefaultsSafely(t *testing.T) {
+	cases := []struct {
+		locale      string
+		importTitle string
+		diagnostics string
+	}{
+		{locale: "zh-CN", importTitle: "选择已签名的 ClawMate 固件包", diagnostics: "选择诊断包保存文件夹"},
+		{locale: "zh-TW", importTitle: "選擇已簽署的 ClawMate 韌體套件", diagnostics: "選擇診斷套件儲存資料夾"},
+		{locale: "en", importTitle: "Choose a signed ClawMate firmware package", diagnostics: "Choose a folder for the diagnostic bundle"},
+		{locale: "untrusted-locale", importTitle: "选择已签名的 ClawMate 固件包", diagnostics: "选择诊断包保存文件夹"},
+	}
+	for _, test := range cases {
+		copy := dialogCopyFor(test.locale)
+		if copy.importTitle != test.importTitle || copy.diagnosticsDirectoryTitle != test.diagnostics || copy.firmwareFilter == "" {
+			t.Fatalf("locale %q copy=%+v", test.locale, copy)
+		}
 	}
 }
 
@@ -91,6 +254,63 @@ func TestAutoDetectionResultDoesNotExposeBatchPackagePaths(t *testing.T) {
 	}
 }
 
+func TestAutoDetectionResultSerializesFirmwareUpdateWithoutHostPaths(t *testing.T) {
+	result := AutoDetectionResult{Devices: []AutoDetectedDevice{{
+		Device:   device.Candidate{Port: "COM4"},
+		Status:   "firmware_ready",
+		Firmware: &catalog.DownloadedRelease{BoardID: "bread-compact", FirmwareVersion: 13, Path: `C:\private\bread.clawfw`},
+		Update:   catalog.CompareFirmwareVersions(12, 13),
+	}}}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`C:\private`)) {
+		t.Fatalf("auto-detection result leaked a host path: %s", encoded)
+	}
+	if !bytes.Contains(encoded, []byte(`"update":{"installedVersion":12,"availableVersion":13,"status":"upgrade_available"}`)) {
+		t.Fatalf("auto-detection result did not expose the safe update decision: %s", encoded)
+	}
+}
+
+func TestSingleAutoDetectionResultSerializesTopLevelFirmwareUpdate(t *testing.T) {
+	result := AutoDetectionResult{
+		Status: "firmware_ready",
+		Update: catalog.CompareFirmwareVersions(12, 13),
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"update":{"installedVersion":12,"availableVersion":13,"status":"upgrade_available"}`)) {
+		t.Fatalf("single auto-detection result omitted update: %s", encoded)
+	}
+}
+
+func TestAppCompareFirmwareVersions(t *testing.T) {
+	got := NewApp().CompareFirmwareVersions(8, 9)
+	if got.Status != "upgrade_available" || got.InstalledVersion != 8 || got.AvailableVersion != 9 {
+		t.Fatalf("unexpected firmware update decision: %+v", got)
+	}
+}
+
+func TestAutoDetectionResultExposesOnlySafeHostAccessEvidence(t *testing.T) {
+	result := AutoDetectionResult{Devices: []AutoDetectedDevice{{
+		Device: device.Candidate{Port: "COM4"},
+		Access: device.HostAccess{Platform: "windows", Status: "blocked", Port: "COM4", DriverNeeded: true, AccessNeeded: true},
+		Status: "access_blocked",
+	}}}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"access"`, `"status":"blocked"`, `"driverNeeded":true`, `"accessNeeded":true`} {
+		if !strings.Contains(string(encoded), expected) {
+			t.Fatalf("missing host access evidence %q in %s", expected, encoded)
+		}
+	}
+}
+
 func TestRegisterVerifiedPackageHidesHostPath(t *testing.T) {
 	a := NewApp()
 	path := filepath.Join(t.TempDir(), "release.clawfw")
@@ -101,6 +321,7 @@ func TestRegisterVerifiedPackageHidesHostPath(t *testing.T) {
 	sum := sha256.Sum256(contents)
 	result, err := a.registerVerifiedPackage(catalog.DownloadedRelease{
 		BoardID:       "bread-compact",
+		Channel:       "stable",
 		Path:          path,
 		InstallStatus: "verified_ready",
 		SHA256:        "sha256:" + hex.EncodeToString(sum[:]),
@@ -128,6 +349,226 @@ func TestGetJobLogPageRejectsUnsafeJobID(t *testing.T) {
 	}
 }
 
+func writeSuccessfulProbeEvidence(t *testing.T, a *App, jobID, port string, finishedAt time.Time) {
+	t.Helper()
+	dir := filepath.Join(a.logsPath(), jobID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(jobs.ProbeResult{JobID: jobID, Port: port, Status: "succeeded", DeviceBinding: "3d7db9c93eb0c7c08860de80f196319679595ade1f572454d659f83d84f02556", StartedAt: finishedAt.Add(-time.Second), FinishedAt: finishedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfirmBoardRequiresFreshSuccessfulProbe(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	if _, err := a.ConfirmBoard("COM3", "bread-compact", "job-0123456789abcdef"); err == nil {
+		t.Fatal("missing probe evidence minted a board confirmation")
+	}
+	writeSuccessfulProbeEvidence(t, a, "job-0123456789abcdef", "COM3", time.Now().UTC())
+	confirmation, err := a.ConfirmBoard("COM3", "bread-compact", "job-0123456789abcdef")
+	if err != nil || confirmation.ConfirmationRef == "" || confirmation.Port != "COM3" || confirmation.BoardID != "bread-compact" {
+		t.Fatalf("confirmation=%#v err=%v", confirmation, err)
+	}
+	if stored := a.confirmations[confirmation.ConfirmationRef]; stored.deviceBinding == "" {
+		t.Fatal("confirmation did not retain the probe device binding")
+	}
+}
+
+func TestConfirmBoardRejectsFailedMismatchedOrExpiredProbe(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	dir := filepath.Join(a.logsPath(), jobID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	failed, _ := json.Marshal(jobs.ProbeResult{JobID: jobID, Port: "COM3", Status: "failed", FinishedAt: time.Now().UTC()})
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"), failed, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ConfirmBoard("COM3", "bread-compact", jobID); err == nil {
+		t.Fatal("failed probe minted a board confirmation")
+	}
+	writeSuccessfulProbeEvidence(t, a, jobID, "COM4", time.Now().UTC())
+	if _, err := a.ConfirmBoard("COM3", "bread-compact", jobID); err == nil {
+		t.Fatal("mismatched probe port minted a board confirmation")
+	}
+	writeSuccessfulProbeEvidence(t, a, jobID, "COM3", time.Now().UTC().Add(-boardConfirmationTTL-time.Second))
+	if _, err := a.ConfirmBoard("COM3", "bread-compact", jobID); err == nil {
+		t.Fatal("expired probe minted a board confirmation")
+	}
+}
+
+func TestConfirmBoardRejectsProbeWithoutROMIdentity(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	dir := filepath.Join(a.logsPath(), jobID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(jobs.ProbeResult{JobID: jobID, Port: "COM3", Status: "succeeded", FinishedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ConfirmBoard("COM3", "bread-compact", jobID); err == nil {
+		t.Fatal("probe without ROM identity minted a board confirmation")
+	}
+}
+
+func TestConsumeBoardConfirmationBindsAndConsumes(t *testing.T) {
+	a := NewApp()
+	a.confirmations["boardref-test"] = boardConfirmation{port: "COM3", boardID: "bread-compact", deviceBinding: "3d7db9c93eb0c7c08860de80f196319679595ade1f572454d659f83d84f02556", issuedAt: time.Now().UTC()}
+	if _, err := a.consumeBoardConfirmation("boardref-test", "COM4", "bread-compact"); err == nil {
+		t.Fatal("confirmation was accepted for a different port")
+	}
+	if _, err := a.consumeBoardConfirmation("boardref-test", "COM3", "echoear-2st"); err == nil {
+		t.Fatal("confirmation was accepted for a different board")
+	}
+	confirmation, err := a.consumeBoardConfirmation("boardref-test", "COM3", "bread-compact")
+	if err != nil || confirmation.deviceBinding != "3d7db9c93eb0c7c08860de80f196319679595ade1f572454d659f83d84f02556" {
+		t.Fatalf("matching confirmation=%#v err=%v", confirmation, err)
+	}
+	if _, err := a.consumeBoardConfirmation("boardref-test", "COM3", "bread-compact"); err == nil {
+		t.Fatal("confirmation was replayed")
+	}
+}
+
+func TestConsumeBoardConfirmationRejectsExpiration(t *testing.T) {
+	a := NewApp()
+	a.confirmations["boardref-test"] = boardConfirmation{port: "COM3", boardID: "bread-compact", issuedAt: time.Now().UTC().Add(-boardConfirmationTTL - time.Second)}
+	if _, err := a.consumeBoardConfirmation("boardref-test", "COM3", "bread-compact"); err == nil {
+		t.Fatal("expired confirmation was accepted")
+	}
+}
+
+func TestPrepareJobKeepsConfirmationUntilStartAndRejectsChangedPlan(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	path := filepath.Join(t.TempDir(), "release.clawfw")
+	contents := []byte("package")
+	if err := os.WriteFile(path, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	a.verifiedPackage["fwref-test"] = verifiedPackage{path: path, boardID: "bread-compact", archiveSHA256: hex.EncodeToString(sum[:]), installPlan: "app-only", preservesUserData: true, requiresRecovery: true, issuedAt: time.Now().UTC()}
+	a.confirmations["boardref-test"] = boardConfirmation{port: "COM3", boardID: "bread-compact", deviceBinding: "binding", issuedAt: time.Now().UTC()}
+	plan, err := a.PrepareJob("request-0123456789", "COM3", "bread-compact", "fwref-test", "boardref-test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.PlanID == "" || plan.PlanHash == "" || plan.Recovery || plan.Port != "COM3" || plan.InstallPlan != "app-only" || !plan.PreservesUserData || !plan.RequiresRecovery {
+		t.Fatalf("plan=%#v", plan)
+	}
+	if _, ok := a.confirmations["boardref-test"]; !ok {
+		t.Fatal("prepare must not consume board confirmation")
+	}
+	if _, err := a.StartJob(plan.PlanID, "changed"); err == nil {
+		t.Fatal("changed plan hash was accepted")
+	}
+	if _, err := a.StartJob(plan.PlanID, plan.PlanHash); err == nil {
+		t.Fatal("invalidated plan was accepted after changed hash attempt")
+	}
+}
+
+func TestPrepareJobUsesVerifiedPackageInstallImpact(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+
+	for _, test := range []struct {
+		name              string
+		installPlan       string
+		preservesUserData bool
+		requiresRecovery  bool
+	}{
+		{name: "app only", installPlan: "app-only", preservesUserData: true, requiresRecovery: true},
+		{name: "full", installPlan: "full", preservesUserData: false, requiresRecovery: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a := NewApp()
+			path := filepath.Join(t.TempDir(), "release.clawfw")
+			contents := []byte("package")
+			if err := os.WriteFile(path, contents, 0600); err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(contents)
+			a.verifiedPackage["fwref-test"] = verifiedPackage{
+				path:              path,
+				boardID:           "bread-compact",
+				archiveSHA256:     hex.EncodeToString(sum[:]),
+				installPlan:       test.installPlan,
+				preservesUserData: test.preservesUserData,
+				requiresRecovery:  test.requiresRecovery,
+				issuedAt:          time.Now().UTC(),
+			}
+			a.confirmations["boardref-test"] = boardConfirmation{port: "COM3", boardID: "bread-compact", deviceBinding: "binding", issuedAt: time.Now().UTC()}
+
+			plan, err := a.PrepareJob("request-0123456789", "COM3", "bread-compact", "fwref-test", "boardref-test", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.InstallPlan != test.installPlan || plan.PreservesUserData != test.preservesUserData || plan.RequiresRecovery != test.requiresRecovery {
+				t.Fatalf("plan impact = %#v, want mode=%q preserves=%t recovery=%t", plan, test.installPlan, test.preservesUserData, test.requiresRecovery)
+			}
+		})
+	}
+}
+
+func TestStartJobReturnsSameCompletedResultForPlanRetry(t *testing.T) {
+	a := NewApp()
+	plan := &preparedFlashPlan{FlashPlan: FlashPlan{PlanID: "plan-test", PlanHash: "hash", ExpiresAt: time.Now().UTC().Add(time.Minute)}, start: &planStart{done: make(chan struct{}), result: jobs.FlashResult{JobID: "job-0123456789abcdef", Status: "succeeded"}}}
+	close(plan.start.done)
+	a.plans[plan.PlanID] = plan
+	result, err := a.StartJob(plan.PlanID, plan.PlanHash)
+	if err != nil || result.Status != "succeeded" || result.JobID != "job-0123456789abcdef" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+func TestStartJobWrongHashDoesNotInvalidateCorrectRetry(t *testing.T) {
+	a := NewApp()
+	plan := &preparedFlashPlan{FlashPlan: FlashPlan{PlanID: "plan-hash", PlanHash: "correct", ExpiresAt: time.Now().UTC().Add(time.Minute)}, start: &planStart{done: make(chan struct{}), result: jobs.FlashResult{Status: "succeeded"}}}
+	close(plan.start.done)
+	a.plans[plan.PlanID] = plan
+	if _, err := a.StartJob(plan.PlanID, "wrong"); err == nil {
+		t.Fatal("wrong plan hash accepted")
+	}
+	if result, err := a.StartJob(plan.PlanID, "correct"); err != nil || result.Status != "succeeded" {
+		t.Fatalf("correct retry result=%#v err=%v", result, err)
+	}
+}
+
+func TestStartJobRetrySurvivesPlanExpiryAfterItStarted(t *testing.T) {
+	a := NewApp()
+	plan := &preparedFlashPlan{FlashPlan: FlashPlan{PlanID: "plan-expired-running", PlanHash: "hash", ExpiresAt: time.Now().UTC().Add(-time.Second)}, start: &planStart{done: make(chan struct{}), result: jobs.FlashResult{Status: "succeeded"}}}
+	close(plan.start.done)
+	a.plans[plan.PlanID] = plan
+	if result, err := a.StartJob(plan.PlanID, "hash"); err != nil || result.Status != "succeeded" {
+		t.Fatalf("started plan retry result=%#v err=%v", result, err)
+	}
+}
+
 func TestGetJobLogPageReadsPersistedEvents(t *testing.T) {
 	a := NewApp()
 	a.logRoot = t.TempDir()
@@ -143,6 +584,36 @@ func TestGetJobLogPageReadsPersistedEvents(t *testing.T) {
 	page, err := a.GetJobLogPage(jobID, 0, 10)
 	if err != nil || len(page.Events) != 1 || page.Next != 1 {
 		t.Fatalf("page=%#v err=%v", page, err)
+	}
+}
+
+func TestGetJobLogPageFilteredRestrictsToStructuredLogFields(t *testing.T) {
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	w, err := logging.New(a.logRoot, jobID, "attempt-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Event(logging.Info, "download", "catalog", "MIRROR_SELECTED", "mirror.selected", "", nil)
+	w.Event(logging.Error, "flash", "engine", "FLASH_VERIFY_FAILED", "flash.verify", "", nil)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	page, err := a.GetJobLogPageFiltered(jobID, 0, 10, logging.Filter{Severity: logging.Error, Stage: "flash", Component: "engine", Code: "FLASH_VERIFY_FAILED"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Code != "FLASH_VERIFY_FAILED" || page.Next != 2 {
+		t.Fatalf("page=%#v", page)
+	}
+}
+
+func TestGetJobLogPageFilteredRejectsInvalidFilter(t *testing.T) {
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	if _, err := a.GetJobLogPageFiltered("job-0123456789abcdef", 0, 10, logging.Filter{Severity: logging.Severity("verbose")}); err == nil {
+		t.Fatal("invalid severity filter was accepted")
 	}
 }
 
@@ -187,10 +658,93 @@ func TestListRecentJobSnapshotsRestoresTerminalState(t *testing.T) {
 	}
 }
 
+func TestGetJobSnapshotReadsOnlyTheValidatedJob(t *testing.T) {
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	w, err := logging.New(a.logRoot, jobID, "attempt-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Event(logging.Info, "flash", "engine", "FLASH_TRANSFER_PROGRESS", "flash.transfer.progress", "", map[string]any{"transferredBytes": 12, "totalBytes": 20})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := a.GetJobSnapshot(jobID)
+	if err != nil || snapshot.JobID != jobID || snapshot.LastEvent == nil || snapshot.LastEvent.Code != "FLASH_TRANSFER_PROGRESS" {
+		t.Fatalf("snapshot=%#v err=%v", snapshot, err)
+	}
+	if _, err := a.GetJobSnapshot("../" + jobID); err == nil {
+		t.Fatal("unsafe snapshot job ID accepted")
+	}
+}
+
 func TestRecoverFirmwareRejectsUnsafeRecoveryJobID(t *testing.T) {
 	a := NewApp()
-	if _, err := a.RecoverFirmware("request-0123456789", "../job-0123456789abcdef", "COM1", "bread-compact", "fwref-x"); err == nil {
+	if _, err := a.RecoverFirmware("request-0123456789", "../job-0123456789abcdef", "COM1", "bread-compact", "fwref-x", "boardref-test"); err == nil {
 		t.Fatal("unsafe recovery job ID was accepted")
+	}
+}
+
+func TestCancelJobOnlyCancelsTheMatchingActiveWrite(t *testing.T) {
+	a := NewApp()
+	ctx, cancel := context.WithCancel(context.Background())
+	a.activeWrites["job-0123456789abcdef"] = activeWrite{cancel: cancel}
+	if err := a.CancelJob("job-0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("active job context was not cancelled")
+	}
+	if err := a.CancelJob("job-ffffffffffffffff"); err == nil {
+		t.Fatal("unknown active job accepted")
+	}
+	if err := a.CancelJob("../job-0123456789abcdef"); err == nil {
+		t.Fatal("unsafe job ID accepted")
+	}
+}
+
+func TestPreventCloseWhileWritingCancelsOnlyWhenNoWriteIsActive(t *testing.T) {
+	a := NewApp()
+	if a.PreventCloseWhileWriting(context.Background()) {
+		t.Fatal("idle application close was blocked")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.activeWrites["job-0123456789abcdef"] = activeWrite{cancel: cancel}
+	if !a.PreventCloseWhileWriting(context.Background()) {
+		t.Fatal("active write did not block window close")
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("close guard must not silently cancel; user must use explicit cancellation")
+	default:
+	}
+	a.cancelActiveWrites()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("shutdown fallback did not cancel active write")
+	}
+}
+
+func TestCancelJobIsIdempotentForPersistedTerminalJob(t *testing.T) {
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	w, err := logging.New(a.logRoot, jobID, "attempt-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteSummary(map[string]any{"status": "failed", "errorCode": "JOB_CANCELLED"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CancelJob(jobID); err != nil {
+		t.Fatalf("terminal cancel retry = %v", err)
 	}
 }
 
@@ -211,13 +765,13 @@ func TestRunWriteRequestReturnsOneExecutionForDuplicateRequestID(t *testing.T) {
 	}
 	firstDone := make(chan jobs.FlashResult, 1)
 	go func() {
-		result, _ := a.runWriteRequest(requestID, "flash", "COM3", "bread-compact", "fwref-a", "", run)
+		result, _ := a.runWriteRequest(requestID, "flash", "COM3", "bread-compact", "fwref-a", "boardref-a", "", run)
 		firstDone <- result
 	}()
 	<-started
 	secondDone := make(chan jobs.FlashResult, 1)
 	go func() {
-		result, _ := a.runWriteRequest(requestID, "flash", "COM3", "bread-compact", "fwref-a", "", run)
+		result, _ := a.runWriteRequest(requestID, "flash", "COM3", "bread-compact", "fwref-a", "boardref-a", "", run)
 		secondDone <- result
 	}()
 	close(finish)
@@ -231,11 +785,11 @@ func TestRunWriteRequestReturnsOneExecutionForDuplicateRequestID(t *testing.T) {
 
 func TestRunWriteRequestRejectsDifferentInputsForReusedID(t *testing.T) {
 	a := NewApp()
-	_, err := a.runWriteRequest("request-0123456789", "flash", "COM3", "bread-compact", "fwref-a", "", func() (jobs.FlashResult, error) { return jobs.FlashResult{}, nil })
+	_, err := a.runWriteRequest("request-0123456789", "flash", "COM3", "bread-compact", "fwref-a", "boardref-a", "", func() (jobs.FlashResult, error) { return jobs.FlashResult{}, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.runWriteRequest("request-0123456789", "flash", "COM4", "bread-compact", "fwref-a", "", func() (jobs.FlashResult, error) { return jobs.FlashResult{}, nil }); err == nil {
+	if _, err := a.runWriteRequest("request-0123456789", "flash", "COM4", "bread-compact", "fwref-a", "boardref-a", "", func() (jobs.FlashResult, error) { return jobs.FlashResult{}, nil }); err == nil {
 		t.Fatal("request ID reuse with changed inputs was accepted")
 	}
 }
@@ -247,6 +801,29 @@ func TestRegisterVerifiedPackageRejectsUnverifiedResult(t *testing.T) {
 	}
 }
 
+func TestRegisterVerifiedPackageRejectsMissingOrUnsupportedChannel(t *testing.T) {
+	a := NewApp()
+	path := filepath.Join(t.TempDir(), "release.clawfw")
+	contents := []byte("verified firmware archive")
+	if err := os.WriteFile(path, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	base := catalog.DownloadedRelease{
+		BoardID:       "bread-compact",
+		Path:          path,
+		InstallStatus: "verified_ready",
+		SHA256:        hex.EncodeToString(sum[:]),
+	}
+	for _, channel := range []string{"", "dev"} {
+		candidate := base
+		candidate.Channel = channel
+		if _, err := a.registerVerifiedPackage(candidate); err == nil {
+			t.Fatalf("channel %q was accepted", channel)
+		}
+	}
+}
+
 func TestLookupVerifiedPackageRejectsChangedArchive(t *testing.T) {
 	a := NewApp()
 	path := filepath.Join(t.TempDir(), "release.clawfw")
@@ -255,7 +832,7 @@ func TestLookupVerifiedPackageRejectsChangedArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(contents)
-	result, err := a.registerVerifiedPackage(catalog.DownloadedRelease{BoardID: "bread-compact", Path: path, InstallStatus: "verified_ready", SHA256: hex.EncodeToString(sum[:])})
+	result, err := a.registerVerifiedPackage(catalog.DownloadedRelease{BoardID: "bread-compact", Channel: "stable", Path: path, InstallStatus: "verified_ready", SHA256: hex.EncodeToString(sum[:])})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +855,7 @@ func TestLookupVerifiedPackageRejectsExpiredReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(contents)
-	result, err := a.registerVerifiedPackage(catalog.DownloadedRelease{BoardID: "bread-compact", Path: path, InstallStatus: "verified_ready", SHA256: hex.EncodeToString(sum[:])})
+	result, err := a.registerVerifiedPackage(catalog.DownloadedRelease{BoardID: "bread-compact", Channel: "stable", Path: path, InstallStatus: "verified_ready", SHA256: hex.EncodeToString(sum[:])})
 	if err != nil {
 		t.Fatal(err)
 	}

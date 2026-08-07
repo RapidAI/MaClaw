@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "audio_common.h"
-#include "board_port.h"
+#include "device_api.h"
 #include "esp_audio_simple_dec.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -63,6 +63,20 @@ static esp_err_t audio_error(esp_audio_err_t err) {
     }
 }
 
+static esp_err_t device_status_to_esp_err(device_status_t status) {
+    switch (status) {
+        case DEVICE_STATUS_OK: return ESP_OK;
+        case DEVICE_STATUS_INVALID_ARGUMENT: return ESP_ERR_INVALID_ARG;
+        case DEVICE_STATUS_UNAVAILABLE: return ESP_ERR_NOT_SUPPORTED;
+        case DEVICE_STATUS_BUSY: return ESP_ERR_INVALID_STATE;
+        case DEVICE_STATUS_TIMEOUT: return ESP_ERR_TIMEOUT;
+        case DEVICE_STATUS_RESOURCE_EXHAUSTED: return ESP_ERR_NO_MEM;
+        case DEVICE_STATUS_IO_ERROR: return ESP_FAIL;
+        case DEVICE_STATUS_INTERNAL_ERROR:
+        default: return ESP_FAIL;
+    }
+}
+
 // The board audio clocks remain at 16 kHz because the microphone, wake-word
 // pipeline and EchoEar codec share that hardware configuration. This streaming
 // linear resampler keeps the previous block's final frame so interpolation is
@@ -82,7 +96,7 @@ static esp_err_t write_resampled_until(mp3_playback_t *state, const int16_t *pcm
     size_t output_count = (size_t)(output_end - state->output_frames);
     if (output_count == 0) return ESP_OK;
     if (!state->playback_started) {
-        esp_err_t err = board_port_audio_playback_begin();
+        esp_err_t err = device_status_to_esp_err(device_audio_playback_begin());
         if (err != ESP_OK) return err;
         state->playback_started = true;
     }
@@ -110,7 +124,8 @@ static esp_err_t write_resampled_until(mp3_playback_t *state, const int16_t *pcm
                     (int16_t)(mixed / AUDIO_RATE);
             }
         }
-        err = board_port_audio_playback_write(resampled, count, state->channels);
+        err = device_status_to_esp_err(device_audio_playback_write(
+            resampled, (uint32_t)count, (uint8_t)state->channels));
         written += count;
     }
     if (err == ESP_OK) state->output_frames = output_end;
@@ -278,7 +293,10 @@ esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
         result = state.have_previous ? finish_resampled(&state)
                                      : ESP_ERR_INVALID_RESPONSE;
     }
-    if (state.playback_started) result = board_port_audio_playback_end(result);
+    if (state.playback_started) {
+        result = device_status_to_esp_err(
+            device_audio_playback_end(result == ESP_OK));
+    }
     free(output);
     esp_audio_simple_dec_close(decoder);
     if (result == ESP_OK) {

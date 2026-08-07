@@ -5,34 +5,32 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "qrcode.h"
+#include "device_api.h"
 
 // This is the only board-specific contract in the starter.  Implement the
 // functions in board_port.c for the display, button/touch controller, I2S mic,
 // and optional speaker fitted to the actual ESP32-S3 smart-speaker board.
-typedef enum {
-    BOARD_INPUT_PRIMARY = 0,
-    BOARD_INPUT_SECONDARY,
-    BOARD_INPUT_CONFIGURE,
-    BOARD_INPUT_VOLUME_UP,
-    BOARD_INPUT_VOLUME_DOWN,
-    // Emitted on the debounced physical down edge. This lets urgent local
-    // surfaces react immediately without waiting for short/double/long
-    // gesture classification. Normal command handling ignores this action.
-    BOARD_INPUT_PRESSED,
-} board_input_action_t;
+typedef device_input_action_t board_input_action_t;
+#define BOARD_INPUT_PRIMARY DEVICE_INPUT_PRIMARY
+#define BOARD_INPUT_SECONDARY DEVICE_INPUT_SECONDARY
+#define BOARD_INPUT_CONFIGURE DEVICE_INPUT_CONFIGURE
+#define BOARD_INPUT_VOLUME_UP DEVICE_INPUT_VOLUME_UP
+#define BOARD_INPUT_VOLUME_DOWN DEVICE_INPUT_VOLUME_DOWN
+// Emitted on the debounced physical down edge. This lets urgent local
+// surfaces react immediately without waiting for short/double/long gesture
+// classification. Normal command handling ignores this action.
+#define BOARD_INPUT_PRESSED DEVICE_INPUT_CONTACT_DOWN
 
 // Physical origin is deliberately independent of gesture semantics. Product
 // features can therefore select the input their enclosure actually exposes
 // without guessing from PRIMARY/SECONDARY/CONFIGURE.
-typedef enum {
-    BOARD_INPUT_SOURCE_UNKNOWN = 0,
-    BOARD_INPUT_SOURCE_TOUCH,
-    BOARD_INPUT_SOURCE_ACTIVATE_KEY,
-    BOARD_INPUT_SOURCE_OTHER_KEY,
-} board_input_source_t;
+typedef device_input_source_t board_input_source_t;
+#define BOARD_INPUT_SOURCE_UNKNOWN DEVICE_INPUT_SOURCE_UNKNOWN
+#define BOARD_INPUT_SOURCE_TOUCH DEVICE_INPUT_SOURCE_TOUCH
+#define BOARD_INPUT_SOURCE_ACTIVATE_KEY DEVICE_INPUT_SOURCE_PRIMARY_CONTROL
+#define BOARD_INPUT_SOURCE_OTHER_KEY DEVICE_INPUT_SOURCE_AUXILIARY_CONTROL
 
-typedef void (*board_input_cb_t)(board_input_action_t action,
-                                 board_input_source_t source, void *arg);
+typedef device_input_cb_t board_input_cb_t;
 // Source-compatible names for board ports that have not yet adopted the
 // hardware-neutral terminology.
 typedef board_input_action_t board_port_button_event_t;
@@ -46,12 +44,20 @@ typedef void (*board_port_wake_word_cb_t)(void *arg);
 // panel/backlight transaction. DISPLAY_OFF keeps alarm, network and wake-word
 // services running, unlike a future MCU light/deep-sleep transition.
 bool board_port_enter_display_off(void);
+/* Returns the adapter's current physical display-off observation.  This is
+ * intentionally separate from an idle deadline: a later renderer may wake a
+ * panel to present an urgent scene without changing Power Service policy. */
+bool board_port_display_is_off(void);
 
 esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg);
 // Fangtang uses GPIO0's initial double click exclusively as a boot-time
 // network-transport selector. The board consumes this bounded window before
 // normal application callbacks become active. Other boards return false.
 bool board_port_wait_for_boot_network_toggle(uint32_t window_ms);
+/* Applies only the board-owned modem guard/power wiring required before a
+ * cellular transport adapter starts. It deliberately does not start ML307,
+ * select an uplink, or issue any network request. */
+esp_err_t board_port_prepare_cellular_transport(void);
 // Re-presents the board-specific boot artwork and keeps it in the foreground
 // until another explicit surface (ready, setup, error, etc.) replaces it.
 void board_port_show_startup_screen(void);

@@ -17,22 +17,54 @@ const JournalSchema = 1
 
 type JournalState string
 
+// JournalImageState describes the strongest durable evidence collected for a
+// single immutable image range. These values intentionally say nothing about
+// a local archive path or a device identifier, both of which must not be
+// persisted in a browser-visible recovery record.
+type JournalImageState string
+
 const (
 	JournalPrepared         JournalState = "prepared"
 	JournalWriting          JournalState = "writing"
 	JournalRecoveryRequired JournalState = "recovery_required"
 	JournalVerified         JournalState = "verified"
+
+	JournalImagePlanned          JournalImageState = "planned"
+	JournalImageWritten          JournalImageState = "written"
+	JournalImageReadbackVerified JournalImageState = "readback_verified"
 )
 
+// JournalImage is the path-free, immutable portion of a signed flash plan.
+// Name is an opaque plan position (not the archive entry or local file name),
+// so recovery diagnostics can be correlated without persisting local paths.
+type JournalImage struct {
+	Name   string            `json:"name"`
+	Region string            `json:"region"`
+	Offset uint64            `json:"offset"`
+	Size   int64             `json:"size"`
+	SHA256 string            `json:"sha256"`
+	State  JournalImageState `json:"state"`
+}
+
 type Journal struct {
-	Schema               int          `json:"schema"`
-	JobID                string       `json:"jobId"`
-	PackageID            string       `json:"packageId"`
-	PackageSHA256        string       `json:"packageSha256"`
-	State                JournalState `json:"state"`
-	BootCriticalModified bool         `json:"bootCriticalModified"`
-	UpdatedAt            time.Time    `json:"updatedAt"`
-	Checksum             string       `json:"checksum"`
+	Schema        int    `json:"schema"`
+	JobID         string `json:"jobId"`
+	PackageID     string `json:"packageId"`
+	PackageSHA256 string `json:"packageSha256"`
+	// PlanSHA256 hashes Images with their mutable State field excluded. It
+	// makes an interrupted job's recovery evidence unambiguously refer to the
+	// exact signed byte ranges that were approved before writing started.
+	PlanSHA256           string         `json:"planSha256,omitempty"`
+	Images               []JournalImage `json:"images,omitempty"`
+	State                JournalState   `json:"state"`
+	BootCriticalModified bool           `json:"bootCriticalModified"`
+	// FlashVerified is written only after every planned image has passed ROM
+	// readback verification. It is deliberately separate from State: a power
+	// loss before this point still requires complete ROM recovery, while a
+	// later application boot timeout can be retried without rewriting Flash.
+	FlashVerified bool      `json:"flashVerified,omitempty"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+	Checksum      string    `json:"checksum"`
 }
 
 // RecoveryItem is the safe subset of an unfinished write journal exposed to
@@ -44,7 +76,8 @@ type RecoveryItem struct {
 	PackageID            string       `json:"packageId"`
 	State                JournalState `json:"state"`
 	BootCriticalModified bool         `json:"bootCriticalModified"`
-	UpdatedAt            time.Time    `json:"updatedAt"`
+	FlashVerified        bool         `json:"flashVerified"`
+	UpdatedAt            time.Time    `json:"updatedAt" ts_type:"string"`
 }
 
 func journalPath(root, jobID string) string { return filepath.Join(root, jobID, "journal.json") }
@@ -55,7 +88,7 @@ func WriteJournal(root string, j Journal) error {
 	if j.Schema == 0 {
 		j.Schema = JournalSchema
 	}
-	if j.Schema != JournalSchema || j.JobID == "" || j.PackageID == "" || !validJournalState(j.State) {
+	if j.Schema != JournalSchema || j.JobID == "" || j.PackageID == "" || !validJournalState(j.State) || !validJournalEvidence(j) {
 		return errors.New("invalid journal")
 	}
 	j.UpdatedAt = time.Now().UTC()
@@ -92,7 +125,7 @@ func ReadJournal(root, jobID string) (Journal, error) {
 	if err := json.Unmarshal(raw, &j); err != nil {
 		return Journal{}, err
 	}
-	if j.Schema != JournalSchema || j.JobID != jobID || j.Checksum == "" || !validJournalState(j.State) {
+	if j.Schema != JournalSchema || j.JobID != jobID || j.Checksum == "" || !validJournalState(j.State) || !validJournalEvidence(j) {
 		return Journal{}, errors.New("invalid journal schema or identity")
 	}
 	got := j.Checksum
@@ -115,6 +148,85 @@ func validJournalState(state JournalState) bool {
 	default:
 		return false
 	}
+}
+
+func validJournalImageState(state JournalImageState) bool {
+	switch state {
+	case JournalImagePlanned, JournalImageWritten, JournalImageReadbackVerified:
+		return true
+	default:
+		return false
+	}
+}
+
+// JournalPlanSHA256 returns a deterministic digest of the immutable image
+// facts. State is deliberately excluded so advancing write evidence cannot
+// silently change the plan it proves.
+func JournalPlanSHA256(images []JournalImage) (string, error) {
+	immutable := make([]struct {
+		Name   string `json:"name"`
+		Region string `json:"region"`
+		Offset uint64 `json:"offset"`
+		Size   int64  `json:"size"`
+		SHA256 string `json:"sha256"`
+	}, len(images))
+	for i, image := range images {
+		immutable[i] = struct {
+			Name   string `json:"name"`
+			Region string `json:"region"`
+			Offset uint64 `json:"offset"`
+			Size   int64  `json:"size"`
+			SHA256 string `json:"sha256"`
+		}{Name: image.Name, Region: image.Region, Offset: image.Offset, Size: image.Size, SHA256: image.SHA256}
+	}
+	raw, err := json.Marshal(immutable)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// HasCompleteReadbackEvidence is the invariant required before a recovery
+// item can offer a non-writing BOOT_STATUS retry. A boolean alone is not
+// trusted because older/corrupt journals have no per-image proof.
+func HasCompleteReadbackEvidence(j Journal) bool {
+	if !j.FlashVerified || len(j.Images) == 0 || j.PlanSHA256 == "" {
+		return false
+	}
+	for _, image := range j.Images {
+		if image.State != JournalImageReadbackVerified {
+			return false
+		}
+	}
+	planSHA256, err := JournalPlanSHA256(j.Images)
+	return err == nil && planSHA256 == j.PlanSHA256
+}
+
+func validJournalEvidence(j Journal) bool {
+	if len(j.Images) == 0 {
+		// Version-1 journals written before immutable image evidence existed
+		// remain recoverable, but never qualify for a non-writing retry.
+		return !j.FlashVerified && j.PlanSHA256 == ""
+	}
+	if j.PlanSHA256 == "" {
+		return false
+	}
+	seen := make(map[string]struct{}, len(j.Images))
+	for _, image := range j.Images {
+		if image.Name == "" || image.Region == "" || image.Size <= 0 || image.SHA256 == "" || !validJournalImageState(image.State) {
+			return false
+		}
+		if _, exists := seen[image.Name]; exists {
+			return false
+		}
+		seen[image.Name] = struct{}{}
+	}
+	planSHA256, err := JournalPlanSHA256(j.Images)
+	if err != nil || planSHA256 != j.PlanSHA256 {
+		return false
+	}
+	return !j.FlashVerified || HasCompleteReadbackEvidence(j)
 }
 
 // ListRecoveryRequired scans only direct job directories, validates every
@@ -154,7 +266,7 @@ func ListRecoveryRequired(root string) ([]RecoveryItem, error) {
 		// journal that reached the writing phase (or was explicitly marked for
 		// recovery) blocks a new installation.
 		if journal.State == JournalWriting || journal.State == JournalRecoveryRequired {
-			items = append(items, RecoveryItem{JobID: journal.JobID, PackageID: journal.PackageID, State: JournalRecoveryRequired, BootCriticalModified: journal.BootCriticalModified, UpdatedAt: journal.UpdatedAt})
+			items = append(items, RecoveryItem{JobID: journal.JobID, PackageID: journal.PackageID, State: JournalRecoveryRequired, BootCriticalModified: journal.BootCriticalModified, FlashVerified: journal.FlashVerified, UpdatedAt: journal.UpdatedAt})
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })

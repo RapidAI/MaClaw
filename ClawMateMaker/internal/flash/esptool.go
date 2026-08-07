@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,21 @@ type Result struct {
 	Output   string
 	ExitCode int
 	Duration time.Duration
+}
+
+// WriteProgress is derived from esptool's live transfer telemetry.  The
+// adapter intentionally reports bytes from the signed images currently being
+// transferred, rather than inventing time-based percentages in the UI.
+type WriteProgress struct {
+	TransferredBytes int64
+	TotalBytes       int64
+}
+
+func (p WriteProgress) Percent() float64 {
+	if p.TotalBytes <= 0 {
+		return 0
+	}
+	return float64(p.TransferredBytes) * 100 / float64(p.TotalBytes)
 }
 
 func FindTool() (Tool, error) {
@@ -126,6 +142,17 @@ func CanRetryWriteAtLowerBaud(result Result, err error) bool {
 // WriteImages is deliberately narrow: the job planner supplies verified files and
 // fixed offsets. This adapter never accepts user-provided argument strings.
 func (t Tool) WriteImages(ctx context.Context, port string, baud int, images []WriteImage) (Result, error) {
+	return t.writeImages(ctx, port, baud, images, nil)
+}
+
+// WriteImagesWithProgress is the controlled-write variant used by FlashJob.
+// The callback sees esptool's live percentage converted against the immutable
+// signed image lengths.  It is deliberately not exposed to the frontend.
+func (t Tool) WriteImagesWithProgress(ctx context.Context, port string, baud int, images []WriteImage, progress func(WriteProgress)) (Result, error) {
+	return t.writeImages(ctx, port, baud, images, progress)
+}
+
+func (t Tool) writeImages(ctx context.Context, port string, baud int, images []WriteImage, progress func(WriteProgress)) (Result, error) {
 	if !validPort(port) {
 		return Result{}, fmt.Errorf("unsafe serial port: %q", port)
 	}
@@ -135,8 +162,11 @@ func (t Tool) WriteImages(ctx context.Context, port string, baud int, images []W
 	if len(images) == 0 || len(images) > 16 {
 		return Result{}, errors.New("invalid image count")
 	}
-	args := []string{"--port", port, "--baud", strconv.Itoa(baud), "--after", "hard_reset", "write_flash", "--flash_mode", "keep", "--flash_freq", "keep", "--flash_size", "keep"}
-	lastEnd := uint64(0)
+	// Keep the target in the ROM bootloader after writing.  verify_flash is a
+	// second ROM operation and must run before the App is allowed to boot;
+	// otherwise a successful write can be followed by a misleading verify
+	// failure simply because the device has already left download mode.
+	args := []string{"--port", port, "--baud", strconv.Itoa(baud), "--after", "no_reset", "write_flash", "--flash_mode", "keep", "--flash_freq", "keep", "--flash_size", "keep"}
 	for i, img := range images {
 		if img.Offset%0x1000 != 0 || img.Path == "" || img.Size <= 0 {
 			return Result{}, fmt.Errorf("invalid image %d", i)
@@ -144,21 +174,57 @@ func (t Tool) WriteImages(ctx context.Context, port string, baud int, images []W
 		if uint64(img.Size) > ^uint64(0)-img.Offset {
 			return Result{}, fmt.Errorf("image %d range overflows", i)
 		}
-		if i > 0 && img.Offset < lastEnd {
-			return Result{}, errors.New("overlapping images")
-		}
 		if _, err := os.Stat(img.Path); err != nil {
 			return Result{}, fmt.Errorf("image not accessible: %w", err)
 		}
 		args = append(args, fmt.Sprintf("0x%x", img.Offset), img.Path)
-		lastEnd = img.Offset + uint64(img.Size)
 	}
-	return t.run(ctx, args)
+	var total int64
+	for _, image := range images {
+		total += image.Size
+	}
+	if progress != nil {
+		progress(WriteProgress{TotalBytes: total})
+	}
+	var last int64
+	onLine := func(line string) {
+		percent, ok := parseWritePercent(line)
+		if !ok || total <= 0 {
+			return
+		}
+		transferred := int64(float64(total) * percent / 100)
+		if transferred < last {
+			// A multi-image esptool invocation may render a new line from a
+			// lower offset. Never report a backwards progress jump as fact.
+			return
+		}
+		if transferred > total {
+			transferred = total
+		}
+		last = transferred
+		progress(WriteProgress{TransferredBytes: transferred, TotalBytes: total})
+	}
+	result, err := t.runStreaming(ctx, args, onLine)
+	if err == nil && progress != nil && last < total {
+		progress(WriteProgress{TransferredBytes: total, TotalBytes: total})
+	}
+	return result, err
 }
 
 // VerifyImages asks esptool to verify each already-written image. It is invoked
 // before a write job can become successful; a process exit code is not enough.
 func (t Tool) VerifyImages(ctx context.Context, port string, baud int, images []WriteImage) (Result, error) {
+	return t.verifyImages(ctx, port, baud, images, "hard_reset")
+}
+
+// VerifyImagesNoReset keeps the target in ROM download mode after a per-image
+// readback check. FlashJob uses it between independently committed images so
+// the signed write order is real device I/O order, not merely a manifest hint.
+func (t Tool) VerifyImagesNoReset(ctx context.Context, port string, baud int, images []WriteImage) (Result, error) {
+	return t.verifyImages(ctx, port, baud, images, "no_reset")
+}
+
+func (t Tool) verifyImages(ctx context.Context, port string, baud int, images []WriteImage, after string) (Result, error) {
 	if !validPort(port) {
 		return Result{}, fmt.Errorf("unsafe serial port: %q", port)
 	}
@@ -168,8 +234,14 @@ func (t Tool) VerifyImages(ctx context.Context, port string, baud int, images []
 	if len(images) == 0 || len(images) > 16 {
 		return Result{}, errors.New("invalid image count")
 	}
-	args := []string{"--port", port, "--baud", strconv.Itoa(baud), "verify_flash"}
-	lastEnd := uint64(0)
+	// This is the single intentional transition back to application mode: the
+	// range hash has succeeded while the ROM session is still active, then
+	// esptool performs a hard reset so the job can bind the re-enumerated
+	// application serial endpoint and obtain nonce-bound BOOT_STATUS proof.
+	if after != "no_reset" && after != "hard_reset" {
+		return Result{}, errors.New("invalid verification reset strategy")
+	}
+	args := []string{"--port", port, "--baud", strconv.Itoa(baud), "--after", after, "verify_flash"}
 	for i, img := range images {
 		if img.Offset%0x1000 != 0 || img.Path == "" || img.Size <= 0 {
 			return Result{}, fmt.Errorf("invalid image %d", i)
@@ -177,14 +249,10 @@ func (t Tool) VerifyImages(ctx context.Context, port string, baud int, images []
 		if uint64(img.Size) > ^uint64(0)-img.Offset {
 			return Result{}, fmt.Errorf("image %d range overflows", i)
 		}
-		if i > 0 && img.Offset < lastEnd {
-			return Result{}, errors.New("overlapping images")
-		}
 		if _, err := os.Stat(img.Path); err != nil {
 			return Result{}, fmt.Errorf("image not accessible: %w", err)
 		}
 		args = append(args, fmt.Sprintf("0x%x", img.Offset), img.Path)
-		lastEnd = img.Offset + uint64(img.Size)
 	}
 	return t.run(ctx, args)
 }
@@ -202,20 +270,28 @@ func (t Tool) ReadFlash(ctx context.Context, port string, offset uint64, length 
 	if _, err := os.Stat(filepath.Dir(output)); err != nil {
 		return Result{}, fmt.Errorf("read destination directory: %w", err)
 	}
-	return t.run(ctx, []string{"--port", port, "--baud", "115200", "read_flash", fmt.Sprintf("0x%x", offset), fmt.Sprintf("0x%x", length), output})
+	// esptool 5 uses hyphenated verbs. Keep the adapter's Go method name
+	// stable while avoiding deprecated-command output in user diagnostics.
+	return t.run(ctx, []string{"--port", port, "--baud", "115200", "read-flash", fmt.Sprintf("0x%x", offset), fmt.Sprintf("0x%x", length), output})
 }
 
 func (t Tool) run(ctx context.Context, args []string) (Result, error) {
+	return t.runStreaming(ctx, args, nil)
+}
+
+func (t Tool) runStreaming(ctx context.Context, args []string, onLine func(string)) (Result, error) {
 	started := time.Now()
-	var out bytes.Buffer
+	command := append([]string{filepath.Base(t.Path)}, args...)
+	out := newOutputCapture(onLine)
 	cmd := exec.Command(t.Path, args...)
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := prepareProcessTree(cmd); err != nil {
-		return Result{Command: append([]string{filepath.Base(t.Path)}, args...), Duration: time.Since(started)}, fmt.Errorf("prepare esptool process tree: %w", err)
+		return Result{Command: command, Duration: time.Since(started)}, fmt.Errorf("prepare esptool process tree: %w", err)
 	}
 	err := runWithCancellation(ctx, cmd)
-	result := Result{Command: append([]string{filepath.Base(t.Path)}, args...), Output: out.String(), Duration: time.Since(started)}
+	out.flush()
+	result := Result{Command: command, Output: out.String(), Duration: time.Since(started)}
 	if exitErr := new(exec.ExitError); errors.As(err, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()
 	} else if err == nil {
@@ -225,6 +301,73 @@ func (t Tool) run(ctx context.Context, args []string) (Result, error) {
 		return result, fmt.Errorf("esptool %s: %w", action(args), err)
 	}
 	return result, nil
+}
+
+var writePercentPattern = regexp.MustCompile(`(?i)writing\s+at\s+0x[0-9a-f]+.*?([0-9]{1,3}(?:\.[0-9]+)?)\s*%`)
+
+func parseWritePercent(line string) (float64, bool) {
+	match := writePercentPattern.FindStringSubmatch(line)
+	if len(match) != 2 {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil || value < 0 || value > 100 {
+		return 0, false
+	}
+	return value, true
+}
+
+// outputCapture retains the complete diagnostic output while also splitting
+// carriage-return based progress redraws into safe live lines. os/exec may
+// write stdout and stderr concurrently, so both buffers are protected.
+type outputCapture struct {
+	mu      sync.Mutex
+	out     bytes.Buffer
+	pending string
+	onLine  func(string)
+}
+
+func newOutputCapture(onLine func(string)) *outputCapture { return &outputCapture{onLine: onLine} }
+
+func (c *outputCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	_, _ = c.out.Write(p)
+	c.pending += string(p)
+	parts := strings.FieldsFunc(c.pending, func(r rune) bool { return r == '\n' || r == '\r' })
+	endsLine := strings.HasSuffix(c.pending, "\n") || strings.HasSuffix(c.pending, "\r")
+	lines := append([]string(nil), parts...)
+	if !endsLine && len(lines) != 0 {
+		c.pending = lines[len(lines)-1]
+		lines = lines[:len(lines)-1]
+	} else {
+		c.pending = ""
+	}
+	onLine := c.onLine
+	c.mu.Unlock()
+	if onLine != nil {
+		for _, line := range lines {
+			if line != "" {
+				onLine(line)
+			}
+		}
+	}
+	return len(p), nil
+}
+
+func (c *outputCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.out.String()
+}
+
+func (c *outputCapture) flush() {
+	c.mu.Lock()
+	line, onLine := c.pending, c.onLine
+	c.pending = ""
+	c.mu.Unlock()
+	if line != "" && onLine != nil {
+		onLine(line)
+	}
 }
 
 // runWithCancellation owns the sidecar lifetime rather than relying on
@@ -278,8 +421,12 @@ func ParseChipID(output string) ChipInfo {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "detecting chip type") || strings.Contains(lower, "chip is") {
-			ci.Chip = line
+		if strings.Contains(lower, "chip type:") {
+			ci.Chip = strings.TrimSpace(line[strings.Index(line, ":")+1:])
+		} else if strings.Contains(lower, "detecting chip type") || strings.Contains(lower, "chip is") {
+			if ci.Chip == "" {
+				ci.Chip = line
+			}
 		}
 		if strings.Contains(lower, "revision") {
 			ci.Revision = line

@@ -11,18 +11,20 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
+// assets is deliberately embedded from the built static surface. The desktop
+// program never loads UI code from a network location, which keeps the local
+// firmware-write authority behind the same reviewed application bundle.
+//
 //go:embed all:frontend/dist
 var assets embed.FS
 
-// releaseBuild is set only by the protected release workflow. It keeps a
-// developer build usable with local ESP-IDF tools while a shipped executable
-// refuses to run an unverified PATH-provided esptool.
+// releaseBuild is injected only by the protected release workflow. A shipped
+// executable therefore refuses a PATH-provided esptool and accepts only its
+// signed sidecar, while developer builds remain probe-only by default.
 var releaseBuild = "false"
 
-// Release metadata is injected by the protected workflow. It is intentionally
-// separate from the firmware signing key: it lets support staff distinguish a
-// development build (which trusts no public releases) from a signed release
-// binary without exposing any signing material.
+// These values are public release metadata, not private signing material.
+// Official packaging injects them with -ldflags.
 var releaseKeyID = "clawmate-release-v1"
 var releasePublicKeyBase64 = ""
 
@@ -34,19 +36,21 @@ func main() {
 	flash.ConfigureSidecar(executable, releaseBuild == "true")
 	flash.ConfigureSidecarTrust(releaseKeyID, releasePublicKeyBase64)
 	app := NewApp()
-	if err := wails.Run(&options.App{
-		Title:     "ClawMate Maker",
-		Width:     1180,
-		Height:    780,
-		MinWidth:  960,
-		MinHeight: 640,
-		AssetServer: &assetserver.Options{
-			Assets: assets,
-		},
-		OnStartup:  app.startup,
-		OnShutdown: app.shutdown,
-		Bind:       []interface{}{app},
-	}); err != nil {
+	err = wails.Run(&options.App{
+		Title:            "ClawMate Maker",
+		Width:            1180,
+		Height:           820,
+		MinWidth:         960,
+		MinHeight:        680,
+		DisableResize:    false,
+		BackgroundColour: &options.RGBA{R: 244, G: 247, B: 251, A: 255},
+		AssetServer:      &assetserver.Options{Assets: assets},
+		OnStartup:        app.startup,
+		OnShutdown:       app.shutdown,
+		OnBeforeClose:    app.PreventCloseWhileWriting,
+		Bind:             []interface{}{app},
+	})
+	if err != nil {
 		log.Fatal(err)
 	}
 }

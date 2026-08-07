@@ -75,6 +75,8 @@ import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
 import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
+import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
+import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
@@ -521,7 +523,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [skillRecordingTabId, setSkillRecordingTabId] = useState<string | null>(null);
     const [skillRecordingCount, setSkillRecordingCount] = useState(0);
     const [skillRecordingCard, setSkillRecordingCard] = useState<any>(null);
-    const { showConfirm } = useDialog();
+    const { showConfirm, showAlert } = useDialog();
     // The panel remains mounted across app-page navigation to retain task-tab
     // state. Close panel-owned overlays when it becomes inactive so nothing
     // unexpected reappears when the user returns.
@@ -529,6 +531,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (panelActive) return;
         setKnowledgeDialogOpen(false);
         setSaveTaskDialogOpen(false);
+        clearExpertOptimizeDraft();
         // Keep a live approval request in memory: the backend may still be
         // awaiting the decision. Its rendering is gated below and it will be
         // available again if the user returns before the request expires.
@@ -682,6 +685,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (isRecordingCurrentTab) {
             // Immediately update UI state (don't wait for backend event)
             setSkillRecordingTabId(null);
+            // The backend may spend a few seconds asking the LLM for a
+            // professional name/summary — show a transient preparing card.
+            setSkillRecordingCard({
+                id: `skill-rec-preparing-${Date.now()}`,
+                type: "skill_recording_preparing",
+                title: lang === "en" ? "Recording stopped" : "录制已停止",
+                description: lang === "en"
+                    ? "Generating skill name and summary…"
+                    : "正在生成 Skill 名称与逻辑总结…",
+                fields: [],
+                actions: [],
+                metadata: {},
+            });
             // Stop recording → show result card
             (window as any).go?.main?.App?.StopSkillRecording?.().then((data: any) => {
                 if (data && !data.error) {
@@ -727,6 +743,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }).catch(() => {
                 // On failure, revert UI state
                 setSkillRecordingTabId(currentTabId);
+                setSkillRecordingCard(null);
             });
         } else if (skillRecordingTabId) {
             // Another tab is recording — cannot start a new one
@@ -776,9 +793,29 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // action === "save"
             const name = (values.name || "").trim() || data.suggested_name || "my-skill";
             const desc = (values.description || "").trim() || data.suggested_description || "";
-            (window as any).go?.main?.App?.ResolveSkillRecording?.("save", name, desc).catch(() => { /* ignore */ });
+            (window as any).go?.main?.App?.ResolveSkillRecording?.("save", name, desc).then((result: any) => {
+                // Surface portability warnings (e.g. machine-specific paths that
+                // could not be parameterized automatically) after a successful save.
+                const warnings: string[] = (result && Array.isArray(result.portability_warnings)) ? result.portability_warnings : [];
+                if (result && result.status === "saved" && warnings.length > 0) {
+                    setSkillRecordingCard({
+                        id: `skill-rec-warn-${Date.now()}`,
+                        type: "skill_recording_saved_warnings",
+                        title: lang === "en"
+                            ? `Skill "${result.name || name}" saved with portability notes.`
+                            : `Skill「${result.name || name}」已保存，但有可移植性提示。`,
+                        description: (lang === "en"
+                            ? "Some machine-specific details may need manual adjustment:\n"
+                            : "以下内容可能需要手动调整（含特定机器的信息）：\n")
+                            + warnings.map((w: string) => `• ${w}`).join("\n"),
+                        fields: [],
+                        actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                        metadata: {},
+                    });
+                }
+            }).catch(() => { /* ignore */ });
         }
-    }, []);
+    }, [lang]);
     const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, clearTabConversation, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
     // Publish open project-tab paths so the sidebar can block deleting active tasks.
     useEffect(() => {
@@ -2275,6 +2312,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const isExpertTabActive = activeTab.type === "expert";
+    // Expert optimization ("专家优化") controller, extracted to useExpertOptimize.
+    const { expertOptimizeBusy, expertOptimizeDraft, handleOptimizeExpert, clearExpertOptimizeDraft } = useExpertOptimize({ activeExpertId: isExpertTabActive ? activeTab.expertId : null, lang, showAlert });
     const isCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "coding_dev";
     const isRemoteCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "remote_coding_dev";
     const isPureCodingEnvironment = isCodingDevEnvironment || isRemoteCodingDevEnvironment;
@@ -5124,7 +5163,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         <div data-testid="ai-panel-root" style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both
                 (so the quick-settings / status strip spans into the code-preview column). */}
             <div data-testid="ai-panel-main" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
@@ -6046,6 +6085,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 />
             )}
             {panelActive && participantInviteTargetTab && <TabParticipantInviteDialog key={participantInviteTargetTab.id} tab={participantInviteTargetTab} lang={lang} theme={t} onClose={() => setParticipantInviteTargetTabId(null)} onAddParticipantToTab={addParticipantToTab} />}
+            {panelActive && <ExpertOptimizeEditorDialog lang={lang} draft={expertOptimizeDraft} onClose={clearExpertOptimizeDraft} />}
             </div>
             {(showCodingConflictPanel || showWorkflowPreview || showCodePreview || showAgentView) ? (
                 <Suspense fallback={null}>

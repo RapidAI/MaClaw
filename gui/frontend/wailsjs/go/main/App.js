@@ -2958,6 +2958,10 @@ export function OpenVirtualRepository(arg1) {
   return window['go']['main']['App']['OpenVirtualRepository'](arg1);
 }
 
+export function OptimizeExpertFromSession(arg1) {
+  return window['go']['main']['App']['OptimizeExpertFromSession'](arg1);
+}
+
 export function PackLog(arg1) {
   return window['go']['main']['App']['PackLog'](arg1);
 }

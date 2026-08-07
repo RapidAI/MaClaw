@@ -1854,6 +1854,10 @@ jobs:
   # ============================================================
   build-esp32-firmware:
     runs-on: ubuntu-latest
+    # Firmware signing material is scoped to this protected environment. The
+    # package-build job must enter it too; otherwise an environment-level
+    # signing key is unavailable before the later mirror publication gate.
+    environment: firmware-release
     strategy:
       fail-fast: false
       matrix:
@@ -1970,17 +1974,24 @@ jobs:
           # variable fails with a clear release-gate error rather than after
           # the expensive firmware build and packaging work.
           test -n "$CLAWMATE_FIRMWARE_PUBLIC_KEY"
+          FIRMWARE_CHANNEL="stable"
+          if [[ "${{ github.ref_name }}" == *-beta* ]] || [[ "${{ github.ref_name }}" == *-alpha* ]] || [[ "${{ github.ref_name }}" == *-rc* ]]; then
+            FIRMWARE_CHANNEL="beta"
+          fi
           (
             cd ClawMateMaker
             go run ./tools/fwpack \
               --board '${{ matrix.device }}' \
               --firmware-board '${{ matrix.firmware_board }}' \
               --layout-id '${{ matrix.layout_id }}' \
+              --mode full \
+              --channel "$FIRMWARE_CHANNEL" \
               --release '${{ github.ref_name }}' \
               --release-sequence '${{ github.run_number }}' \
-              --image "$release_dir/${FIRMWARE_NAME}.bin" \
+              --flasher-args "$project_dir/$build_dir/flasher_args.json" \
               --partition-table "$project_dir/$build_dir/partition_table/partition-table.bin" \
               --project-description "$project_dir/$build_dir/project_description.json" \
+              --sdkconfig-header "$project_dir/$build_dir/config/sdkconfig.h" \
               --output "$release_dir/${FIRMWARE_NAME}.clawfw" \
               --key-id "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
           )
@@ -1999,6 +2010,7 @@ jobs:
               --input "$release_dir/${FIRMWARE_NAME}.clawfw" \
               --board '${{ matrix.device }}' \
               --key-id "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID" \
+              --require-split-full \
               --evidence "$release_dir/${FIRMWARE_NAME}.clawfw.evidence.json"
           )
           test -s "$release_dir/${FIRMWARE_NAME}.clawfw.evidence.json"
@@ -2065,6 +2077,12 @@ jobs:
           go-version-file: ClawMateMaker/go.mod
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
+      - name: Test desktop flasher safety boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ClawMateMaker
+          go test ./...
       - name: Build signed desktop flasher
         shell: bash
         env:
@@ -2112,6 +2130,19 @@ jobs:
           "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" version
           test -s "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}"
           test -s "ClawMateMaker/build/bin/tools/sidecar-manifest.json"
+      - name: Verify signed managed sidecar against desktop release trust root
+        shell: bash
+        env:
+          CLAWMATE_FIRMWARE_PUBLIC_KEY: ${{ vars.CLAWMATE_FIRMWARE_PUBLIC_KEY }}
+          CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLAWMATE_FIRMWARE_PUBLIC_KEY"
+          test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
+          (
+            cd ClawMateMaker
+            go run ./tools/sidecarverify "$(pwd)/build/bin/${{ matrix.executable }}"
+          )
       - name: Package desktop flasher
         shell: bash
         run: |
@@ -2170,6 +2201,10 @@ jobs:
   release:
     needs: [build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-esp32-firmware, build-clawmate-maker]
     runs-on: ubuntu-latest
+    # The R2/COS credentials and firmware release keys may be environment
+    # secrets. Keep asset generation, mirror upload and public read-back under
+    # the same protected release boundary as the desktop flasher build.
+    environment: firmware-release
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -2285,6 +2320,9 @@ jobs:
               "TigerProxy-Setup.exe",
               "TigerProxy-Universal.pkg",
               "TigerProxy-x86_64.AppImage",
+              "MaClaw-ESP32S3-EchoEar-2ST-firmware.bin",
+              "MaClaw-ESP32S3-Bread-Compact-firmware.bin",
+              "MaClaw-ESP32S3-Fangtang-4G-firmware.bin",
               "MaClaw-ESP32S3-EchoEar-2ST-firmware.zip",
               "MaClaw-ESP32S3-Bread-Compact-firmware.zip",
               "MaClaw-ESP32S3-Fangtang-4G-firmware.zip",
@@ -2310,14 +2348,17 @@ jobs:
           echo "Release asset allowlist for BRAND=${BRAND_FILTER:-all}:"
           cat release_only_assets.txt
 
+      - name: Test three-board firmware manifest contract
+        run: python3 .github/scripts/test_firmware_release_contract.py
+
       - name: Generate latest manifest
         env:
           COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
           COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
           COS_BUCKET: ${{ secrets.COS_BUCKET }}
           COS_REGION: ${{ secrets.COS_REGION }}
-          COS_PUBLIC_BASE_URL: ${{ secrets.COS_PUBLIC_BASE_URL }}
-          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL || 'https://pub-c837069cbe31469590a5fea6235b436b.r2.dev' }}
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
           RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
@@ -2331,14 +2372,6 @@ jobs:
           python3 .github/scripts/sync_cos_release.py --manifest-only --manifest-name "${MANIFEST_NAME}"
           echo "${MANIFEST_NAME} preview:"
           cat "release-assets/${MANIFEST_NAME}"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release-assets/*
-          body_path: release_notes.md
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Set up Node.js for Cloudflare R2
         uses: actions/setup-node@v6
@@ -2354,8 +2387,8 @@ jobs:
           R2_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_BUCKET" ]; then
-            echo "Cloudflare R2 secrets are not configured; skipping R2 upload."
-            exit 0
+            echo "Cloudflare R2 credentials are required for an official firmware release." >&2
+            exit 1
           fi
           node --version
           npm --version
@@ -2381,14 +2414,13 @@ jobs:
           wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
 
       - name: Upload release assets to Tencent COS
-        continue-on-error: true
         env:
           COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
           COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
           COS_BUCKET: ${{ secrets.COS_BUCKET }}
           COS_REGION: ${{ secrets.COS_REGION }}
-          COS_PUBLIC_BASE_URL: ${{ secrets.COS_PUBLIC_BASE_URL }}
-          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL || 'https://pub-c837069cbe31469590a5fea6235b436b.r2.dev' }}
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
           RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
@@ -2398,11 +2430,32 @@ jobs:
           COS_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
         run: |
           if [ -z "$COS_SECRET_ID" ] || [ -z "$COS_SECRET_KEY" ] || [ -z "$COS_BUCKET" ] || [ -z "$COS_REGION" ] || [ -z "$COS_PUBLIC_BASE_URL" ]; then
-            echo "Tencent COS secrets are not configured; skipping COS upload."
-            exit 0
+            echo "Tencent COS credentials and public URL are required for an official firmware release." >&2
+            exit 1
           fi
           python3 -m pip install -q cos-python-sdk-v5
           python3 .github/scripts/sync_cos_release.py
+
+      - name: Verify firmware publication on Cloudflare R2 and Tencent COS
+        env:
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+        run: python3 .github/scripts/verify_firmware_mirrors.py
+
+      # Do not publish the GitHub Release until both public mirrors contain
+      # the same manifest and all three signed firmware archives. This keeps
+      # the desktop client's GitHub/R2/COS discovery contract truthful.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Verify Gitee token secret
         env:

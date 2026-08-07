@@ -1497,6 +1497,8 @@ export function OpenSystemUrl(arg1:string):Promise<void>;
 
 export function OpenVirtualRepository(arg1:string):Promise<string>;
 
+export function OptimizeExpertFromSession(arg1:string):Promise<string>;
+
 export function PackLog(arg1:string):Promise<string>;
 
 export function ParseResumeForWorkflowForm(arg1:string,arg2:string):Promise<string>;

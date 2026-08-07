@@ -472,3 +472,41 @@ func TestTombstoneSemantics(t *testing.T) {
 		t.Fatalf("cross-tenant tombstone leaked: applied=%v err=%v", applied, err)
 	}
 }
+
+func TestUpsertOptimizedFromAndAboutRoundtrip(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+
+	ex, applied, err := st.Upsert(ctx, "tenant-a", CreateInput{
+		ID:              "expert-opt-1",
+		Name:            "润色·优化",
+		SystemPrompt:    "p",
+		OptimizedFromID: "expert-src-1",
+		About:           "作者：张三\n版权：保留所有权利",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("fresh insert should be applied")
+	}
+
+	got, err := st.Get(ctx, "tenant-a", ex.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OptimizedFromID != "expert-src-1" {
+		t.Fatalf("optimized_from_id=%q", got.OptimizedFromID)
+	}
+	if got.About != "作者：张三\n版权：保留所有权利" {
+		t.Fatalf("about=%q", got.About)
+	}
+
+	list, err := st.List(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].OptimizedFromID != "expert-src-1" || list[0].About == "" {
+		t.Fatalf("list round-trip lost lineage/about: %+v", list)
+	}
+}

@@ -123,6 +123,13 @@ func Encode(entries []Entry) ([]byte, error) {
 		raw[off+2], raw[off+3] = e.Type, e.Subtype
 		binary.LittleEndian.PutUint32(raw[off+4:], e.Offset)
 		binary.LittleEndian.PutUint32(raw[off+8:], e.Size)
+		// ESP-IDF labels are NUL-terminated within a fixed-width field. The
+		// surrounding table starts out as 0xFF, so clear this field explicitly
+		// before copying the label; otherwise Parse would treat padding as part
+		// of the label and app-only package generation could not find factory.
+		for position := off + 12; position < off+28; position++ {
+			raw[position] = 0
+		}
 		copy(raw[off+12:off+28], []byte(e.Label))
 		binary.LittleEndian.PutUint32(raw[off+28:], e.Flags)
 	}

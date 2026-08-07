@@ -7,6 +7,7 @@
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_chip_info.h"
+#include "esp_timer.h"
 #include "esp_flash.h"
 #include "esp_psram.h"
 #include "hal/usb_serial_jtag_ll.h"
@@ -21,6 +22,20 @@
 
 static volatile bool s_local_ready;
 static volatile bool s_service_ready;
+// This diagnostic service is lifecycle-owned even though the current boot
+// path keeps it alive for the lifetime of the application.  Future Power and
+// Manufacturing coordinators must be able to quiesce it before USB is
+// reconfigured; never leave a hidden permanent reader task behind.
+static volatile bool s_query_task_stop_requested;
+static TaskHandle_t s_query_task;
+
+static TaskHandle_t query_task_handle(void) {
+    return __atomic_load_n(&s_query_task, __ATOMIC_ACQUIRE);
+}
+
+static void set_query_task_handle(TaskHandle_t handle) {
+    __atomic_store_n(&s_query_task, handle, __ATOMIC_RELEASE);
+}
 
 static bool nonce_is_valid(const char *nonce) {
     if (!nonce) return true;
@@ -73,8 +88,48 @@ static cJSON *create_identity_event(const char *type, const char *nonce) {
     cJSON_AddStringToObject(root, "hw_rev", CONFIG_MACLAW_HW_REV);
     cJSON_AddStringToObject(root, "layout_id", CONFIG_MACLAW_LAYOUT_ID);
     cJSON_AddStringToObject(root, "compat_id", CONFIG_MACLAW_COMPAT_ID);
+    firmware_identity_info_t identity = {0};
+    if (firmware_identity_get(&identity) != ESP_OK) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON *power_json = cJSON_AddObjectToObject(root, "power");
+    if (!power_json ||
+        !cJSON_AddBoolToObject(power_json, "available", identity.power_available) ||
+        !cJSON_AddNumberToObject(power_json, "state", identity.power.state) ||
+        !cJSON_AddBoolToObject(power_json, "display_off_armed",
+                               identity.power.display_off_armed)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON *connectivity_json = cJSON_AddObjectToObject(root, "connectivity");
+    if (!connectivity_json ||
+        !cJSON_AddNumberToObject(connectivity_json, "active_uplink",
+                                 identity.connectivity.active_uplink) ||
+        !cJSON_AddBoolToObject(connectivity_json, "wifi_ready",
+                               identity.connectivity.wifi_ready) ||
+        !cJSON_AddBoolToObject(connectivity_json, "cellular_ready",
+                               identity.connectivity.cellular_ready) ||
+        !cJSON_AddBoolToObject(connectivity_json, "ready",
+                               identity.connectivity.ready)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON *profile_json = cJSON_AddObjectToObject(root, "device_profile");
+    if (!profile_json ||
+        !cJSON_AddNumberToObject(profile_json, "abi_version", identity.profile.abi_version) ||
+        !cJSON_AddStringToObject(profile_json, "id", identity.profile.id) ||
+        !cJSON_AddNumberToObject(profile_json, "display_width", identity.profile.display_width) ||
+        !cJSON_AddNumberToObject(profile_json, "display_height", identity.profile.display_height) ||
+        !cJSON_AddNumberToObject(profile_json, "capabilities", identity.profile.capabilities) ||
+        !cJSON_AddNumberToObject(profile_json, "primary_interaction_source",
+                                 identity.profile.primary_interaction_source)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
     cJSON_AddStringToObject(root, "project_name", app->project_name);
     cJSON_AddNumberToObject(root, "release_sequence", CONFIG_MACLAW_RELEASE_SEQUENCE);
+    cJSON_AddNumberToObject(root, "firmware_version", CONFIG_MACLAW_RELEASE_SEQUENCE);
     cJSON_AddStringToObject(root, "app_version", app->version);
     cJSON_AddStringToObject(root, "idf_version", app->idf_ver);
     cJSON_AddStringToObject(root, "app_elf_sha256", elf_sha256);
@@ -134,7 +189,7 @@ static void identity_query_task(void *arg) {
     char line[IDENTITY_LINE_CAPACITY];
     size_t used = 0;
     bool discarding = false;
-    while (true) {
+    while (!__atomic_load_n(&s_query_task_stop_requested, __ATOMIC_ACQUIRE)) {
         unsigned char input[64];
         int count = usb_serial_jtag_ll_read_rxfifo(input, sizeof(input));
         for (int i = 0; i < count; ++i) {
@@ -157,16 +212,35 @@ static void identity_query_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(count > 0 ? 10 : 50));
     }
+    set_query_task_handle(NULL);
+    vTaskDelete(NULL);
 }
 
 esp_err_t firmware_identity_start(void) {
     // Broadcasts remain diagnostic only. The host accepts only a query-bound,
     // nonce-bearing BOOT_STATUS response as post-flash success evidence.
+    if (query_task_handle()) return ESP_OK;
+    __atomic_store_n(&s_query_task_stop_requested, false, __ATOMIC_RELEASE);
     emit_event("IDENTITY", NULL);
 #if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
     BaseType_t created = xTaskCreate(identity_query_task, "firmware_identity", 4096,
-                                     NULL, 1, NULL);
+                                     NULL, 1, &s_query_task);
     if (created != pdPASS) return ESP_ERR_NO_MEM;
+#endif
+    return ESP_OK;
+}
+
+esp_err_t firmware_identity_stop(uint32_t timeout_ms) {
+#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+    if (!query_task_handle()) return ESP_OK;
+    __atomic_store_n(&s_query_task_stop_requested, true, __ATOMIC_RELEASE);
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    while (query_task_handle()) {
+        if (esp_timer_get_time() >= deadline_us) return ESP_ERR_TIMEOUT;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+#else
+    (void)timeout_ms;
 #endif
     return ESP_OK;
 }
@@ -174,6 +248,25 @@ esp_err_t firmware_identity_start(void) {
 void firmware_identity_set_local_ready(bool ready) {
     s_local_ready = ready;
     if (ready) emit_event("BOOT_STATUS", NULL);
+}
+
+esp_err_t firmware_identity_get(firmware_identity_info_t *out) {
+    if (!out) return ESP_ERR_INVALID_ARG;
+    const esp_app_desc_t *app = esp_app_get_description();
+    if (!app) return ESP_ERR_INVALID_STATE;
+    memset(out, 0, sizeof(*out));
+    strlcpy(out->product_id, CONFIG_MACLAW_PRODUCT_ID, sizeof(out->product_id));
+    strlcpy(out->board_id, CONFIG_MACLAW_BOARD_ID, sizeof(out->board_id));
+    strlcpy(out->hardware_rev, CONFIG_MACLAW_HW_REV, sizeof(out->hardware_rev));
+    strlcpy(out->layout_id, CONFIG_MACLAW_LAYOUT_ID, sizeof(out->layout_id));
+    strlcpy(out->compatibility_id, CONFIG_MACLAW_COMPAT_ID, sizeof(out->compatibility_id));
+    out->release_sequence = CONFIG_MACLAW_RELEASE_SEQUENCE;
+    strlcpy(out->app_version, app->version, sizeof(out->app_version));
+    (void)esp_app_get_elf_sha256(out->elf_sha256, sizeof(out->elf_sha256));
+    if (!device_profile_get(&out->profile)) return ESP_ERR_INVALID_STATE;
+    out->power_available = device_power_get_snapshot(&out->power);
+    (void)device_connectivity_get_snapshot(&out->connectivity);
+    return ESP_OK;
 }
 
 void firmware_identity_set_service_ready(bool ready) {

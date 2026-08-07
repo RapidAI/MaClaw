@@ -8,8 +8,6 @@ import (
 	"go.bug.st/serial"
 )
 
-// HostAccess describes only local prerequisites. It never downloads or
-// installs drivers, changes group membership, or attempts elevation.
 type HostAccess struct {
 	Platform     string `json:"platform"`
 	Status       string `json:"status"`
@@ -20,9 +18,6 @@ type HostAccess struct {
 	AccessNeeded bool   `json:"accessNeeded"`
 }
 
-// DiagnoseAccess performs a short open/close check only. It deliberately
-// avoids DTR/RTS changes, writes, erases, and ROM reset traffic, so it can be
-// shown before users start a probe or flash job.
 func DiagnoseAccess(port string) HostAccess {
 	result := HostAccess{Platform: runtime.GOOS, Port: port, Status: "unknown", Message: "Select a serial device to check local access."}
 	if strings.TrimSpace(port) == "" {

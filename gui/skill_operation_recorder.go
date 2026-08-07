@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -36,14 +37,15 @@ type pendingTemplateFile struct {
 // SkillOperationRecorder records tool operations during an agent loop session
 // and generates a portable skill.yaml from the recorded sequence.
 type SkillOperationRecorder struct {
-	mu        sync.Mutex
-	active    atomic.Bool // fast-path check without lock; mirrors r.recording
-	recording bool
-	entries   []RecordedOp
-	startTime time.Time
-	workDir   string // primary working directory during recording
-	ownerID   string // session/tab owner that started this recording (used for filtering)
-	tabID     string // frontend tabID that owns this recording (for event payloads)
+	mu         sync.Mutex
+	active     atomic.Bool // fast-path check without lock; mirrors r.recording
+	recording  bool
+	entries    []RecordedOp
+	startTime  time.Time
+	workDir    string   // primary working directory during recording
+	ownerID    string   // session/tab owner that started this recording (used for filtering)
+	tabID      string   // frontend tabID that owns this recording (for event payloads)
+	stepTitles []string // optional per-step titles suggested by the LLM (applied at Stop)
 }
 
 // NewSkillOperationRecorder creates a new recorder instance.
@@ -89,6 +91,7 @@ func (r *SkillOperationRecorder) StartWithTab(workDir, ownerID, tabID string) er
 	r.workDir = workDir
 	r.ownerID = ownerID
 	r.tabID = tabID
+	r.stepTitles = nil
 	return nil
 }
 
@@ -105,6 +108,14 @@ func (r *SkillOperationRecorder) TabID() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.tabID
+}
+
+// SetSuggestedStepTitles stores optional per-step titles (e.g. produced by the
+// LLM metadata pass) to be written into each generated step's name field at Stop.
+func (r *SkillOperationRecorder) SetSuggestedStepTitles(titles []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stepTitles = titles
 }
 
 // IsRecording returns whether the recorder is currently active.
@@ -147,18 +158,21 @@ func (r *SkillOperationRecorder) EntryCount() int {
 }
 
 // Stop ends recording and generates a skill from the recorded operations.
-// Returns the generated skill directory path.
-func (r *SkillOperationRecorder) Stop(skillName, description string) (string, error) {
+// Returns the generated skill directory path and any portability warnings
+// detected after the auto-fix pass (non-fatal; empty when clean).
+func (r *SkillOperationRecorder) Stop(skillName, description string) (string, []string, error) {
 	r.mu.Lock()
 	entries := r.entries
 	workDir := r.workDir
+	stepTitles := r.stepTitles
 	r.recording = false
 	r.active.Store(false)
 	r.entries = nil
+	r.stepTitles = nil
 	r.mu.Unlock()
 
 	if len(entries) == 0 {
-		return "", fmt.Errorf("no operations recorded")
+		return "", nil, fmt.Errorf("no operations recorded")
 	}
 
 	if skillName == "" {
@@ -171,15 +185,15 @@ func (r *SkillOperationRecorder) Stop(skillName, description string) (string, er
 
 	// Generate skill.yaml content + collect template files
 	var templates []pendingTemplateFile
-	yamlContent, err := r.generateSkillYAML(skillName, description, entries, workDir, &templates)
+	yamlContent, err := r.generateSkillYAML(skillName, description, entries, workDir, stepTitles, &templates)
 	if err != nil {
-		return "", fmt.Errorf("generate skill yaml: %w", err)
+		return "", nil, fmt.Errorf("generate skill yaml: %w", err)
 	}
 
 	// Write to skill directory
 	skillsDir, err := skill.PrimarySkillsDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve skills dir: %w", err)
+		return "", nil, fmt.Errorf("resolve skills dir: %w", err)
 	}
 
 	dirName := sanitizeSkillDirName(skillName)
@@ -197,23 +211,44 @@ func (r *SkillOperationRecorder) Stop(skillName, description string) (string, er
 	}
 
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		return "", fmt.Errorf("create skill dir: %w", err)
+		return "", nil, fmt.Errorf("create skill dir: %w", err)
 	}
 
 	yamlPath := filepath.Join(skillDir, "skill.yaml")
 	if err := os.WriteFile(yamlPath, []byte(yamlContent), 0o644); err != nil {
-		return "", fmt.Errorf("write skill.yaml: %w", err)
+		return "", nil, fmt.Errorf("write skill.yaml: %w", err)
 	}
 
 	// Write template/patch files referenced by generated bash steps
 	for _, tmpl := range templates {
 		tmplPath := filepath.Join(skillDir, tmpl.Name)
 		if err := os.WriteFile(tmplPath, []byte(tmpl.Content), 0o644); err != nil {
-			return "", fmt.Errorf("write template %s: %w", tmpl.Name, err)
+			return "", nil, fmt.Errorf("write template %s: %w", tmpl.Name, err)
 		}
 	}
 
-	return skillDir, nil
+	// Portability gate: auto-fix what can be fixed mechanically, then validate
+	// and surface anything left (e.g. absolute paths embedded in file contents).
+	// Failures here never block saving — the skill is already on disk.
+	if changes, fixErr := skill.AutoFixPortability(skillDir); fixErr != nil {
+		log.Printf("[skill-recorder] portability auto-fix failed (non-fatal): %v", fixErr)
+	} else if len(changes) > 0 {
+		log.Printf("[skill-recorder] portability auto-fix applied %d change(s) to %s", len(changes), skillDir)
+	}
+
+	var warnings []string
+	if report, valErr := skill.ValidateSkillPortability(skillDir); valErr != nil {
+		log.Printf("[skill-recorder] portability validation failed (non-fatal): %v", valErr)
+	} else if report != nil {
+		for _, issue := range report.Issues {
+			if issue.Severity == skill.SeverityInfo {
+				continue
+			}
+			warnings = append(warnings, fmt.Sprintf("%s: %s", issue.File, issue.Message))
+		}
+	}
+
+	return skillDir, warnings, nil
 }
 
 // Cancel discards the current recording without generating a skill.
@@ -272,50 +307,120 @@ func (r *SkillOperationRecorder) OperationSummary() []string {
 
 // --- Internal helpers ---
 
+// scriptFileExts are extensions treated as "the script being run" when
+// deriving a skill name from a bash command.
+var scriptFileExts = map[string]bool{
+	"py": true, "js": true, "ts": true, "mjs": true,
+	"sh": true, "bat": true, "ps1": true, "rb": true, "pl": true,
+}
+
 func (r *SkillOperationRecorder) suggestSkillName(entries []RecordedOp) string {
 	if len(entries) == 0 {
-		return "my-skill"
+		return "recorded-skill"
 	}
 
-	// Use the first meaningful tool action as the name base
+	// 1. Prefer the script a bash command actually runs: `python export_data.py`
+	//    → "export-data". This is usually the heart of the workflow.
 	for _, op := range entries {
-		switch op.ToolName {
-		case "bash":
-			if cmd, ok := op.Args["command"].(string); ok {
-				parts := strings.Fields(cmd)
-				if len(parts) > 0 {
-					base := filepath.Base(parts[0])
-					if base != "" && base != "." {
-						return "auto-" + sanitizeSkillDirName(base)
-					}
-				}
+		if op.ToolName != "bash" {
+			continue
+		}
+		cmd, _ := op.Args["command"].(string)
+		for _, field := range strings.Fields(cmd) {
+			field = strings.Trim(field, `"'`)
+			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(field), "."))
+			if !scriptFileExts[ext] {
+				continue
 			}
-		case "write_file":
-			if path, ok := op.Args["path"].(string); ok {
-				ext := strings.TrimPrefix(filepath.Ext(path), ".")
-				base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-				if ext != "" {
-					return "auto-" + sanitizeSkillDirName(base+"-"+ext)
-				}
-				return "auto-" + sanitizeSkillDirName(base)
+			stem := strings.TrimSuffix(filepath.Base(field), filepath.Ext(field))
+			if name := sanitizeSkillDirName(strings.ReplaceAll(stem, "_", "-")); name != "" && name != "skill" {
+				return name
 			}
 		}
 	}
 
-	return "auto-skill-" + time.Now().Format("0102-1504")
+	// 2. A written file reveals the artifact the skill produces:
+	//    write_file report_template.xlsx → "report-template-xlsx".
+	for _, op := range entries {
+		if op.ToolName != "write_file" {
+			continue
+		}
+		path, _ := op.Args["path"].(string)
+		if path == "" {
+			continue
+		}
+		ext := strings.TrimPrefix(filepath.Ext(path), ".")
+		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		candidate := base
+		if ext != "" {
+			candidate = base + "-" + ext
+		}
+		if name := sanitizeSkillDirName(candidate); name != "" && name != "skill" {
+			return name
+		}
+	}
+
+	// 3. First non-generic executable: `ffmpeg -i ...` → "ffmpeg".
+	for _, op := range entries {
+		if op.ToolName != "bash" {
+			continue
+		}
+		cmd, _ := op.Args["command"].(string)
+		fields := strings.Fields(cmd)
+		if len(fields) == 0 {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(fields[0]))
+		if base != "" && base != "." && !triggerGenericCmds[base] {
+			return sanitizeSkillDirName(base)
+		}
+	}
+
+	return "recorded-skill-" + time.Now().Format("0102-1504")
 }
 
 func (r *SkillOperationRecorder) suggestDescription(entries []RecordedOp) string {
-	var toolNames []string
-	seen := make(map[string]bool)
+	// Describe what the workflow actually does, one short phrase per action,
+	// instead of a bare operation count. Commands are scrubbed of
+	// machine-specific paths first — this text is persisted into skill.yaml.
+	var actions []string
 	for _, op := range entries {
-		if !seen[op.ToolName] {
-			toolNames = append(toolNames, op.ToolName)
-			seen[op.ToolName] = true
+		if !op.Success {
+			continue
+		}
+		switch op.ToolName {
+		case "bash":
+			cmd, _ := op.Args["command"].(string)
+			cmd = strings.Join(strings.Fields(cmd), " ") // collapse whitespace
+			if cmd == "" {
+				continue
+			}
+			cmd = portabilizeCommand(cmd, r.workDir)
+			actions = append(actions, fmt.Sprintf("运行 `%s`", truncateString(cmd, 50)))
+		case "write_file":
+			path, _ := op.Args["path"].(string)
+			if path != "" {
+				actions = append(actions, fmt.Sprintf("写入 `%s`", filepath.Base(path)))
+			}
+		case "edit_file":
+			path, _ := op.Args["path"].(string)
+			if path != "" {
+				actions = append(actions, fmt.Sprintf("修改 `%s`", filepath.Base(path)))
+			}
+		}
+		if len(actions) >= 4 {
+			break
 		}
 	}
-	return fmt.Sprintf("Auto-learned skill from %d operations (tools: %s)",
-		len(entries), strings.Join(toolNames, ", "))
+
+	if len(actions) == 0 {
+		return fmt.Sprintf("录制的工作流（%d 个操作）", len(entries))
+	}
+	desc := "录制的工作流：" + strings.Join(actions, "；")
+	if remaining := len(entries) - len(actions); remaining > 0 {
+		desc += fmt.Sprintf("；等共 %d 步", len(entries))
+	}
+	return desc
 }
 
 // consolidateRecordedOps reduces a raw recording into a cleaner operation list by:
@@ -556,7 +661,7 @@ func normalizePath(p string) string {
 	return p
 }
 
-func (r *SkillOperationRecorder) generateSkillYAML(name, description string, entries []RecordedOp, workDir string, templates *[]pendingTemplateFile) (string, error) {
+func (r *SkillOperationRecorder) generateSkillYAML(name, description string, entries []RecordedOp, workDir string, stepTitles []string, templates *[]pendingTemplateFile) (string, error) {
 	// ===== Step Consolidation Layer =====
 	// Before converting ops to steps, consolidate the raw recording:
 	// 1. Remove diagnostic/exploratory commands that don't produce side effects
@@ -580,6 +685,16 @@ func (r *SkillOperationRecorder) generateSkillYAML(name, description string, ent
 
 	if len(steps) == 0 {
 		return "", fmt.Errorf("no successful operations to convert")
+	}
+
+	// Attach human-readable step titles when available (LLM-suggested). The
+	// SkillYAMLStep.Name field is optional metadata used for display/logging.
+	for i := range steps {
+		if i < len(stepTitles) {
+			if title := strings.TrimSpace(stepTitles[i]); title != "" {
+				steps[i]["name"] = title
+			}
+		}
 	}
 
 	// Detect dependencies
@@ -647,7 +762,10 @@ func (r *SkillOperationRecorder) convertOpToStep(op RecordedOp, workDir string, 
 		if path == "" {
 			return nil
 		}
-		path = portabilizePath(path, workDir)
+		path = workspaceRelIfRelative(portabilizePath(path, workDir))
+		// Scrub machine-specific absolute paths from the file content as well —
+		// recorded content must not leak the recording machine's layout.
+		content = portabilizeCommand(content, workDir)
 		mode, _ := op.Args["mode"].(string)
 
 		// SkillRunner only supports "bash" action.
@@ -681,12 +799,15 @@ func (r *SkillOperationRecorder) convertOpToStep(op RecordedOp, workDir string, 
 		if path == "" {
 			return nil
 		}
-		path = portabilizePath(path, workDir)
+		path = workspaceRelIfRelative(portabilizePath(path, workDir))
 		oldStr, _ := op.Args["old_string"].(string)
 		newStr, _ := op.Args["new_string"].(string)
 		if oldStr == "" {
 			return nil
 		}
+		// Same scrubbing for the patch payloads.
+		oldStr = portabilizeCommand(oldStr, workDir)
+		newStr = portabilizeCommand(newStr, workDir)
 
 		// Write old/new strings to patch files to avoid shell quoting issues.
 		patchBaseName := fmt.Sprintf("patch_%d_%d", op.Timestamp.UnixMilli(), templateSeqNum)
@@ -703,25 +824,29 @@ func (r *SkillOperationRecorder) convertOpToStep(op RecordedOp, workDir string, 
 
 		// Generate a standalone Python script for the patch operation.
 		// Uses __file__ directory to locate sibling patch files (portable).
-		// Also resolves {baseDir} in the target path at runtime.
+		// The target path is passed as argv[1] so {{placeholder}} args in it are
+		// substituted by the skill runner (substitution only happens in the step
+		// command string, not inside script files).
 		scriptName := patchBaseName + "_apply.py"
 		scriptContent := fmt.Sprintf(`import pathlib
 import os
+import sys
 _dir = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
 _base = str(_dir)
-target_path = r'%s'.replace('{baseDir}', _base).replace('${baseDir}', _base)
+target_path = sys.argv[1].replace('{baseDir}', _base).replace('${baseDir}', _base)
 target = pathlib.Path(target_path)
 old = (_dir / '%s').read_text(encoding='utf-8')
 new = (_dir / '%s').read_text(encoding='utf-8')
 content = target.read_text(encoding='utf-8')
 target.write_text(content.replace(old, new), encoding='utf-8')
-`, path, oldFileName, newFileName)
+`, oldFileName, newFileName)
 		*templates = append(*templates, pendingTemplateFile{
 			Name:    scriptName,
 			Content: scriptContent,
 		})
 
-		cmd := fmt.Sprintf("python {baseDir}/%s", scriptName)
+		safeTarget := strings.ReplaceAll(path, `"`, `\"`)
+		cmd := fmt.Sprintf(`python {baseDir}/%s "%s"`, scriptName, safeTarget)
 		return map[string]interface{}{
 			"action": "bash",
 			"params": map[string]interface{}{"command": cmd},
@@ -733,38 +858,116 @@ target.write_text(content.replace(old, new), encoding='utf-8')
 	}
 }
 
-// portabilizeCommand replaces absolute paths in a command with {baseDir} macros
-// and parameterizes obvious input/output file references.
+// workspacePlaceholder is the {{arg}} name used for the recording-time working
+// directory. It becomes a required_arg in the generated skill.yaml, so at replay
+// time the caller supplies the target workspace explicitly — the skill never
+// depends on the machine it was recorded on.
+const workspacePlaceholder = "{{workspace}}"
+
+// portabilizeCommand replaces machine-specific absolute paths in a command with
+// portable macros/placeholders:
+//   - recording workDir → {{workspace}} (resolved from skill args at replay)
+//   - user home dir     → $HOME
+//   - any other absolute path (Windows drive paths, /Users/..., /home/...) →
+//     a {{placeholder}} derived from the path's base name
 func portabilizeCommand(cmd string, workDir string) string {
 	if workDir != "" {
-		// Normalize path separators for comparison
-		normWorkDir := filepath.ToSlash(workDir)
-		normCmd := cmd
-
-		// Replace workDir references with {baseDir}
-		normCmd = strings.ReplaceAll(normCmd, normWorkDir, "{baseDir}")
-		normCmd = strings.ReplaceAll(normCmd, workDir, "{baseDir}")
-
-		// Also handle backslash variant on Windows
-		if runtime.GOOS == "windows" {
-			backslashDir := strings.ReplaceAll(workDir, "/", "\\")
-			normCmd = strings.ReplaceAll(normCmd, backslashDir, "{baseDir}")
-		}
-
-		cmd = normCmd
+		cmd = replacePathPrefix(cmd, workDir, workspacePlaceholder)
 	}
 
 	// Replace home directory references
 	if home, err := os.UserHomeDir(); err == nil {
-		cmd = strings.ReplaceAll(cmd, filepath.ToSlash(home), "$HOME")
-		cmd = strings.ReplaceAll(cmd, home, "$HOME")
+		cmd = replacePathPrefix(cmd, home, "$HOME")
 	}
 
+	// Parameterize any remaining machine-specific absolute paths.
+	cmd = replaceForeignAbsPaths(cmd)
 	return cmd
 }
 
-// portabilizePath makes a file path portable by replacing absolute prefixes.
+// replacePathPrefix replaces occurrences of an absolute path prefix in text
+// with replacement, guarding against partial-segment matches (e.g. prefix
+// "/a/proj" must not rewrite "/a/proj2"). Matching is case-insensitive on
+// Windows, where the filesystem ignores path case.
+func replacePathPrefix(text, prefix, replacement string) string {
+	if prefix == "" {
+		return text
+	}
+	fold := runtime.GOOS == "windows"
+	for _, variant := range pathVariants(prefix) {
+		// Separator-terminated form first: keeps the remaining suffix intact.
+		if fold {
+			text = replaceAllFold(text, variant+"/", replacement+"/")
+			text = replaceAllFold(text, variant+`\`, replacement+`\`)
+		} else {
+			text = strings.ReplaceAll(text, variant+"/", replacement+"/")
+			text = strings.ReplaceAll(text, variant+`\`, replacement+`\`)
+		}
+		// Bare prefix only at a segment boundary (end of string or a character
+		// that cannot continue a longer path segment).
+		pattern := regexp.QuoteMeta(variant) + `(?:$|[^A-Za-z0-9._/\\-])`
+		if fold {
+			pattern = "(?i)" + pattern
+		}
+		re := regexp.MustCompile(pattern)
+		text = re.ReplaceAllStringFunc(text, func(m string) string {
+			return replacement + m[len(variant):]
+		})
+	}
+	return text
+}
+
+// replaceAllFold is a case-insensitive strings.ReplaceAll. Falls back to
+// case-sensitive replacement when case folding changes byte lengths
+// (non-ASCII), where index arithmetic would misalign.
+func replaceAllFold(text, old, new string) string {
+	if old == "" {
+		return text
+	}
+	lowerOld := strings.ToLower(old)
+	if len(lowerOld) != len(old) {
+		return strings.ReplaceAll(text, old, new)
+	}
+	lower := strings.ToLower(text)
+	if len(lower) != len(text) {
+		return strings.ReplaceAll(text, old, new)
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	for {
+		i := strings.Index(lower, lowerOld)
+		if i < 0 {
+			break
+		}
+		b.WriteString(text[:i])
+		b.WriteString(new)
+		text = text[i+len(old):]
+		lower = lower[i+len(old):]
+	}
+	b.WriteString(text)
+	return b.String()
+}
+
+// pathVariants returns the slash/backslash spellings of a path, deduped.
+func pathVariants(p string) []string {
+	seen := make(map[string]bool, 3)
+	var out []string
+	for _, v := range []string{p, filepath.ToSlash(p), strings.ReplaceAll(p, "/", `\`)} {
+		if v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// portabilizePath makes a file path portable by replacing absolute prefixes:
+//   - under recording workDir → {{workspace}}/relative
+//   - under user home         → $HOME/relative
+//   - other absolute paths    → {{placeholder}} derived from the base name
+//   - relative paths          → returned unchanged
 func portabilizePath(path string, workDir string) string {
+	fold := runtime.GOOS == "windows" // Windows filesystems ignore path case
 	if workDir != "" {
 		// filepath.Rel fails across drive letters on Windows — check same prefix first
 		normPath := filepath.ToSlash(path)
@@ -773,21 +976,21 @@ func portabilizePath(path string, workDir string) string {
 			normWorkDir += "/"
 		}
 
-		if strings.HasPrefix(normPath, normWorkDir) {
-			suffix := strings.TrimPrefix(normPath, normWorkDir)
+		if hasPathPrefix(normPath, normWorkDir, fold) {
+			suffix := normPath[len(normWorkDir):]
 			if suffix == "" {
-				return "{baseDir}"
+				return workspacePlaceholder
 			}
-			return "{baseDir}/" + suffix
+			return workspacePlaceholder + "/" + suffix
 		}
 
 		// Try filepath.Rel for same-drive relative paths
 		rel, err := filepath.Rel(workDir, path)
 		if err == nil && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
 			if rel == "." {
-				return "{baseDir}"
+				return workspacePlaceholder
 			}
-			return "{baseDir}/" + filepath.ToSlash(rel)
+			return workspacePlaceholder + "/" + filepath.ToSlash(rel)
 		}
 	}
 
@@ -798,13 +1001,116 @@ func portabilizePath(path string, workDir string) string {
 		if !strings.HasSuffix(normHome, "/") {
 			normHome += "/"
 		}
-		if strings.HasPrefix(normPath, normHome) {
-			suffix := strings.TrimPrefix(normPath, normHome)
+		if hasPathPrefix(normPath, normHome, fold) {
+			suffix := normPath[len(normHome):]
 			return "$HOME/" + suffix
 		}
 	}
 
+	// Foreign absolute path (another drive, another user, another machine's
+	// layout): never bake it into the skill — turn it into a required arg.
+	if isMachineAbsPath(path) {
+		return placeholderForPath(path)
+	}
+
 	return path
+}
+
+// hasPathPrefix reports whether path starts with prefix (both already
+// slash-normalized), optionally case-insensitively. Byte-length equality is
+// guaranteed for ASCII case folding; non-ASCII paths fall back to
+// case-sensitive matching to keep index arithmetic aligned.
+func hasPathPrefix(path, prefix string, fold bool) bool {
+	if fold {
+		lp, lx := strings.ToLower(path), strings.ToLower(prefix)
+		if len(lp) == len(path) && len(lx) == len(prefix) {
+			return strings.HasPrefix(lp, lx)
+		}
+	}
+	return strings.HasPrefix(path, prefix)
+}
+
+// workspaceRelIfRelative anchors a still-relative target path to {{workspace}}.
+// At record time relative paths resolve against the working directory; at
+// replay time bash steps run with the skill directory as cwd, so an
+// unqualified relative path would land in the wrong place.
+// Paths already parameterized ({{...}}, $HOME) or absolute are returned as-is.
+func workspaceRelIfRelative(p string) string {
+	if p == "" || strings.HasPrefix(p, "{{") || strings.HasPrefix(p, "$HOME") {
+		return p
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") || winDriveAbsRe.MatchString(p) {
+		return p
+	}
+	return workspacePlaceholder + "/" + filepath.ToSlash(p)
+}
+
+// isMachineAbsPath reports whether p looks like a machine-specific absolute
+// path (Windows drive path or a unix user-home path). System paths such as
+// /usr/bin are intentionally NOT treated as machine-specific.
+func isMachineAbsPath(p string) bool {
+	if winDriveAbsRe.MatchString(p) {
+		return true
+	}
+	return unixUserHomeRe.MatchString(filepath.ToSlash(p))
+}
+
+// placeholderForPath derives a {{arg}} placeholder from a path's base name,
+// e.g. `D:\data\input.csv` → {{input_csv}}, `/Users/x/tools` → {{tools_dir}}.
+func placeholderForPath(p string) string {
+	norm := strings.TrimRight(strings.ReplaceAll(p, "\\", "/"), "/")
+	base := filepath.Base(norm)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+
+	name := sanitizeSkillDirName(stem)
+	name = strings.ReplaceAll(name, "-", "_")
+	if name == "" || name == "skill" {
+		name = "path"
+	}
+	if ext == "" {
+		// No extension: most likely a directory.
+		if !strings.HasSuffix(name, "_dir") {
+			name += "_dir"
+		}
+	} else {
+		name += "_" + strings.ToLower(strings.TrimPrefix(ext, "."))
+	}
+	return "{{" + name + "}}"
+}
+
+// replaceForeignAbsPaths scans text for machine-specific absolute paths that
+// survived the workDir/home replacements and parameterizes each of them.
+func replaceForeignAbsPaths(text string) string {
+	text = replaceMatchesWithPlaceholders(winDriveAbsRe, text, 1)
+	text = replaceMatchesWithPlaceholders(unixUserHomeRe, text, 1)
+	return text
+}
+
+// replaceMatchesWithPlaceholders replaces the given capture group (0 = whole
+// match) of every regex hit with a {{placeholder}} derived from the matched path.
+func replaceMatchesWithPlaceholders(re *regexp.Regexp, text string, group int) string {
+	locs := re.FindAllStringSubmatchIndex(text, -1)
+	if len(locs) == 0 {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	last := 0
+	for _, loc := range locs {
+		s, e := loc[0], loc[1]
+		if group > 0 {
+			s, e = loc[2*group], loc[2*group+1]
+		}
+		if s < 0 || s < last {
+			continue
+		}
+		b.WriteString(text[last:s])
+		b.WriteString(placeholderForPath(text[s:e]))
+		last = e
+	}
+	b.WriteString(text[last:])
+	return b.String()
 }
 
 // Pre-compiled regexps for hot paths.
@@ -822,6 +1128,15 @@ var (
 	validPkgNameRe   = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9\-_.]*(\[[\w,]+\])?(([><=!~]+).+)?$`)
 	windowsPathRe    = regexp.MustCompile(`[A-Za-z]:\\[\w]`)
 	placeholderArgRe = regexp.MustCompile(`\{\{(\w+)\}\}`)
+	// winDriveAbsRe matches a Windows drive-letter absolute path (capture group 1),
+	// guarded so the drive letter is not preceded by an alphanumeric char
+	// (avoids matching the "s://" inside "https://...").
+	winDriveAbsRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9])([A-Za-z]:[\\/][^\s"'|;&<>]*)`)
+	// unixUserHomeRe matches unix user-home absolute paths (/Users/..., /home/...)
+	// in capture group 1, guarded so it does not fire inside URLs or other
+	// tokens (e.g. "https://example.com/home/x" must not match).
+	// System paths like /usr/bin are intentionally not matched.
+	unixUserHomeRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9.:~/\\-])(/(?:Users|home)/[^\s"'|;&<>]+)`)
 	// Credential detection patterns for security warnings
 	credentialPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|bearer)\s*[=:]\s*\S+`),
@@ -1068,6 +1383,21 @@ func dedup(ss []string) []string {
 			seen[s] = true
 			out = append(out, s)
 		}
+	}
+	return out
+}
+
+// cloneRecordedOps deep-copies the Args maps so consolidation (which rewrites
+// write_file contents in place) cannot mutate the recorder's pending entries.
+func cloneRecordedOps(entries []RecordedOp) []RecordedOp {
+	out := make([]RecordedOp, len(entries))
+	for i, op := range entries {
+		args := make(map[string]interface{}, len(op.Args))
+		for k, v := range op.Args {
+			args[k] = v
+		}
+		op.Args = args
+		out[i] = op
 	}
 	return out
 }

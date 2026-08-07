@@ -24,12 +24,8 @@ type Candidate struct {
 	Description string `json:"description,omitempty"`
 }
 
-// CandidateLister isolates OS enumeration so the post-reset association logic
-// has deterministic tests and does not depend on a particular platform API.
 type CandidateLister func() ([]Candidate, error)
 
-// ReenumerationPolicy bounds how long a job can wait for the USB serial
-// endpoint created by a hard reset. It never guesses among multiple new ports.
 type ReenumerationPolicy struct {
 	Timeout      time.Duration
 	PollInterval time.Duration
@@ -46,19 +42,14 @@ func ListCandidates() ([]Candidate, error) {
 	}
 	result := make([]Candidate, 0, len(ports))
 	for _, p := range ports {
-		c := Candidate{Port: p.Name, Name: p.Name, VendorID: strings.ToUpper(p.VID), ProductID: strings.ToUpper(p.PID), Serial: p.SerialNumber, IsUSB: p.IsUSB, Description: p.Product}
-		c.LikelyEsp = isLikelyESP(c.VendorID, c.ProductID, p.Product)
-		result = append(result, c)
+		candidate := Candidate{Port: p.Name, Name: p.Name, VendorID: strings.ToUpper(p.VID), ProductID: strings.ToUpper(p.PID), Serial: p.SerialNumber, IsUSB: p.IsUSB, Description: p.Product}
+		candidate.LikelyEsp = isLikelyESP(candidate.VendorID, candidate.ProductID, p.Product)
+		result = append(result, candidate)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Port < result[j].Port })
 	return result, nil
 }
 
-// WaitForReenumeratedPort resolves the application serial endpoint after a
-// flash-triggered reset. USB serial number is the only automatic binding that
-// permits a changed port name; when it is unavailable, the original port is
-// accepted only if it returns. A sole unfamiliar new port is intentionally not
-// selected because that could belong to a second device plugged in mid-job.
 func WaitForReenumeratedPort(ctx context.Context, before Candidate, list CandidateLister, policy ReenumerationPolicy) (Candidate, error) {
 	if list == nil {
 		return Candidate{}, errors.New("serial candidate lister is unavailable")
@@ -97,14 +88,14 @@ func WaitForReenumeratedPort(ctx context.Context, before Candidate, list Candida
 func reenumeratedMatch(before Candidate, candidates []Candidate) (Candidate, bool) {
 	serial := strings.TrimSpace(before.Serial)
 	if serial != "" {
-		var matched []Candidate
+		var matches []Candidate
 		for _, candidate := range candidates {
 			if candidate.IsUSB && strings.EqualFold(strings.TrimSpace(candidate.Serial), serial) {
-				matched = append(matched, candidate)
+				matches = append(matches, candidate)
 			}
 		}
-		if len(matched) == 1 {
-			return matched[0], true
+		if len(matches) == 1 {
+			return matches[0], true
 		}
 		return Candidate{}, false
 	}
@@ -122,12 +113,11 @@ func isLikelyESP(vid, pid string, parts ...string) bool {
 	if vid == "303A" {
 		return true
 	}
-	for _, v := range parts {
-		if strings.Contains(strings.ToLower(v), "espressif") || strings.Contains(strings.ToLower(v), "esp32") {
+	for _, part := range parts {
+		if strings.Contains(strings.ToLower(part), "espressif") || strings.Contains(strings.ToLower(part), "esp32") {
 			return true
 		}
 	}
-	// USB-UART bridge IDs are candidates, not identity proof.
 	return (vid == "10C4" && pid == "EA60") || (vid == "1A86" && (pid == "7523" || pid == "55D4")) || (vid == "0403" && pid == "6001")
 }
 

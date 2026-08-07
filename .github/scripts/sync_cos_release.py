@@ -3,7 +3,16 @@ import hashlib
 import json
 import os
 import pathlib
-import urllib.parse
+
+from firmware_manifest_contract import (
+    COS_PUBLIC_BASE_URL,
+    R2_PUBLIC_BASE_URL,
+    required_firmware,
+    require_split_firmware_archives,
+    require_archive_channel,
+    validate_manifest_asset_urls,
+    validate_public_mirror_base,
+)
 
 def log(message):
     print(f"[cos-release-sync] {message}", flush=True)
@@ -87,10 +96,13 @@ def sha256_file(path):
 
 
 def validate_public_base_url(name, value):
-    parsed = urllib.parse.urlparse(value)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise RuntimeError(f"{name} must be an https URL with a host: {value!r}")
-    return value.rstrip("/")
+    expected = {
+        "R2_PUBLIC_BASE_URL": R2_PUBLIC_BASE_URL,
+        "COS_PUBLIC_BASE_URL": COS_PUBLIC_BASE_URL,
+    }.get(name)
+    if expected is None:
+        raise RuntimeError(f"unsupported public mirror label: {name}")
+    return validate_public_mirror_base(name, value, expected)
 
 
 def asset_urls(path):
@@ -123,6 +135,10 @@ def write_latest_manifest(assets, manifest_name="latest.json"):
     }
     latest_path = asset_dir / manifest_name
     latest_path.write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    required_firmware(latest, asset_dir, tag)
+    require_split_firmware_archives(asset_dir)
+    require_archive_channel(asset_dir, release_channel)
+    validate_manifest_asset_urls(latest, release_channel)
     log(f"wrote manifest {latest_path} assets={len(assets)}")
     return latest_path
 

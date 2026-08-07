@@ -8,10 +8,8 @@ import (
 	"go.bug.st/serial"
 )
 
-// readBoundedLine reads one serial frame without bufio's speculative
-// read-ahead. The application protocol is line-delimited and capped, so this
-// keeps one timed Read bound to one operation and prevents a cancelled probe
-// from stealing a future nonce response.
+// ReadBoundedLine reads one serial frame without bufio's speculative
+// read-ahead. The application protocol is line-delimited and capped.
 func ReadBoundedLine(port serial.Port, limit int) (string, error) {
 	if limit <= 0 {
 		return "", errors.New("invalid serial frame limit")
@@ -22,9 +20,6 @@ func ReadBoundedLine(port serial.Port, limit int) (string, error) {
 		n, err := port.Read(one)
 		if n > 0 {
 			buf = append(buf, one[:n]...)
-			// The final delimiter counts toward the bounded protocol frame. Check
-			// the bound first so a peer cannot bypass it with an oversized line
-			// whose last byte happens to be a newline.
 			if len(buf) > limit {
 				return "", errors.New("serial frame exceeds size limit")
 			}
@@ -32,9 +27,6 @@ func ReadBoundedLine(port serial.Port, limit int) (string, error) {
 				return string(buf), nil
 			}
 		}
-		// go.bug.st/serial reports a configured idle timeout as (0, nil)
-		// on Unix (and normally on Windows through COMMTIMEOUTS). Surface a
-		// stable timeout error to callers rather than spinning forever here.
 		if n == 0 && err == nil {
 			return string(buf), errSerialReadTimeout
 		}
@@ -47,14 +39,10 @@ func ReadBoundedLine(port serial.Port, limit int) (string, error) {
 
 var errSerialReadTimeout = errors.New("serial read timeout")
 
-// Serial backends use platform-specific timeout errors. Treat only the known
-// no-byte/timeout forms as a retryable idle read; all other errors still end
-// the probe to avoid hiding disconnects or permission loss.
+// IsSerialReadTimeout recognizes only retryable idle reads; disconnects and
+// permission failures still terminate the probe.
 func IsSerialReadTimeout(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, io.EOF) {
+	if err == nil || errors.Is(err, io.EOF) {
 		return false
 	}
 	text := strings.ToLower(err.Error())

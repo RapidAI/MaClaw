@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -142,6 +143,24 @@ func (s *HTTPServer) handleThirdPartyGatewayHandshake(w http.ResponseWriter, r *
 		return
 	}
 	clientID := req.ClientID
+	identity, identityPresent := thirdPartyFirmwareIdentity(req.Capabilities)
+	if identityPresent {
+		if !validSrvFirmwareIdentity(identity) {
+			writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", "firmware identity is invalid")
+			return
+		}
+		if identity.DeviceID != clientID {
+			writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", "firmware identity does not match clientId")
+			return
+		}
+		if err := s.bindHardwareDevice(r.Context(), tp, identity, false); err != nil {
+			// Existing legacy devices remain able to handshake. Identity-bearing
+			// clients must fail closed instead of silently receiving a catalog
+			// answer for the wrong owner/profile.
+			writeThirdPartyGatewayError(w, http.StatusForbidden, "device_unbound", err.Error())
+			return
+		}
+	}
 	s.thirdPartyIM.setClientRegistration(thirdPartyClientKey(tp.Principal, clientID), req.ClientCapabilities, req.Tools)
 	response := coreim.NewThirdPartyGatewayHandshakeResponse(coreim.ThirdPartyGatewayConfig{
 		RequestID:      newThirdPartyGatewayRequestID(),
@@ -155,7 +174,29 @@ func (s *HTTPServer) handleThirdPartyGatewayHandshake(w http.ResponseWriter, r *
 		MaxPollLimit:   srvThirdPartyMaxLimit,
 	})
 	response.CapabilitiesAccepted = req.ClientCapabilities
+	if identityPresent {
+		response.Update = s.firmwareUpdateForHandshake(tp, identity)
+	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func thirdPartyFirmwareIdentity(capabilities map[string]any) (coreim.FirmwareIdentity, bool) {
+	if capabilities == nil {
+		return coreim.FirmwareIdentity{}, false
+	}
+	raw, exists := capabilities["firmwareIdentity"]
+	if !exists || raw == nil {
+		return coreim.FirmwareIdentity{}, false
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return coreim.FirmwareIdentity{}, true
+	}
+	var identity coreim.FirmwareIdentity
+	if err := json.Unmarshal(encoded, &identity); err != nil {
+		return coreim.FirmwareIdentity{}, true
+	}
+	return identity, true
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayMediaUploadURL(w http.ResponseWriter, r *http.Request) {

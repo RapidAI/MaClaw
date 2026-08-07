@@ -5,12 +5,19 @@ import (
 	"crypto/rand"
 	"testing"
 
+	"clawmatemaker/internal/catalog"
 	"clawmatemaker/internal/firmware"
 )
 
 func TestImportRejectsUnsafeExtensionBeforeAnyPackageRead(t *testing.T) {
 	if _, err := NewImportJob(t.TempDir(), "bread-compact", "C:/firmware.bin", firmware.TrustStore{}, nil); err == nil {
 		t.Fatal("non-clawfw offline package accepted")
+	}
+}
+
+func TestImportRejectsUnsupportedReleaseChannel(t *testing.T) {
+	if _, err := NewImportJobForChannel(t.TempDir(), "bread-compact", "C:/firmware.clawfw", catalog.ReleaseChannel("dev"), firmware.TrustStore{}, nil); err == nil {
+		t.Fatal("unsupported offline firmware channel accepted")
 	}
 }
 

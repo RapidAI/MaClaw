@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -94,6 +95,7 @@ func (a *App) StopSkillRecording() map[string]interface{} {
 	}
 
 	suggestedName := a.skillRecorder.SuggestSkillName()
+	suggestedDescription := a.skillRecorder.SuggestDescription()
 	summary := a.skillRecorder.OperationSummary()
 	count := a.skillRecorder.EntryCount()
 
@@ -101,8 +103,33 @@ func (a *App) StopSkillRecording() map[string]interface{} {
 	a.skillRecorder.mu.Lock()
 	entriesCopy := make([]RecordedOp, len(a.skillRecorder.entries))
 	copy(entriesCopy, a.skillRecorder.entries)
+	workDir := a.skillRecorder.workDir
 	a.skillRecorder.mu.Unlock()
 	credWarnings := detectCredentialWarnings(entriesCopy)
+
+	// Ask the LLM for a professional name/description/step titles. Falls back
+	// to the heuristics above when the LLM is unconfigured or fails.
+	var existingNames map[string]bool
+	if a.skillExecutor != nil {
+		existingNames = make(map[string]bool)
+		for _, s := range a.skillExecutor.loadSkills() {
+			existingNames[s.Name] = true
+		}
+	}
+	llmAdapter := NewSkillEvolutionLLMAdapter(a.GetMaclawLLMConfig).WithTimeout(25 * time.Second)
+	// Pass the consolidated op list so LLM step titles align with the final
+	// steps written by generateSkillYAML (which consolidates the same way).
+	// Clone first: consolidation rewrites write_file contents in place, and
+	// entriesCopy shares the Args maps with the recorder's pending entries.
+	if name, desc, titles, ok := SuggestRecordingMetadataWithLLM(llmAdapter, consolidateRecordedOps(cloneRecordedOps(entriesCopy)), workDir, existingNames); ok {
+		suggestedName = name
+		if desc != "" {
+			suggestedDescription = desc
+		}
+		if len(titles) > 0 {
+			a.skillRecorder.SetSuggestedStepTitles(titles)
+		}
+	}
 
 	a.emitEvent("skill-recording-state-changed", map[string]interface{}{
 		"recording":      false,
@@ -113,7 +140,7 @@ func (a *App) StopSkillRecording() map[string]interface{} {
 
 	result := map[string]interface{}{
 		"suggested_name":        suggestedName,
-		"suggested_description": a.skillRecorder.SuggestDescription(),
+		"suggested_description": suggestedDescription,
 		"summary":               summary,
 		"count":                 count,
 	}
@@ -141,7 +168,7 @@ func (a *App) ResolveSkillRecording(action string, name string, description stri
 	}
 
 	// action == "save"
-	skillDir, err := a.skillRecorder.Stop(name, description)
+	skillDir, portabWarnings, err := a.skillRecorder.Stop(name, description)
 	if err != nil {
 		log.Printf("[skill-recorder] stop failed: %v", err)
 		return map[string]interface{}{"error": err.Error()}
@@ -174,11 +201,15 @@ func (a *App) ResolveSkillRecording(action string, name string, description stri
 		"tabId":          a.skillRecorder.TabID(),
 	})
 
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"status":    "saved",
 		"name":      name,
 		"skill_dir": skillDir,
 	}
+	if len(portabWarnings) > 0 {
+		result["portability_warnings"] = portabWarnings
+	}
+	return result
 }
 
 // IsSkillRecording returns whether the recorder is currently active.
