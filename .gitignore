@@ -220,3 +220,68 @@ build/maclaw-gui-compat-test.exe
 # Temp working files
 .tmp/
 .codex-go-cache/
+
+# --- Scratch/diagnostic artifacts (2026-08 cleanup) ---
+# Root scratch scripts, logs, dumps and one-off probes
+/_*
+/.tmp-*
+/.tmp_*
+/*.log
+/*.exe
+/live_probe*
+/tmp_hub_com3_preview.go
+/sv_cpu
+/campplus-cn-common.cmpg
+/official-sensevoice/
+/test_funasr.py
+/run_cache_tests.cmd
+/asr_eval_results.txt
+/esptool.spec
+# Research/reference clones and analysis caches
+/.research-*/
+/.impeccable/
+graphify-out/
+# Generated wails runtime at repo root
+/frontend/
+# Tool-local caches/dumps
+/tui/Microsoft/
+/vscode-ext/.npm_cache/
+/third_party/shine-mp3/*.exe
+/mobile/maclaw_mobile/account2.xml
+# ClawMateMaker build outputs and icon scratch
+/ClawMateMaker/*.exe
+/ClawMateMaker/*.png
+/ClawMateMaker/build/
+/ClawMateMaker/dist/
+/ClawMateMaker/frontend/wailsjs/
+# Deploy/build artifacts
+/deploy/logs/
+/build/deploy-ha/
+/build/diag-hubcenter
+/build/esptool/
+/build/meeting_asr_worker-linux-amd64
+/build/verify/
+# ESP32 scratch: verify logs, tmp captures, device backups
+/esp32s3-maclaw-client/*.log
+/esp32s3-maclaw-client/*.err
+/esp32s3-maclaw-client/*.out
+/esp32s3-maclaw-client/.tmp-*
+/esp32s3-maclaw-client/.device-backup/
+/esp32s3-maclaw-client/button-diagnostic/build*/
+# NV3023 test project build dirs/logs/fetched components
+/esp32-nv3023-lcd-test/build*/
+/esp32-nv3023-lcd-test/*.log
+/esp32-nv3023-lcd-test/managed_components/
+# GUI scratch runners and generated frontend artifacts
+/gui/_run_*
+/gui/frontend/*.tsbuildinfo
+/gui/frontend/vite.config.js
+/gui/frontend/vite.config.d.ts
+/gui/frontend/apps-page-vitest-after.json
+/gui/frontend/.*.log
+/gui/build/
+/scripts/_*
+*.local-backup.bin
+.tmp-*
+/esp32s3-maclaw-client/hub-com3-*-result.json
+/esp32s3-maclaw-client/review-hotspots.txt
