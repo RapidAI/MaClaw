@@ -289,7 +289,7 @@ POST /api/device-gateway/v1/meeting-recordings/{recording_id}/process
           <tr><td>5xx</td><td>Hub 临时故障</td><td>按端点决定是否重试；<code>/incoming</code> 仅在可接受至少一次语义时复用原 ID 并有限重试。</td></tr>
         </tbody>
       </table>
-      <p class="source-note">协议依据：<code>esp32s3-maclaw-client/main/main.c</code>、<code>hub/internal/im/device_gateway.go</code>、<code>hub/internal/httpapi/hardware_meeting_recordings.go</code>。</p>
+      <p class="source-note">协议依据：<code>iot-agentos/main/main.c</code>、<code>hub/internal/im/device_gateway.go</code>、<code>hub/internal/httpapi/hardware_meeting_recordings.go</code>。</p>
     </section>
   </section>
 
@@ -476,7 +476,7 @@ POST /api/device-gateway/v1/meeting-recordings/{recording_id}/process
         <tr><td>503</td><td>GUI relay, ASR, or processor unavailable</td><td>Keep local data and retry later or choose an available mode.</td></tr>
         <tr><td>5xx</td><td>Temporary Hub failure</td><td>Retry according to the endpoint; for <code>/incoming</code>, reuse the original IDs and retry only when at-least-once semantics are acceptable.</td></tr>
       </tbody></table>
-      <p class="source-note">Contract sources: <code>esp32s3-maclaw-client/main/main.c</code>, <code>hub/internal/im/device_gateway.go</code>, and <code>hub/internal/httpapi/hardware_meeting_recordings.go</code>.</p>
+      <p class="source-note">Contract sources: <code>iot-agentos/main/main.c</code>, <code>hub/internal/im/device_gateway.go</code>, and <code>hub/internal/httpapi/hardware_meeting_recordings.go</code>.</p>
     </section>
   </section>
 </main>

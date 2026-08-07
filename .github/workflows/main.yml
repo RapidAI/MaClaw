@@ -1,4 +1,4 @@
-﻿name: Release Build
+name: Release Build
 
 on:
   push:
@@ -1898,7 +1898,7 @@ jobs:
           CLAWMATE_FIRMWARE_PUBLIC_KEY: ${{ vars.CLAWMATE_FIRMWARE_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          project_dir="$GITHUB_WORKSPACE/esp32s3-maclaw-client"
+          project_dir="$GITHUB_WORKSPACE/iot-agentos"
           release_dir="$project_dir/release"
           build_dir="build-release-${{ matrix.device }}"
           mkdir -p "$release_dir"
@@ -1911,7 +1911,7 @@ jobs:
           # FLASH_IN_PROJECT partition required by this profile.
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/project" \
-            -w /project/esp32s3-maclaw-client \
+            -w /project/iot-agentos \
             -e SDKCONFIG_DEFAULTS \
             -e FIRMWARE_NAME \
             espressif/idf:v6.0.2 \
@@ -2021,10 +2021,10 @@ jobs:
           name: esp32-firmware-${{ matrix.device }}
           compression-level: 0
           path: |
-            esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.bin
-            esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.zip
-            esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.clawfw
-            esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.clawfw.evidence.json
+            iot-agentos/release/${{ matrix.firmware_name }}.bin
+            iot-agentos/release/${{ matrix.firmware_name }}.zip
+            iot-agentos/release/${{ matrix.firmware_name }}.clawfw
+            iot-agentos/release/${{ matrix.firmware_name }}.clawfw.evidence.json
           if-no-files-found: error
 
   # ============================================================

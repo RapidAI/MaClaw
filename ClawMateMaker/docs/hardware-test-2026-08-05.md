@@ -35,7 +35,7 @@ model,data,spiffs,0x3b0000,3M
 storage,data,spiffs,0x6b0000,9536K
 ```
 
-设备读取结果的前 3072 字节与 `esp32s3-maclaw-client/build/partition_table/partition-table.bin` 逐字节相同，后 1024 字节均为 `0xFF`。这验证了设计 Review 中提出的方案：App-only 前可以只依赖 ROM Bootloader 读取、规范化并解析当前 partition table，而不要求旧 App 正常启动。
+设备读取结果的前 3072 字节与 `iot-agentos/build/partition_table/partition-table.bin` 逐字节相同，后 1024 字节均为 `0xFF`。这验证了设计 Review 中提出的方案：App-only 前可以只依赖 ROM Bootloader 读取、规范化并解析当前 partition table，而不要求旧 App 正常启动。
 
 ## App image header 实测
 
@@ -72,7 +72,7 @@ hard reset 后 COM4 保持/恢复可用，20 秒日志显示：
 
 ## 固件标识改进复测
 
-在 `esp32s3-maclaw-client` 增加结构化身份模块后，于同一台 COM4 设备完成 App-only 刷写与查询复测：
+在 `iot-agentos` 增加结构化身份模块后，于同一台 COM4 设备完成 App-only 刷写与查询复测：
 
 - 写入范围仅为 factory App：`0x10000`，未改写 NVS、model、storage。
 - 刷写前从 ROM 读取的真实分区表与目标布局逐项一致；Secure Boot 与 Flash Encryption 均为 Disabled。

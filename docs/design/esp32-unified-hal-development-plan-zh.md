@@ -6,7 +6,7 @@
 - 日期：2026-08-07
 - 系统名称：MaClaw AgentOS
 - 评审轮次：第二十二轮产品决策审查（固定 16 MiB Flash 放弃设备端 OTA，改为 GitHub Release→Hub 版本检查/提醒→用户使用受校验刷机工具更新）
-- 适用工程：`esp32s3-maclaw-client`
+- 适用工程：`iot-agentos`
 - 首批正式支持硬件：Bread Compact、EchoEar-2ST、Fangtang-4G
 - 稳定 profile ID：`bread-compact-wifi-lcd-v1`、`echoear-2st-r8`、`fangtang-4g-v1`
 - 唯一功能与业务行为基线：Bread Compact 当前已经验证的完整功能集合及处理方式。EchoEar-2ST 与 Fangtang-4G 必须逐项对齐 Bread Compact；除通过硬件适配表达的屏幕、输入、音频、连接与电源差异外，不得自行定义另一套功能或业务行为。
@@ -348,7 +348,7 @@ HIL evidence 除 firmware/profile digest 外，还必须记录 board serial/hw r
 ## 4. 目标目录结构
 
 ```text
-esp32s3-maclaw-client/main/
+iot-agentos/main/
   app/
     app_main.c
     app_interaction.c

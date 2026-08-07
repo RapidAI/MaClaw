@@ -262,12 +262,12 @@ graphify-out/
 /build/meeting_asr_worker-linux-amd64
 /build/verify/
 # ESP32 scratch: verify logs, tmp captures, device backups
-/esp32s3-maclaw-client/*.log
-/esp32s3-maclaw-client/*.err
-/esp32s3-maclaw-client/*.out
-/esp32s3-maclaw-client/.tmp-*
-/esp32s3-maclaw-client/.device-backup/
-/esp32s3-maclaw-client/button-diagnostic/build*/
+/iot-agentos/*.log
+/iot-agentos/*.err
+/iot-agentos/*.out
+/iot-agentos/.tmp-*
+/iot-agentos/.device-backup/
+/iot-agentos/button-diagnostic/build*/
 # NV3023 test project build dirs/logs/fetched components
 /esp32-nv3023-lcd-test/build*/
 /esp32-nv3023-lcd-test/*.log
@@ -283,5 +283,5 @@ graphify-out/
 /scripts/_*
 *.local-backup.bin
 .tmp-*
-/esp32s3-maclaw-client/hub-com3-*-result.json
-/esp32s3-maclaw-client/review-hotspots.txt
+/iot-agentos/hub-com3-*-result.json
+/iot-agentos/review-hotspots.txt

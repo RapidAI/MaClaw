@@ -104,7 +104,7 @@ Hub 生成的六码短码完成绑定，避免把旧 Hub 的持久 Token 发往�
 本机已经使用 ESP-IDF v6.0.2 成功构建。推荐从普通 PowerShell 调用 IDF 环境：
 
 ```powershell
-cd D:\workprj\aicoder\esp32s3-maclaw-client
+cd D:\workprj\aicoder\iot-agentos
 cmd.exe /d /s /c "call C:\esp\v6.0.2\esp-idf\export.bat >nul && idf.py -B build-gateway-fix build"
 ```
 

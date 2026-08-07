@@ -1,4 +1,4 @@
-﻿# ClawMate Maker：ESP32 跨平台刷机工具设计
+# ClawMate Maker：ESP32 跨平台刷机工具设计
 
 > 状态：实现中 v0.7（自动多设备识别与 Release 下载）
 > 目标平台：Windows 10/11、macOS 12+（Intel / Apple Silicon）、主流 x86_64 / arm64 Linux
@@ -24,7 +24,7 @@ ClawMate Maker 应当是一个“发布固件安装器”，不是一个缩小�
 - MVP 安全策略：只支持明确读取为 Secure Boot Disabled、Flash Encryption Disabled，且 anti-rollback/eFuse secure version 处于未启用基线的设备；任一状态启用、非基线或无法可靠判断时 fail-closed。安全量产设备另行设计密钥、加密下载和 anti-rollback 流程，不由普通 manifest 声明直接放行。
 - 断电边界：当前真实布局只有一个 factory App 分区，App-only 是原地更新，不能提供 A/B 原子切换或自动回滚。MVP 的承诺是“写入中断后仍可通过 ROM Bootloader 恢复”，不是“断电后旧版本仍可启动”；产品文案、状态机和硬件在环测试必须一致表达这一限制。
 
-现有 `esp32s3-maclaw-client` 已给出首个设备的真实约束：ESP-IDF 6.0.2、目标 `esp32s3`、16 MB Flash，当前完整布局为 `0x0` bootloader、`0x8000` partition table、`0x10000` App、`0x3b0000` srmodels、`0x6b0000` storage。该布局必须由发布流水线生成清单，不能硬编码为全局默认值。
+现有 `iot-agentos` 已给出首个设备的真实约束：ESP-IDF 6.0.2、目标 `esp32s3`、16 MB Flash，当前完整布局为 `0x0` bootloader、`0x8000` partition table、`0x10000` App、`0x3b0000` srmodels、`0x6b0000` storage。该布局必须由发布流水线生成清单，不能硬编码为全局默认值。
 
 ## 2. 产品目标与非目标
 
@@ -977,10 +977,10 @@ type Session interface {
 
 ## 20. 与现有仓库的衔接
 
-- `esp32s3-maclaw-client/dependencies.lock` 已固定目标为 ESP32-S3、ESP-IDF 6.0.2；它属于固件构建输入，不应成为终端用户依赖。
-- `esp32s3-maclaw-client/sdkconfig.defaults` 声明 16 MB Flash、Octal PSRAM 和自定义分区，是生成兼容元数据的重要来源。
-- `esp32s3-maclaw-client/partitions.csv` 是当前布局事实来源；发布 CI 必须解析它，禁止手工复制 offset。
-- `esp32s3-maclaw-client/tools/flash-app-on-com3.ps1` 已验证“检查 Espressif VID/PID + 固件 SHA-256 + App-only + hard reset + 启动日志”的最小闭环。ClawMate Maker 应把这些思路泛化为跨平台、动态端口、签名 manifest 和结构化启动验证，不再固定 COM3、Python 路径或单个 hash。
+- `iot-agentos/dependencies.lock` 已固定目标为 ESP32-S3、ESP-IDF 6.0.2；它属于固件构建输入，不应成为终端用户依赖。
+- `iot-agentos/sdkconfig.defaults` 声明 16 MB Flash、Octal PSRAM 和自定义分区，是生成兼容元数据的重要来源。
+- `iot-agentos/partitions.csv` 是当前布局事实来源；发布 CI 必须解析它，禁止手工复制 offset。
+- `iot-agentos/tools/flash-app-on-com3.ps1` 已验证“检查 Espressif VID/PID + 固件 SHA-256 + App-only + hard reset + 启动日志”的最小闭环。ClawMate Maker 应把这些思路泛化为跨平台、动态端口、签名 manifest 和结构化启动验证，不再固定 COM3、Python 路径或单个 hash。
 - 当前 `firmware_identity.c` 的 `protocol:1` 是实验版：使用 `BOOT_OK`、编译期 `board_id`、`firmware_version`、`local_ready/service_ready`。Phase 0 必须把它迁移到第 10.3 节冻结的正式 `protocol:2`；桌面端不得把实验版事件静默解释为正式成功证明。
 - 现有 MaClaw Wails/React 主题使用钢蓝、蓝灰和克制语义色，ClawMate Maker 可复用其产品语言，但应保持独立进程和独立发布，以降低主应用与硬件恢复流程的耦合风险。
 

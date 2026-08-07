@@ -232,7 +232,7 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         firmware_job = workflow[workflow.index("  build-esp32-firmware:") : workflow.index("  build-clawmate-maker:")]
         self.assertIn("printf 'CONFIG_MACLAW_RELEASE_SEQUENCE=%s\\n' \"${{ github.run_number }}\"", firmware_job)
         self.assertIn("--release-sequence '${{ github.run_number }}'", firmware_job)
-        identity = (ROOT.parent.parent / "esp32s3-maclaw-client" / "main" / "firmware_identity.c").read_text(encoding="utf-8")
+        identity = (ROOT.parent.parent / "iot-agentos" / "main" / "firmware_identity.c").read_text(encoding="utf-8")
         self.assertIn('"release_sequence", CONFIG_MACLAW_RELEASE_SEQUENCE', identity)
         self.assertIn('"firmware_version", CONFIG_MACLAW_RELEASE_SEQUENCE', identity)
 

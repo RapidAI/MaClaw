@@ -5,7 +5,7 @@
 - 状态：待实施
 - 日期：2026-08-06
 - 所属系统：MaClaw AgentOS
-- 适用工程：`esp32s3-maclaw-client`
+- 适用工程：`iot-agentos`
 - 正式支持硬件：Bread Compact、EchoEar-2ST、Fangtang-4G
 - 评审对象：Bread Compact 当前完整业务功能、EchoEar-2ST 当前闹钟及圆屏/触屏能力、Fangtang-4G 当前单键/小屏/ML307/电池能力，以及三者在共享业务层中的收敛方案
 - 唯一功能与业务行为基线：Bread Compact 已验证的完整功能集合及处理方式；EchoEar-2ST 与 Fangtang-4G 必须逐项对齐，不得保留板型专属业务分叉或正式功能缺口
@@ -349,7 +349,7 @@ flowchart TB
 ### 6.2 建议目录结构
 
 ```text
-esp32s3-maclaw-client/main/
+iot-agentos/main/
   app/
     app_interaction_service.c
     app_intent.h
