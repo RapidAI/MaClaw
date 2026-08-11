@@ -24,18 +24,23 @@ const (
 
 // When to push the agent result.
 const (
-	DeliveryOnSuccess = "success"     // default: only on successful run with non-empty result
-	DeliveryOnAlways  = "always"      // success or failure (if text available)
-	DeliveryOnError   = "error_only"  // only when the run fails
+	DeliveryOnSuccess = "success"    // default: only on successful run with non-empty result
+	DeliveryOnAlways  = "always"     // success or failure (if text available)
+	DeliveryOnError   = "error_only" // only when the run fails
 )
 
 // TaskDelivery is optional push configuration for a scheduled task result.
 // Empty / disabled means legacy behaviour (desktop notification / owner proactive only).
 type TaskDelivery struct {
-	Enabled  bool             `json:"enabled"`
-	Channel  string           `json:"channel,omitempty"`  // e.g. "lansenger", "weixin"
-	Targets  []DeliveryTarget `json:"targets,omitempty"`
-	On       string           `json:"on,omitempty"`       // success | always | error_only
+	Enabled bool   `json:"enabled"`
+	Channel string `json:"channel,omitempty"` // e.g. "lansenger", "weixin"
+	// BotProfileID identifies the Lansenger bot that owns this delivery. It is
+	// runtime-injected by a profile-bound IM handler, never supplied by an LLM.
+	// Empty preserves legacy/default-channel behaviour and is intentionally
+	// omitted from old persisted task files.
+	BotProfileID string           `json:"bot_profile_id,omitempty"`
+	Targets      []DeliveryTarget `json:"targets,omitempty"`
+	On           string           `json:"on,omitempty"` // success | always | error_only
 	// Prefix is prepended to the body (task name is applied by the sender if empty).
 	Prefix string `json:"prefix,omitempty"`
 	// FailOnError when true makes delivery failures fail the scheduled task
@@ -120,6 +125,7 @@ func (d *TaskDelivery) Normalize() {
 	}
 	// Canonicalize aliases (蓝信/微信/wechat/…) before empty-default.
 	d.Channel = DefaultDeliveryChannel(d.Channel)
+	d.BotProfileID = strings.TrimSpace(d.BotProfileID)
 	on := strings.TrimSpace(strings.ToLower(d.On))
 	switch on {
 	case DeliveryOnAlways, DeliveryOnError, DeliveryOnSuccess:

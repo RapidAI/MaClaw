@@ -7,6 +7,10 @@
 
 #include "nvs.h" /* ESP_ERR_NVS_NOT_FOUND for legacy-key migration */
 #include "persistence_service.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "esp_timer.h"
 
 #define UPDATE_SERVICE_NAMESPACE "maclaw"
 #define UPDATE_SERVICE_STORE_KEY "update_meta"
@@ -31,6 +35,65 @@ typedef struct {
 
 static int64_t s_running_release_sequence;
 static update_service_status_t s_status;
+/* Metadata delivery and tool execution can be dispatched by separate tasks.
+ * Admission tracks callers which may touch Persistence, while this permanent
+ * mutex serializes the one shared update-status/store transaction. */
+static portMUX_TYPE s_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
+static SemaphoreHandle_t s_operation_mutex;
+/* Retained deinit shell serializes a stop transaction with init. It is not
+ * deleted because an already-admitted caller may still be contending for the
+ * operation mutex while rollback closes admission. */
+static SemaphoreHandle_t s_deinit_mutex;
+static bool s_initialized;
+static bool s_stopping;
+static volatile bool s_initializing;
+static uint32_t s_active_calls;
+
+static TickType_t update_stop_timeout_ticks(uint32_t timeout_ms) {
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    return ticks == 0 ? 1 : ticks;
+}
+
+static TickType_t update_stop_remaining_ticks(TickType_t started, TickType_t budget) {
+    const TickType_t elapsed = xTaskGetTickCount() - started;
+    return elapsed >= budget ? 0 : budget - elapsed;
+}
+
+static bool admission_enter(void) {
+    bool admitted = false;
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_initialized && !s_stopping && s_operation_mutex) {
+        ++s_active_calls;
+        admitted = true;
+    }
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    return admitted;
+}
+
+static void admission_exit(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_active_calls > 0) --s_active_calls;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+static bool operation_enter(void) {
+    if (!s_operation_mutex ||
+        xSemaphoreTake(s_operation_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        return false;
+    }
+    /* A caller can pass admission and then wait here while rollback closes
+     * the service. Do not let it access/update the retained status or NVS
+     * state after that boundary. */
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool admitted = s_initialized && !s_stopping;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (!admitted) xSemaphoreGive(s_operation_mutex);
+    return admitted;
+}
+
+static void operation_exit(void) {
+    if (s_operation_mutex) xSemaphoreGive(s_operation_mutex);
+}
 
 static bool metadata_string(cJSON *object, const char *key, char *out, size_t out_size) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
@@ -154,9 +217,97 @@ static void clear_update_status(void) {
 esp_err_t update_service_init(const update_service_config_t *config) {
     if (!config || !persistence_service_is_initialized() ||
         config->running_release_sequence < 0) return ESP_ERR_INVALID_ARG;
+    bool expected = false;
+    if (!__atomic_compare_exchange_n(&s_initializing, &expected, true, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_operation_mutex) s_operation_mutex = xSemaphoreCreateMutex();
+    if (!s_deinit_mutex) s_deinit_mutex = xSemaphoreCreateMutex();
+    if (!s_operation_mutex || !s_deinit_mutex) {
+        __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
+        return ESP_ERR_NO_MEM;
+    }
+    if (xSemaphoreTake(s_deinit_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
+        return ESP_ERR_TIMEOUT;
+    }
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_initialized && !s_stopping) {
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        xSemaphoreGive(s_deinit_mutex);
+        __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
+        return ESP_OK;
+    }
+    if (s_stopping) {
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        xSemaphoreGive(s_deinit_mutex);
+        __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
+        return ESP_ERR_INVALID_STATE;
+    }
     s_running_release_sequence = config->running_release_sequence;
     memset(&s_status, 0, sizeof(s_status));
+    s_initialized = true;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    xSemaphoreGive(s_deinit_mutex);
+    __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
     return ESP_OK;
+}
+
+esp_err_t update_service_deinit(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = update_stop_timeout_ticks(timeout_ms);
+    while (__atomic_load_n(&s_initializing, __ATOMIC_ACQUIRE)) {
+        if (update_stop_remaining_ticks(started, budget) == 0) return ESP_ERR_TIMEOUT;
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    /* Allocation can fail before Update Service publishes its retained
+     * lifecycle shell. That is an idempotent no-op for startup rollback, not
+     * a timeout that blocks teardown of the services which did start. */
+    if (!s_deinit_mutex) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        const bool live = s_initialized || s_stopping || s_active_calls != 0;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        return live ? ESP_ERR_INVALID_STATE : ESP_OK;
+    }
+    const TickType_t remaining = update_stop_remaining_ticks(started, budget);
+    if (remaining == 0 || xSemaphoreTake(s_deinit_mutex, remaining) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    /* Close admission before Persistence stops.  An already admitted metadata
+     * or tool transaction owns the one remaining legal path to its NVS state,
+     * and must finish before the Persistence boundary is torn down. */
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    s_initialized = false;
+    s_stopping = true;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    for (;;) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        const uint32_t active_calls = s_active_calls;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        if (active_calls == 0) break;
+        if (update_stop_remaining_ticks(started, budget) == 0) {
+            xSemaphoreGive(s_deinit_mutex);
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    s_running_release_sequence = 0;
+    memset(&s_status, 0, sizeof(s_status));
+    s_stopping = false;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    xSemaphoreGive(s_deinit_mutex);
+    return ESP_OK;
+}
+
+bool update_service_is_initialized(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool initialized = s_initialized && !s_stopping &&
+                             !__atomic_load_n(&s_initializing, __ATOMIC_ACQUIRE);
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    return initialized;
 }
 
 bool update_service_apply_metadata(cJSON *metadata, int64_t now_epoch,
@@ -165,25 +316,31 @@ bool update_service_apply_metadata(cJSON *metadata, int64_t now_epoch,
     // still be retained so the Welcome sequence can publish it once it has
     // released ownership of the screen.
     (void)defer_presentation;
+    if (!admission_enter()) return false;
+    if (!operation_enter()) {
+        admission_exit();
+        return false;
+    }
+    bool present = false;
     if (!cJSON_IsObject(metadata) ||
         !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(metadata, "requiresComputer"))) {
         clear_update_status();
-        return false;
+        goto done;
     }
     if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(metadata, "available"))) {
         // An authenticated Hub explicitly says there is no applicable update.
         // Clear the transient in-RAM view, but retain the bounded NVS history:
         // a catalog/network outage must never erase a user's defer preference.
         clear_update_status();
-        return false;
+        goto done;
     }
     if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(metadata, "withdrawn"))) {
         clear_update_status();
-        return false;
+        goto done;
     }
     cJSON *sequence_item = cJSON_GetObjectItemCaseSensitive(metadata, "releaseSequence");
     if (!cJSON_IsNumber(sequence_item) || sequence_item->valuedouble <= s_running_release_sequence ||
-        sequence_item->valuedouble > INT64_MAX || sequence_item->valuedouble != (double)(int64_t)sequence_item->valuedouble) return false;
+        sequence_item->valuedouble > INT64_MAX || sequence_item->valuedouble != (double)(int64_t)sequence_item->valuedouble) goto done;
     update_service_status_t next = {0};
     next.available = true;
     next.release_sequence = (int64_t)sequence_item->valuedouble;
@@ -191,10 +348,10 @@ bool update_service_apply_metadata(cJSON *metadata, int64_t now_epoch,
     if (!metadata_string(metadata, "displayVersion", next.display_version, sizeof(next.display_version)) ||
         !metadata_string(metadata, "releaseTag", next.release_tag, sizeof(next.release_tag)) ||
         !metadata_string(metadata, "manifestSha256", next.manifest_sha256, sizeof(next.manifest_sha256)) ||
-        !valid_digest(next.manifest_sha256)) return false;
+        !valid_digest(next.manifest_sha256)) goto done;
 
     update_service_store_t store;
-    if (load_store(&store) != ESP_OK) return false;
+    if (load_store(&store) != ESP_OK) goto done;
     const bool release_changed = store.release_sequence != next.release_sequence ||
                                  strcmp(store.manifest_sha256, next.manifest_sha256) != 0;
     const bool dismiss_matches = store.dismissed_sequence == next.release_sequence &&
@@ -224,33 +381,68 @@ bool update_service_apply_metadata(cJSON *metadata, int64_t now_epoch,
     store.release_sequence = next.release_sequence;
     store.remind_after_epoch = next.remind_after_epoch;
     strlcpy(store.manifest_sha256, next.manifest_sha256, sizeof(store.manifest_sha256));
-    if (save_store(&store) != ESP_OK) return false;
+    if (save_store(&store) != ESP_OK) goto done;
 
     s_status = next;
     if (!deferred && (release_changed || due)) set_pending_presentation();
-    return s_status.pending_presentation;
+    present = s_status.pending_presentation;
+done:
+    operation_exit();
+    admission_exit();
+    return present;
 }
 
 bool update_service_take_pending_presentation(char *title, size_t title_size,
                                               char *detail, size_t detail_size) {
-    if (!s_status.pending_presentation || !title || !detail || title_size == 0 || detail_size == 0) return false;
+    if (!admission_enter()) return false;
+    if (!operation_enter()) {
+        admission_exit();
+        return false;
+    }
+    bool taken = false;
+    if (!s_status.pending_presentation || !title || !detail ||
+        title_size == 0 || detail_size == 0) goto done;
     strlcpy(title, s_status.title, title_size);
     strlcpy(detail, s_status.detail, detail_size);
     s_status.pending_presentation = false;
-    return true;
+    taken = true;
+done:
+    operation_exit();
+    admission_exit();
+    return taken;
 }
 
 void update_service_get_status(update_service_status_t *out) {
-    if (out) *out = s_status;
+    if (!out) return;
+    if (!admission_enter()) {
+        memset(out, 0, sizeof(*out));
+        return;
+    }
+    if (operation_enter()) {
+        *out = s_status;
+        operation_exit();
+    } else {
+        memset(out, 0, sizeof(*out));
+    }
+    admission_exit();
 }
 
 esp_err_t update_service_execute_tool(const char *name, cJSON *arguments,
                                       cJSON **out_result, char *error,
                                       size_t error_size) {
     if (!name || !out_result || !cJSON_IsObject(arguments)) return ESP_ERR_INVALID_ARG;
+    if (!admission_enter()) return ESP_ERR_INVALID_STATE;
+    if (!operation_enter()) {
+        admission_exit();
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t status = ESP_OK;
     *out_result = NULL;
     cJSON *result = cJSON_CreateObject();
-    if (!result) return ESP_ERR_NO_MEM;
+    if (!result) {
+        status = ESP_ERR_NO_MEM;
+        goto done;
+    }
     if (!strcmp(name, "update_status") || !strcmp(name, "update_check")) {
         cJSON_AddBoolToObject(result, "available", s_status.available);
         cJSON_AddBoolToObject(result, "requiresComputer", true);
@@ -266,18 +458,21 @@ esp_err_t update_service_execute_tool(const char *name, cJSON *arguments,
         if (!s_status.available) {
             snprintf(error, error_size, "no update is available");
             cJSON_Delete(result);
-            return ESP_ERR_INVALID_STATE;
+            status = ESP_ERR_INVALID_STATE;
+            goto done;
         }
         update_service_store_t store;
         if (load_store(&store) != ESP_OK) {
             cJSON_Delete(result);
-            return ESP_ERR_TIMEOUT;
+            status = ESP_ERR_TIMEOUT;
+            goto done;
         }
         int64_t now = (int64_t)time(NULL);
         if (now < 1672531200) {
             snprintf(error, error_size, "trusted wall clock is unavailable");
             cJSON_Delete(result);
-            return ESP_ERR_INVALID_STATE;
+            status = ESP_ERR_INVALID_STATE;
+            goto done;
         }
         int64_t defer = !strcmp(name, "update_remind_later")
                             ? (s_status.critical ? UPDATE_SERVICE_CRITICAL_INTERVAL_SECONDS
@@ -290,7 +485,8 @@ esp_err_t update_service_execute_tool(const char *name, cJSON *arguments,
         store.remind_after_epoch = store.dismissed_until_epoch;
         if (save_store(&store) != ESP_OK) {
             cJSON_Delete(result);
-            return ESP_FAIL;
+            status = ESP_FAIL;
+            goto done;
         }
         s_status.remind_after_epoch = store.remind_after_epoch;
         s_status.pending_presentation = false;
@@ -299,8 +495,12 @@ esp_err_t update_service_execute_tool(const char *name, cJSON *arguments,
     } else {
         snprintf(error, error_size, "unsupported client tool: %s", name);
         cJSON_Delete(result);
-        return ESP_ERR_NOT_SUPPORTED;
+        status = ESP_ERR_NOT_SUPPORTED;
+        goto done;
     }
     *out_result = result;
-    return ESP_OK;
+done:
+    operation_exit();
+    admission_exit();
+    return status;
 }

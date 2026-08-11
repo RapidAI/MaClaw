@@ -45,6 +45,12 @@ type IMFileDeliveryRequest struct {
 	MIMEType string               `json:"mime_type"`
 	Message  string               `json:"message,omitempty"`
 	Target   IMFileDeliveryTarget `json:"target,omitempty"`
+
+	// BotProfileID is host-owned routing context for a Lansenger runtime. It is
+	// deliberately not derived from tool arguments: the profile handler injects
+	// it after materializing a file so an artifact cannot be sent through a
+	// different bot's gateway or private-session route.
+	BotProfileID string `json:"-"`
 }
 
 // IMFileDeliveryTargetFromArgs extracts exact-target fields from tool args.

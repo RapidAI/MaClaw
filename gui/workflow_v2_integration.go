@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -48,6 +49,10 @@ func (a *App) buildWorkflowV2StateWithLLM(store v2.WorkflowStore) *workflowV2Sta
 	if strings.TrimSpace(a.testHomeDir) != "" {
 		st.machine.SetAllowTempTestPaths(true)
 	}
+	// Repair only the completed Ledger -> Workflow metadata handoff before the
+	// regular startup suspension pass. This never starts a coding loop: the
+	// checkpoint contains completed result references and the report only.
+	a.repairCompletedCodingWorkflowProjections(st)
 	log.Printf("[workflow-v2] engine ready: router=%v machine=%v store=%v", st.router != nil, st.machine != nil, st.store != nil)
 
 	// Self-heal: cancel stale active workflows that were left over from a previous
@@ -657,6 +662,14 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		}
 		return h.runWorkflowV2Phase(msg.UserID, hr.State, "")
 	case v2.ActionRunPhase:
+		// Confirmation is a Workflow boundary, not merely a template convention.
+		// A persisted/custom phase may carry subagent execution metadata while it
+		// still requires review. Keep that phase on the document-producing path;
+		// do not mark it executing or arm the write-capable runtime until the
+		// StateMachine has advanced it after an explicit confirmation.
+		if hr.Phase != nil && hr.Phase.NeedsConfirm {
+			return h.runWorkflowV2Phase(msg.UserID, hr.State, "")
+		}
 		if hr.Phase != nil {
 			switch hr.Phase.ExecMode {
 			case v2.ExecModeSubAgent:
@@ -1694,6 +1707,7 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 		ownLoop = true
 	}
 	ensureLoopCtxUserID(loopCtx, userID)
+	loopCtx.WorkflowID = state.ID
 	runCtx, cancelRun := loopCtx.Context()
 	defer cancelRun()
 	if ownLoop {
@@ -1714,7 +1728,7 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 		}
 	}
 
-	cfg := h.getMaclawLLMConfig()
+	cfg := h.getCodingLLMConfig()
 	httpClient := h.client
 	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
 		if task == nil {
@@ -1746,13 +1760,7 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 		if v1Result == nil {
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
 		}
-		status := v2.TaskFailed
-		switch v1Result.Status {
-		case TaskExecPassed:
-			status = v2.TaskPassed
-		case TaskExecSkipped:
-			status = v2.TaskSkipped
-		}
+		status := mapLocalCodingSubAgentStatusForRetry(v1Result.Status)
 		if progressCB != nil {
 			switch status {
 			case v2.TaskPassed:
@@ -1764,13 +1772,15 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 			}
 		}
 		return &v2.TaskRunResult{
-			TaskIndex:     task.Index,
-			Title:         task.Title,
-			Status:        status,
-			Summary:       v1Result.Summary,
-			FilesCreated:  v1Result.FilesCreated,
-			FilesModified: v1Result.FilesModified,
-			Error:         v1Result.Error,
+			TaskIndex:      task.Index,
+			Title:          task.Title,
+			Status:         status,
+			Summary:        v1Result.Summary,
+			FilesCreated:   v1Result.FilesCreated,
+			FilesModified:  v1Result.FilesModified,
+			Error:          v1Result.Error,
+			RuntimeTaskID:  v1Result.RuntimeTaskID,
+			RuntimeHandoff: v1Result.RuntimeHandoff,
 		}
 	}
 
@@ -1778,8 +1788,9 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 		ProjectPath:     state.ProjectPath,
 		RequirementsCtx: reqCtx,
 		DesignCtx:       designCtx,
-		MaxRetries:      2,
+		MaxRetries:      0,
 		TDDMode:         true,
+		MaxParallel:     1,
 	}
 
 	runner := v2.NewTaskRunner(config, subAgentFn)
@@ -1856,6 +1867,7 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 		ownLoop = true
 	}
 	ensureLoopCtxUserID(loopCtx, userID)
+	loopCtx.WorkflowID = state.ID
 	runCtx, cancelRun := loopCtx.Context()
 	defer cancelRun()
 	if ownLoop {
@@ -1928,7 +1940,7 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 		}
 	}
 
-	cfg := h.getMaclawLLMConfig()
+	cfg := h.getCodingLLMConfig()
 	httpClient := h.client
 
 	// 1-based ordinal for user-facing progress (TaskItem.Index may already be 1-based).
@@ -2010,13 +2022,15 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 			}
 		}
 		return &v2.TaskRunResult{
-			TaskIndex:     task.Index,
-			Title:         title,
-			Status:        status,
-			Summary:       result.Summary,
-			FilesCreated:  result.FilesCreated,
-			FilesModified: result.FilesModified,
-			Error:         result.Error,
+			TaskIndex:      task.Index,
+			Title:          title,
+			Status:         status,
+			Summary:        result.Summary,
+			FilesCreated:   result.FilesCreated,
+			FilesModified:  result.FilesModified,
+			Error:          result.Error,
+			RuntimeTaskID:  result.RuntimeTaskID,
+			RuntimeHandoff: result.RuntimeHandoff,
 		}
 	}
 
@@ -2025,8 +2039,9 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 		ProjectPath:     state.ProjectPath,
 		RequirementsCtx: reqCtx,
 		DesignCtx:       designCtx,
-		MaxRetries:      2,
+		MaxRetries:      0,
 		TDDMode:         true,
+		MaxParallel:     1,
 	}
 	runner := v2.NewTaskRunner(config, subAgentFn)
 	allResults := runner.RunAll(runCtx, tasks, reasoningToken, func(progress string) {
@@ -2095,15 +2110,44 @@ func (h *IMMessageHandler) finalizeCodingImplementation(
 	cp codingExecCheckpoint,
 	onProgress func(string),
 ) *IMAgentResponse {
+	// The ledger is the execution source of truth. Workflow gets only a bounded
+	// projection (the normal report plus opaque RuntimeTaskID references), while
+	// ConversationMemory gets one recovery-facing opaque reference. Neither
+	// surface receives command/tool payloads or an implicit replay plan.
+	h.projectCodingRuntimeProjection(userID, state, results, report, cancelled)
 	passed, failed, skipped := countTaskRunStatuses(results)
 	// Advance only when every task has a Passed result. A cancel that races
 	// after the last task still advances; empty/partial results never do.
 	allOK := allCodingTasksPassed(tasks, results)
 
 	if allOK {
-		h.clearCodingExecCheckpoint(userID)
+		// Persist the completed Ledger -> Workflow handoff before attempting the
+		// Workflow write. A crash or store failure after the executor committed
+		// must leave an opaque, recoverable projection marker rather than cause a
+		// later workflow resume to invoke the coding executor again.
+		cp.Results = results
+		cp.Cancelled = false
+		cp.IsRemote = isRemote
+		cp.ProjectionPending = true
+		if state != nil {
+			cp.WorkflowID = state.ID
+			if phase := state.ActivePhase(); phase != nil {
+				cp.WorkflowPhaseID = phase.ID
+			}
+			if strings.TrimSpace(cp.ProjectPath) == "" {
+				cp.ProjectPath = state.ProjectPath
+			}
+		}
+		h.storeCodingExecCheckpoint(userID, cp)
 		if wf := h.getWorkflowV2(); wf != nil {
-			_ = wf.machine.RecordOutput(userID, report)
+			if err := wf.machine.RecordOutput(userID, report); err != nil {
+				log.Printf("[workflow-v2-exec] durable coding completed but Workflow projection failed: user=%s err=%v", userID, err)
+				return h.completedCodingProjectionPendingResponse(tasks, report)
+			}
+			// The coding phase itself is now durably projected. Any following
+			// auto-generated workflow phase is ordinary Workflow metadata and is
+			// never grounds to rerun the already completed coding executor.
+			h.clearCodingExecCheckpoint(userID)
 			if updatedState := wf.machine.GetActive(userID); updatedState != nil {
 				if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
 					if onProgress != nil {
@@ -2114,7 +2158,9 @@ func (h *IMMessageHandler) finalizeCodingImplementation(
 						))
 					}
 					log.Printf("[workflow-v2-exec] auto-completing phase=%s", nextPhase.ID)
-					_ = wf.machine.RecordOutput(userID, report)
+					if err := wf.machine.RecordOutput(userID, report); err != nil {
+						log.Printf("[workflow-v2-exec] durable coding completed but auto phase projection failed: user=%s err=%v", userID, err)
+					}
 				}
 			}
 			if updatedState := wf.machine.GetActive(userID); updatedState != nil {
@@ -2247,6 +2293,19 @@ func (h *IMMessageHandler) finalizeCodingImplementation(
 	}
 }
 
+func (h *IMMessageHandler) completedCodingProjectionPendingResponse(tasks []*v2.TaskItem, report string) *IMAgentResponse {
+	var b strings.Builder
+	b.WriteString(codingExecText(
+		"Coding execution completed and was saved safely. The workflow phase update is pending and will be retried as metadata only; no coding task will be run again.\n\n",
+		"编码执行已安全完成并持久化。工作流阶段更新待补齐，将仅重试元数据写入，不会再次执行编码任务。\n\n",
+		"編碼執行已安全完成並持久化。工作流程階段更新待補齊，將僅重試中繼資料寫入，不會再次執行編碼任務。\n\n",
+	))
+	b.WriteString(formatTaskListBrief(tasks))
+	b.WriteString("\n")
+	b.WriteString(report)
+	return &IMAgentResponse{Text: b.String()}
+}
+
 // runCodingExecFromCheckpoint re-runs failed or incomplete tasks from a checkpoint.
 func (h *IMMessageHandler) runCodingExecFromCheckpoint(userID, action string, state *v2.WorkflowState, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
 	cp, ok := h.loadCodingExecCheckpoint(userID)
@@ -2277,6 +2336,8 @@ func (h *IMMessageHandler) runCodingExecFromCheckpoint(userID, action string, st
 		targets = failedTaskItemsFromResults(cp.Tasks, cp.Results)
 	case codingExecRetryActionResume:
 		targets = incompleteTaskItemsFromResults(cp.Tasks, cp.Results)
+	case codingExecRetryActionReviewChildren:
+		return h.reviewCodingExecChildResults(userID, state, cp, onProgress, onToken, parentLoop)
 	default:
 		return &IMAgentResponse{Text: codingExecText(
 			fmt.Sprintf("Unknown retry action. Send “%s” or “%s”.", codingExecCmdRetryFailed(), codingExecCmdResume()),
@@ -2320,6 +2381,219 @@ func (h *IMMessageHandler) runCodingExecFromCheckpoint(userID, action string, st
 	return h.runCodingExecTargetsLocal(userID, state, cp, targets, onProgress, onToken, parentLoop)
 }
 
+// reviewCodingExecChildResults begins a fresh, explicit parent review attempt
+// only after Runtime confirms every child has delivered its bounded result. It
+// never uses an old parent transcript, command, tool argument, or prior model
+// context. The only injected evidence is a small child summary plus digest.
+func (h *IMMessageHandler) reviewCodingExecChildResults(userID string, state *v2.WorkflowState, cp codingExecCheckpoint, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
+	targets := childHandoffTaskItemsFromResults(cp.Tasks, cp.Results)
+	if len(targets) == 0 {
+		return &IMAgentResponse{Text: codingExecText(
+			"No Runtime child-result handoff is ready for review.",
+			"没有可审阅的 Runtime 子任务结果交接。",
+			"沒有可審閱的 Runtime 子任務結果交接。",
+		)}
+	}
+	store, closeStore, err := openGUICodingRuntimeStore(h)
+	if err != nil {
+		return &IMAgentResponse{Text: codingExecText("Unable to open the coding Runtime ledger.", "无法打开编码 Runtime 台账。", "無法開啟編碼 Runtime 台帳。"), Error: err.Error()}
+	}
+	defer closeStore()
+	byIndex := make(map[int]v2.TaskRunResult, len(cp.Results))
+	for _, result := range cp.Results {
+		byIndex[result.TaskIndex] = result
+	}
+	continuations := make(map[int]*codingruntime.ParentContinuation, len(targets))
+	for _, target := range targets {
+		result := byIndex[target.Index]
+		continuation, prepareErr := (codingruntime.ChildTaskService{Store: store}).PrepareParentContinuation(result.RuntimeTaskID)
+		if prepareErr != nil {
+			return &IMAgentResponse{Text: codingExecText(
+				"Child results are not ready for review yet; the parent was not restarted.",
+				"子任务结果尚未准备好审阅；父任务没有被重新启动。",
+				"子任務結果尚未準備好審閱；父任務沒有被重新啟動。",
+			)}
+		}
+		continuations[target.Index] = continuation
+	}
+	// This action bypasses the ordinary retry switch, so explicitly preserve
+	// the phase transition used by all implementation executions.
+	if wf := h.getWorkflowV2(); wf != nil {
+		if err := wf.machine.MarkPhaseExecuting(userID); err != nil {
+			log.Printf("[coding-child-review] MarkPhaseExecuting failed: %v", err)
+		}
+		if fresh := wf.machine.GetActive(userID); fresh != nil {
+			state = fresh
+		}
+	}
+	if onProgress != nil {
+		onProgress(fmt.Sprintf(codingExecText(
+			"▶ Reviewing bounded child results for %d task(s)…",
+			"▶ 正在审阅 %d 个任务的受限子任务结果…",
+			"▶ 正在審閱 %d 個任務的受限子任務結果…",
+		), len(targets)))
+	}
+	if cp.IsRemote || isCodingWorkflowRemoteExecution(state) {
+		return h.runCodingExecChildReviewTargetsRemote(userID, state, cp, targets, continuations, onProgress, onToken, parentLoop)
+	}
+	return h.runCodingExecChildReviewTargetsLocal(userID, state, cp, targets, continuations, onProgress, onToken, parentLoop)
+}
+
+func codingRuntimeChildReviewContext(continuation *codingruntime.ParentContinuation) string {
+	if continuation == nil {
+		return ""
+	}
+	const maxResults = 8
+	const maxSummaryRunes = 360
+	var b strings.Builder
+	b.WriteString("## Runtime child-result review\n")
+	b.WriteString("This is a fresh review attempt. Treat these bounded findings as evidence to verify; do not assume or replay any prior parent tool action.\n")
+	for i, result := range continuation.ChildResults {
+		if i >= maxResults {
+			break
+		}
+		fmt.Fprintf(&b, "- Child %d (%s): %s\n  Evidence digest: %s\n", i+1, result.Status, codingRuntimeChildReviewSummary(result.Summary, maxSummaryRunes), truncateRunesV2(strings.TrimSpace(result.EvidenceDigest), 160))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// codingRuntimeChildReviewSummary preserves concise findings while refusing to
+// inject a command/tool-shaped line into a fresh parent prompt. Runtime never
+// stores raw tool payloads, but this additional host boundary also prevents a
+// child model from smuggling echoed command text through its summary.
+func codingRuntimeChildReviewSummary(value string, limit int) string {
+	var safe []string
+	inCodeFence := false
+	for _, line := range strings.Split(strings.TrimSpace(value), "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeFence = !inCodeFence
+			continue
+		}
+		if inCodeFence || trimmed == "" ||
+			strings.Contains(lower, "ssh_bash") || strings.Contains(lower, "tool:") ||
+			strings.Contains(lower, "command:") || strings.HasPrefix(lower, "$ ") ||
+			strings.HasPrefix(lower, "rm ") || strings.HasPrefix(lower, "curl ") ||
+			strings.HasPrefix(lower, "powershell ") || strings.HasPrefix(lower, "cmd ") ||
+			strings.HasPrefix(lower, "bash ") || strings.HasPrefix(lower, "sh ") ||
+			strings.HasPrefix(lower, "python ") || strings.HasPrefix(lower, "go ") ||
+			strings.HasPrefix(lower, "git ") || strings.Contains(lower, "```") {
+			continue
+		}
+		safe = append(safe, trimmed)
+	}
+	return truncateRunesV2(strings.Join(safe, " "), limit)
+}
+
+func (h *IMMessageHandler) runCodingExecChildReviewTargetsLocal(userID string, state *v2.WorkflowState, cp codingExecCheckpoint, targets []*v2.TaskItem, continuations map[int]*codingruntime.ParentContinuation, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
+	projectPath := cp.ProjectPath
+	if state != nil && strings.TrimSpace(state.ProjectPath) != "" {
+		projectPath = state.ProjectPath
+	}
+	loopCtx := parentLoop
+	if loopCtx == nil {
+		loopCtx = NewLoopContext("workflow-local-child-review", h.getMaclawAgentMaxIterations(), h.client)
+		defer func() { loopCtx.Cancel(); loopCtx.Done() }()
+	}
+	ensureLoopCtxUserID(loopCtx, userID)
+	if state != nil {
+		loopCtx.WorkflowID = state.ID
+	}
+	runCtx, cancelRun := loopCtx.Context()
+	defer cancelRun()
+	cfg, total := h.getCodingLLMConfig(), len(targets)
+	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
+		if task == nil {
+			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
+		}
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if progressCB != nil {
+			progressCB(fmt.Sprintf(codingExecText("Review local child results %d/%d: %s", "审阅本机子任务结果 %d/%d：%s", "審閱本機子任務結果 %d/%d：%s"), task.Index, total, task.Title))
+		}
+		continuation := continuations[task.Index]
+		v1Task := &TaskItem{Index: task.Index, Title: task.Title, Description: task.Description, Files: append([]string(nil), task.Files...), DependsOn: append([]int(nil), task.DependsOn...)}
+		options := &guiCodingRuntimeOptions{ExistingTaskID: continuation.Task.TaskID, ParentContinuationAttemptID: continuation.ParentAttemptID}
+		result := runTaskWithSubAgentRuntimeOptions(h, cfg, h.client, v1Task, projectPath, config.RequirementsCtx, config.DesignCtx, []string{codingRuntimeChildReviewContext(continuation)}, loopCtx, tokenCB, progressCB, options)
+		if result == nil {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "child-result review returned nil"}
+		}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapLocalCodingSubAgentStatusForRetry(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff}
+	}
+	config := v2.TaskRunnerConfig{ProjectPath: projectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 0, TDDMode: false}
+	results := v2.NewTaskRunner(config, subAgentFn).RunAll(runCtx, tasksForSubsetRerun(targets), onToken, onProgress)
+	return h.finalizeChildReviewResults(userID, state, cp, results, false, onProgress, onToken, runCtx.Err() != nil || loopCtx.IsCancelled())
+}
+
+func (h *IMMessageHandler) runCodingExecChildReviewTargetsRemote(userID string, state *v2.WorkflowState, cp codingExecCheckpoint, targets []*v2.TaskItem, continuations map[int]*codingruntime.ParentContinuation, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
+	sessionID, workDir := cp.RemoteSessionID, cp.RemoteWorkDir
+	if sid, wd, errMsg := h.ensureCodingWorkflowRemoteSSHSession(userID, state); errMsg == "" {
+		sessionID, workDir = sid, wd
+	} else if sessionID == "" {
+		return &IMAgentResponse{Text: codingExecText("Unable to connect SSH for child-result review: ", "无法连接 SSH 以审阅子任务结果：", "無法連線 SSH 以審閱子任務結果：") + errMsg, Error: errMsg}
+	}
+	loopCtx := parentLoop
+	if loopCtx == nil {
+		loopCtx = NewLoopContext("workflow-remote-child-review", h.getMaclawAgentMaxIterations(), h.client)
+		defer func() { loopCtx.Cancel(); loopCtx.Done() }()
+	}
+	ensureLoopCtxUserID(loopCtx, userID)
+	if state != nil {
+		loopCtx.WorkflowID = state.ID
+	}
+	runCtx, cancelRun := loopCtx.Context()
+	defer cancelRun()
+	cfg, total := h.getCodingLLMConfig(), len(targets)
+	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
+		if task == nil {
+			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
+		}
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if progressCB != nil {
+			progressCB(fmt.Sprintf(codingExecText("Review remote child results %d/%d: %s", "审阅远程子任务结果 %d/%d：%s", "審閱遠端子任務結果 %d/%d：%s"), task.Index, total, task.Title))
+		}
+		continuation := continuations[task.Index]
+		desc, taskContext := buildCodingRemoteTaskPrompt(task, config.RequirementsCtx, config.DesignCtx)
+		taskContext = strings.TrimSpace(taskContext + "\n\n" + codingRuntimeChildReviewContext(continuation))
+		agent := NewRemoteCodingSubAgent(h, cfg, h.client, sessionID, workDir, workDir, loopCtx)
+		agent.runtimeExistingTaskID = continuation.Task.TaskID
+		agent.runtimeParentContinuationAttemptID = continuation.ParentAttemptID
+		agent.SetCallbacks(tokenCB, progressCB)
+		agent.SetSourcePreviewEnabled(true)
+		if h.app != nil {
+			agent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
+		}
+		result := agent.ExecuteTask(desc, taskContext)
+		if result == nil {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "remote child-result review returned nil"}
+		}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapRemoteCodingSubAgentStatus(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff}
+	}
+	config := v2.TaskRunnerConfig{ProjectPath: cp.ProjectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 0, TDDMode: false}
+	results := v2.NewTaskRunner(config, subAgentFn).RunAll(runCtx, tasksForSubsetRerun(targets), onToken, onProgress)
+	cp.RemoteSessionID, cp.RemoteWorkDir = sessionID, workDir
+	return h.finalizeChildReviewResults(userID, state, cp, results, true, onProgress, onToken, runCtx.Err() != nil || loopCtx.IsCancelled())
+}
+
+func (h *IMMessageHandler) finalizeChildReviewResults(userID string, state *v2.WorkflowState, cp codingExecCheckpoint, updates []v2.TaskRunResult, isRemote bool, onProgress func(string), onToken func(string), cancelled bool) *IMAgentResponse {
+	merged := mergeTaskRunResultsByIndex(cp.Results, updates)
+	for i := range merged {
+		if merged[i].RuntimeHandoff && merged[i].Status != v2.TaskSkipped {
+			merged[i].RuntimeHandoff = false
+		}
+	}
+	report := formatTaskRunResultsReportEx(merged, cancelled)
+	if onToken != nil {
+		onToken("\n\n" + report)
+	}
+	cp.Results, cp.Cancelled, cp.IsRemote = merged, cancelled, isRemote
+	return h.finalizeCodingImplementation(userID, state, cp.Tasks, merged, report, cancelled, isRemote, cp, onProgress)
+}
+
 func (h *IMMessageHandler) runCodingExecTargetsLocal(userID string, state *v2.WorkflowState, cp codingExecCheckpoint, targets []*v2.TaskItem, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
 	projectPath := cp.ProjectPath
 	if state != nil && state.ProjectPath != "" {
@@ -2331,10 +2605,13 @@ func (h *IMMessageHandler) runCodingExecTargetsLocal(userID string, state *v2.Wo
 		defer func() { loopCtx.Cancel(); loopCtx.Done() }()
 	}
 	ensureLoopCtxUserID(loopCtx, userID)
+	if state != nil {
+		loopCtx.WorkflowID = state.ID
+	}
 	runCtx, cancelRun := loopCtx.Context()
 	defer cancelRun()
 
-	cfg := h.getMaclawLLMConfig()
+	cfg := h.getCodingLLMConfig()
 	httpClient := h.client
 	total := len(targets)
 	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
@@ -2359,14 +2636,8 @@ func (h *IMMessageHandler) runCodingExecTargetsLocal(userID string, state *v2.Wo
 		if v1Result == nil {
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
 		}
-		status := v2.TaskFailed
-		switch v1Result.Status {
-		case TaskExecPassed:
-			status = v2.TaskPassed
-		case TaskExecSkipped:
-			status = v2.TaskSkipped
-		}
-		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: v1Result.Summary, FilesCreated: v1Result.FilesCreated, FilesModified: v1Result.FilesModified, Error: v1Result.Error}
+		status := mapLocalCodingSubAgentStatusForRetry(v1Result.Status)
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: v1Result.Summary, FilesCreated: v1Result.FilesCreated, FilesModified: v1Result.FilesModified, Error: v1Result.Error, RuntimeTaskID: v1Result.RuntimeTaskID, RuntimeHandoff: v1Result.RuntimeHandoff}
 	}
 	config := v2.TaskRunnerConfig{ProjectPath: projectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 1, TDDMode: true}
 	runner := v2.NewTaskRunner(config, subAgentFn)
@@ -2418,10 +2689,13 @@ func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.W
 		defer func() { loopCtx.Cancel(); loopCtx.Done() }()
 	}
 	ensureLoopCtxUserID(loopCtx, userID)
+	if state != nil {
+		loopCtx.WorkflowID = state.ID
+	}
 	runCtx, cancelRun := loopCtx.Context()
 	defer cancelRun()
 
-	cfg := h.getMaclawLLMConfig()
+	cfg := h.getCodingLLMConfig()
 	httpClient := h.client
 	total := len(targets)
 	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
@@ -2451,7 +2725,7 @@ func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.W
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "RemoteCodingSubAgent returned nil"}
 		}
 		status := mapRemoteCodingSubAgentStatus(result.Status)
-		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, Error: result.Error}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff}
 	}
 	config := v2.TaskRunnerConfig{ProjectPath: cp.ProjectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 1, TDDMode: true}
 	runner := v2.NewTaskRunner(config, subAgentFn)
@@ -2499,9 +2773,9 @@ func buildCodingRemoteTaskPrompt(task *v2.TaskItem, reqCtx, designCtx string) (d
 	return desc, strings.Join(parts, "\n\n")
 }
 
-// autoRetryFailedCodingTasks runs one automatic failed-only subset pass shared by
-// local and remote first-run coding execution. DependsOn is stripped so TaskRunner
-// does not false-skip subset tasks.
+// autoRetryFailedCodingTasks is retained for callers that have independently
+// proven idempotence. Coding execution does not enable it because a failed
+// task may already have edited files or triggered external side effects.
 func autoRetryFailedCodingTasks(
 	runCtx context.Context,
 	loopCtx *LoopContext,
@@ -2513,6 +2787,9 @@ func autoRetryFailedCodingTasks(
 	onProgress func(string),
 	envLabel string,
 ) []v2.TaskRunResult {
+	if !config.AllowAutomaticRetries {
+		return allResults
+	}
 	cancelled := runCtx != nil && runCtx.Err() != nil
 	if !cancelled && loopCtx != nil && loopCtx.IsCancelled() {
 		cancelled = true
@@ -2572,7 +2849,21 @@ func mapRemoteCodingSubAgentStatus(status string) v2.TaskRunStatus {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "passed", "success", "ok", "completed", "done":
 		return v2.TaskPassed
-	case "skipped", "cancelled", "canceled":
+	case "skipped", "cancelled", "canceled", "interrupted", "waiting_child":
+		return v2.TaskSkipped
+	default:
+		return v2.TaskFailed
+	}
+}
+
+// mapLocalCodingSubAgentStatusForRetry keeps durable parent handoffs out of
+// the retry failure bucket. waiting_child has no completed parent decision
+// yet; a fresh Runtime attempt must explicitly consume the child results.
+func mapLocalCodingSubAgentStatusForRetry(status TaskExecStatus) v2.TaskRunStatus {
+	switch status {
+	case TaskExecPassed:
+		return v2.TaskPassed
+	case TaskExecSkipped, TaskExecWaitingApproval, TaskExecWaitingChild, TaskExecInterrupted:
 		return v2.TaskSkipped
 	default:
 		return v2.TaskFailed
@@ -2970,7 +3261,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	}
 
 	hooks := loadCodingWorkbenchHooks(projectPath)
-	cfg := h.getMaclawLLMConfig()
+	cfg := h.getCodingLLMConfig()
 	httpClient := h.client
 	worktreeMode := h.getStickyCodingWorktreeMode(userID)
 	// Start a fresh source-preview session for each turn. Inquiry and operational
@@ -2993,12 +3284,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, previewRoutePath)
 	}
 	// Multi-step plans already encode explore→implement→verify; TDD doubling is too heavy.
-	// Parallel waves: explore-only steps with softened deps can fan out (MaxParallel=3).
-	// Write steps may isolate into git worktrees when mode is auto/always.
-	maxParallel := 1
-	if planned && len(tasks) >= 2 {
-		maxParallel = 3
-	}
+	// Keep all coding steps serial until write sets and isolated workspaces are
+	// verified by the runtime. A worktree creation failure must not fall back to
+	// concurrent writes on the primary worktree.
+	// The cap is only a scheduler upper-bound: every ready wave is still
+	// rejected unless its explicit write declarations satisfy P3 admission.
+	maxParallel := codingWorkbenchMaxParallel(requestKind, planned, worktreeMode)
 	var lastCodingResult *CodingSubAgentResult
 	totalToolCalls, totalIters := 0, 0
 	totalInTok, totalOutTok := 0, 0
@@ -3060,6 +3351,11 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		if useWT {
 			created, wtErr := createCodingWorkbenchWorktree(projectPath, t.Index, t.Title)
 			if wtErr != nil {
+				if config.WaveSize > 1 {
+					sum := fmt.Sprintf("isolated worktree creation failed; parallel writer was not run on primary workspace: %v", wtErr)
+					h.updateStickyCodingStepStatus(userID, t.Index, codingStepFailed, sum)
+					return &v2.TaskRunResult{TaskIndex: t.Index, Title: t.Title, Status: v2.TaskFailed, Summary: sum, Error: "isolated worktree unavailable"}
+				}
 				log.Printf("[coding-worktree] create failed T%d: %v — falling back to main tree", t.Index, wtErr)
 				if onPr != nil {
 					onPr(fmt.Sprintf("T%d worktree 创建失败，回退主目录: %v", t.Index, wtErr))
@@ -3075,6 +3371,11 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					"\n\nYou are in an isolated git worktree. Edit only under this project path. Changes will be cherry-picked back to the main tree after the step.")
 			}
 		}
+		if config.WaveSize > 1 && useWT && wt == nil {
+			sum := "isolated worktree is unavailable; parallel writer was not run on primary workspace"
+			h.updateStickyCodingStepStatus(userID, t.Index, codingStepFailed, sum)
+			return &v2.TaskRunResult{TaskIndex: t.Index, Title: t.Title, Status: v2.TaskFailed, Summary: sum, Error: "isolated worktree unavailable"}
+		}
 
 		v1Task := &TaskItem{
 			Index:       t.Index,
@@ -3084,20 +3385,58 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			DependsOn:   t.DependsOn,
 			RequestKind: requestKind,
 		}
-		var fn subAgentTaskFunc
-		if runTaskWithSubAgent != nil {
-			fn = runTaskWithSubAgent
-		} else {
-			fn = RunTaskWithSubAgent
-		}
 		// Snapshot prevOutputs under lock so parallel waves don't race the slice.
 		usageMu.Lock()
 		stepPrev := append([]string(nil), prevOutputs...)
 		usageMu.Unlock()
-		v1Result := fn(h, cfg, httpClient, v1Task, stepProject, stepReqCtx, "", stepPrev, loopCtx, onTk, onPr)
+		var v1Result *CodingSubAgentResult
+		parallelIsolatedWriter := wt != nil && runTaskWithSubAgent == nil && config.WaveSize > 1
+		if parallelIsolatedWriter {
+			declaredWrites := append([]string(nil), t.Files...)
+			v1Result = runTaskWithSubAgentRuntimeOptions(h, cfg, httpClient, v1Task, stepProject, stepReqCtx, "", stepPrev, loopCtx, onTk, onPr, &guiCodingRuntimeOptions{
+				DeclaredWrites:       declaredWrites,
+				PolicyProjectRoot:    projectPath,
+				WorkspaceIsolated:    true,
+				RequireFinalDiffGate: true,
+				FinalizeWriter: func(result *CodingSubAgentResult) (bool, error) {
+					mergeMu.Lock()
+					defer mergeMu.Unlock()
+					mergedOK, mergeSum, mergeErr := wt.mergeBack(projectPath, declaredWrites)
+					if mergeErr != nil {
+						log.Printf("[coding-worktree] merge failed T%d: %v", t.Index, mergeErr)
+						h.rememberCodingWorktree(userID, wt, "merge-failed")
+						h.recordLocalWorktreeConflict(userID, wt, projectPath, mergeErr.Error())
+						wt.cleanup(true)
+						return false, mergeErr
+					}
+					if !mergedOK {
+						return false, fmt.Errorf("controlled worktree merge did not produce a merge: %s", mergeSum)
+					}
+					if mergeSum != "" {
+						h.rememberCodingWorktree(userID, wt, mergeSum)
+						if onPr != nil {
+							onPr(fmt.Sprintf("T%d %s", t.Index, mergeSum))
+						}
+						result.Summary = strings.TrimSpace(result.Summary + "\n\n" + mergeSum)
+					}
+					result.FilesModified = remapWorktreePaths(result.FilesModified, wt.ProjectPath, projectPath)
+					result.FilesCreated = remapWorktreePaths(result.FilesCreated, wt.ProjectPath, projectPath)
+					wt.cleanup(false)
+					return true, nil
+				},
+			})
+		} else {
+			var fn subAgentTaskFunc
+			if runTaskWithSubAgent != nil {
+				fn = runTaskWithSubAgent
+			} else {
+				fn = RunTaskWithSubAgent
+			}
+			v1Result = fn(h, cfg, httpClient, v1Task, stepProject, stepReqCtx, "", stepPrev, loopCtx, onTk, onPr)
+		}
 
 		// Merge worktree back (or cleanup on failure).
-		if wt != nil {
+		if wt != nil && runTaskWithSubAgent != nil {
 			if v1Result != nil && v1Result.Status == TaskExecPassed {
 				mergeMu.Lock()
 				mergedOK, mergeSum, mergeErr := wt.mergeBack(projectPath)
@@ -3140,6 +3479,11 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 				wt.cleanup(false)
 			}
 		}
+		if parallelIsolatedWriter && (v1Result == nil || v1Result.Status != TaskExecPassed) {
+			// A non-successful executor never reaches FinalizeWriter. Its isolated
+			// checkout has no controlled merge candidate and must be discarded.
+			wt.cleanup(false)
+		}
 
 		if v1Result != nil {
 			// Push step file changes into the right-hand preview immediately
@@ -3178,14 +3522,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			h.updateStickyCodingStepStatus(userID, t.Index, codingStepFailed, "SubAgent returned nil")
 			return &v2.TaskRunResult{TaskIndex: t.Index, Title: t.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
 		}
-		status := v2.TaskFailed
+		status := mapLocalCodingSubAgentStatusForRetry(v1Result.Status)
 		stepStatus := codingStepFailed
-		switch v1Result.Status {
-		case TaskExecPassed:
-			status = v2.TaskPassed
+		switch status {
+		case v2.TaskPassed:
 			stepStatus = codingStepPassed
-		case TaskExecSkipped:
-			status = v2.TaskSkipped
+		case v2.TaskSkipped:
 			stepStatus = codingStepSkipped
 		}
 		summary := v1Result.Summary
@@ -3268,13 +3610,15 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 		_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
 		return &v2.TaskRunResult{
-			TaskIndex:     t.Index,
-			Title:         t.Title,
-			Status:        status,
-			Summary:       summary,
-			FilesCreated:  v1Result.FilesCreated,
-			FilesModified: v1Result.FilesModified,
-			Error:         v1Result.Error,
+			TaskIndex:      t.Index,
+			Title:          t.Title,
+			Status:         status,
+			Summary:        summary,
+			FilesCreated:   v1Result.FilesCreated,
+			FilesModified:  v1Result.FilesModified,
+			Error:          v1Result.Error,
+			RuntimeTaskID:  v1Result.RuntimeTaskID,
+			RuntimeHandoff: v1Result.RuntimeHandoff,
 		}
 	}
 
@@ -3289,16 +3633,14 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	if operational {
 		log.Printf("[workflow-v2] pure coding: operational run/build path user=%s", userID)
 	}
-	maxRetries := 2
-	if operational {
-		// Run/demo follow-ups should fail fast rather than thrash implement retries.
-		maxRetries = 0
-	}
 	config := v2.TaskRunnerConfig{
 		ProjectPath: projectPath,
-		MaxRetries:  maxRetries,
+		MaxRetries:  0,
 		TDDMode:     tddMode,
 		MaxParallel: maxParallel,
+		CanRunParallelWave: func(wave []*v2.TaskItem) bool {
+			return codingWorkbenchCanRunParallelWriterWave(requestKind, planned, worktreeMode, projectPath, wave)
+		},
 	}
 
 	// Route SubAgent thinking to reasoning panel (collapsed)
@@ -3697,7 +4039,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}
 	}
 
-	cfg := h.getMaclawLLMConfig()
+	cfg := h.getCodingLLMConfig()
 	httpClient := h.client
 	runner := remoteCodingTemplateRunner
 	if runner == nil {
@@ -3752,11 +4094,20 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		if remoteCtx.RequestKind == codingRequestImplementation &&
 			shouldUseRemoteCodingIsolate(wtMode, planned, step.Title, step.Description, step.DependsOn) {
 			allowCopy := normalizeCodingWorktreeMode(wtMode) == codingWorktreeModeAlways
-			iso, isoErr := createRemoteCodingIsolate(h, remoteCtx.SessionID, remoteCtx.ProjectDir, step.Index, allowCopy)
+			iso, isoErr := createRemoteCodingIsolate(h, remoteCtx.SessionID, remoteCtx.ProjectDir, step.Index, allowCopy, step.Files)
 			if isoErr != nil {
-				log.Printf("[remote-isolate] T%d create failed: %v — using main remote dir", step.Index, isoErr)
-				if onProgress != nil && allowCopy {
-					onProgress(fmt.Sprintf("T%d 远程隔离目录创建失败，使用主目录: %v", step.Index, isoErr))
+				if remoteIsolateCreationMustFailClosed(wtMode) {
+					sum := fmt.Sprintf("remote isolated workspace creation failed; always mode will not write the primary remote workspace: %v", isoErr)
+					log.Printf("[remote-isolate] T%d %s", step.Index, sum)
+					h.updateStickyCodingStepStatus(userID, step.Index, codingStepFailed, sum)
+					reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
+					result = &RemoteCodingSubAgentResult{Status: "failed", Error: "remote isolated workspace unavailable", Summary: sum}
+					h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: remote isolation unavailable")
+					break
+				}
+				log.Printf("[remote-isolate] T%d create failed: %v — using main remote dir (auto mode, serial execution)", step.Index, isoErr)
+				if onProgress != nil {
+					onProgress(fmt.Sprintf("T%d 远程隔离目录创建失败；auto 模式按串行策略使用主目录: %v", step.Index, isoErr))
 				}
 			} else if iso != nil {
 				isolate = iso
@@ -3771,12 +4122,13 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		stepResult := runner(h, cfg, httpClient, stepRemoteCtx, loopCtx, taskText, onProgress, onToken)
 		if isolate != nil {
 			if stepResult != nil && stepResult.Status == "success" {
-				if mergeSum, mergeErr := isolate.mergeBack(h); mergeErr != nil {
+				if mergeSum, mergeErr := isolate.mergeBack(h, step.Files); mergeErr != nil {
 					log.Printf("[remote-isolate] T%d merge failed: %v", step.Index, mergeErr)
 					h.storeStickyCodingConflict(userID, codingWorkbenchConflict{
 						StepIndex:   step.Index,
 						Path:        isolate.IsolateDir,
 						MainProject: remoteCtx.ProjectDir,
+						Files:       append([]string(nil), isolate.DeclaredWrites...),
 						Error:       mergeErr.Error(),
 						Kind:        "remote_isolate",
 					})
@@ -3991,6 +4343,14 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	return resp
 }
 
+// remoteIsolateCreationMustFailClosed gives `/worktree mode always` a literal
+// meaning: if the requested remote isolation cannot be made, no implementation
+// tool is allowed to fall back to the primary remote checkout. Auto mode stays
+// serial and may use its primary-directory fallback.
+func remoteIsolateCreationMustFailClosed(mode string) bool {
+	return normalizeCodingWorktreeMode(mode) == codingWorktreeModeAlways
+}
+
 // recoverStickyRemoteCodingSSHSession creates a fresh managed SSH session when
 // the sticky session ID is no longer present. It intentionally uses only
 // persisted non-secret coordinates and any configured key/agent auth; a missing
@@ -4120,6 +4480,43 @@ func remoteCodingShouldEnableSourcePreview(kind codingRequestKind) bool {
 func codingWorkbenchShouldUseWorktree(kind codingRequestKind, mode string, planned bool, title, description string, maxParallel, waveSize int, dependsOn []int) bool {
 	return kind == codingRequestImplementation &&
 		shouldUseCodingWorktree(mode, planned, title, description, maxParallel, waveSize, dependsOn)
+}
+
+const codingWorkbenchParallelWriterLimit = 2
+
+func codingWorkbenchMaxParallel(kind codingRequestKind, planned bool, worktreeMode string) int {
+	if kind != codingRequestImplementation || !planned || normalizeCodingWorktreeMode(worktreeMode) == codingWorktreeModeOff {
+		return 1
+	}
+	return codingWorkbenchParallelWriterLimit
+}
+
+// codingWorkbenchCanRunParallelWriterWave verifies the planner-provided
+// declaration before a TaskRunner goroutine is launched. Files is untrusted
+// model output: malformed, empty, read-only, unknown, overlapping, or
+// non-isolated work is serialized. Worktree creation is checked separately in
+// the callback and likewise must never fall back to a shared write workspace.
+func codingWorkbenchCanRunParallelWriterWave(kind codingRequestKind, planned bool, worktreeMode, projectPath string, wave []*v2.TaskItem) bool {
+	if kind != codingRequestImplementation || !planned || len(wave) < 2 || len(wave) > codingWorkbenchParallelWriterLimit || normalizeCodingWorktreeMode(worktreeMode) == codingWorktreeModeOff {
+		return false
+	}
+	sets := make([]codingruntime.WriteSet, 0, len(wave))
+	for _, task := range wave {
+		if task == nil || isCodingPlanExploreOnlyStep(task.Title, task.Description) || len(task.Files) == 0 {
+			return false
+		}
+		set, err := codingruntime.NormalizeWriteSet(codingruntime.WriteScope{Mode: "local", ProjectRef: projectPath}, task.Files)
+		if err != nil || set.Unknown {
+			return false
+		}
+		for _, prior := range sets {
+			if codingruntime.CanAdmitParallelWriters(prior, set, true, true, true).Conflicts {
+				return false
+			}
+		}
+		sets = append(sets, set)
+	}
+	return true
 }
 
 // callLightweightLLM makes a quick non-streaming LLM call for lightweight

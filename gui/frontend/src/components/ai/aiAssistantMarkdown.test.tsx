@@ -10,14 +10,21 @@ import {
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
 
-const { openFileOrShowInFolderMock, showItemInFolderMock } = vi.hoisted(() => ({
+// Minimal JPEG stream with a 1x1 SOF0 frame. The renderer only needs header
+// validation before assigning a data URL to img.src; browser image loading is
+// outside jsdom's scope.
+const safeKBImageJPEG = "/9j/2wCEAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDIBCQkJDAsMGA0NGDIhHCEyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMv/AABEIAAEAAQMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AOLooor5k/cT/9k=";
+
+const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn(async () => undefined),
     showItemInFolderMock: vi.fn(async () => undefined),
+    knowledgeOpenImageAssetMock: vi.fn(async () => undefined),
 }));
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
     ShowItemInFolder: showItemInFolderMock,
+    KnowledgeOpenImageAsset: knowledgeOpenImageAssetMock,
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -28,6 +35,7 @@ describe("renderContentWithCodeBlocks", () => {
     beforeEach(() => {
         openFileOrShowInFolderMock.mockClear();
         showItemInFolderMock.mockClear();
+        knowledgeOpenImageAssetMock.mockClear();
     });
 
     it("normalizes escaped newline sequences before rendering", () => {
@@ -206,7 +214,7 @@ describe("renderContentWithCodeBlocks", () => {
 
     it("keeps KB image thumbnails inside the message width", () => {
         const { container } = render(
-            <div>{renderContentWithCodeBlocks("[KB_IMAGE:asset-1|data:image/png;base64,abc|C:\\Users\\demo\\image.png]", lightTheme)}</div>
+            <div>{renderContentWithCodeBlocks(`[KB_IMAGE:asset-1|data:image/jpeg;base64,${safeKBImageJPEG}]`, lightTheme)}</div>
         );
 
         const wrapper = container.querySelector("img")?.parentElement as HTMLElement;
@@ -218,6 +226,111 @@ describe("renderContentWithCodeBlocks", () => {
         expect(image.style.maxWidth).toBe("100%");
         expect(image.style.boxSizing).toBe("border-box");
         expect(image.style.display).toBe("block");
+    });
+
+    it("renders path-free KB image markers", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(`[KB_IMAGE:asset-1|data:image/jpeg;base64,${safeKBImageJPEG}]`, lightTheme)}</div>
+        );
+        const image = container.querySelector("img") as HTMLImageElement;
+        expect(image).toBeTruthy();
+        expect(image.src).toContain(`data:image/jpeg;base64,${safeKBImageJPEG}`);
+        expect(image.title).toBe("Click to open: asset-1");
+    });
+
+    it("opens a KB image only through its opaque asset ID", async () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(`[KB_IMAGE:asset-1|data:image/jpeg;base64,${safeKBImageJPEG}]`, lightTheme)}</div>
+        );
+        const image = container.querySelector("img") as HTMLImageElement;
+        fireEvent.click(image);
+        expect(knowledgeOpenImageAssetMock).not.toHaveBeenCalled();
+        fireEvent.load(image);
+        fireEvent.click(image);
+
+        await waitFor(() => expect(knowledgeOpenImageAssetMock).toHaveBeenCalledWith("asset-1"));
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+    });
+
+    it("does not render base64 that is not a managed JPEG thumbnail", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("[KB_IMAGE:asset-1|data:image/jpeg;base64,YWJj]", lightTheme)}</div>,
+        );
+        expect(container.querySelector("img")).toBeNull();
+    });
+
+    it("never opens an asset for a JPEG-shaped marker until browser decoding succeeds", () => {
+        // A model can imitate JPEG headers. Header checks bound the candidate,
+        // but only the image element's successful decoder event enables the
+        // asset-ID action.
+        const jpegShapedGarbage = btoa("\xff\xd8\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x03\x01\x11\x00\xff\xd9");
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(`[KB_IMAGE:asset-1|data:image/jpeg;base64,${jpegShapedGarbage}]`, lightTheme)}</div>,
+        );
+        const image = container.querySelector("img") as HTMLImageElement;
+        expect(image).toBeTruthy();
+        fireEvent.click(image);
+        expect(knowledgeOpenImageAssetMock).not.toHaveBeenCalled();
+        fireEvent.error(image);
+        expect(container.querySelector("img")).toBeNull();
+    });
+
+    it("rejects a JPEG marker whose first frame exceeds the managed thumbnail size", () => {
+        // A later fake small SOF must not override the first real frame. JPEG
+        // segment parsing intentionally stops at that first SOF, matching the
+        // managed thumbnail producer's dimensional contract.
+        const oversizedFirstFrame = btoa("\xff\xd8\xff\xc0\x00\x0b\x08\x00\x79\x00\x79\x03\x01\x11\x00\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x03\x01\x11\x00\xff\xd9");
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(`[KB_IMAGE:asset-1|data:image/jpeg;base64,${oversizedFirstFrame}]`, lightTheme)}</div>,
+        );
+
+        expect(container.querySelector("img")).toBeNull();
+        expect(knowledgeOpenImageAssetMock).not.toHaveBeenCalled();
+    });
+
+    it("does not load a model-authored remote URL from a KB image marker", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("[KB_IMAGE:asset-1|https://tracker.example/collect.png]", lightTheme)}</div>
+        );
+
+        expect(container.querySelector("img")).toBeNull();
+        expect(knowledgeOpenImageAssetMock).not.toHaveBeenCalled();
+    });
+
+    it("does not load non-image data URLs from a KB image marker", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("[KB_IMAGE:asset-1|data:text/html;base64,PHNjcmlwdD4=]", lightTheme)}</div>
+        );
+
+        expect(container.querySelector("img")).toBeNull();
+    });
+
+    it("rejects legacy KB image markers carrying an agent-provided file path", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("[KB_IMAGE:asset-1|data:image/jpeg;base64,abc|C:\\private\\image.png]", lightTheme)}</div>
+        );
+        expect(container.querySelector("img")).toBeNull();
+        expect(knowledgeOpenImageAssetMock).not.toHaveBeenCalled();
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects a KB image marker whose asset ID could be a filesystem path", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("[KB_IMAGE:../../private|data:image/jpeg;base64,YWJj]", lightTheme)}</div>
+        );
+
+        expect(container.querySelector("img")).toBeNull();
+        expect(knowledgeOpenImageAssetMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects an oversized but syntactically valid KB image data URL", () => {
+        const oversized = "A".repeat(Math.ceil((256 * 1024 + 1) / 3) * 4);
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(`[KB_IMAGE:asset-1|data:image/jpeg;base64,${oversized}]`, lightTheme)}</div>
+        );
+
+        expect(container.querySelector("img")).toBeNull();
+        expect(knowledgeOpenImageAssetMock).not.toHaveBeenCalled();
     });
 
     it("keeps screenshot previews inside the message width", () => {

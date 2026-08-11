@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,136 @@ const volcengineAgentPlanProviderName = "\u706b\u5c71\u5f15\u64ce Agent Plan"
 const legacyVolcengineTokenPlanProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan"
 const legacyVolcengineTokenPlanAnthropicProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)"
 const legacyVolcengineTokenPlanAnthropicProviderNameAlt = "\u706b\u5c71\u5f15\u64ceTokenPlan Anthropic"
+
+const (
+	maclawLLMProfileAssistant = "assistant"
+	maclawLLMProfileCoding    = "coding"
+	maclawLLMProfilesVersion  = 1
+)
+
+// MaclawLLMProfileProviderSummary is the non-sensitive provider directory
+// exposed to the model-assignment UI. Connection details and credentials stay
+// exclusively in the provider-management flow.
+type MaclawLLMProfileProviderSummary struct {
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Model          string   `json:"model,omitempty"`
+	Models         []string `json:"models,omitempty"`
+	IsHubService   bool     `json:"is_hub_service,omitempty"`
+	SupportsVision bool     `json:"supports_vision"`
+	AuthType       string   `json:"auth_type,omitempty"`
+}
+
+// MaclawLLMProfileEffectiveSummary describes the base selection that a new
+// request will receive before request-level reasoning/vision routing runs.
+// It deliberately contains no URL, credentials, or raw probe response.
+type MaclawLLMProfileEffectiveSummary struct {
+	Profile          string `json:"profile"`
+	ProviderID       string `json:"provider_id,omitempty"`
+	ProviderName     string `json:"provider_name,omitempty"`
+	Model            string `json:"model,omitempty"`
+	InheritAssistant bool   `json:"inherit_assistant,omitempty"`
+	Configured       bool   `json:"configured"`
+	Health           string `json:"health"`
+	CheckedAt        string `json:"checked_at,omitempty"`
+	ReasonCode       string `json:"reason_code,omitempty"`
+	RouteHint        string `json:"route_hint,omitempty"`
+}
+
+// maclawLLMProfileHealthRecord is an in-memory probe result. Do not add URLs,
+// raw errors, credentials, or response bodies here: this record is projected
+// into the Wails settings/sidebar read model.
+type maclawLLMProfileHealthRecord struct {
+	Health     string
+	CheckedAt  string
+	ReasonCode string
+}
+
+// MaclawLLMProfilePanelState is the single read model for the dual-profile
+// assignment surface. Revision is an optimistic-concurrency token; callers
+// must send it back unchanged when saving a profile assignment.
+type MaclawLLMProfilePanelState struct {
+	Providers []MaclawLLMProfileProviderSummary `json:"providers"`
+	Profiles  corelib.MaclawLLMProfiles         `json:"profiles"`
+	Assistant MaclawLLMProfileEffectiveSummary  `json:"assistant"`
+	Coding    MaclawLLMProfileEffectiveSummary  `json:"coding"`
+	Revision  string                            `json:"revision"`
+}
+
+// MaclawLLMProfileProbeResult is the non-sensitive result of testing a
+// profile draft. It intentionally omits endpoint addresses, credentials and
+// transport error text so it is safe for settings and sidebar consumers.
+type MaclawLLMProfileProbeResult struct {
+	Profile    string `json:"profile"`
+	ProviderID string `json:"provider_id,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Health     string `json:"health"`
+	CheckedAt  string `json:"checked_at,omitempty"`
+	ReasonCode string `json:"reason_code,omitempty"`
+}
+
+func newMaclawLLMProviderID() string {
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err == nil {
+		return "llmp_" + hex.EncodeToString(buf)
+	}
+	return fmt.Sprintf("llmp_%d", time.Now().UnixNano())
+}
+
+// legacyMaclawLLMProviderID gives an old name-only provider a stable in-memory
+// identity. It lets the new UI reference a legacy provider without writing
+// config merely to open settings; the ID is persisted on the next controlled
+// save. New providers still receive random IDs.
+func legacyMaclawLLMProviderID(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	sum := sha256.Sum256([]byte(name))
+	return "legacy_llmp_" + hex.EncodeToString(sum[:8])
+}
+
+func maclawLLMProviderIDForRead(provider corelib.MaclawLLMProvider) string {
+	if id := strings.TrimSpace(provider.ID); id != "" {
+		return id
+	}
+	return legacyMaclawLLMProviderID(provider.Name)
+}
+
+// ensureMaclawLLMProviderIDs assigns durable identifiers during a write. It
+// intentionally does not run on read paths, so merely opening the app never
+// mutates a legacy config file.
+func ensureMaclawLLMProviderIDs(providers []corelib.MaclawLLMProvider, previous []corelib.MaclawLLMProvider) []corelib.MaclawLLMProvider {
+	previousIDByName := make(map[string]string, len(previous))
+	previousNameSeen := make(map[string]bool, len(previous))
+	for _, p := range previous {
+		if key := strings.ToLower(strings.TrimSpace(p.Name)); key != "" {
+			previousNameSeen[key] = true
+			if id := strings.TrimSpace(p.ID); id != "" {
+				previousIDByName[key] = id
+			}
+		}
+	}
+	used := make(map[string]struct{}, len(providers))
+	for i := range providers {
+		providers[i].ID = strings.TrimSpace(providers[i].ID)
+		if providers[i].ID == "" {
+			nameKey := strings.ToLower(strings.TrimSpace(providers[i].Name))
+			providers[i].ID = previousIDByName[nameKey]
+			if providers[i].ID == "" && previousNameSeen[nameKey] {
+				providers[i].ID = legacyMaclawLLMProviderID(providers[i].Name)
+			}
+		}
+		if providers[i].ID == "" {
+			providers[i].ID = newMaclawLLMProviderID()
+		}
+		for {
+			if _, exists := used[providers[i].ID]; !exists {
+				break
+			}
+			providers[i].ID = newMaclawLLMProviderID()
+		}
+		used[providers[i].ID] = struct{}{}
+	}
+	return providers
+}
 
 // obsoleteProviderNames lists provider names that have been permanently removed.
 // They are stripped from the persisted provider list on load.
@@ -420,6 +552,13 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 		log.Printf("[LLM] SaveMaclawLLMProviders:load_config_failed after=%s err=%v", time.Since(start), err)
 		return fmt.Errorf("load config: %w", err)
 	}
+	// Provider management owns connection/catalog data, while profile
+	// assignments are edited from a separate surface (including the bottom
+	// quick picker). This method prepares its provider payload outside the
+	// config transaction for OAuth/Hub work, so it must reject a concurrent
+	// assignment or catalog change rather than writing this stale snapshot back
+	// over a newer profile selection.
+	expectedProfileRevision := maclawLLMProfileRevision(cfg)
 	log.Printf("[LLM] SaveMaclawLLMProviders:load_config=%s", time.Since(start))
 	cfg.MaclawLLMUrl = ""
 	cfg.MaclawLLMKey = ""
@@ -475,21 +614,65 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 			return fmt.Errorf("MaClaw 官方服务商暂不可用：请刷新 Hub 服务状态后重试")
 		}
 	}
-	cfg.MaclawLLMProviders = providers
-	cfg.MaclawLLMCurrentProvider = current
-	for _, p := range providers {
-		if p.Name == current {
-			cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(p.URL), "/")
-			cfg.MaclawLLMKey = strings.TrimSpace(p.Key)
-			cfg.MaclawLLMModel = strings.TrimSpace(p.Model)
-			cfg.MaclawLLMProtocol = p.Protocol
-			cfg.MaclawLLMContextLength = p.ContextLength
-			cfg.MaclawLLMTimeoutSec = p.TimeoutSec
-			break
+	providers = ensureMaclawLLMProviderIDs(providers, cfg.MaclawLLMProviders)
+	// Provider management owns connection details, credentials and model
+	// discovery. Once dual profiles exist it must not also become an implicit
+	// model-assignment writer: saving an OAuth token or editing an unrelated
+	// provider may never switch the assistant or overwrite coding's selection.
+	// It also cannot delete either effective profile's provider. The dedicated
+	// profile API is the only place that may replace an effective selection.
+	profiles := cfg.MaclawLLMProfiles
+	assistantSelectionChanged := profiles == nil
+	if profiles == nil {
+		var selected *corelib.MaclawLLMProvider
+		for i := range providers {
+			if strings.EqualFold(strings.TrimSpace(providers[i].Name), current) {
+				selected = &providers[i]
+				break
+			}
+		}
+		if selected == nil {
+			return fmt.Errorf("current provider %q not found", current)
+		}
+		profiles = &corelib.MaclawLLMProfiles{
+			Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{
+				ProviderID: selected.ID,
+				Model:      strings.TrimSpace(selected.Model),
+			},
+			Coding: corelib.MaclawLLMProfile{InheritAssistant: true},
+		}
+	} else {
+		profilesCopy := *profiles
+		profiles = &profilesCopy
+		if profiles.Version <= 0 {
+			profiles.Version = maclawLLMProfilesVersion
+		}
+		remapLegacyProfileProviderIDs(profiles, cfg.MaclawLLMProviders, providers)
+		if err := validateMaclawLLMProfiles(*profiles, providers); err != nil {
+			if _, exists := resolveMaclawLLMProviderByID(providers, profiles.Assistant.ProviderID); !exists {
+				return fmt.Errorf("cannot remove provider used by the assistant profile; select another assistant provider in model assignments first")
+			}
+			if !profiles.Coding.InheritAssistant {
+				if _, exists := resolveMaclawLLMProviderByID(providers, profiles.Coding.ProviderID); !exists {
+					return fmt.Errorf("cannot remove provider used by the independent coding profile; select another coding provider or enable follow assistant first")
+				}
+			}
+			return err
 		}
 	}
+	cfg.MaclawLLMProviders = providers
+	cfg.MaclawLLMProfiles = profiles
+	if err := applyAssistantProfileCompatibilityProjection(&cfg, *profiles); err != nil {
+		return err
+	}
 	persistStart := time.Now()
-	if err := a.PatchConfig(func(currentCfg *corelib.AppConfig) {
+	profilesChangedElsewhere := false
+	changed, err := a.PatchConfigIfChanged(func(currentCfg *corelib.AppConfig) bool {
+		if maclawLLMProfileRevision(*currentCfg) != expectedProfileRevision {
+			profilesChangedElsewhere = true
+			return false
+		}
 		currentCfg.MaclawLLMUrl = cfg.MaclawLLMUrl
 		currentCfg.MaclawLLMKey = cfg.MaclawLLMKey
 		currentCfg.MaclawLLMModel = cfg.MaclawLLMModel
@@ -498,16 +681,36 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 		currentCfg.MaclawLLMTimeoutSec = cfg.MaclawLLMTimeoutSec
 		currentCfg.MaclawLLMProviders = cfg.MaclawLLMProviders
 		currentCfg.MaclawLLMCurrentProvider = cfg.MaclawLLMCurrentProvider
-	}); err != nil {
+		currentCfg.MaclawLLMProfiles = cfg.MaclawLLMProfiles
+		return true
+	})
+	if err != nil {
 		log.Printf("[LLM] SaveMaclawLLMProviders:save_config_failed after=%s err=%v", time.Since(persistStart), err)
 		return err
 	}
+	if profilesChangedElsewhere {
+		return fmt.Errorf("LLM model assignments changed elsewhere; refresh provider settings and try again")
+	}
+	if !changed {
+		return nil
+	}
 	log.Printf("[LLM] SaveMaclawLLMProviders:save_config=%s", time.Since(persistStart))
-	// Provider switch ends sticky multi-model council for this session.
-	a.clearMoAStickyForAllUsers()
+	// Provider edits can change URLs, credentials, OAuth state and effective
+	// selections. Any prior probe result is unsafe until the profile is checked
+	// again, so surface the conservative unverified state immediately.
+	a.invalidateMaclawLLMProfileHealth()
+	// Only an actual assistant selection change invalidates the global council.
+	// Connection/catalog maintenance and coding-only changes must not disturb an
+	// active assistant session.
+	if assistantSelectionChanged {
+		a.clearMoAStickyForAllUsers()
+	}
 	if a.ctx != nil {
-		a.emitEvent("llm-token-usage-changed", current)
-		a.emitEvent("moa-session-changed", nil)
+		a.emitEvent("llm-token-usage-changed", cfg.MaclawLLMCurrentProvider)
+		if assistantSelectionChanged {
+			a.emitEvent("moa-session-changed", nil)
+		}
+		a.emitEvent("llm-profiles-changed", map[string]string{"changed": "providers"})
 	}
 	// Invalidate LLM-dependent tool outcome records when the provider changes.
 	// PatchConfig (used above) does not go through PatchConfigFields, so the
@@ -529,10 +732,20 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 // notifyHubLLMConfigChanged sends an immediate heartbeat to the Hub so that
 // the llm_configured status is refreshed right after the user saves LLM config.
 func (a *App) notifyHubLLMConfigChanged() {
-	if a.remoteSessions == nil {
+	// remoteSessions is published during one-time remote infrastructure
+	// initialization. Do not read that pointer while initialization is still in
+	// flight: saving a provider can schedule this best-effort notification before
+	// the first IM handler asks for remote infrastructure. Before readiness there
+	// cannot be a Hub client to notify; after the atomic ready publication the
+	// initialization writes are safely visible.
+	if a == nil {
 		return
 	}
-	hc := a.remoteSessions.hubClient
+	sessions := a.remoteSessionManagerIfReady()
+	if sessions == nil {
+		return
+	}
+	hc := sessions.hubClient
 	if hc == nil || !hc.IsConnected() {
 		return
 	}
@@ -554,85 +767,630 @@ func (a *App) MaterializeProviderByName(providerName string) (corelib.MaclawLLMC
 		if !strings.EqualFold(strings.TrimSpace(p.Name), providerName) {
 			continue
 		}
-		authKind := normalizeMaclawLLMAuthTypeKind(p.AuthType)
-		wireAPI := p.WireAPI
-		// Only the ChatGPT Codex subscription endpoint defaults to Responses.
-		// Anthropic and GitHub Copilot OAuth providers use their configured
-		// protocol's normal request format for their capability probes.
-		if wireAPI == "" && p.IsCodexSubscriptionOAuthProvider() {
-			wireAPI = "responses-ws"
-		}
-		key := p.Key
-		if authKind.IsOAuth() {
-			if storeKey := a.resolveProviderKeyFromStore(p); storeKey != "" {
-				key = storeKey
-			} else if p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
-				key = p.OAuthAccessToken
-			}
-		}
-		return a.withGlobalThinkingMode(corelib.MaclawLLMConfig{
-			URL:             p.URL,
-			Key:             key,
-			Model:           p.Model,
-			Protocol:        p.Protocol,
-			ContextLength:   p.ContextLength,
-			TimeoutSec:      normalizeLLMTimeoutSec(p.TimeoutSec),
-			MaxOutputTokens: p.MaxOutputTokens,
-			SupportsVision:  p.SupportsVision,
-			AgentType:       p.AgentType,
-			WireAPI:         wireAPI,
-			ProviderName:    p.Name,
-			AuthType:        p.AuthType,
-		}), nil
+		return a.materializeMaclawLLMProvider(p), nil
 	}
 	return corelib.MaclawLLMConfig{}, fmt.Errorf("provider %q not found", providerName)
 }
 
-func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
-	// Use GetMaclawLLMProviders which applies URL sync for preset providers
-	// (e.g. port changes), instead of reading legacy fields directly.
+// FetchMaclawLLMProfileModels returns the model catalog for a persisted
+// provider identity. Unlike FetchProviderModels, it resolves the endpoint and
+// credentials on the backend, so the profile-scoped quick picker never has to
+// receive API keys just to populate its menu.
+func (a *App) FetchMaclawLLMProfileModels(providerID string) ([]ProviderModelItem, error) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return nil, fmt.Errorf("provider ID is required")
+	}
+	// Match profile health/request resolution: managed credentials may refresh
+	// between menu opens, and the catalog request must use the refreshed
+	// provider rather than a stale key projected from an earlier UI snapshot.
+	if err := a.ensureOAuthTokenForProvider(providerID); err != nil {
+		return nil, fmt.Errorf("refresh provider credentials: %w", err)
+	}
+	if err := a.ensureCodeGenTokenForProvider(providerID); err != nil {
+		return nil, fmt.Errorf("refresh provider credentials: %w", err)
+	}
 	data := a.GetMaclawLLMProviders()
-	for _, p := range data.Providers {
-		if p.Name == data.Current {
-			authKind := normalizeMaclawLLMAuthTypeKind(p.AuthType)
-			wireAPI := p.WireAPI
-			if wireAPI == "" && p.IsCodexSubscriptionOAuthProvider() {
-				wireAPI = "responses-ws"
-			}
-			// ChatGPT Codex subscription endpoints authenticate with the raw OAuth JWT.
-			// Primary: read from independent CredentialStore (Pi-aligned).
-			// Fallback: config.json fields.
-			key := p.Key
-			if authKind.IsOAuth() {
-				if storeKey := a.resolveProviderKeyFromStore(p); storeKey != "" {
-					key = storeKey
-				} else if p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
-					key = p.OAuthAccessToken
-				}
-			}
-			// Keep OAuth diagnostics useful without ever writing credential material
-			// (or token lengths/prefixes) to application logs.
-			if authKind.IsOAuth() {
-				log.Printf("[LLM] GetMaclawLLMConfig oauth: wire_api=%s credential_present=%t raw_oauth_present=%t auth=%s",
-					wireAPI, p.Key != "", p.OAuthAccessToken != "", p.AuthType)
-			}
-			return a.withGlobalThinkingMode(corelib.MaclawLLMConfig{
-				URL:             p.URL,
-				Key:             key,
-				Model:           p.Model,
-				Protocol:        p.Protocol,
-				ContextLength:   p.ContextLength,
-				TimeoutSec:      normalizeLLMTimeoutSec(p.TimeoutSec),
-				MaxOutputTokens: p.MaxOutputTokens,
-				SupportsVision:  p.SupportsVision,
-				AgentType:       p.AgentType,
-				WireAPI:         wireAPI,
-				ProviderName:    p.Name,
-				AuthType:        p.AuthType,
-			})
+	for _, provider := range data.Providers {
+		if maclawLLMProviderIDForRead(provider) != providerID {
+			continue
+		}
+		resolved := a.materializeMaclawLLMProvider(provider)
+		if strings.TrimSpace(resolved.URL) == "" {
+			return nil, fmt.Errorf("provider %q has no endpoint", provider.Name)
+		}
+		return a.fetchProviderModels(resolved.URL, resolved.Key, resolved.Protocol, resolved.UserAgent(), true)
+	}
+	return nil, fmt.Errorf("provider %q not found", providerID)
+}
+
+func (a *App) materializeMaclawLLMProvider(p corelib.MaclawLLMProvider) corelib.MaclawLLMConfig {
+	authKind := normalizeMaclawLLMAuthTypeKind(p.AuthType)
+	wireAPI := p.WireAPI
+	// Only the ChatGPT Codex subscription endpoint defaults to Responses.
+	if wireAPI == "" && p.IsCodexSubscriptionOAuthProvider() {
+		wireAPI = "responses-ws"
+	}
+	key := p.Key
+	if authKind.IsOAuth() {
+		if storeKey := a.resolveProviderKeyFromStore(p); storeKey != "" {
+			key = storeKey
+		} else if p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
+			key = p.OAuthAccessToken
 		}
 	}
-	return corelib.MaclawLLMConfig{}
+	if authKind.IsOAuth() {
+		log.Printf("[LLM] materialize provider oauth: wire_api=%s credential_present=%t raw_oauth_present=%t auth=%s",
+			wireAPI, p.Key != "", p.OAuthAccessToken != "", p.AuthType)
+	}
+	return a.withGlobalThinkingMode(corelib.MaclawLLMConfig{
+		URL:             p.URL,
+		Key:             key,
+		Model:           p.Model,
+		Protocol:        p.Protocol,
+		ContextLength:   p.ContextLength,
+		TimeoutSec:      normalizeLLMTimeoutSec(p.TimeoutSec),
+		MaxOutputTokens: p.MaxOutputTokens,
+		SupportsVision:  p.SupportsVision,
+		AgentType:       p.AgentType,
+		WireAPI:         wireAPI,
+		ProviderName:    p.Name,
+		ProviderID:      maclawLLMProviderIDForRead(p),
+		AuthType:        p.AuthType,
+	})
+}
+
+func effectiveMaclawLLMProfiles(cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) (*corelib.MaclawLLMProfiles, error) {
+	if cfg.MaclawLLMProfiles != nil {
+		profiles := *cfg.MaclawLLMProfiles
+		if profiles.Version <= 0 {
+			profiles.Version = maclawLLMProfilesVersion
+		}
+		return &profiles, nil
+	}
+	// Legacy configs retain name-based selection only until a controlled write.
+	// Resolve the name in memory; never materialize IDs or profiles while reading.
+	current = strings.TrimSpace(current)
+	for _, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(provider.Name), current) {
+			return &corelib.MaclawLLMProfiles{
+				Version: maclawLLMProfilesVersion,
+				Assistant: corelib.MaclawLLMProfile{
+					ProviderID: maclawLLMProviderIDForRead(provider),
+					Model:      strings.TrimSpace(provider.Model),
+				},
+				Coding: corelib.MaclawLLMProfile{InheritAssistant: true},
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("legacy current provider %q not found", current)
+}
+
+func resolveMaclawLLMProviderByID(providers []corelib.MaclawLLMProvider, providerID string) (corelib.MaclawLLMProvider, bool) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return corelib.MaclawLLMProvider{}, false
+	}
+	for _, provider := range providers {
+		if maclawLLMProviderIDForRead(provider) == providerID {
+			return provider, true
+		}
+	}
+	return corelib.MaclawLLMProvider{}, false
+}
+
+// ResolveMaclawLLMProfile resolves one persisted execution profile. It is the
+// single entry point for new dual-profile callers; it never writes config.
+func (a *App) ResolveMaclawLLMProfile(profile string) (corelib.MaclawLLMConfig, error) {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding {
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("unknown LLM profile %q", profile)
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.MaclawLLMConfig{}, err
+	}
+	state := a.GetMaclawLLMProviders()
+	profiles, err := effectiveMaclawLLMProfiles(cfg, state.Providers, state.Current)
+	if err != nil {
+		return corelib.MaclawLLMConfig{}, err
+	}
+	selected := profiles.Assistant
+	if profile == maclawLLMProfileCoding && !profiles.Coding.InheritAssistant {
+		selected = profiles.Coding
+	}
+	provider, ok := resolveMaclawLLMProviderByID(state.Providers, selected.ProviderID)
+	if !ok && cfg.MaclawLLMProfiles == nil {
+		// Old files do not yet have provider IDs. Coding follows that legacy
+		// assistant selection, so the name fallback also applies to coding.
+		for _, candidate := range state.Providers {
+			if strings.EqualFold(strings.TrimSpace(candidate.Name), state.Current) {
+				provider, ok = candidate, true
+				break
+			}
+		}
+	}
+	if !ok {
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM profile %q references unavailable provider", profile)
+	}
+	model := strings.TrimSpace(selected.Model)
+	if model == "" {
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM profile %q has no model", profile)
+	}
+	resolved := a.materializeMaclawLLMProvider(provider)
+	resolved.Model = model
+	resolved.Profile = profile
+	resolved.RouteSource = "base"
+	return resolved, nil
+}
+
+func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
+	cfg, err := a.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
+	if err != nil {
+		return corelib.MaclawLLMConfig{}
+	}
+	return cfg
+}
+
+// GetCodingLLMConfig returns coding's effective base selection before the
+// existing reasoning/vision router applies a final request-level override.
+func (a *App) GetCodingLLMConfig() corelib.MaclawLLMConfig {
+	cfg, err := a.ResolveMaclawLLMProfile(maclawLLMProfileCoding)
+	if err != nil {
+		return corelib.MaclawLLMConfig{}
+	}
+	return cfg
+}
+
+func validateMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) error {
+	if profiles.Version > maclawLLMProfilesVersion {
+		return fmt.Errorf("unsupported LLM profile version %d", profiles.Version)
+	}
+	if strings.TrimSpace(profiles.Assistant.ProviderID) == "" || strings.TrimSpace(profiles.Assistant.Model) == "" {
+		return fmt.Errorf("assistant provider and model are required")
+	}
+	if _, ok := resolveMaclawLLMProviderByID(providers, profiles.Assistant.ProviderID); !ok {
+		return fmt.Errorf("assistant references an unavailable provider")
+	}
+	if profiles.Coding.InheritAssistant {
+		return nil
+	}
+	if strings.TrimSpace(profiles.Coding.ProviderID) == "" || strings.TrimSpace(profiles.Coding.Model) == "" {
+		return fmt.Errorf("coding provider and model are required when it does not follow assistant")
+	}
+	if _, ok := resolveMaclawLLMProviderByID(providers, profiles.Coding.ProviderID); !ok {
+		return fmt.Errorf("coding references an unavailable provider")
+	}
+	return nil
+}
+
+// remapLegacyProfileProviderIDs translates read-only IDs handed to a legacy
+// config's UI into the durable IDs allocated during its first controlled save.
+// It only changes exact legacy aliases, never an explicit persisted ID.
+func remapLegacyProfileProviderIDs(profiles *corelib.MaclawLLMProfiles, before, after []corelib.MaclawLLMProvider) {
+	if profiles == nil || len(before) == 0 || len(after) == 0 {
+		return
+	}
+	durableByLegacyID := make(map[string]string, len(before))
+	for _, oldProvider := range before {
+		legacyID := maclawLLMProviderIDForRead(oldProvider)
+		if strings.TrimSpace(oldProvider.ID) != "" {
+			continue
+		}
+		for _, newProvider := range after {
+			if strings.EqualFold(strings.TrimSpace(oldProvider.Name), strings.TrimSpace(newProvider.Name)) {
+				durableByLegacyID[legacyID] = strings.TrimSpace(newProvider.ID)
+				break
+			}
+		}
+	}
+	if mapped := durableByLegacyID[strings.TrimSpace(profiles.Assistant.ProviderID)]; mapped != "" {
+		profiles.Assistant.ProviderID = mapped
+	}
+	if mapped := durableByLegacyID[strings.TrimSpace(profiles.Coding.ProviderID)]; mapped != "" {
+		profiles.Coding.ProviderID = mapped
+	}
+}
+
+func maclawLLMProfileRevision(cfg corelib.AppConfig) string {
+	// This is intentionally derived only from the model-assignment contract and
+	// stable provider identities. Editing an API key must not make an open
+	// assignment draft stale, while provider/model changes must.
+	type revisionProvider struct {
+		ID     string   `json:"id"`
+		Name   string   `json:"name"`
+		Model  string   `json:"model"`
+		Models []string `json:"models,omitempty"`
+	}
+	payload := struct {
+		Providers []revisionProvider         `json:"providers"`
+		Profiles  *corelib.MaclawLLMProfiles `json:"profiles"`
+		Current   string                     `json:"current"`
+	}{
+		Profiles: cfg.MaclawLLMProfiles,
+		Current:  strings.TrimSpace(cfg.MaclawLLMCurrentProvider),
+	}
+	for _, provider := range cfg.MaclawLLMProviders {
+		payload.Providers = append(payload.Providers, revisionProvider{
+			ID: maclawLLMProviderIDForRead(provider), Name: strings.TrimSpace(provider.Name),
+			Model: strings.TrimSpace(provider.Model), Models: append([]string(nil), provider.Models...),
+		})
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:16])
+}
+
+func maclawLLMProfileHealthKey(profile, providerID, model string) string {
+	return strings.ToLower(strings.TrimSpace(profile)) + "|" + strings.TrimSpace(providerID) + "|" + strings.TrimSpace(model)
+}
+
+func (a *App) maclawLLMProfileHealthFor(profile, providerID, model string) (maclawLLMProfileHealthRecord, bool) {
+	key := maclawLLMProfileHealthKey(profile, providerID, model)
+	a.llmProfileHealthMu.Lock()
+	defer a.llmProfileHealthMu.Unlock()
+	record, ok := a.llmProfileHealth[key]
+	return record, ok
+}
+
+func (a *App) setMaclawLLMProfileHealth(profile, providerID, model string, record maclawLLMProfileHealthRecord) bool {
+	key := maclawLLMProfileHealthKey(profile, providerID, model)
+	a.llmProfileHealthMu.Lock()
+	defer a.llmProfileHealthMu.Unlock()
+	if a.llmProfileHealth == nil {
+		a.llmProfileHealth = make(map[string]maclawLLMProfileHealthRecord)
+	}
+	// A successful real request is stronger evidence than an optional probe
+	// endpoint. Keep that success through transient probe failures; the next
+	// successful probe refreshes its timestamp, while configuration/auth errors
+	// still replace it immediately.
+	if previous, ok := a.llmProfileHealth[key]; ok && previous.Health == "configured" && record.Health == "unverified" {
+		return false
+	}
+	// Repeated completed turns should not turn into a UI event storm. Once a
+	// route is verified, its status is already current; the next regular probe
+	// can refresh the timestamp without forcing every response to re-render the
+	// sidebar.
+	if previous, ok := a.llmProfileHealth[key]; ok && previous.Health == record.Health && previous.ReasonCode == record.ReasonCode {
+		return false
+	}
+	a.llmProfileHealth[key] = record
+	return true
+}
+
+// setMaclawLLMProfileHealthIfCurrent commits a probe only when the profile
+// still resolves to the same provider/model snapshot. Profile health is an
+// ephemeral cache, so discarding a raced result is safer than presenting the
+// success/failure of a previous selection after a concurrent save.
+func (a *App) setMaclawLLMProfileHealthIfCurrent(profile string, resolved corelib.MaclawLLMConfig, record maclawLLMProfileHealthRecord) bool {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding {
+		return false
+	}
+	current, err := a.ResolveMaclawLLMProfile(profile)
+	if err != nil || strings.TrimSpace(current.ProviderID) != strings.TrimSpace(resolved.ProviderID) || strings.TrimSpace(current.Model) != strings.TrimSpace(resolved.Model) {
+		return false
+	}
+	return a.setMaclawLLMProfileHealth(profile, resolved.ProviderID, resolved.Model, record)
+}
+
+// markMaclawLLMProfileHealthyIfCurrent promotes a completed real chat request
+// to the strongest health evidence. Some compatible providers answer chat
+// completions but reject or do not implement the optional /models probe, so
+// relying on that probe alone leaves a working assistant marked offline.
+//
+// A request may finish after the user changes provider or model. The current
+// profile check prevents such a stale response from changing the new route's
+// status.
+func (a *App) markMaclawLLMProfileHealthyIfCurrent(resolved corelib.MaclawLLMConfig) {
+	profile := strings.ToLower(strings.TrimSpace(resolved.Profile))
+	if !a.setMaclawLLMProfileHealthIfCurrent(profile, resolved, maclawLLMProfileHealthRecord{
+		Health:    "configured",
+		CheckedAt: time.Now().UTC().Format(time.RFC3339),
+	}) {
+		return
+	}
+	if a.ctx != nil {
+		a.emitEvent("llm-profile-health-changed", map[string]string{"profile": profile})
+	}
+}
+
+// invalidateMaclawLLMProfileHealth is called after controlled model/provider
+// writes. It clears all entries instead of attempting a fragile diff across
+// credential and provider-management paths; the cache is tiny and an
+// unverified summary is the safe immediate truth after any selection change.
+func (a *App) invalidateMaclawLLMProfileHealth() {
+	a.llmProfileHealthMu.Lock()
+	a.llmProfileHealth = nil
+	a.llmProfileHealthMu.Unlock()
+}
+
+func profileSummaryFromResolved(app *App, profile string, inherit bool, resolved corelib.MaclawLLMConfig, err error) MaclawLLMProfileEffectiveSummary {
+	summary := MaclawLLMProfileEffectiveSummary{Profile: profile, InheritAssistant: inherit, RouteHint: "base"}
+	if err != nil || strings.TrimSpace(resolved.ProviderName) == "" || strings.TrimSpace(resolved.Model) == "" || strings.TrimSpace(resolved.URL) == "" {
+		summary.Health = "invalid"
+		summary.ReasonCode = "invalid_configuration"
+		return summary
+	}
+	summary.Configured = true
+	summary.ProviderID = strings.TrimSpace(resolved.ProviderID)
+	summary.ProviderName = strings.TrimSpace(resolved.ProviderName)
+	summary.Model = strings.TrimSpace(resolved.Model)
+	// A key may be provided by the Hub/OAuth credential store rather than the
+	// profile resolver. Missing credentials are therefore unverified, not an
+	// invalid selection.
+	if app != nil {
+		if record, ok := app.maclawLLMProfileHealthFor(profile, summary.ProviderID, summary.Model); ok {
+			summary.Health = record.Health
+			summary.CheckedAt = record.CheckedAt
+			summary.ReasonCode = record.ReasonCode
+			return summary
+		}
+	}
+	summary.Health = "unverified"
+	if strings.TrimSpace(resolved.Key) == "" && !isHubServiceProviderName(resolved.ProviderName) {
+		summary.ReasonCode = "credentials_unverified"
+	}
+	return summary
+}
+
+// GetMaclawLLMProfilePanelState returns both persistent profile drafts and
+// their effective selections. It reads the configuration once and never
+// exposes provider URLs, API keys, OAuth tokens, or raw health diagnostics.
+func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return MaclawLLMProfilePanelState{}, err
+	}
+	providers := normalizeMaclawLLMProviders(cfg.MaclawLLMProviders)
+	if len(providers) == 0 {
+		providers = defaultMaclawLLMProviders()
+	}
+	profiles, err := effectiveMaclawLLMProfiles(cfg, providers, cfg.MaclawLLMCurrentProvider)
+	if err != nil {
+		return MaclawLLMProfilePanelState{}, err
+	}
+	state := MaclawLLMProfilePanelState{Profiles: *profiles, Revision: maclawLLMProfileRevision(cfg)}
+	for _, provider := range providers {
+		state.Providers = append(state.Providers, MaclawLLMProfileProviderSummary{
+			ID: maclawLLMProviderIDForRead(provider), Name: strings.TrimSpace(provider.Name),
+			Model: strings.TrimSpace(provider.Model), Models: append([]string(nil), provider.Models...),
+			IsHubService: provider.IsHubService, SupportsVision: provider.SupportsVision, AuthType: provider.AuthType,
+		})
+	}
+	assistant, assistantErr := a.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
+	state.Assistant = profileSummaryFromResolved(a, maclawLLMProfileAssistant, false, assistant, assistantErr)
+	if state.Assistant.ProviderID == "" {
+		state.Assistant.ProviderID = profiles.Assistant.ProviderID
+	}
+	coding, codingErr := a.ResolveMaclawLLMProfile(maclawLLMProfileCoding)
+	state.Coding = profileSummaryFromResolved(a, maclawLLMProfileCoding, profiles.Coding.InheritAssistant, coding, codingErr)
+	if profiles.Coding.InheritAssistant {
+		state.Coding.ProviderID = profiles.Assistant.ProviderID
+		// Following is an alias of the assistant's effective selection, not a
+		// second health probe. Preserve coding identity while copying only the
+		// safe outcome fields.
+		state.Coding.Configured = state.Assistant.Configured
+		state.Coding.Health = state.Assistant.Health
+		state.Coding.CheckedAt = state.Assistant.CheckedAt
+		state.Coding.ReasonCode = state.Assistant.ReasonCode
+	} else {
+		if state.Coding.ProviderID == "" {
+			state.Coding.ProviderID = profiles.Coding.ProviderID
+		}
+	}
+	return state, nil
+}
+
+func applyAssistantProfileCompatibilityProjection(cfg *corelib.AppConfig, profiles corelib.MaclawLLMProfiles) error {
+	provider, ok := resolveMaclawLLMProviderByID(cfg.MaclawLLMProviders, profiles.Assistant.ProviderID)
+	if !ok {
+		return fmt.Errorf("assistant references an unavailable provider")
+	}
+	for i := range cfg.MaclawLLMProviders {
+		if cfg.MaclawLLMProviders[i].ID != provider.ID {
+			continue
+		}
+		// The provider-level model remains an assistant-only legacy projection.
+		// Coding profiles never write this shared field.
+		cfg.MaclawLLMProviders[i].Model = profiles.Assistant.Model
+		if !containsStringFold(cfg.MaclawLLMProviders[i].Models, profiles.Assistant.Model) {
+			cfg.MaclawLLMProviders[i].Models = append(cfg.MaclawLLMProviders[i].Models, profiles.Assistant.Model)
+		}
+		provider = cfg.MaclawLLMProviders[i]
+		break
+	}
+	cfg.MaclawLLMCurrentProvider = provider.Name
+	cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(provider.URL), "/")
+	cfg.MaclawLLMKey = strings.TrimSpace(provider.Key)
+	cfg.MaclawLLMModel = profiles.Assistant.Model
+	cfg.MaclawLLMProtocol = provider.Protocol
+	cfg.MaclawLLMContextLength = provider.ContextLength
+	cfg.MaclawLLMTimeoutSec = provider.TimeoutSec
+	return nil
+}
+
+func containsStringFold(values []string, value string) bool {
+	for _, candidate := range values {
+		if strings.EqualFold(strings.TrimSpace(candidate), strings.TrimSpace(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+// SaveMaclawLLMProfiles persists the two model assignments atomically. The
+// caller must provide the revision returned by GetMaclawLLMProfilePanelState;
+// a stale draft is rejected rather than overwriting a newer settings change.
+// It is deliberately separate from SaveMaclawLLMProviders so a coding-only
+// change cannot clear the assistant's MoA session state or overwrite shared
+// fields.
+func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision string) error {
+	profiles.Version = maclawLLMProfilesVersion
+	profiles.Assistant.ProviderID = strings.TrimSpace(profiles.Assistant.ProviderID)
+	profiles.Assistant.Model = strings.TrimSpace(profiles.Assistant.Model)
+	profiles.Coding.ProviderID = strings.TrimSpace(profiles.Coding.ProviderID)
+	profiles.Coding.Model = strings.TrimSpace(profiles.Coding.Model)
+	revision = strings.TrimSpace(revision)
+	if revision == "" {
+		return fmt.Errorf("LLM profile revision is required")
+	}
+
+	assistantChanged := false
+	var validationErr error
+	var stale bool
+	changed, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		if revision != maclawLLMProfileRevision(*cfg) {
+			stale = true
+			return false
+		}
+		providers := cfg.MaclawLLMProviders
+		if len(providers) == 0 {
+			providers = defaultMaclawLLMProviders()
+		}
+		beforeIDs := append([]corelib.MaclawLLMProvider(nil), providers...)
+		providers = ensureMaclawLLMProviderIDs(normalizeMaclawLLMProviders(providers), cfg.MaclawLLMProviders)
+		remapLegacyProfileProviderIDs(&profiles, beforeIDs, providers)
+		if err := validateMaclawLLMProfiles(profiles, providers); err != nil {
+			validationErr = err
+			return false
+		}
+		previous, previousErr := effectiveMaclawLLMProfiles(*cfg, providers, cfg.MaclawLLMCurrentProvider)
+		if previousErr != nil {
+			validationErr = previousErr
+			return false
+		}
+		assistantChanged = previous == nil || previous.Assistant.ProviderID != profiles.Assistant.ProviderID || previous.Assistant.Model != profiles.Assistant.Model
+		cfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider(nil), providers...)
+		cfg.MaclawLLMProfiles = &profiles
+		if err := applyAssistantProfileCompatibilityProjection(cfg, profiles); err != nil {
+			validationErr = err
+			return false
+		}
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if stale {
+		return fmt.Errorf("LLM profile settings changed elsewhere; refresh and try again")
+	}
+	if validationErr != nil {
+		return validationErr
+	}
+	if !changed {
+		return nil
+	}
+	a.invalidateMaclawLLMProfileHealth()
+	if assistantChanged {
+		a.clearMoAStickyForAllUsers()
+		if a.ctx != nil {
+			a.emitEvent("moa-session-changed", nil)
+		}
+	}
+	if a.ctx != nil {
+		a.emitEvent("llm-profiles-changed", map[string]string{"changed": "profiles"})
+		a.emitEvent("llm-token-usage-changed", "profiles")
+	}
+	a.refreshMemoryEvolutionLLM()
+	go a.notifyHubLLMConfigChanged()
+	return nil
+}
+
+// QuickSaveMaclawLLMProfile updates exactly one independently effective
+// profile. It deliberately delegates to the same CAS-backed full save used by
+// the settings form, so quick pickers cannot bypass validation or accidentally
+// write a coding choice into the legacy assistant projection. The returned
+// panel state is the authoritative post-save snapshot for a menu to render.
+func (a *App) QuickSaveMaclawLLMProfile(profile, providerID, model, revision string) (MaclawLLMProfilePanelState, error) {
+	profile = strings.TrimSpace(profile)
+	providerID = strings.TrimSpace(providerID)
+	model = strings.TrimSpace(model)
+	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding {
+		return MaclawLLMProfilePanelState{}, fmt.Errorf("unknown LLM profile %q", profile)
+	}
+	if providerID == "" || model == "" {
+		return MaclawLLMProfilePanelState{}, fmt.Errorf("provider and model are required")
+	}
+
+	state, err := a.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		return MaclawLLMProfilePanelState{}, err
+	}
+	if strings.TrimSpace(revision) != state.Revision {
+		return MaclawLLMProfilePanelState{}, fmt.Errorf("LLM profile settings changed elsewhere; refresh and try again")
+	}
+	profiles := state.Profiles
+	switch profile {
+	case maclawLLMProfileAssistant:
+		profiles.Assistant.ProviderID = providerID
+		profiles.Assistant.Model = model
+	case maclawLLMProfileCoding:
+		if profiles.Coding.InheritAssistant {
+			return MaclawLLMProfilePanelState{}, fmt.Errorf("coding profile follows assistant; change it in LLM settings")
+		}
+		profiles.Coding.ProviderID = providerID
+		profiles.Coding.Model = model
+	}
+	if err := a.SaveMaclawLLMProfiles(profiles, state.Revision); err != nil {
+		return MaclawLLMProfilePanelState{}, err
+	}
+	return a.GetMaclawLLMProfilePanelState()
+}
+
+// TestMaclawLLMProfile tests an effective profile selection without persisting
+// it. The returned result is intentionally safe to show in settings: detailed
+// diagnostics stay in backend logs while the UI receives an enum/reason code.
+func (a *App) TestMaclawLLMProfile(profile, providerID, model string) (MaclawLLMProfileProbeResult, error) {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	providerID = strings.TrimSpace(providerID)
+	model = strings.TrimSpace(model)
+	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding {
+		return MaclawLLMProfileProbeResult{}, fmt.Errorf("unknown LLM profile %q", profile)
+	}
+	result := MaclawLLMProfileProbeResult{Profile: profile, ProviderID: providerID, Model: model}
+	if providerID == "" || model == "" {
+		result.Health = "invalid"
+		result.ReasonCode = "invalid_configuration"
+		return result, nil
+	}
+	providerState := a.GetMaclawLLMProviders()
+	provider, found := resolveMaclawLLMProviderByID(providerState.Providers, providerID)
+	if !found || strings.TrimSpace(provider.URL) == "" {
+		result.Health = "invalid"
+		result.ReasonCode = "invalid_configuration"
+		return result, nil
+	}
+	// Build from the caller's selection rather than the persisted profile: this
+	// diagnostic must be usable before the user clicks Save.
+	resolved := a.materializeMaclawLLMProvider(provider)
+	resolved.Model = model
+	resolved.Profile = profile
+	resolved.RouteSource = "base"
+	var status MaclawLLMStatus
+	if err := a.ensureOAuthTokenForProvider(resolved.ProviderID); err != nil {
+		status = MaclawLLMStatus{Configured: true, Error: err.Error()}
+	} else if err := a.ensureCodeGenTokenForProvider(resolved.ProviderID); err != nil {
+		status = MaclawLLMStatus{Configured: true, Error: err.Error()}
+	} else {
+		// materialize again after a possible token refresh, keeping the draft
+		// model independent from the provider's legacy default model.
+		if refreshedProvider, refreshedFound := resolveMaclawLLMProviderByID(a.GetMaclawLLMProviders().Providers, providerID); refreshedFound {
+			resolved = a.materializeMaclawLLMProvider(refreshedProvider)
+			resolved.Model = model
+			resolved.Profile = profile
+			resolved.RouteSource = "base"
+		}
+		status = a.pingResolvedMaclawLLMConfigWithAuthStatus(resolved, true)
+	}
+	health := maclawLLMProfileHealthFromPing(status)
+	result.Health = health.Health
+	result.CheckedAt = health.CheckedAt
+	result.ReasonCode = health.ReasonCode
+	return result, nil
 }
 
 // isMaclawLLMConfigured returns true if the current MaClaw LLM selection
@@ -642,15 +1400,21 @@ func (a *App) isMaclawLLMConfigured() bool {
 	return strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != ""
 }
 
-// SetMaclawLLMCurrentModel updates only the model id/name for the currently
-// selected MaClaw LLM provider. Unlike SaveMaclawLLMProviders, this does not
-// clear session multi-model council sticky state.
+// SetMaclawLLMCurrentModel updates the legacy single-provider model
+// selection. Dual-profile configurations must use QuickSaveMaclawLLMProfile
+// or SaveMaclawLLMProfiles so the assistant and coding selections stay
+// revision-protected and independently scoped.
 func (a *App) SetMaclawLLMCurrentModel(model string) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return fmt.Errorf("model is required")
 	}
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+	profilesManaged := false
+	changed, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		if cfg.MaclawLLMProfiles != nil {
+			profilesManaged = true
+			return false
+		}
 		currentRaw := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
 		currentCanon := canonicalVolcengineTokenPlanProviderName(canonicalHubServiceProviderName(currentRaw))
 		for i := range cfg.MaclawLLMProviders {
@@ -674,8 +1438,16 @@ func (a *App) SetMaclawLLMCurrentModel(model string) error {
 		}
 		// Always keep the legacy flat field aligned (used by some status paths).
 		cfg.MaclawLLMModel = model
-	}); err != nil {
+		return true
+	})
+	if err != nil {
 		return err
+	}
+	if profilesManaged {
+		return fmt.Errorf("LLM profiles are enabled; update the assistant profile through model assignments")
+	}
+	if !changed {
+		return nil
 	}
 	if a.ctx != nil {
 		a.emitEvent("llm-token-usage-changed", model)
@@ -695,17 +1467,33 @@ func (a *App) isProMode() bool {
 	return normalizeUIModeKind(cfg.UIMode).IsProDefault()
 }
 
-// SaveMaclawLLMConfig persists the MaClaw LLM configuration.
+// SaveMaclawLLMConfig persists a legacy, single-provider MaClaw LLM
+// configuration. It is intentionally unavailable after migration to model
+// profiles: raw flat-field writes could otherwise disagree with the effective
+// assistant profile and silently leave the coding profile stale.
 func (a *App) SaveMaclawLLMConfig(llm corelib.MaclawLLMConfig) error {
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+	profilesManaged := false
+	changed, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		if cfg.MaclawLLMProfiles != nil {
+			profilesManaged = true
+			return false
+		}
 		cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 		cfg.MaclawLLMKey = strings.TrimSpace(llm.Key)
 		cfg.MaclawLLMModel = strings.TrimSpace(llm.Model)
 		cfg.MaclawLLMProtocol = llm.Protocol
 		cfg.MaclawLLMContextLength = llm.ContextLength
 		cfg.MaclawLLMTimeoutSec = normalizeLLMTimeoutSec(llm.TimeoutSec)
-	}); err != nil {
+		return true
+	})
+	if err != nil {
 		return err
+	}
+	if profilesManaged {
+		return fmt.Errorf("LLM profiles are enabled; manage providers and model assignments separately")
+	}
+	if !changed {
+		return nil
 	}
 	a.refreshMemoryEvolutionLLM()
 	a.notifyHubLLMConfigChanged()
@@ -1083,12 +1871,13 @@ func (a *App) GetOpenAIUsage() (*oauth.UsageInfo, error) {
 	return nil, fmt.Errorf("当前 provider 不支持用量查询")
 }
 
-// ensureOAuthToken checks if the current provider uses OAuth and refreshes
-// the token if needed. Returns the (possibly updated) LLM config.
-func (a *App) ensureOAuthToken() error {
+// ensureOAuthTokenForProvider refreshes the exact resolved provider when it
+// uses OAuth. Profile-based probes must never refresh whichever provider is
+// currently projected into the legacy assistant fields.
+func (a *App) ensureOAuthTokenForProvider(providerID string) error {
 	data := a.GetMaclawLLMProviders()
 	for i, p := range data.Providers {
-		if p.Name == data.Current && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+		if maclawLLMProviderIDForRead(p) == strings.TrimSpace(providerID) && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 			// Primary path: use CredentialStore (serialized, independent of configMu)
 			if a.credentialStore != nil && credentialStoreProviderID(p) != "" {
 				return a.ensureOAuthTokenViaStore(p, i)
@@ -1116,6 +1905,18 @@ func (a *App) ensureOAuthToken() error {
 			}
 			data.Providers[i] = updated
 			break
+		}
+	}
+	return nil
+}
+
+// ensureOAuthToken preserves the legacy assistant-current behavior for older
+// callers. New profile-aware paths must use ensureOAuthTokenForProvider.
+func (a *App) ensureOAuthToken() error {
+	data := a.GetMaclawLLMProviders()
+	for _, provider := range data.Providers {
+		if provider.Name == data.Current {
+			return a.ensureOAuthTokenForProvider(maclawLLMProviderIDForRead(provider))
 		}
 	}
 	return nil
@@ -1627,6 +2428,16 @@ func (a *App) withGlobalThinkingMode(cfg corelib.MaclawLLMConfig) corelib.Maclaw
 	return cfg
 }
 
+// maclawLLMConfigForMutation returns the complete current configuration. It
+// uses the established mutation-side clone path rather than the deliberately
+// slim public snapshot, which is important during early startup and tests.
+func (a *App) maclawLLMConfigForMutation() (corelib.AppConfig, error) {
+	a.configMu.Lock()
+	cfg, err := a.getConfigForMutationLocked()
+	a.unlockConfigAbort(cfg)
+	return cfg, err
+}
+
 // GetMaclawLLMThinkingMode returns the global thinking mode:
 // "" (auto), "enabled", or "disabled".
 func (a *App) GetMaclawLLMThinkingMode() string {
@@ -1710,7 +2521,21 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
 	}
 
-	llmCfg := a.GetMaclawLLMConfig()
+	return a.pingResolvedMaclawLLMConfig(a.GetMaclawLLMConfig())
+}
+
+// pingResolvedMaclawLLMConfig is the compatibility probe implementation for
+// one already-resolved profile. Unlike PingMaclawLLM it does not select a
+// profile or refresh an unrelated provider's credentials.
+func (a *App) pingResolvedMaclawLLMConfig(llmCfg corelib.MaclawLLMConfig) MaclawLLMStatus {
+	return a.pingResolvedMaclawLLMConfigWithAuthStatus(llmCfg, false)
+}
+
+// pingResolvedMaclawLLMConfigWithAuthStatus keeps PingMaclawLLM's legacy
+// reachability semantics (a 4xx endpoint is reachable) while allowing the
+// profile-health surface to classify explicit authentication rejection as
+// unavailable. Network and 5xx failures remain retryable in both paths.
+func (a *App) pingResolvedMaclawLLMConfigWithAuthStatus(llmCfg corelib.MaclawLLMConfig, authenticationFailuresAreOffline bool) MaclawLLMStatus {
 	baseURL := strings.TrimRight(strings.TrimSpace(llmCfg.URL), "/")
 	model := strings.TrimSpace(llmCfg.Model)
 	if baseURL == "" || model == "" {
@@ -1733,6 +2558,9 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 		if err == nil {
 			return MaclawLLMStatus{Online: online, Configured: true}
 		}
+		if authenticationFailuresAreOffline && isMaclawLLMAuthenticationError(err) {
+			return MaclawLLMStatus{Online: false, Configured: true, Error: "authentication failed"}
+		}
 		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
 	}
 
@@ -1744,19 +2572,126 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	probeCfg.Protocol = protocol
 	var err2 error
 	for _, endpoint := range openAIModelsEndpointCandidates(probeBaseURL, protocol) {
-		online, probeErr := maclawLLMProbe(endpoint, probeCfg)
+		statusCode, probeErr := maclawLLMProbeStatus(endpoint, probeCfg)
 		if probeErr == nil {
-			return MaclawLLMStatus{Online: online, Configured: true}
+			if authenticationFailuresAreOffline && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) {
+				return MaclawLLMStatus{Online: false, Configured: true, Error: fmt.Sprintf("HTTP %d", statusCode)}
+			}
+			return MaclawLLMStatus{Online: true, Configured: true}
 		}
 		err2 = probeErr
 	}
 
-	online, err2 := maclawLLMProbe(llm.BuildOpenAIChatCompletionsEndpoint(probeBaseURL), probeCfg)
+	statusCode, err2 := maclawLLMProbeStatus(llm.BuildOpenAIChatCompletionsEndpoint(probeBaseURL), probeCfg)
 	if err2 == nil {
-		return MaclawLLMStatus{Online: online, Configured: true}
+		if authenticationFailuresAreOffline && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) {
+			return MaclawLLMStatus{Online: false, Configured: true, Error: fmt.Sprintf("HTTP %d", statusCode)}
+		}
+		return MaclawLLMStatus{Online: true, Configured: true}
 	}
 
 	return MaclawLLMStatus{Online: false, Configured: true, Error: err2.Error()}
+}
+
+func isMaclawLLMAuthenticationError(err error) bool {
+	message := strings.ToLower(fmt.Sprint(err))
+	return strings.Contains(message, "401") || strings.Contains(message, "403") || strings.Contains(message, "unauthorized") || strings.Contains(message, "forbidden")
+}
+
+// maclawLLMProfileHealthFromPing converts compatibility ping output into the
+// intentionally small UI contract. Raw endpoint errors must not cross this
+// boundary because the panel/sidebar are broadly visible UI surfaces.
+func maclawLLMProfileHealthFromPing(status MaclawLLMStatus) maclawLLMProfileHealthRecord {
+	record := maclawLLMProfileHealthRecord{CheckedAt: time.Now().UTC().Format(time.RFC3339)}
+	if !status.Configured {
+		record.Health = "invalid"
+		record.ReasonCode = "invalid_configuration"
+		return record
+	}
+	if status.Online {
+		record.Health = "configured"
+		return record
+	}
+	message := strings.ToLower(status.Error)
+	if strings.Contains(message, "401") || strings.Contains(message, "403") || strings.Contains(message, "auth") || strings.Contains(message, "token") {
+		record.Health = "unavailable"
+		record.ReasonCode = "authentication_failed"
+		return record
+	}
+	// Timeouts, DNS errors and transient upstream failures are deliberately not
+	// called unavailable. The user can retry without being told their other
+	// profile is broken.
+	record.Health = "unverified"
+	record.ReasonCode = "probe_retryable"
+	return record
+}
+
+// RefreshMaclawLLMProfileHealth probes assistant and independent coding
+// selections and returns the same non-sensitive panel state used by the UI.
+// Coding that follows assistant never sends a duplicate request: its health is
+// projected from assistant by GetMaclawLLMProfilePanelState.
+func (a *App) RefreshMaclawLLMProfileHealth() (MaclawLLMProfilePanelState, error) {
+	if a == nil {
+		return MaclawLLMProfilePanelState{}, fmt.Errorf("app is unavailable")
+	}
+	// A profile probe can perform token refresh plus a 10-second network check
+	// for each independent profile. Serialize it so a quick-save refresh and
+	// the periodic poll do not issue the same requests concurrently.
+	a.llmProfileHealthProbeMu.Lock()
+	defer a.llmProfileHealthProbeMu.Unlock()
+
+	assistant, assistantErr := a.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
+	if assistantErr != nil {
+		// The read model can still safely present invalid/unverified summaries
+		// for a broken assistant selection; do not make the whole sidebar vanish.
+		return a.GetMaclawLLMProfilePanelState()
+	}
+	// Resolve first, probe second. A concurrent save changes the effective key,
+	// so its new summary remains unverified rather than receiving this stale
+	// result when we read the state again below.
+	if err := a.ensureOAuthTokenForProvider(assistant.ProviderID); err != nil {
+		a.setMaclawLLMProfileHealthIfCurrent(maclawLLMProfileAssistant, assistant, maclawLLMProfileHealthFromPing(MaclawLLMStatus{Configured: true, Error: err.Error()}))
+	} else if err := a.ensureCodeGenTokenForProvider(assistant.ProviderID); err != nil {
+		a.setMaclawLLMProfileHealthIfCurrent(maclawLLMProfileAssistant, assistant, maclawLLMProfileHealthFromPing(MaclawLLMStatus{Configured: true, Error: err.Error()}))
+	} else {
+		// Re-resolve the assistant rather than using GetMaclawLLMConfig so this
+		// helper remains correct even if the legacy projection changes mid-probe.
+		if refreshed, resolveErr := a.ResolveMaclawLLMProfile(maclawLLMProfileAssistant); resolveErr == nil {
+			assistant = refreshed
+		}
+		assistantStatus := a.pingResolvedMaclawLLMConfigWithAuthStatus(assistant, true)
+		a.setMaclawLLMProfileHealthIfCurrent(maclawLLMProfileAssistant, assistant, maclawLLMProfileHealthFromPing(assistantStatus))
+	}
+	// The assistant probe may take seconds. Re-read the profile shape before
+	// deciding whether coding is independent, otherwise a just-saved switch to
+	// "follow assistant" can trigger an unnecessary duplicate probe (and the
+	// inverse switch would wait an extra polling cycle for coding health).
+	state, err := a.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		return MaclawLLMProfilePanelState{}, err
+	}
+	if !state.Profiles.Coding.InheritAssistant {
+		coding, err := a.ResolveMaclawLLMProfile(maclawLLMProfileCoding)
+		if err == nil {
+			if err := a.ensureOAuthTokenForProvider(coding.ProviderID); err != nil {
+				a.setMaclawLLMProfileHealthIfCurrent(maclawLLMProfileCoding, coding, maclawLLMProfileHealthFromPing(MaclawLLMStatus{Configured: true, Error: err.Error()}))
+			} else if err := a.ensureCodeGenTokenForProvider(coding.ProviderID); err != nil {
+				a.setMaclawLLMProfileHealthIfCurrent(maclawLLMProfileCoding, coding, maclawLLMProfileHealthFromPing(MaclawLLMStatus{Configured: true, Error: err.Error()}))
+			} else {
+				// Re-resolve after a possible OAuth refresh so the probe uses the
+				// refreshed credential store value for this profile only.
+				if refreshed, resolveErr := a.ResolveMaclawLLMProfile(maclawLLMProfileCoding); resolveErr == nil {
+					coding = refreshed
+				}
+				codingStatus := a.pingResolvedMaclawLLMConfigWithAuthStatus(coding, true)
+				a.setMaclawLLMProfileHealthIfCurrent(maclawLLMProfileCoding, coding, maclawLLMProfileHealthFromPing(codingStatus))
+			}
+		}
+	}
+	// Health is returned directly to the probing caller. Do not broadcast an
+	// event here: App owns the 60-second refresh, and an event fan-out on every
+	// probe creates needless runtime traffic without changing any assignment.
+	return a.GetMaclawLLMProfilePanelState()
 }
 
 func normalizeOpenAIProbeBaseURL(baseURL, userAgent string) string {
@@ -1913,9 +2848,19 @@ func dedupeStrings(values []string) []string {
 // credentials are accepted or at least the server is alive).  Only network
 // errors and 5xx are treated as "offline".
 func maclawLLMProbe(endpoint string, cfg corelib.MaclawLLMConfig) (bool, error) {
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	statusCode, err := maclawLLMProbeStatus(endpoint, cfg)
 	if err != nil {
 		return false, err
+	}
+	return statusCode < 500, nil
+}
+
+// maclawLLMProbeStatus retains the response classification needed by profile
+// health without exposing raw responses or headers to callers.
+func maclawLLMProbeStatus(endpoint string, cfg corelib.MaclawLLMConfig) (int, error) {
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, err
 	}
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	if cfg.Key != "" {
@@ -1926,7 +2871,7 @@ func maclawLLMProbe(endpoint string, cfg corelib.MaclawLLMConfig) (bool, error) 
 
 	resp, err := maclawLLMPingClient.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("request failed: %w", err)
+		return 0, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.ReadAll(io.LimitReader(resp.Body, 1024)) // drain for conn reuse
@@ -1934,9 +2879,9 @@ func maclawLLMProbe(endpoint string, cfg corelib.MaclawLLMConfig) (bool, error) 
 	// 2xx or 4xx → server is alive (4xx = auth issue but reachable).
 	// 5xx → server error, treat as offline.
 	if resp.StatusCode < 500 {
-		return true, nil
+		return resp.StatusCode, nil
 	}
-	return false, fmt.Errorf("HTTP %d", resp.StatusCode)
+	return resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
 }
 
 // maclawAnthropicProbe sends a tiny Messages API request via anthropic-sdk-go
@@ -2023,14 +2968,71 @@ func maclawLLMUsagePricesFromConfig(cfg *corelib.AppConfig, providerName string)
 // calls do not PatchConfig+AtomicWrite on every completion (was a major source
 // of configMu / disk write storms that froze skills and settings UI).
 type pendingLLMTokenDelta struct {
-	InputTokens        int64
-	OutputTokens       int64
-	CachedInputTokens  int64
-	CacheWriteTokens   int64
-	Requests           int64
-	CachedRequests     int64
-	LocalCacheRequests int64
-	LocalCacheHits     int64
+	IsProfile           bool
+	Profile             string
+	ProviderID          string
+	ProviderDisplayName string
+	FinalModel          string
+	RouteSource         string
+	InputTokens         int64
+	OutputTokens        int64
+	CachedInputTokens   int64
+	CacheWriteTokens    int64
+	Requests            int64
+	CachedRequests      int64
+	LocalCacheRequests  int64
+	LocalCacheHits      int64
+}
+
+func maclawLLMProfileUsageKey(cfg corelib.MaclawLLMConfig) string {
+	profile := strings.TrimSpace(cfg.Profile)
+	providerID := strings.TrimSpace(cfg.ProviderID)
+	model := strings.TrimSpace(cfg.Model)
+	if profile == "" || providerID == "" || model == "" {
+		return ""
+	}
+	return profile + "|" + providerID + "|" + model
+}
+
+// AccumulateLLMProfileTokenUsageWithCache records a request with immutable
+// profile/provider/final-model attribution. It intentionally does not guess
+// identity for legacy call sites; those continue to populate LLMTokenUsage.
+func (a *App) AccumulateLLMProfileTokenUsageWithCache(cfg corelib.MaclawLLMConfig, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) {
+	if inputTokens == 0 && outputTokens == 0 && cachedInputTokens == 0 && cacheWriteTokens == 0 {
+		return
+	}
+	key := maclawLLMProfileUsageKey(cfg)
+	if key == "" || isRemoteToolTokenUsageProvider(cfg.ProviderName) {
+		return
+	}
+	a.tokenUsageMu.Lock()
+	if a.tokenUsagePending == nil {
+		a.tokenUsagePending = make(map[string]*pendingLLMTokenDelta)
+	}
+	key = "profile:" + key
+	delta := a.tokenUsagePending[key]
+	if delta == nil {
+		delta = &pendingLLMTokenDelta{
+			IsProfile: true,
+			Profile:   strings.TrimSpace(cfg.Profile), ProviderID: strings.TrimSpace(cfg.ProviderID),
+			ProviderDisplayName: strings.TrimSpace(cfg.ProviderName), FinalModel: strings.TrimSpace(cfg.Model),
+			RouteSource: strings.TrimSpace(cfg.RouteSource),
+		}
+		a.tokenUsagePending[key] = delta
+	}
+	delta.InputTokens += int64(inputTokens)
+	delta.OutputTokens += int64(outputTokens)
+	delta.CachedInputTokens += int64(cachedInputTokens)
+	delta.CacheWriteTokens += int64(cacheWriteTokens)
+	delta.Requests++
+	if cachedInputTokens > 0 {
+		delta.CachedRequests++
+	}
+	a.scheduleTokenUsageFlushLocked()
+	a.tokenUsageMu.Unlock()
+	if a.ctx != nil {
+		a.emitEvent("llm-token-usage-changed", key)
+	}
 }
 
 const tokenUsageFlushInterval = 2 * time.Second
@@ -2127,8 +3129,35 @@ func (a *App) flushPendingTokenUsage() {
 		if cfg.LLMTokenUsage == nil {
 			cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
 		}
+		if cfg.LLMProfileTokenUsage == nil {
+			cfg.LLMProfileTokenUsage = make(map[string]*corelib.TokenUsageStat)
+		}
 		for providerName, delta := range pending {
 			if delta == nil {
+				continue
+			}
+			if delta.IsProfile {
+				profileStat := cfg.LLMProfileTokenUsage[providerName]
+				if profileStat == nil {
+					profileStat = &corelib.TokenUsageStat{
+						Profile: delta.Profile, ProviderID: delta.ProviderID, ProviderDisplayName: delta.ProviderDisplayName,
+						FinalModel: delta.FinalModel, RouteSource: delta.RouteSource,
+					}
+					cfg.LLMProfileTokenUsage[providerName] = profileStat
+				}
+				profileStat.InputTokens += delta.InputTokens
+				profileStat.OutputTokens += delta.OutputTokens
+				profileStat.TotalTokens = profileStat.InputTokens + profileStat.OutputTokens
+				profileStat.CachedInputTokens += delta.CachedInputTokens
+				profileStat.CacheWriteTokens += delta.CacheWriteTokens
+				profileStat.Requests += delta.Requests
+				profileStat.CachedRequests += delta.CachedRequests
+				profileStat.LocalCacheRequests += delta.LocalCacheRequests
+				profileStat.LocalCacheHits += delta.LocalCacheHits
+				inputPrice, outputPrice := maclawLLMUsagePricesFromConfig(cfg, delta.ProviderDisplayName)
+				profileStat.InputPricePerMTokensRMB = inputPrice
+				profileStat.OutputPricePerMTokensRMB = outputPrice
+				profileStat.InputCostRMB, profileStat.OutputCostRMB, profileStat.TotalCostRMB = corelib.CalculateLLMCostRMB(profileStat.InputTokens, profileStat.OutputTokens, inputPrice, outputPrice)
 				continue
 			}
 			stat, ok := cfg.LLMTokenUsage[providerName]
@@ -2202,6 +3231,12 @@ func (a *App) GetLLMTokenUsage(provider string) *corelib.TokenUsageStat {
 			stat = &cp
 		}
 	}
+	// A newly accumulated provider can be present only in the debounced delta.
+	// Give that transient snapshot the same pricing metadata as a persisted row;
+	// otherwise the sidebar reports zero cost for up to the first flush interval.
+	if stat.InputPricePerMTokensRMB == 0 && stat.OutputPricePerMTokensRMB == 0 {
+		stat.InputPricePerMTokensRMB, stat.OutputPricePerMTokensRMB = maclawLLMUsagePricesFromConfig(&cfg, provider)
+	}
 	a.mergePendingTokenUsageInto(provider, stat)
 	return stat
 }
@@ -2233,6 +3268,47 @@ func (a *App) GetAllLLMTokenUsage() map[string]*corelib.TokenUsageStat {
 		if stat == nil {
 			stat = &corelib.TokenUsageStat{}
 			out[name] = stat
+		}
+		if stat.InputPricePerMTokensRMB == 0 && stat.OutputPricePerMTokensRMB == 0 {
+			stat.InputPricePerMTokensRMB, stat.OutputPricePerMTokensRMB = maclawLLMUsagePricesFromConfig(&cfg, name)
+		}
+		applyPendingTokenDelta(stat, delta)
+	}
+	a.tokenUsageMu.Unlock()
+	return out
+}
+
+// GetAllLLMProfileTokenUsage returns only post-upgrade, explicitly attributed
+// usage rows. The legacy provider-only map is intentionally not merged here:
+// historical data cannot be safely assigned to assistant or coding.
+func (a *App) GetAllLLMProfileTokenUsage() map[string]*corelib.TokenUsageStat {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return map[string]*corelib.TokenUsageStat{}
+	}
+	out := map[string]*corelib.TokenUsageStat{}
+	for key, stat := range cfg.LLMProfileTokenUsage {
+		if stat == nil {
+			continue
+		}
+		cp := *stat
+		out[key] = &cp
+	}
+	a.tokenUsageMu.Lock()
+	for key, delta := range a.tokenUsagePending {
+		if delta == nil || !delta.IsProfile {
+			continue
+		}
+		stat := out[key]
+		if stat == nil {
+			stat = &corelib.TokenUsageStat{
+				Profile: delta.Profile, ProviderID: delta.ProviderID, ProviderDisplayName: delta.ProviderDisplayName,
+				FinalModel: delta.FinalModel, RouteSource: delta.RouteSource,
+			}
+			out[key] = stat
+		}
+		if stat.InputPricePerMTokensRMB == 0 && stat.OutputPricePerMTokensRMB == 0 {
+			stat.InputPricePerMTokensRMB, stat.OutputPricePerMTokensRMB = maclawLLMUsagePricesFromConfig(&cfg, delta.ProviderDisplayName)
 		}
 		applyPendingTokenDelta(stat, delta)
 	}
@@ -2278,6 +3354,13 @@ func isRemoteToolTokenUsageProvider(provider string) bool {
 // ResetLLMTokenUsage resets the token usage stats for a specific provider.
 // If provider is empty, resets all providers.
 func (a *App) ResetLLMTokenUsage(provider string) error {
+	// Preserve pending deltas for every other provider before applying the
+	// reset. Without this flush, resetting an unrelated provider could leave
+	// its peers visible in memory but absent from the config until a timer fires
+	// (or the process exits).
+	if strings.TrimSpace(provider) != "" {
+		a.flushPendingTokenUsage()
+	}
 	// Drop pending deltas so a later flush cannot resurrect reset counters.
 	a.tokenUsageMu.Lock()
 	if provider == "" {
@@ -2307,6 +3390,23 @@ func (a *App) ResetLLMTokenUsage(provider string) error {
 // meaning all CodeGen SSO logic should be skipped.
 func shouldSkipCodeGenSSO(brandID string) bool {
 	return brandID != "qianxin"
+}
+
+// ensureCodeGenTokenForProvider validates the requested CodeGen SSO provider.
+// It remains a no-op outside the branded build and avoids an unrelated
+// independent coding provider being refreshed while assistant is probed.
+func (a *App) ensureCodeGenTokenForProvider(providerID string) error {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" || shouldSkipCodeGenSSO(brand.Current().ID) {
+		return nil
+	}
+	data := a.GetMaclawLLMProviders()
+	for _, provider := range data.Providers {
+		if maclawLLMProviderIDForRead(provider) == providerID && provider.Name == codegenProviderName && provider.AuthType == "sso" {
+			return a.ensureCodeGenToken()
+		}
+	}
+	return nil
 }
 
 // ensureCodeGenToken 检查 CodeGen SSO token 是否有效。

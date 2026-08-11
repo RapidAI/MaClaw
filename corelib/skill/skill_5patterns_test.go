@@ -89,6 +89,16 @@ func TestEvaluateDescription_LowQuality(t *testing.T) {
 	}
 }
 
+func TestEvaluateDescription_RecognizesLegacyOfficeFormats(t *testing.T) {
+	for _, format := range []string{"doc", "xls", "ppt"} {
+		t.Run(format, func(t *testing.T) {
+			if !containsSpecificNoun("convert " + format + " documents") {
+				t.Fatalf("legacy Office format %q should count as a specific noun", format)
+			}
+		})
+	}
+}
+
 // ===== Gap 6: Execution Preamble =====
 
 func TestBuildExecutionPreamble_SimpleSkill(t *testing.T) {

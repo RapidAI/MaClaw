@@ -1330,22 +1330,42 @@ func TestHandleIMGatewayMessageInjectsConnectionTenant(t *testing.T) {
 }
 
 type deviceGatewayReplyCapture struct {
-	replies        []map[string]any
-	queueCount     int
-	profileUpdates int
-	petSkin        string
-	volumeUpdates  int
-	volume         any
-	devices        []map[string]any
-	deletedClient  string
-	targetMachine  string
-	targetClient   string
-	targetCount    int
-	hardwareState  *bool
+	replies           []map[string]any
+	queueCount        int
+	profileUpdates    int
+	petSkin           string
+	volumeUpdates     int
+	volume            any
+	brightnessUpdates int
+	brightness        any
+	devices           []map[string]any
+	deletedClient     string
+	deleteErr         error
+	targetMachine     string
+	targetClient      string
+	targetCount       int
+	hardwareState     *bool
+	pairingErr        error
 }
 
-func (g *deviceGatewayReplyCapture) RegisterPairing(string, string, string, string) error { return nil }
-func (g *deviceGatewayReplyCapture) ServeHTTP(http.ResponseWriter, *http.Request)         {}
+type pairingCollisionError struct{}
+
+func (pairingCollisionError) Error() string { return "unrelated wording" }
+func (pairingCollisionError) PairingErrorCode() string {
+	return "PAIRING_CODE_COLLISION"
+}
+
+type pairingDisabledError struct{}
+
+func (pairingDisabledError) Error() string { return "machine hardware transport is disabled" }
+func (pairingDisabledError) PairingErrorCode() string {
+	return "HARDWARE_DISABLED"
+}
+
+func (g *deviceGatewayReplyCapture) RegisterPairing(string, string, string, string) error {
+	return g.pairingErr
+}
+func (g *deviceGatewayReplyCapture) ServeHTTP(http.ResponseWriter, *http.Request) {}
 func (g *deviceGatewayReplyCapture) EnqueueReply(_, _ string, reply map[string]any) {
 	g.replies = append(g.replies, reply)
 }
@@ -1366,6 +1386,20 @@ func (g *deviceGatewayReplyCapture) EnqueueMachineClientReplyCount(machineID, cl
 	}
 	return g.targetCount
 }
+
+type detailedDeviceGatewayReplyCapture struct {
+	deviceGatewayReplyCapture
+	result MachineClientReplyResult
+}
+
+func (g *detailedDeviceGatewayReplyCapture) EnqueueMachineClientReplyResult(machineID, clientID, _ string, reply map[string]any) MachineClientReplyResult {
+	g.targetMachine = machineID
+	g.targetClient = clientID
+	if g.result.Queued > 0 {
+		g.replies = append(g.replies, reply)
+	}
+	return g.result
+}
 func (g *deviceGatewayReplyCapture) UpdateMachinePetProfileAsset(_ string, skin string, _ bool, _ map[string]any) {
 	g.profileUpdates++
 	g.petSkin = skin
@@ -1380,6 +1414,16 @@ func (g *deviceGatewayReplyCapture) UpdateMachineDeviceVolume(_ string, clientID
 	g.volume = map[string]any{"clientId": clientID, "volume": volume}
 	return nil
 }
+func (g *deviceGatewayReplyCapture) UpdateMachineBrightness(_ string, brightness any) error {
+	g.brightnessUpdates++
+	g.brightness = brightness
+	return nil
+}
+func (g *deviceGatewayReplyCapture) UpdateMachineDeviceBrightness(_ string, clientID string, brightness any) error {
+	g.brightnessUpdates++
+	g.brightness = map[string]any{"clientId": clientID, "brightness": brightness}
+	return nil
+}
 func (g *deviceGatewayReplyCapture) UpdateMachineHardwareEnabled(_ string, enabled bool) error {
 	g.hardwareState = &enabled
 	return nil
@@ -1390,8 +1434,13 @@ func (g *deviceGatewayReplyCapture) MachineHardwareBindingStateJSON(string) map[
 func (g *deviceGatewayReplyCapture) ListMachineDevicesJSON(string) []map[string]any { return g.devices }
 func (g *deviceGatewayReplyCapture) DeleteMachineDevice(_, clientID string) error {
 	g.deletedClient = clientID
-	return nil
+	return g.deleteErr
 }
+
+type hardwareNotOwnedError struct{}
+
+func (hardwareNotOwnedError) Error() string             { return "hardware client is not bound to this machine" }
+func (hardwareNotOwnedError) HardwareErrorCode() string { return "HARDWARE_NOT_OWNED" }
 
 func TestGatewayListsAndDeletesOwnedHardwareDevices(t *testing.T) {
 	capture := &deviceGatewayReplyCapture{devices: []map[string]any{{"clientId": "esp32s3-a", "online": true}, {"clientId": "esp32s3-b", "online": false}}}
@@ -1422,6 +1471,104 @@ func TestGatewayListsAndDeletesOwnedHardwareDevices(t *testing.T) {
 	}
 	if response["type"] != "ack" || capture.deletedClient != "esp32s3-a" {
 		t.Fatalf("delete response=%#v deleted=%q", response, capture.deletedClient)
+	}
+}
+
+func TestGatewayDeleteHardwareReportsNotOwnedWithStableCode(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{deleteErr: hardwareNotOwnedError{}}
+	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, &testSessionService{})
+	gateway.DeviceGateway = capture
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(map[string]any{"type": "auth.machine", "payload": map[string]any{"machine_id": "gui-a", "machine_token": "token"}}); err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := conn.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "im.device_gateway_device_delete", "request_id": "delete-not-owned", "payload": map[string]any{"clientId": "esp32s3-a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := response["payload"].(map[string]any)
+	if response["type"] != "error" || response["request_id"] != "delete-not-owned" || payload["code"] != "HARDWARE_NOT_OWNED" {
+		t.Fatalf("delete error=%#v", response)
+	}
+}
+
+func TestGatewayPairingErrorKeepsRequestCorrelation(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{pairingErr: pairingCollisionError{}}
+	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, &testSessionService{})
+	gateway.DeviceGateway = capture
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(map[string]any{
+		"type": "auth.machine", "payload": map[string]any{"machine_id": "gui-a", "machine_token": "token"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := conn.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "im.device_gateway_pairing", "request_id": "pairing-1", "payload": map[string]any{"pairCode": "123456"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := response["payload"].(map[string]any)
+	if response["type"] != "error" || response["request_id"] != "pairing-1" || payload["code"] != "PAIRING_CODE_COLLISION" {
+		t.Fatalf("pairing error lost request correlation: %#v", response)
+	}
+}
+
+func TestGatewayPairingDisabledErrorKeepsStableCode(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{pairingErr: pairingDisabledError{}}
+	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, &testSessionService{})
+	gateway.DeviceGateway = capture
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(map[string]any{
+		"type": "auth.machine", "payload": map[string]any{"machine_id": "gui-a", "machine_token": "token"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := conn.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "im.device_gateway_pairing", "request_id": "pairing-disabled", "payload": map[string]any{"pairCode": "123456"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := response["payload"].(map[string]any)
+	if response["type"] != "error" || response["request_id"] != "pairing-disabled" || payload["code"] != "HARDWARE_DISABLED" {
+		t.Fatalf("disabled pairing error lost stable code: %#v", response)
 	}
 }
 
@@ -1581,6 +1728,102 @@ func TestHandleDeviceGatewayPerDeviceVolumeUpdateIsDurableAndTargeted(t *testing
 	}
 }
 
+func TestHandleDeviceGatewayBrightnessUpdateIsDurableAndRelayed(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{}
+	gateway := &Gateway{DeviceGateway: capture}
+	ctx := &ConnContext{Role: "machine", MachineID: "gui-a"}
+	payload, _ := json.Marshal(map[string]any{
+		"clientId": "*", "conversationId": "system",
+		"reply": map[string]any{"reply_type": "hardware_config", "extra": map[string]any{"brightness": 65}},
+	})
+	if _, err := gateway.handleDeviceGatewayReply(ctx, Envelope{Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if capture.brightnessUpdates != 1 || capture.brightness != float64(65) {
+		t.Fatalf("brightness update=%d value=%#v", capture.brightnessUpdates, capture.brightness)
+	}
+	// A brightness-only payload must not touch the volume path.
+	if capture.volumeUpdates != 0 {
+		t.Fatalf("brightness-only payload updated volume=%#v", capture.volume)
+	}
+	if len(capture.replies) != 1 || capture.replies[0]["reply_type"] != "hardware_config" {
+		t.Fatalf("brightness update was not relayed: %#v", capture.replies)
+	}
+}
+
+func TestHandleDeviceGatewayPerDeviceBrightnessUpdateIsDurableAndTargeted(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{}
+	gateway := &Gateway{DeviceGateway: capture}
+	ctx := &ConnContext{Role: "machine", MachineID: "gui-a"}
+	payload, _ := json.Marshal(map[string]any{
+		"clientId": "esp32-a", "conversationId": "system",
+		"reply": map[string]any{"reply_type": "hardware_config", "extra": map[string]any{"brightness": 30}},
+	})
+	if _, err := gateway.handleDeviceGatewayReply(ctx, Envelope{Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	update, ok := capture.brightness.(map[string]any)
+	if capture.brightnessUpdates != 1 || !ok || update["clientId"] != "esp32-a" || update["brightness"] != float64(30) {
+		t.Fatalf("per-device brightness update=%#v", capture.brightness)
+	}
+	if capture.volumeUpdates != 0 {
+		t.Fatalf("brightness-only payload updated volume=%#v", capture.volume)
+	}
+	if len(capture.replies) != 0 {
+		t.Fatalf("per-device brightness was relayed twice: %#v", capture.replies)
+	}
+}
+
+func TestHandleDeviceGatewayHardwareConfigRejectsEmptyLevels(t *testing.T) {
+	assertHardwareConfigRejected(t, map[string]any{})
+}
+
+func TestHandleDeviceGatewayHardwareConfigRejectsUnknownLevels(t *testing.T) {
+	assertHardwareConfigRejected(t, map[string]any{"volume": 50, "unsupported": true})
+}
+
+func assertHardwareConfigRejected(t *testing.T, extra map[string]any) {
+	t.Helper()
+	capture := &deviceGatewayReplyCapture{}
+	gateway := &Gateway{DeviceGateway: capture}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade connection: %v", err)
+			return
+		}
+		defer conn.Close()
+		var response map[string]any
+		if err := conn.ReadJSON(&response); err != nil {
+			t.Errorf("read error response: %v", err)
+			return
+		}
+		payload, _ := response["payload"].(map[string]any)
+		if response["type"] != "error" || response["request_id"] != "empty-levels" || payload["code"] != "INVALID_MESSAGE" {
+			t.Errorf("unexpected error response: %#v", response)
+		}
+	}))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ctx := &ConnContext{Conn: conn, Role: "machine", MachineID: "gui-a"}
+	payload, _ := json.Marshal(map[string]any{
+		"clientId": "esp32-a", "conversationId": "system",
+		"reply": map[string]any{"reply_type": "hardware_config", "extra": extra},
+	})
+	handled, err := gateway.handleDeviceGatewayReply(ctx, Envelope{RequestID: "empty-levels", Payload: payload})
+	if !handled || err != nil {
+		t.Fatalf("empty hardware config was not rejected: handled=%t err=%v", handled, err)
+	}
+	if capture.volumeUpdates != 0 || capture.brightnessUpdates != 0 || len(capture.replies) != 0 {
+		t.Fatalf("empty hardware config had side effects: %#v", capture)
+	}
+}
+
 func TestGatewayDeviceGatewayReplyReturnsRequestAck(t *testing.T) {
 	capture := &deviceGatewayReplyCapture{queueCount: 1}
 	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, &testSessionService{})
@@ -1650,6 +1893,40 @@ func TestGatewayHardwarePreviewFailsFastWithoutCompatibleDevice(t *testing.T) {
 	payload, _ := response["payload"].(map[string]any)
 	if response["type"] != "error" || response["request_id"] != "offline-preview-1" || payload["code"] != "NO_COMPATIBLE_HARDWARE" {
 		t.Fatalf("offline preview response=%#v", response)
+	}
+}
+
+func TestGatewaySelectedPreviewReturnsOfflineInsteadOfNotOwned(t *testing.T) {
+	capture := &detailedDeviceGatewayReplyCapture{result: MachineClientReplyResult{Reason: "HARDWARE_OFFLINE"}}
+	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, &testSessionService{})
+	gateway.DeviceGateway = capture
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.WriteJSON(map[string]any{"type": "auth.machine", "payload": map[string]any{"machine_id": "gui-a", "machine_token": "token"}})
+	var response map[string]any
+	if err := conn.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.WriteJSON(map[string]any{
+		"type": "im.device_gateway_reply", "request_id": "selected-offline-preview",
+		"payload": map[string]any{"clientId": "pet-a", "conversationId": "system", "reply": map[string]any{
+			"reply_type": "audio", "mime_type": "audio/wav", "file_data": "d2F2", "extra": map[string]any{"hardware_audio_preview": true},
+		}},
+	})
+	if err := conn.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := response["payload"].(map[string]any)
+	if response["type"] != "error" || response["request_id"] != "selected-offline-preview" || payload["code"] != "HARDWARE_OFFLINE" {
+		t.Fatalf("selected offline preview response=%#v", response)
+	}
+	if capture.targetMachine != "gui-a" || capture.targetClient != "pet-a" {
+		t.Fatalf("selected offline route=%q/%q", capture.targetMachine, capture.targetClient)
 	}
 }
 

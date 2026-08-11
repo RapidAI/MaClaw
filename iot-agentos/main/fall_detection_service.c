@@ -100,7 +100,21 @@ static TaskHandle_t s_task;
 static SemaphoreHandle_t s_stopped;
 static volatile bool s_stop_requested;
 static portMUX_TYPE s_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
+/* Only one init/deinit transaction may create, join or reclaim the optional
+ * sensor worker.  Public tool admission alone cannot serialize two rollback
+ * callers that both observe the same stopped semaphore. */
+static SemaphoreHandle_t s_deinit_mutex;
+static StaticSemaphore_t s_deinit_mutex_storage;
 static uint32_t s_tool_admissions;
+/* Physical touch/button cancellation is not a Gateway tool transaction, but
+ * it can release a Power lease after leaving s_lock.  Count it separately so
+ * lifecycle never advances to Power teardown while that release is in flight.
+ */
+static uint32_t s_user_action_admissions;
+/* Application presentation runs synchronously on the classifier task, yet it
+ * is an explicit lifecycle borrower: a client callback admitted just before
+ * rollback must finish before the service can release the Power domain. */
+static uint32_t s_callback_admissions;
 /* Serialises the read/check/write replay transaction.  Persistence Service
  * serialises individual NVS calls; it cannot make a load followed by save
  * atomic relative to another Gateway retry. */
@@ -120,6 +134,40 @@ static bool admit_tool(void) {
 static void release_tool(void) {
     taskENTER_CRITICAL(&s_lifecycle_lock);
     if (s_tool_admissions > 0) --s_tool_admissions;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+static bool admit_user_action(void) {
+    bool admitted = false;
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_initialized && !s_stop_requested) {
+        ++s_user_action_admissions;
+        admitted = true;
+    }
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    return admitted;
+}
+
+static void release_user_action(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_user_action_admissions > 0) --s_user_action_admissions;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+static bool admit_callback(void) {
+    bool admitted = false;
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (!s_stop_requested) {
+        ++s_callback_admissions;
+        admitted = true;
+    }
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    return admitted;
+}
+
+static void release_callback(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_callback_admissions > 0) --s_callback_admissions;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
 }
 
@@ -330,10 +378,21 @@ static bool classifier_observe(fall_classifier_t *classifier,
 }
 
 static void notify_if_current(fall_detection_event_t event, uint32_t generation) {
+    /* The callback runs synchronously on the classifier worker, so deinit's
+     * worker join is also its callback drain.  Sample the stop generation
+     * under the lifecycle lock first; s_stop_requested is not protected by
+     * the classifier-state lock. */
+    if (!admit_callback()) return;
     taskENTER_CRITICAL(&s_lock);
-    bool current = !s_stop_requested && s_enabled && s_event_generation == generation;
+    bool current = s_enabled && s_event_generation == generation;
+    fall_detection_callback_t callback = s_callback;
+    void *context = s_callback_context;
     taskEXIT_CRITICAL(&s_lock);
-    if (current && s_callback) s_callback(event, s_callback_context);
+    /* Callback ownership is sampled atomically with the current-generation
+     * test.  Deinit may clear the service fields after this point, but never
+     * invalidates the application-owned callback context itself. */
+    if (current && callback) callback(event, context);
+    release_callback();
 }
 
 static bool begin_confirmation_window(void) {
@@ -396,7 +455,10 @@ static void fall_detection_task(void *arg) {
     classifier_reset(&classifier);
     unsigned consecutive_read_errors = 0;
     for (;;) {
-        if (s_stop_requested) break;
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        const bool stopping = s_stop_requested;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        if (stopping) break;
         uint64_t deadline_us;
         fall_detection_state_t state;
         taskENTER_CRITICAL(&s_lock);
@@ -429,7 +491,12 @@ static void fall_detection_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(FALL_SAMPLE_PERIOD_MS));
     }
+    /* Publish worker exit before the final completion hand-off.  Deinit reads
+     * this handle under the same lock, so it cannot notify a recycled task
+     * handle after consuming s_stopped. */
+    taskENTER_CRITICAL(&s_lifecycle_lock);
     s_task = NULL;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
     if (s_stopped) xSemaphoreGive(s_stopped);
     vTaskDelete(NULL);
 }
@@ -437,13 +504,27 @@ static void fall_detection_task(void *arg) {
 device_status_t fall_detection_service_init(fall_detection_callback_t callback,
                                             void *context) {
     if (!callback || !persistence_service_is_initialized()) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!s_deinit_mutex) {
+        s_deinit_mutex = xSemaphoreCreateMutexStatic(&s_deinit_mutex_storage);
+    }
+    if (!s_deinit_mutex) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    if (xSemaphoreTake(s_deinit_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
     taskENTER_CRITICAL(&s_lock);
     bool initialized = s_initialized;
     bool same_callback = s_callback == callback && s_callback_context == context;
     taskEXIT_CRITICAL(&s_lock);
-    if (initialized) return same_callback ? (s_available ? DEVICE_STATUS_OK
-                                                         : DEVICE_STATUS_UNAVAILABLE)
-                                          : DEVICE_STATUS_BUSY;
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool stopping = s_stop_requested;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (initialized) {
+        xSemaphoreGive(s_deinit_mutex);
+        if (stopping) return DEVICE_STATUS_BUSY;
+        return same_callback ? (s_available ? DEVICE_STATUS_OK
+                                            : DEVICE_STATUS_UNAVAILABLE)
+                             : DEVICE_STATUS_BUSY;
+    }
     taskENTER_CRITICAL(&s_lifecycle_lock);
     s_stop_requested = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
@@ -454,6 +535,7 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
         s_enabled = false;
         s_state = FALL_DETECTION_STATE_UNAVAILABLE;
         taskEXIT_CRITICAL(&s_lock);
+        xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_UNAVAILABLE;
     }
     /* Load before publishing service state so a task can never observe an
@@ -465,6 +547,7 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
         if (s_stopped) vSemaphoreDelete(s_stopped);
         s_mutation_mutex = NULL;
         s_stopped = NULL;
+        xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     }
     fall_detection_store_t store;
@@ -476,6 +559,7 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
         vSemaphoreDelete(s_mutation_mutex);
         s_stopped = NULL;
         s_mutation_mutex = NULL;
+        xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_INTERNAL_ERROR;
     }
     if (store_migrated && save_store(&store) != ESP_OK) {
@@ -484,6 +568,7 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
         vSemaphoreDelete(s_mutation_mutex);
         s_stopped = NULL;
         s_mutation_mutex = NULL;
+        xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_INTERNAL_ERROR;
     }
     taskENTER_CRITICAL(&s_lock);
@@ -500,14 +585,18 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
     taskEXIT_CRITICAL(&s_lock);
     if (xTaskCreate(fall_detection_task, "maclaw_fall", 4096, NULL, 3, &s_task) != pdPASS) {
         taskENTER_CRITICAL(&s_lock);
+        s_initialized = false;
         s_available = false;
         s_enabled = false;
         s_state = FALL_DETECTION_STATE_UNAVAILABLE;
+        s_callback = NULL;
+        s_callback_context = NULL;
         taskEXIT_CRITICAL(&s_lock);
         vSemaphoreDelete(s_stopped);
         vSemaphoreDelete(s_mutation_mutex);
         s_stopped = NULL;
         s_mutation_mutex = NULL;
+        xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     }
     taskENTER_CRITICAL(&s_lock);
@@ -515,20 +604,68 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
     s_enabled = store.enabled != 0;
     s_state = s_enabled ? FALL_DETECTION_STATE_MONITORING : FALL_DETECTION_STATE_DISABLED;
     taskEXIT_CRITICAL(&s_lock);
+    xSemaphoreGive(s_deinit_mutex);
     ESP_LOGI(TAG, "monitoring started: freefall/impact/orientation/stillness pipeline");
     return DEVICE_STATUS_OK;
 }
 
 device_status_t fall_detection_service_deinit(uint32_t timeout_ms) {
     if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+
+    /* Startup rollback invokes every optional service boundary, including
+     * profiles which failed before this service was ever initialized.  An
+     * inactive service owns no task or Power/Persistence borrower, so it is
+     * already quiescent; treating its absent retained mutex as a timeout
+     * incorrectly blocks the rest of the fail-closed rollback chain. */
+    taskENTER_CRITICAL(&s_lock);
+    const bool initialized_at_entry = s_initialized;
+    taskEXIT_CRITICAL(&s_lock);
+    if (!initialized_at_entry) return DEVICE_STATUS_OK;
+
+    /* Profiles without a motion sensor publish an initialized-but-unavailable
+     * service so callers can distinguish an unsupported capability from an
+     * initialization fault.  That generation creates no worker, semaphore,
+     * mutation lock, lease or callback borrower.  It must therefore close
+     * immediately during a parent rollback instead of spending the parent's
+     * last few milliseconds waiting for the retained lifecycle mutex.  Do
+     * not use this shortcut for the normal init publication window: that one
+     * has already allocated the worker resources even while availability is
+     * temporarily false. */
+    const bool profile_has_motion = has_configured_motion_sensor();
+    taskENTER_CRITICAL(&s_lock);
+    const bool unavailable_without_worker = !profile_has_motion &&
+                                           s_initialized && s_task == NULL &&
+                                           s_stopped == NULL && s_mutation_mutex == NULL;
+    if (unavailable_without_worker) {
+        s_initialized = false;
+        s_enabled = false;
+        s_state = FALL_DETECTION_STATE_UNAVAILABLE;
+        s_callback = NULL;
+        s_callback_context = NULL;
+    }
+    taskEXIT_CRITICAL(&s_lock);
+    if (unavailable_without_worker) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        s_stop_requested = false;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        return DEVICE_STATUS_OK;
+    }
+
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = pdMS_TO_TICKS(timeout_ms);
+    if (!s_deinit_mutex || xSemaphoreTake(s_deinit_mutex, budget) != pdTRUE) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
     taskENTER_CRITICAL(&s_lifecycle_lock);
     bool initialized = s_initialized;
     s_stop_requested = true;
+    TaskHandle_t task = s_task;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     if (!initialized) {
         taskENTER_CRITICAL(&s_lifecycle_lock);
         s_stop_requested = false;
         taskEXIT_CRITICAL(&s_lifecycle_lock);
+        xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_OK;
     }
 
@@ -542,27 +679,46 @@ device_status_t fall_detection_service_deinit(uint32_t timeout_ms) {
     s_state = FALL_DETECTION_STATE_UNAVAILABLE;
     ++s_event_generation;
     if (s_event_generation == 0) ++s_event_generation;
-    TaskHandle_t task = s_task;
     taskEXIT_CRITICAL(&s_lock);
     device_power_lease_release(lease);
     if (task) {
         xTaskNotifyGive(task);
-        if (!s_stopped || xSemaphoreTake(s_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        TickType_t elapsed = xTaskGetTickCount() - started;
+        TickType_t remaining = elapsed >= budget ? 0 : budget - elapsed;
+        if (!s_stopped || remaining == 0 ||
+            xSemaphoreTake(s_stopped, remaining) != pdTRUE) {
+            xSemaphoreGive(s_deinit_mutex);
+            return DEVICE_STATUS_TIMEOUT;
+        }
+    } else if (s_stopped) {
+        /* A bounded prior stop may have timed out just before the worker
+         * published completion.  Consume that handoff before deleting its
+         * semaphore; otherwise the exiting task could give a freed object. */
+        TickType_t elapsed = xTaskGetTickCount() - started;
+        TickType_t remaining = elapsed >= budget ? 0 : budget - elapsed;
+        if (remaining == 0 || xSemaphoreTake(s_stopped, remaining) != pdTRUE) {
+            xSemaphoreGive(s_deinit_mutex);
             return DEVICE_STATUS_TIMEOUT;
         }
     }
-    TickType_t started = xTaskGetTickCount();
-    const TickType_t timeout = pdMS_TO_TICKS(timeout_ms);
     for (;;) {
         taskENTER_CRITICAL(&s_lifecycle_lock);
         uint32_t admissions = s_tool_admissions;
+        admissions += s_user_action_admissions;
+        admissions += s_callback_admissions;
         taskEXIT_CRITICAL(&s_lifecycle_lock);
         if (admissions == 0) break;
-        if ((xTaskGetTickCount() - started) >= timeout) return DEVICE_STATUS_TIMEOUT;
+        if ((xTaskGetTickCount() - started) >= budget) {
+            xSemaphoreGive(s_deinit_mutex);
+            return DEVICE_STATUS_TIMEOUT;
+        }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+    TickType_t elapsed = xTaskGetTickCount() - started;
+    TickType_t remaining = elapsed >= budget ? 0 : budget - elapsed;
     if (s_mutation_mutex &&
-        xSemaphoreTake(s_mutation_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        (remaining == 0 || xSemaphoreTake(s_mutation_mutex, remaining) != pdTRUE)) {
+        xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_TIMEOUT;
     }
     if (s_mutation_mutex) {
@@ -582,6 +738,7 @@ device_status_t fall_detection_service_deinit(uint32_t timeout_ms) {
     taskENTER_CRITICAL(&s_lifecycle_lock);
     s_stop_requested = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
+    xSemaphoreGive(s_deinit_mutex);
     ESP_LOGI(TAG, "monitoring stopped");
     return DEVICE_STATUS_OK;
 }
@@ -795,6 +952,7 @@ esp_err_t fall_detection_service_execute_tool(const char *name, cJSON *arguments
 }
 
 bool fall_detection_service_cancel_from_user(void) {
+    if (!admit_user_action()) return false;
     device_power_lease_t lease = DEVICE_POWER_LEASE_INVALID;
     taskENTER_CRITICAL(&s_lock);
     if (s_state == FALL_DETECTION_STATE_PENDING_CONFIRMATION) {
@@ -806,8 +964,12 @@ bool fall_detection_service_cancel_from_user(void) {
         if (s_event_generation == 0) ++s_event_generation;
     }
     taskEXIT_CRITICAL(&s_lock);
-    if (lease == DEVICE_POWER_LEASE_INVALID) return false;
+    if (lease == DEVICE_POWER_LEASE_INVALID) {
+        release_user_action();
+        return false;
+    }
     device_power_lease_release(lease);
     ESP_LOGI(TAG, "suspected fall cancelled by local user interaction");
+    release_user_action();
     return true;
 }

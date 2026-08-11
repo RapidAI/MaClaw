@@ -35,6 +35,15 @@ func TestThirdPartyGatewayEnqueueEnforcesClientCapabilities(t *testing.T) {
 	}
 }
 
+func TestDeleteThirdPartyHardwareDeviceRejectsBlankClientIDBeforeHubCheck(t *testing.T) {
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{HardwareEnabled: true}}
+
+	err := app.DeleteThirdPartyHardwareDevice(" \t ")
+	if err == nil || !strings.Contains(err.Error(), "hardware client ID is required") {
+		t.Fatalf("blank hardware deletion error=%v", err)
+	}
+}
+
 func TestThirdPartyGatewayHubPayloadPreservesOwningClientTools(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientTools("PET-alpha", []agent.ClientToolDefinition{{
@@ -60,6 +69,53 @@ func TestThirdPartyGatewayHubPayloadPreservesOwningClientTools(t *testing.T) {
 	}
 }
 
+func TestThirdPartyGatewayHubPayloadPreservesServerMediaReference(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	payload := m.hubGatewayPayload(thirdPartyIncomingRequest{
+		ClientID: "pet-1", ConversationID: "default", EventID: "event-1",
+		Message: thirdPartyMessagePayload{Type: "file", Attachments: []coreim.ThirdPartyMediaReference{{
+			ID: "media-office", Type: "image", FileName: "report.docx",
+			MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", SizeBytes: 1024,
+		}}},
+	}, "message-1")
+	attachments, ok := payload["attachments"].([]map[string]any)
+	if !ok || len(attachments) != 1 {
+		t.Fatalf("attachments = %#v", payload["attachments"])
+	}
+	attachment := attachments[0]
+	if attachment["source_media_id"] != "media-office" || attachment["data"] != nil {
+		t.Fatalf("server media attachment = %#v", attachment)
+	}
+	if attachment["file_name"] != "report.docx" || attachment["mime_type"] != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+		t.Fatalf("server media metadata = %#v", attachment)
+	}
+}
+
+func TestThirdPartyGatewayHubPayloadOmitsNonDocumentServerMedia(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	payload := m.hubGatewayPayload(thirdPartyIncomingRequest{
+		ClientID: "pet-1", ConversationID: "default", EventID: "event-1",
+		Message: thirdPartyMessagePayload{Type: "voice", Attachments: []coreim.ThirdPartyMediaReference{{
+			ID: "voice-media", Type: "voice", FileName: "voice.wav", MimeType: "audio/wav", SizeBytes: 4 << 20,
+		}}},
+	}, "message-1")
+	if _, ok := payload["attachments"]; ok {
+		t.Fatalf("non-document server media must not enter Hub payload: %#v", payload["attachments"])
+	}
+}
+func TestThirdPartyGatewayHubPayloadKeepsSmallInlineMedia(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	payload := m.hubGatewayPayload(thirdPartyIncomingRequest{
+		ClientID: "pet-1", ConversationID: "default", EventID: "event-1",
+		Message: thirdPartyMessagePayload{Type: "file", Attachments: []coreim.ThirdPartyMediaReference{{
+			Type: "file", FileName: "brief.doc", MimeType: "application/msword", Data: base64.StdEncoding.EncodeToString([]byte("doc")), SizeBytes: 3,
+		}}},
+	}, "message-1")
+	attachments := payload["attachments"].([]map[string]any)
+	if len(attachments) != 1 || attachments[0]["data"] == nil || attachments[0]["source_media_id"] != nil {
+		t.Fatalf("inline media attachment = %#v", attachments)
+	}
+}
 func TestThirdPartyGatewayAgentResponseSelectsPreferredLegalCombination(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("combo-device", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
@@ -357,6 +413,101 @@ func TestThirdPartyGatewayLocalResultIsQueuedBeforeDeferredSpeech(t *testing.T) 
 	m.mu.Unlock()
 	if len(messages) < 1 || messages[0].Type != "text" || messages[0].Metadata["acp_turn"] != "final" || messages[0].Metadata["speech_parts_pending"] == "" {
 		t.Fatalf("first local result frame = %#v", messages)
+	}
+}
+
+func TestThirdPartyGatewayPlansDeviceSpeechWithLazyTTSManager(t *testing.T) {
+	localMode := true
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{
+		ThirdPartyGatewayLocalMode: &localMode, TTSEnabled: true,
+	}}
+	m := newThirdPartyGatewayManager(app)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "audio"}, Text: &agent.ClientTextCapabilities{},
+		Audio: &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/mpeg"}, Playback: true, DeliveryModes: []string{"inline"}, MaxInlineBytes: 512 << 10},
+	}})
+
+	if !clientCanSynthesizeDeviceSpeech(m, m.clientCapabilities("pet")) {
+		t.Fatal("device TTS should be eligible before the lazy desktop manager is initialized")
+	}
+	m.enqueueAgentResponse("pet", "default", "in-lazy", &IMAgentResponse{Text: "先显示结果，再异步合成语音。"})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) == 0 || messages[0].Type != "text" || messages[0].Metadata["speech_parts_pending"] == "" {
+		t.Fatalf("lazy-manager response did not arm deferred speech: %#v", messages)
+	}
+}
+
+func TestHardwareDeviceBindingAppliesNormalizedAgentPolicy(t *testing.T) {
+	device := HardwareDeviceBinding{}
+	device.applyAgentBinding(corelib.HardwareAgentBinding{})
+	if device.AssistantMode != corelib.LansengerAssistantModeGeneral || device.ExpertID != "" || device.TTSVoiceID != corelib.DefaultHardwareTTSVoiceID {
+		t.Fatalf("missing policy = %#v, want general assistant with default reply voice", device)
+	}
+
+	device.applyAgentBinding(corelib.HardwareAgentBinding{
+		AssistantMode: corelib.LansengerAssistantModeExpert,
+		ExpertID:      "  builtin-pptx-maker ",
+		TTSVoiceID:    " zm_yunxi ",
+	})
+	if device.AssistantMode != corelib.LansengerAssistantModeExpert || device.ExpertID != "builtin-pptx-maker" || device.TTSVoiceID != "zm_yunxi" {
+		t.Fatalf("normalized policy = %#v", device)
+	}
+
+	device.applyAgentBinding(corelib.HardwareAgentBinding{TTSVoiceID: "removed_voice"})
+	if device.TTSVoiceID != corelib.DefaultHardwareTTSVoiceID {
+		t.Fatalf("unsupported persisted voice = %q, want %q", device.TTSVoiceID, corelib.DefaultHardwareTTSVoiceID)
+	}
+}
+
+func TestGetHardwareAgentBindingFallsBackFromUnsupportedPersistedVoice(t *testing.T) {
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{
+		HardwareAgentBindings: map[string]corelib.HardwareAgentBinding{
+			"pet-alpha": {AssistantMode: corelib.LansengerAssistantModeGeneral, TTSVoiceID: "removed_voice"},
+		},
+	}}
+
+	policy, err := app.GetHardwareAgentBinding("pet-alpha")
+	if err != nil {
+		t.Fatalf("GetHardwareAgentBinding() error = %v", err)
+	}
+	if policy.TTSVoiceID != corelib.DefaultHardwareTTSVoiceID {
+		t.Fatalf("GetHardwareAgentBinding() voice = %q, want %q", policy.TTSVoiceID, corelib.DefaultHardwareTTSVoiceID)
+	}
+}
+
+func TestSetHardwareAgentBindingKeepsRuntimeForVoiceOnlyUpdate(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{
+		HardwareAgentBindings: map[string]corelib.HardwareAgentBinding{
+			"pet-alpha": {AssistantMode: corelib.LansengerAssistantModeGeneral, TTSVoiceID: corelib.DefaultHardwareTTSVoiceID},
+		},
+	}}
+	registry := newHardwareAgentRuntimeRegistry(app, nil, nil)
+	gateway := newThirdPartyGatewayManager(app)
+	gateway.localHandlers = registry
+	app.thirdPartyGateway = gateway
+	handler, err := registry.handler("pet-alpha")
+	if err != nil {
+		t.Fatalf("create hardware runtime: %v", err)
+	}
+	defer registry.stopAll()
+
+	if err := app.SetHardwareAgentBinding("pet-alpha", corelib.HardwareAgentBinding{
+		AssistantMode: corelib.LansengerAssistantModeGeneral,
+		TTSVoiceID:    "zm_yunxi",
+	}); err != nil {
+		t.Fatalf("set voice-only hardware binding: %v", err)
+	}
+	if !registry.isActiveHandler("pet-alpha", handler) || registry.count() != 1 {
+		t.Fatal("voice-only update must not tear down the hardware agent runtime")
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.HardwareAgentBindings["pet-alpha"].Normalized().TTSVoiceID; got != "zm_yunxi" {
+		t.Fatalf("saved hardware reply voice = %q", got)
 	}
 }
 
@@ -1014,6 +1165,29 @@ func TestThirdPartyServerMediaRequestFromURLRejectsUnsafeInputs(t *testing.T) {
 	}
 }
 
+func TestThirdPartyGatewayPrepareMediaUsesDocumentLimit(t *testing.T) {
+	manager := newThirdPartyGatewayManager(nil)
+	for _, tc := range []struct {
+		name     string
+		fileName string
+		mimeType string
+		want     int64
+	}{
+		{name: "pdf", fileName: "report.pdf", want: agent.MaxOfficeReadFileBytes},
+		{name: "pptx mime", fileName: "image.png", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", want: agent.MaxOfficeReadFileBytes},
+		{name: "ordinary media", fileName: "photo.png", mimeType: "image/png", want: coreim.ThirdPartyMaxMediaBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prepared, err := manager.prepareMedia(coreim.ThirdPartyMediaPrepareRequest{ClientID: "client-a", Type: "file", FileName: tc.fileName, MimeType: tc.mimeType}, "http://127.0.0.1:18777/api/im-gateway/v1")
+			if err != nil {
+				t.Fatalf("prepareMedia: %v", err)
+			}
+			if prepared.Upload.MaxBytes != tc.want {
+				t.Fatalf("upload max bytes = %d, want %d", prepared.Upload.MaxBytes, tc.want)
+			}
+		})
+	}
+}
 func TestThirdPartyGatewayServerMediaUploadFlow(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	prepared, err := m.prepareMedia(coreim.ThirdPartyMediaPrepareRequest{
@@ -1188,6 +1362,27 @@ func TestThirdPartyGatewayValidateIncomingAcceptsServerMediaURL(t *testing.T) {
 	}
 }
 
+func TestThirdPartyGatewayServerMediaMetadataOverridesClientReference(t *testing.T) {
+	manager := newThirdPartyGatewayManager(nil)
+	prepared, err := manager.prepareMedia(coreim.ThirdPartyMediaPrepareRequest{ClientID: "client-a", Type: "file", FileName: "report.docx", MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}, "http://127.0.0.1:18777/api/im-gateway/v1")
+	if err != nil {
+		t.Fatalf("prepareMedia: %v", err)
+	}
+	if err := manager.storeMediaUpload(httptest.NewRequest(http.MethodPut, prepared.Upload.URL, strings.NewReader("document-body")), prepared.Media.ID); err != nil {
+		t.Fatalf("storeMediaUpload: %v", err)
+	}
+	req := thirdPartyIncomingRequest{ClientID: "client-a", EventID: "evt-authoritative-media", MessageID: "msg-authoritative-media", ConversationID: "room-a", User: thirdPartyUserRef{ID: "user-a"}, Message: thirdPartyMessagePayload{Type: "file", Attachments: []coreim.ThirdPartyMediaReference{{ID: prepared.Media.ID, Type: "file", FileName: "photo.png", MimeType: "image/png", SizeBytes: 1}}}}
+	if err := normalizeIncomingRequest(&req); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if err := manager.validateIncomingMediaReferences(&req); err != nil {
+		t.Fatalf("validate server media: %v", err)
+	}
+	got := req.Message.Attachments[0]
+	if got.FileName != "report.docx" || got.MimeType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || got.SizeBytes != int64(len("document-body")) {
+		t.Fatalf("server media metadata must be authoritative: %#v", got)
+	}
+}
 func TestThirdPartyGatewayRequestBaseURLSanitizesForwardedHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/media/upload-url", nil)
 	req.Host = "gateway.example.test"

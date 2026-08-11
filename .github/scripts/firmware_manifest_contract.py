@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Shared, strict contract for the three ClawMateMaker release archives.
+"""Shared, strict contract for the four ClawMateMaker release archives.
 
 Both the manifest writer and its pre-publication verifier import this module so
-there is one exact asset allow-list and one parser for the public index shape.
+there is one exact four-board asset allow-list and one parser for the public
+index shape.
 """
 
 import hashlib
@@ -16,6 +17,7 @@ FIRMWARE_ASSETS = (
     "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw",
     "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw",
     "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw",
+    "MaClaw-ESP32S3-Waveshare-AMOLED-1.75C-firmware.clawfw",
 )
 
 

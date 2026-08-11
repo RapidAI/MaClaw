@@ -11,6 +11,10 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 )
 
 const (
@@ -21,13 +25,14 @@ const (
 	codingSubAgentMaxParallelSpawn = 3
 )
 
-// codingSubAgentRole specializes tool surface and prompt for nested agents.
-type codingSubAgentRole string
+// codingSubAgentRole is retained as a GUI-facing alias while the canonical
+// role vocabulary lives in corelib for TUI and MaClawSrv reuse.
+type codingSubAgentRole = codingagent.Role
 
 const (
-	codingRoleWorker   codingSubAgentRole = "worker"   // implement / fix (full coding tools, no further spawn)
-	codingRoleExplorer codingSubAgentRole = "explorer" // read-only map/search
-	codingRoleReviewer codingSubAgentRole = "reviewer" // read + bash + git_diff (no writes)
+	codingRoleWorker   = codingagent.RoleWorker   // reserved for a future isolated write-child runtime
+	codingRoleExplorer = codingagent.RoleExplorer // read-only map/search
+	codingRoleReviewer = codingagent.RoleReviewer // strict read-only review
 )
 
 var codingSubAgentSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
@@ -40,7 +45,7 @@ var codingSubAgentSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 	codingRoleReviewer: {
 		"Glob": true, "ripgrep": true, "read_file": true, "list_directory": true,
 		codeNavigationToolName: true, reportLocalizationToolName: true,
-		"bash": true, "git_diff": true,
+		"git_diff":   true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
 		"coding_knowledge_search": true, "knowledge_search": true,
 	},
@@ -48,16 +53,7 @@ var codingSubAgentSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 }
 
 func parseCodingSubAgentRole(raw string) (codingSubAgentRole, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "worker", "implement", "coder", "default":
-		return codingRoleWorker, nil
-	case "explorer", "explore", "research", "search":
-		return codingRoleExplorer, nil
-	case "reviewer", "review", "verify", "qa":
-		return codingRoleReviewer, nil
-	default:
-		return "", fmt.Errorf("unknown role %q (supported: explorer, worker, reviewer)", raw)
-	}
+	return codingagent.ParseRole(raw)
 }
 
 func (s *CodingSubAgent) canSpawnCodingAgent() bool {
@@ -67,7 +63,9 @@ func (s *CodingSubAgent) canSpawnCodingAgent() bool {
 	if s.nestDepth >= codingSubAgentMaxNestDepth {
 		return false
 	}
-	// Only root (or worker-role full env at depth 0) may spawn.
+	// Only root (or worker-role full env at depth 0) may admit inspection
+	// children. Write-capable child workers are intentionally not admitted until
+	// they have isolated workspaces and conflict detection in corelib.
 	role := s.role
 	if role == "" {
 		role = codingRoleWorker
@@ -89,10 +87,33 @@ func (s *CodingSubAgent) toolAllowedForRole(name string) bool {
 		return true
 	}
 	allowed, ok := codingSubAgentSpawnRoleTools[role]
-	if !ok || allowed == nil {
-		return true
+	if !ok {
+		return false
 	}
-	return allowed[name]
+	return (codingagent.ToolPolicy{Role: role, Allowed: allowed}).Allows(name)
+}
+
+// toolCallAllowedForRole is the execution-time companion to
+// toolAllowedForRole. Inspection roles may expose observational web_fetch,
+// but destination aliases turn that tool into a write and must be rejected
+// before the host handler sees them.
+func (s *CodingSubAgent) toolCallAllowedForRole(name string, args map[string]interface{}) (bool, string) {
+	if s == nil {
+		return false, "coding subagent is unavailable"
+	}
+	name = canonicalCodingSubAgentToolName(name)
+	role := s.role
+	if role == "" || role == codingRoleWorker {
+		if !s.toolAllowedForRole(name) {
+			return false, fmt.Sprintf("tool %s is not available for nested role %q", name, s.role)
+		}
+		return true, ""
+	}
+	allowed, ok := codingSubAgentSpawnRoleTools[role]
+	if !ok {
+		return false, fmt.Sprintf("tool %s is not available for nested role %q", name, s.role)
+	}
+	return (codingagent.ToolPolicy{Role: role, Allowed: allowed, Normalize: canonicalCodingSubAgentToolName}).IsToolCallAllowed(name, args)
 }
 
 func buildSpawnCodingAgentToolDefinition() map[string]interface{} {
@@ -101,15 +122,15 @@ func buildSpawnCodingAgentToolDefinition() map[string]interface{} {
 		"function": map[string]interface{}{
 			"name": codingSubAgentSpawnToolName,
 			"description": "Spawn a nested coding subagent with a clean context (Codex-style). " +
-				"Use for independent explore / implement / review work so the parent context stays focused. " +
-				"Roles: explorer (read-only search), worker (implement/fix with full coding tools), reviewer (read + shell + git_diff, no file writes). " +
-				"Children cannot spawn further subagents. agents[] max 3; only all-explorer batches run in parallel (workers/reviewers are sequential).",
+				"Use for independent repository exploration so the parent context stays focused. " +
+				"Roles: explorer (read-only search) or reviewer (read-only code review); worker is not available for nested execution. " +
+				"Children cannot spawn further subagents. agents[] max 3; inspection children may run in parallel.",
 			"parameters": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"role": map[string]interface{}{
 						"type":        "string",
-						"description": "Single-agent role: explorer | worker | reviewer (default worker). Ignored when agents[] is set.",
+						"description": "Single-agent role: explorer | reviewer (default explorer). worker is reserved and rejected. Ignored when agents[] is set.",
 					},
 					"task": map[string]interface{}{
 						"type":        "string",
@@ -125,7 +146,7 @@ func buildSpawnCodingAgentToolDefinition() map[string]interface{} {
 						"items": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
-								"role":    map[string]interface{}{"type": "string", "description": "explorer | worker | reviewer"},
+								"role":    map[string]interface{}{"type": "string", "description": "explorer | reviewer (worker is reserved)"},
 								"task":    map[string]interface{}{"type": "string", "description": "What this agent should do"},
 								"context": map[string]interface{}{"type": "string", "description": "Optional context"},
 							},
@@ -192,7 +213,7 @@ func parseCodingSpawnSpecs(args map[string]interface{}) ([]codingSpawnSpec, erro
 			if task == "" {
 				return nil, fmt.Errorf("agents[%d].task is required", i)
 			}
-			role, err := parseCodingSubAgentRole(codingSpawnStringArg(m["role"]))
+			role, err := parseCodingReadOnlySpawnRole(codingSpawnStringArg(m["role"]))
 			if err != nil {
 				return nil, fmt.Errorf("agents[%d]: %w", i, err)
 			}
@@ -208,7 +229,7 @@ func parseCodingSpawnSpecs(args map[string]interface{}) ([]codingSpawnSpec, erro
 	if task == "" {
 		return nil, fmt.Errorf("task is required (or pass agents[])")
 	}
-	role, err := parseCodingSubAgentRole(codingSpawnStringArg(args["role"]))
+	role, err := parseCodingReadOnlySpawnRole(codingSpawnStringArg(args["role"]))
 	if err != nil {
 		return nil, err
 	}
@@ -219,14 +240,25 @@ func parseCodingSpawnSpecs(args map[string]interface{}) ([]codingSpawnSpec, erro
 	}}, nil
 }
 
-// shouldParallelizeCodingSpawn only parallelizes pure explorer fan-out.
-// Workers/reviewers can mutate or run tests and must stay sequential.
+func parseCodingReadOnlySpawnRole(raw string) (codingSubAgentRole, error) {
+	role, err := parseCodingSubAgentRole(raw)
+	if err != nil {
+		return "", err
+	}
+	if role == codingRoleWorker {
+		return "", fmt.Errorf("worker nested subagents require an isolated write workspace and are not enabled")
+	}
+	return role, nil
+}
+
+// shouldParallelizeCodingSpawn may parallelize only inspection children. Their
+// corelib admission policy is read-only, so they cannot write the workspace.
 func shouldParallelizeCodingSpawn(specs []codingSpawnSpec) bool {
 	if len(specs) <= 1 {
 		return false
 	}
 	for _, s := range specs {
-		if s.Role != codingRoleExplorer {
+		if s.Role != codingRoleExplorer && s.Role != codingRoleReviewer {
 			return false
 		}
 	}
@@ -272,6 +304,20 @@ func (c *codingSubAgentCallbacks) executeSpawnCodingAgent(args map[string]interf
 	}
 	if parent.loopCtx != nil && parent.loopCtx.IsCancelled() {
 		return codingToolExecutionResult{Text: "coding subagent cancelled before spawn", Outcome: codingToolOutcomeFailed}
+	}
+	if parent.runtimeAttempt != nil && parent.runtimeStore != nil {
+		current, getErr := parent.runtimeStore.GetAttempt(parent.runtimeAttempt.AttemptID)
+		if getErr != nil || current.Status != codingruntime.TaskRunning {
+			return codingToolExecutionResult{Text: "spawn_coding_agent: runtime parent attempt is no longer running", Outcome: codingToolOutcomeFailed}
+		}
+	}
+	// A nested child must be admitted through the corelib ledger whenever the
+	// parent itself is a runtime attempt. The ledger closes the parent attempt
+	// as waiting_child and releases its write lease before any child starts.
+	// Legacy callers without a runtime attempt keep their existing safe,
+	// in-process read-only behavior until their parent path is ledger-backed.
+	if parent.runtimeAttempt != nil {
+		return c.executeLedgerReadOnlySpawn(specs)
 	}
 
 	// Serialize progress/UI callbacks across nested agents (esp. parallel explorers).
@@ -341,7 +387,9 @@ func (c *codingSubAgentCallbacks) executeSpawnCodingAgent(args map[string]interf
 		}
 	}
 
-	// Merge child file audit into parent so multi-turn sticky/quality sees child work.
+	// Only pass the bounded child reports to the parent. Inspection children are
+	// not allowed to produce file audits and their full transcript stays out of
+	// the parent conversation.
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("spawn_coding_agent completed: %d agent(s) mode=%s\n", len(outcomes), mode))
 	anyFail := false
@@ -370,17 +418,10 @@ func (c *codingSubAgentCallbacks) executeSpawnCodingAgent(args map[string]interf
 			b.WriteString(compactSubAgentErrorSummary(res.Error))
 			b.WriteString("\n")
 		}
-		if len(res.FilesModified) > 0 {
-			b.WriteString("files_modified: ")
-			b.WriteString(strings.Join(res.FilesModified, ", "))
-			b.WriteString("\n")
+		if len(res.FilesModified) > 0 || len(res.FilesCreated) > 0 {
+			anyFail = true
+			b.WriteString("error: inspection child reported workspace writes\n")
 		}
-		if len(res.FilesCreated) > 0 {
-			b.WriteString("files_created: ")
-			b.WriteString(strings.Join(res.FilesCreated, ", "))
-			b.WriteString("\n")
-		}
-		c.mergeSpawnedFileAudit(res.FilesModified, res.FilesCreated)
 	}
 	b.WriteString(fmt.Sprintf("\npassed=%d failed=%d\n", passed, len(outcomes)-passed))
 	out := strings.TrimSpace(b.String())
@@ -388,6 +429,98 @@ func (c *codingSubAgentCallbacks) executeSpawnCodingAgent(args map[string]interf
 		return codingToolExecutionResult{Text: out, Outcome: codingToolOutcomeFailed}
 	}
 	return codingToolExecutionResult{Text: out, Outcome: codingToolOutcomeSuccess}
+}
+
+func (c *codingSubAgentCallbacks) executeLedgerReadOnlySpawn(specs []codingSpawnSpec) codingToolExecutionResult {
+	if c == nil || c.subagent == nil || c.subagent.runtimeAttempt == nil || c.subagent.runtimeStore == nil {
+		return codingToolExecutionResult{Text: "runtime child admission is unavailable", Outcome: codingToolOutcomeFailed}
+	}
+	parent := c.subagent
+	policy := codingruntime.PolicySnapshot{
+		Digest:      codingRuntimeDigest(parent.projectPath + "\nreadonly-child"),
+		ProjectRoot: parent.projectPath,
+		Mode:        "local",
+		ReadOnly:    true,
+	}
+	childSpecs := make([]codingruntime.ChildTaskSpec, 0, len(specs))
+	for _, spec := range specs {
+		childSpecs = append(childSpecs, codingruntime.ChildTaskSpec{Name: string(spec.Role), RequestedWork: spec.Task, ProjectRef: parent.projectPath, Mode: "local"})
+	}
+	service := codingruntime.ChildTaskService{Store: parent.runtimeStore}
+	handles, err := service.AdmitReadOnlyChildren(parent.runtimeAttempt.AttemptID, parent.runtimeAttempt.LeaseOwner, childSpecs, policy)
+	if err != nil {
+		return codingToolExecutionResult{Text: "spawn_coding_agent: runtime admission failed: " + err.Error(), Outcome: codingToolOutcomeFailed}
+	}
+	// Admission is the completion boundary for the parent tool call. Child
+	// execution happens independently, and only its bounded ledger result is
+	// available to a later parent Attempt. Do not wait here: waiting would keep
+	// the old parent loop alive and collapse the durable handoff back into an
+	// in-process nested conversation.
+	store := parent.runtimeStore
+	for i, handle := range handles {
+		spec := specs[i]
+		child := parent.newReadOnlyNestedCodingAgent(spec, c)
+		go runAdmittedLocalReadOnlyChild(store, parent.runtimeAttempt.TaskID, handle, policy, child, parent.onProgress)
+	}
+	return codingToolExecutionResult{Text: formatAdmittedReadOnlyChildHandles(handles), Outcome: codingToolOutcomeSuccess}
+}
+
+// runAdmittedLocalReadOnlyChild is intentionally detached from the parent
+// LoopContext. A parent loop ends immediately after admission; binding child
+// execution to that stack would turn normal handoff into an accidental cancel.
+// Explicit cancellation/recovery remains ledger-driven and starts a new
+// Attempt rather than replaying this child.
+func runAdmittedLocalReadOnlyChild(store codingruntime.Store, parentTaskID string, handle codingruntime.ChildTaskHandle, policy codingruntime.PolicySnapshot, child *CodingSubAgent, onProgress func(string)) {
+	if store == nil || child == nil {
+		return
+	}
+	ctx, release := guiAdmittedChildExecutions.Begin(parentTaskID, handle.TaskID)
+	defer release()
+	if onProgress != nil {
+		emitCodingSubAgentProgress(onProgress, fmt.Sprintf("read-only child admitted: %s (%s)", handle.TaskID, handle.Name))
+	}
+	service := codingruntime.ChildTaskService{Store: store}
+	runner := codingruntime.Runner{Store: store, LeaseOwner: "gui:child:" + handle.TaskID, LeaseDuration: 15 * time.Minute}
+	outcome := <-service.StartReadOnlyChild(ctx, runner, handle.TaskID, policy, child)
+	if onProgress == nil {
+		return
+	}
+	if outcome.Err != nil {
+		emitCodingSubAgentProgress(onProgress, fmt.Sprintf("read-only child %s failed: %s", handle.TaskID, compactSubAgentErrorSummary(outcome.Err.Error())))
+		return
+	}
+	status := codingruntime.TaskFailed
+	if outcome.Attempt != nil {
+		status = outcome.Attempt.Status
+	}
+	emitCodingSubAgentProgress(onProgress, fmt.Sprintf("read-only child %s completed: %s", handle.TaskID, status))
+}
+
+func formatAdmittedReadOnlyChildHandles(handles []codingruntime.ChildTaskHandle) string {
+	lines := make([]string, 0, len(handles)+1)
+	lines = append(lines, "spawn_coding_agent admitted read-only child task(s); parent attempt released its lease:")
+	for _, handle := range handles {
+		lines = append(lines, fmt.Sprintf("- task_id=%s name=%s status=%s", handle.TaskID, handle.Name, handle.Status))
+	}
+	lines = append(lines, "Child results will be persisted as bounded summaries/evidence digests; a fresh parent attempt must explicitly review them.")
+	return strings.Join(lines, "\n")
+}
+
+func (parent *CodingSubAgent) newReadOnlyNestedCodingAgent(spec codingSpawnSpec, parentCB *codingSubAgentCallbacks) *CodingSubAgent {
+	child := NewCodingSubAgent(parent.handler, parent.cfg, parent.httpClient, parent.projectPath, parent.loopCtx)
+	child.nestDepth, child.role = parent.nestDepth+1, spec.Role
+	// The detached child receives its own Attempt in ExecuteReadOnlyChild; the
+	// shared Store is only for observing that fresh Attempt's cancellation.
+	child.runtimeStore = parent.runtimeStore
+	child.codingKB, child.generalKB = parent.codingKB, parent.generalKB
+	if parent.scopeApproval != nil {
+		child.scopeApproval = parent.scopeApproval
+	}
+	if parentCB != nil && parentCB.designCtx != "" {
+		// The actual prompt stays host-local; corelib stores only ChildTaskSpec.
+		child.SetCallbacks(nil, parent.onProgress)
+	}
+	return child
 }
 
 func (c *codingSubAgentCallbacks) mergeSpawnedFileAudit(modified, created []string) {
@@ -425,11 +558,8 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 	child := NewCodingSubAgent(parent.handler, parent.cfg, parent.httpClient, parent.projectPath, parent.loopCtx)
 	child.nestDepth = parent.nestDepth + 1
 	child.role = spec.Role
-	// Workers inherit full-env skill/MCP posture; explorer/reviewer stay lean + role-filtered.
-	// Nested full-env still cannot spawn (depth cap + canSpawnCodingAgent).
-	if spec.Role == codingRoleWorker {
-		child.SetFullEnvironment(true)
-	}
+	// Inspection children deliberately stay lean and role-filtered. Worker is
+	// rejected before this point until an isolated write-child design exists.
 	// Progress only — avoid flooding parent stream with child token deltas.
 	// onProgress is expected to be concurrency-safe when parallel explorers run.
 	if onProgress == nil {

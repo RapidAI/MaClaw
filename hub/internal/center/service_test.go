@@ -747,6 +747,100 @@ func TestStartBackgroundSyncStartsHeartbeatForRegisteredHub(t *testing.T) {
 	t.Fatalf("expected heartbeat to be sent, calls=%d", calls)
 }
 
+func TestStartBackgroundSyncTriggersDeviceCredentialRecoveryForRegisteredHub(t *testing.T) {
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true,
+		HubID:      "hub_credentials",
+		HubSecret:  "secret_credentials",
+	}))
+
+	svc := NewService(cfg, settings)
+	recovered := make(chan struct{}, 1)
+	svc.SetDeviceCredentialRecovery(func(context.Context) {
+		recovered <- struct{}{}
+	})
+	svc.StartBackgroundSync()
+
+	select {
+	case <-recovered:
+	case <-time.After(time.Second):
+		t.Fatal("expected registered Hub to trigger device credential recovery")
+	}
+}
+
+func TestRecoverDeviceCredentialsNowRunsHookSynchronously(t *testing.T) {
+	svc := NewService(config.Default(), newFakeSettingsRepo())
+	calls := 0
+	svc.SetDeviceCredentialRecovery(func(ctx context.Context) {
+		if ctx == nil {
+			t.Fatal("recovery context is nil")
+		}
+		calls++
+	})
+	svc.RecoverDeviceCredentialsNow(context.Background())
+	if calls != 1 {
+		t.Fatalf("recovery calls=%d, want 1", calls)
+	}
+}
+
+func TestBackupDeviceCredentialsDoesNotRetryUnauthorizedCenter(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if got := r.URL.Path; got != "/api/hubs/hub_credentials/device-credentials" {
+			t.Fatalf("path = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer secret" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true, HubID: "hub_credentials", HubSecret: "secret",
+	}))
+	svc := NewService(cfg, settings)
+	if err := svc.BackupDeviceCredentials(context.Background(), `{"tokens":{}}`); err == nil {
+		t.Fatal("expected unauthorized backup failure")
+	}
+	if calls != 1 {
+		t.Fatalf("backup calls = %d, want 1", calls)
+	}
+}
+
+func TestBackupDeviceCredentialsRejectsOversizedSnapshotBeforeRequest(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true, HubID: "hub_credentials", HubSecret: "secret",
+	}))
+	svc := NewService(cfg, settings)
+	err := svc.BackupDeviceCredentials(context.Background(), strings.Repeat("x", deviceCredentialBackupSnapshotMaxBytes+1))
+	if err == nil || !strings.Contains(err.Error(), "snapshot exceeds") {
+		t.Fatalf("BackupDeviceCredentials error=%v, want size limit error", err)
+	}
+	if called {
+		t.Fatal("oversized snapshot reached Hub Center")
+	}
+}
+
 func TestStartBackgroundSyncAutoRegistersWhenConfigured(t *testing.T) {
 	var (
 		registerCalls  int
@@ -928,6 +1022,41 @@ func TestInstallationIDIsGeneratedOnceAndReused(t *testing.T) {
 	}
 	if first != second {
 		t.Fatalf("expected installation id to persist, got %q and %q", first, second)
+	}
+}
+
+func TestRegisterFallsBackToConfiguredRecoveryOwnerEmail(t *testing.T) {
+	var gotOwnerEmail string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/hubs/register" {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			gotOwnerEmail, _ = payload["owner_email"].(string)
+			_, _ = w.Write([]byte(`{"hub_id":"hub_recovered","hub_secret":"secret_recovered"}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "/heartbeat") {
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		t.Fatalf("unexpected path %q", r.URL.Path)
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.InstallationID = "inst_recovery"
+	cfg.Center.OwnerEmail = "owner@example.com"
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+	svc := NewService(cfg, newFakeSettingsRepo())
+	if _, err := svc.Register(context.Background(), ""); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if gotOwnerEmail != "owner@example.com" {
+		t.Fatalf("owner email = %q, want recovery owner", gotOwnerEmail)
 	}
 }
 
@@ -1318,6 +1447,131 @@ func TestSendHeartbeatFallsBackWhenNodeNotReady(t *testing.T) {
 	}
 	if record.LastError != "" {
 		t.Fatalf("LastError = %q, want empty", record.LastError)
+	}
+}
+
+func TestRestoreDeviceCredentialsFallsBackPastMissingHANode(t *testing.T) {
+	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/client/quality" {
+			_, _ = w.Write([]byte(`{"quality_score":99,"routable":true}`))
+			return
+		}
+		if r.URL.Path != "/api/hubs/hub_credentials/device-credentials" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		http.Error(w, `{"code":"DEVICE_CREDENTIALS_NOT_FOUND"}`, http.StatusNotFound)
+	}))
+	defer firstServer.Close()
+
+	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/client/quality" {
+			_, _ = w.Write([]byte(`{"quality_score":90,"routable":true}`))
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer secret_credentials" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"found":true,"device_credentials":"snapshot"}`))
+	}))
+	defer secondServer.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURLs = []string{firstServer.URL, secondServer.URL}
+	cfg.Center.BaseURL = ""
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true, HubID: "hub_credentials", HubSecret: "secret_credentials", LastBaseURL: firstServer.URL,
+	}))
+	svc := NewService(cfg, settings)
+	snapshot, found, err := svc.RestoreDeviceCredentials(context.Background())
+	if err != nil || !found || snapshot != "snapshot" {
+		t.Fatalf("RestoreDeviceCredentials() = (%q, %v, %v)", snapshot, found, err)
+	}
+	raw, err := settings.Get(context.Background(), systemKeyCenterRegistration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record registrationRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.LastBaseURL != secondServer.URL {
+		t.Fatalf("LastBaseURL = %q, want %q", record.LastBaseURL, secondServer.URL)
+	}
+}
+
+func TestRestoreDeviceCredentialsReturnsAuthenticationFailure(t *testing.T) {
+	var firstCalls, secondCalls int
+	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls++
+		http.Error(w, `{"code":"HUB_UNREGISTERED"}`, http.StatusUnauthorized)
+	}))
+	defer firstServer.Close()
+	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls++
+		_, _ = w.Write([]byte(`{"found":true,"device_credentials":"must-not-be-read"}`))
+	}))
+	defer secondServer.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURLs = []string{firstServer.URL}
+	cfg.Center.BaseURL = ""
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true, HubID: "hub_credentials", HubSecret: "expired_secret",
+	}))
+	svc := NewService(cfg, settings)
+	if _, found, err := svc.RestoreDeviceCredentials(context.Background()); err == nil || found {
+		t.Fatalf("RestoreDeviceCredentials() should return authentication failure, found=%v err=%v", found, err)
+	}
+	if firstCalls != 1 || secondCalls != 0 {
+		t.Fatalf("recovery calls = first:%d second:%d, want first:1 second:0", firstCalls, secondCalls)
+	}
+}
+
+func TestRestoreDeviceCredentialsReturnsFailureForInvalidCenterResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`not-json`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true, HubID: "hub_credentials", HubSecret: "secret_credentials",
+	}))
+	svc := NewService(cfg, settings)
+	if _, found, err := svc.RestoreDeviceCredentials(context.Background()); err == nil || found {
+		t.Fatalf("RestoreDeviceCredentials() should reject invalid response, found=%v err=%v", found, err)
+	}
+}
+
+func TestRestoreDeviceCredentialsRejectsOversizedSnapshot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer secret_credentials" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(deviceCredentialBackupResponse{
+			Found:             true,
+			DeviceCredentials: strings.Repeat("x", deviceCredentialBackupSnapshotMaxBytes+1),
+		})
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = server.URL
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true, HubID: "hub_credentials", HubSecret: "secret_credentials",
+	}))
+	svc := NewService(cfg, settings)
+	if _, found, err := svc.RestoreDeviceCredentials(context.Background()); err == nil || found || !strings.Contains(err.Error(), "snapshot exceeding") {
+		t.Fatalf("RestoreDeviceCredentials() should reject oversized snapshot, found=%v err=%v", found, err)
 	}
 }
 

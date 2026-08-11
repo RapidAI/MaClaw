@@ -660,6 +660,15 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		return false
 	}
 	changed := false
+	projectAssistantCompatibility := func() {
+		if cfg == nil || cfg.MaclawLLMProfiles == nil {
+			return
+		}
+		profiles := *cfg.MaclawLLMProfiles
+		if validateMaclawLLMProfiles(profiles, cfg.MaclawLLMProviders) == nil {
+			_ = applyAssistantProfileCompatibilityProjection(cfg, profiles)
+		}
+	}
 	originalProviders := append([]corelib.MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
 	providers := normalizeMaclawLLMProviders(originalProviders)
 	if !maclawLLMProvidersEqual(originalProviders, providers) {
@@ -675,15 +684,54 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 	hasEntitlement := hubLLMServiceStatusHasEntitlement(status)
 	if !hasEntitlement || strings.TrimSpace(cfg.RemoteViewerToken) == "" || strings.TrimSpace(status.HubLLMBaseURL) == "" {
 		if providerIndex >= 0 {
+			removedProviderID := maclawLLMProviderIDForRead(providers[providerIndex])
+			// Provider sync is not an assignment transaction. In particular, it
+			// must not remove the assistant's selected provider and leave a
+			// persisted profile dangling: there is no safe alternate model to
+			// infer. Keep the catalog entry until the user chooses a replacement
+			// in Model assignments. A later health probe will accurately report
+			// whether that retained connection is usable.
+			assistantUsesHub := cfg.MaclawLLMProfiles != nil &&
+				strings.TrimSpace(cfg.MaclawLLMProfiles.Assistant.ProviderID) == removedProviderID
+			if assistantUsesHub {
+				// Keep any normalization performed above; otherwise returning a
+				// changed result here would make callers persist a change that was
+				// never applied to the config object.
+				if changed {
+					cfg.MaclawLLMProviders = providers
+					projectAssistantCompatibility()
+				}
+				return changed
+			}
 			providers = append(providers[:providerIndex], providers[providerIndex+1:]...)
 			changed = true
 			if isHubServiceProviderName(cfg.MaclawLLMCurrentProvider) {
 				cfg.MaclawLLMCurrentProvider = ""
 				changed = true
 			}
+			// A follow-mode coding draft is safe to clear because it is not
+			// effective. An independent profile must never retain a dangling
+			// provider ID: the only safe automatic recovery is to follow the
+			// assistant, which itself is only valid when it points elsewhere.
+			if cfg.MaclawLLMProfiles != nil {
+				profiles := *cfg.MaclawLLMProfiles
+				if profiles.Coding.InheritAssistant && profiles.Coding.ProviderID == removedProviderID {
+					profiles.Coding.ProviderID = ""
+					profiles.Coding.Model = ""
+					changed = true
+				}
+				if !profiles.Coding.InheritAssistant && profiles.Coding.ProviderID == removedProviderID {
+					profiles.Coding.InheritAssistant = true
+					profiles.Coding.ProviderID = ""
+					profiles.Coding.Model = ""
+					changed = true
+				}
+				cfg.MaclawLLMProfiles = &profiles
+			}
 		}
 		if changed {
 			cfg.MaclawLLMProviders = providers
+			projectAssistantCompatibility()
 		}
 		return changed
 	}
@@ -706,24 +754,31 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		AgentType:     "openclaw",
 	}
 	if providerIndex >= 0 {
+		// Replacing the service connection must retain its stable identity. Both
+		// profiles reference this ID, rather than the mutable display name.
+		provider.ID = providers[providerIndex].ID
 		if !reflect.DeepEqual(providers[providerIndex], provider) {
 			providers[providerIndex] = provider
 			changed = true
 		}
 	} else {
+		provider.ID = newMaclawLLMProviderID()
 		providers = append([]corelib.MaclawLLMProvider{provider}, providers...)
 		changed = true
 	}
-	if canonicalCurrent := canonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider); canonicalCurrent != cfg.MaclawLLMCurrentProvider {
-		cfg.MaclawLLMCurrentProvider = canonicalCurrent
-		changed = true
+	profilesBacked := cfg.MaclawLLMProfiles != nil
+	if !profilesBacked {
+		if canonicalCurrent := canonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider); canonicalCurrent != cfg.MaclawLLMCurrentProvider {
+			cfg.MaclawLLMCurrentProvider = canonicalCurrent
+			changed = true
+		}
 	}
-	if cfg.MaclawLLMCurrentProvider == "" || cfg.MaclawLLMCurrentProvider == hubServiceProviderName {
+	if !profilesBacked && (cfg.MaclawLLMCurrentProvider == "" || cfg.MaclawLLMCurrentProvider == hubServiceProviderName) {
 		if cfg.MaclawLLMCurrentProvider != hubServiceProviderName {
 			cfg.MaclawLLMCurrentProvider = hubServiceProviderName
 			changed = true
 		}
-	} else {
+	} else if !profilesBacked {
 		// User has selected a third-party provider — respect their choice.
 		// Only forceCurrentProvider (ActivateRemote) can override this.
 		// Throttle this log: hub sync fires every ~10s, this message is purely informational.
@@ -734,7 +789,7 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		}
 		hubLLMSyncRespectLogThrottle.mu.Unlock()
 	}
-	if cfg.MaclawLLMUrl != provider.URL || cfg.MaclawLLMKey != provider.Key || cfg.MaclawLLMModel != provider.Model || cfg.MaclawLLMProtocol != provider.Protocol || cfg.MaclawLLMTimeoutSec != provider.TimeoutSec || cfg.MaclawLLMContextLength != provider.ContextLength {
+	if !profilesBacked && (cfg.MaclawLLMUrl != provider.URL || cfg.MaclawLLMKey != provider.Key || cfg.MaclawLLMModel != provider.Model || cfg.MaclawLLMProtocol != provider.Protocol || cfg.MaclawLLMTimeoutSec != provider.TimeoutSec || cfg.MaclawLLMContextLength != provider.ContextLength) {
 		cfg.MaclawLLMUrl = provider.URL
 		cfg.MaclawLLMKey = provider.Key
 		cfg.MaclawLLMModel = provider.Model
@@ -745,6 +800,12 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 	}
 	if changed {
 		cfg.MaclawLLMProviders = providers
+		// Provider/entitlement synchronization is not a model-assignment write.
+		// In a migrated configuration the flat fields remain an assistant-only
+		// compatibility projection, so adding or refreshing the Hub catalog must
+		// never make old consumers observe Hub while the assistant profile still
+		// selects a third-party provider.
+		projectAssistantCompatibility()
 	}
 	return changed
 }
@@ -769,15 +830,23 @@ func (a *App) syncHubLLMServiceStatusToConfig(status HubLLMServiceStatus, forceC
 	if !changed {
 		return false, nil
 	}
+	// Hub synchronization can add, remove, or change the effective assistant
+	// provider. Profile health belongs to that effective selection, not to the
+	// prior Hub snapshot.
+	a.invalidateMaclawLLMProfileHealth()
 	if a.ctx != nil {
 		a.emitEvent("hub-llm-service-changed")
+		a.emitEvent("llm-profiles-changed", map[string]string{"changed": "hub-provider"})
 	}
 	return true, nil
 }
 
 func (a *App) applyHubLLMServiceStatusPatchToConfig(cfg *corelib.AppConfig, status HubLLMServiceStatus, forceCurrentProvider bool) bool {
 	changed := a.applyHubLLMServiceStatusToConfig(cfg, status)
-	if forceCurrentProvider && hubLLMServiceStatusHasEntitlement(status) && strings.TrimSpace(cfg.RemoteViewerToken) != "" && strings.TrimSpace(status.HubLLMBaseURL) != "" && cfg.MaclawLLMCurrentProvider != hubServiceProviderName {
+	// In dual-profile configs current is only an assistant compatibility mirror;
+	// forcing it to Hub would make legacy readers disagree with the effective
+	// assistant selection. The explicit model-assignment flow owns that change.
+	if forceCurrentProvider && cfg.MaclawLLMProfiles == nil && hubLLMServiceStatusHasEntitlement(status) && strings.TrimSpace(cfg.RemoteViewerToken) != "" && strings.TrimSpace(status.HubLLMBaseURL) != "" && cfg.MaclawLLMCurrentProvider != hubServiceProviderName {
 		cfg.MaclawLLMCurrentProvider = hubServiceProviderName
 		changed = true
 	}

@@ -8,12 +8,42 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
+
+func TestHubCenterSelectionCacheLazyInitializationIsConcurrentSafe(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	const workers = 16
+	var wg sync.WaitGroup
+	caches := make(chan *remote.HubCenterSelectionCache, workers)
+	for range workers {
+		wg.Go(func() {
+			cache, persister := app.hubCenterSelectionCacheAndPersister()
+			if cache == nil || persister == nil {
+				t.Error("lazy HubCenter cache or persister is nil")
+				return
+			}
+			caches <- cache
+		})
+	}
+	wg.Wait()
+	close(caches)
+	var first *remote.HubCenterSelectionCache
+	for cache := range caches {
+		if first == nil {
+			first = cache
+			continue
+		}
+		if cache != first {
+			t.Fatal("concurrent lazy initialization published multiple caches")
+		}
+	}
+}
 
 func TestGetHubCenterJSONReturnsExplicitLimitErrorInsteadOfUnexpectedEOF(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

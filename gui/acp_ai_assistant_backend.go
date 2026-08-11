@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 )
 
 // AIAssistantExternalCallbacks streams desktop AI assistant output to external
@@ -18,6 +22,63 @@ type AIAssistantExternalCallbacks struct {
 	OnStreamDone func()
 	// OnToolEvent powers Cursor-like tool chips in VS Code (tool_call UI).
 	OnToolEvent func(ev ACPToolEvent)
+}
+
+// acpProgrammingRuntimeTaskID is an opaque stable task identity for exactly
+// one ACP prompt. It intentionally includes the ACP session owner and cwd so
+// two editor windows in the same repository cannot accidentally share a
+// cancellation or lease. The request ID remains part of the identity because
+// ACP has no user-approved cross-prompt continuation/replay contract.
+func acpProgrammingRuntimeTaskID(ownerID, workspace, requestID string) string {
+	sum := sha256.Sum256([]byte("acp-programming-runtime-v1\n" + strings.TrimSpace(ownerID) + "\n" + normalizeProjectSessionPath(workspace) + "\n" + strings.TrimSpace(requestID)))
+	return fmt.Sprintf("acp-coding-%x", sum[:16])
+}
+
+// acpPromptMayMutateWorkspace is deliberately conservative and is used only
+// to decide whether the existing generic ACP turn gets the writer-quality
+// workspace gate. It does not route a request or grant tool authority: ACP's
+// normal confirmation and per-tool permission checks remain authoritative.
+func acpPromptMayMutateWorkspace(text string) bool {
+	text = strings.ToLower(acpUserFacingText(text))
+	for _, marker := range []string{
+		"implement", "create", "add ", "write ", "edit ", "modify", "change ", "fix ", "refactor", "patch ",
+		"实现", "创建", "新增", "添加", "编写", "修改", "修复", "重构", "开发", "代码",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+type acpProgrammingRuntimeExecutor func(context.Context, codingruntime.ExecutionRequest) codingruntime.ExecutionResult
+
+func (f acpProgrammingRuntimeExecutor) Execute(ctx context.Context, request codingruntime.ExecutionRequest) codingruntime.ExecutionResult {
+	return f(ctx, request)
+}
+
+func (a *App) cancelACPProgrammingRuntimeTask(taskID string) {
+	if a == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	if err := cancelACPProgrammingRuntimeTaskInStore(a.ensureCodingRuntimeStore(), taskID, time.Now().UTC()); err != nil {
+		log.Printf("[acp-mode-b] durable runtime cancel task=%s: %v", taskID, err)
+	}
+}
+
+// cancelACPProgrammingRuntimeTaskInStore closes the Ledger task before the
+// host cancels its in-process ACP/assistant context. It is deliberately
+// idempotent for an already absent task so cancellation remains best-effort
+// when a non-mutating ACP turn never created a Runtime record.
+func cancelACPProgrammingRuntimeTaskInStore(store codingruntime.Store, taskID string, now time.Time) error {
+	if store == nil || strings.TrimSpace(taskID) == "" {
+		return nil
+	}
+	_, err := store.CancelTask(taskID, now.UTC())
+	if errors.Is(err, codingruntime.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // acpProgrammingUserText wraps the VS Code user prompt with an explicit
@@ -92,6 +153,11 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	if requestID == "" {
 		requestID = fmt.Sprintf("acp-prog-%d", time.Now().UnixNano())
 	}
+	// Keep ordinary ACP questions on the established shared-chat path. Only a
+	// likely workspace mutation gets a durable writer task (and consequently a
+	// cancellation record) so cancelling a simple question never creates a
+	// needless Ledger database/task.
+	mutatingRuntime := acpPromptMayMutateWorkspace(text) && projectPath != ""
 
 	msgLang := strings.TrimSpace(req.Lang)
 	if msgLang == "" {
@@ -104,6 +170,7 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 		UserID:       userID,
 		Platform:     desktopPlatform,
 		Text:         agentText,
+		CancelCtx:    ctx,
 		Lang:         msgLang,
 		ResumeSlotID: strings.TrimSpace(req.ResumeSlotID),
 		StartNewTask: req.StartNewTask,
@@ -137,12 +204,19 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 		}
 	}
 
-	// Watch ctx for cancel → cancel AI assistant session for this project user.
+	// Watch ctx for cancel → close the durable task before stopping the live
+	// assistant session. The ledger transition is the cross-restart authority;
+	// LoopContext cancellation only stops this process's current work.
+	runtimeTaskID := ""
+	if mutatingRuntime {
+		runtimeTaskID = acpProgrammingRuntimeTaskID(userID, projectPath, requestID)
+	}
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
+			a.cancelACPProgrammingRuntimeTask(runtimeTaskID)
 			if _, err := a.CancelAIAssistantSessionForSession(userID); err != nil {
 				log.Printf("[acp-mode-b] cancel session: %v", err)
 			}
@@ -175,7 +249,78 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	log.Printf("[acp-mode-b] programming prompt request_id=%s user=%q project=%q work_dir=%q text_len=%d agent_text_len=%d",
 		requestID, userID, projectPath, workDir, len(text), len(agentText))
 
-	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
+	// ACP remains on the shared GUI agent brain, but a likely workspace-mutating
+	// prompt is now explicitly bound to a durable Runtime task. We do not force
+	// greetings, questions, or generic ACP chat into a write workflow: doing so
+	// would change the established request classification and confirmation
+	// semantics. Once admitted, cancellation and stale callbacks use the same
+	// ledger behavior as GUI/TUI/MaClawSrv coding tasks.
+	var resp *IMAgentResponse
+	if mutatingRuntime {
+		store := a.ensureCodingRuntimeStore()
+		if store == nil {
+			return nil, fmt.Errorf("coding execution ledger is unavailable")
+		}
+		policy := codingruntime.PolicySnapshot{
+			ProjectRoot:                projectPath,
+			Mode:                       "acp",
+			FinalWorkspaceGateRequired: true,
+		}
+		policyDigest, digestErr := codingruntime.PolicyDigest(policy)
+		if digestErr != nil {
+			return nil, fmt.Errorf("freeze ACP coding runtime policy: %w", digestErr)
+		}
+		policy.Digest = policyDigest
+		// Let the shared IM entry build and own its usual loop context. Giving it
+		// a pre-created context bypasses the per-session serialization boundary,
+		// which would break normal ACP confirmation and history semantics.
+		executor := acpProgrammingRuntimeExecutor(func(runCtx context.Context, runtimeRequest codingruntime.ExecutionRequest) codingruntime.ExecutionResult {
+			if runCtx != nil && runCtx.Err() != nil {
+				return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "acp_request_cancelled", ErrorSummary: "ACP coding request was cancelled; inspect workspace before continuation"}
+			}
+			resp = handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
+			if runCtx != nil && runCtx.Err() != nil {
+				return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "acp_request_cancelled", ErrorSummary: "ACP coding request was cancelled; inspect workspace before continuation"}
+			}
+			if resp != nil && resp.Confirmation != nil {
+				return codingruntime.ExecutionResult{Status: codingruntime.TaskBlocked, SideEffectState: codingruntime.SideEffectNone, ErrorCode: "acp_confirmation_required", ErrorSummary: "ACP coding request requires explicit confirmation before execution"}
+			}
+			if resp != nil && strings.TrimSpace(resp.Error) != "" {
+				return codingruntime.ExecutionResult{Status: codingruntime.TaskFailed, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "acp_agent_failed", ErrorSummary: "ACP coding agent failed; inspect host-local diagnostics"}
+			}
+			return codingruntime.ExecutionResult{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectObserved, Evidence: []codingruntime.Evidence{{Type: "acp_agent_completion", Digest: codingRuntimeDigest(requestID)}}}
+		})
+		runner := codingruntime.Runner{
+			Store:           store,
+			LeaseOwner:      "gui:acp:" + userID,
+			LeaseDuration:   15 * time.Minute,
+			WorkspaceProber: codingruntime.NewLocalGitWorkspaceProber(projectPath),
+		}
+		task, attempt, runErr := runner.Run(ctx, codingruntime.Task{
+			TaskID:        runtimeTaskID,
+			WorkflowID:    "acp",
+			PhaseID:       requestID,
+			OwnerID:       "gui:acp:" + userID,
+			ProjectRef:    projectPath,
+			Mode:          "acp",
+			RequestedWork: text,
+			PolicyDigest:  policyDigest,
+		}, policy, executor)
+		if resp == nil {
+			resp = &IMAgentResponse{}
+		}
+		if task != nil {
+			resp.CodingRuntimeTaskID = task.TaskID
+		}
+		if attempt != nil {
+			resp.CodingRuntimeAttemptID = attempt.AttemptID
+		}
+		if runErr != nil && !errors.Is(runErr, codingruntime.ErrStaleAttempt) {
+			return resp, runErr
+		}
+	} else {
+		resp = handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
+	}
 	if resp == nil {
 		resp = &IMAgentResponse{}
 	}

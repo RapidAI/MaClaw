@@ -11,7 +11,6 @@ REM -- Set Environment Variables --
 set "APP_NAME=MaClaw"
 set "OUTPUT_DIR=%~dp0dist"
 set "NSIS_PATH=C:\Program Files (x86)\NSIS\makensis.exe"
-set "GOVERSIONINFO_PATH=%USERPROFILE%\go\bin\goversioninfo.exe"
 set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "NPM_CMD=C:\Program Files\nodejs\npm.cmd"
 set "GO_EXE=C:\Program Files\Go\bin\go.exe"
@@ -43,7 +42,7 @@ del /q "%OUTPUT_DIR%\maclaw-data-srv-Setup.exe" 2>nul
 REM -- Increment build number and set version (single PowerShell call) --
 echo [Step 2/14] Updating version number...
 %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command ^
-  "$root = '%~dp0'; if (Test-Path ($root + 'build_number')) { $n = [int](Get-Content ($root + 'build_number')) + 1 } else { $n = 1 }; Set-Content -Path ($root + 'build_number') -Value $n -NoNewline; $cfg = Get-Content ($root + 'wails.json') -Raw | ConvertFrom-Json; $parts = $cfg.info.productVersion.Split('.'); $parts[3] = [string]$n; $ver = $parts -join '.'; Set-Content -Path ($root + 'temp_VERSION.txt') -Value $ver -NoNewline; Set-Content -Path ($root + 'temp_BUILD_NUM.txt') -Value ([string]$n) -NoNewline; Set-Content -Path ($root + 'temp_PRODUCT_NAME.txt') -Value '%APP_NAME%' -NoNewline; Set-Content -Path ($root + 'temp_COMPANY_NAME.txt') -Value $cfg.info.companyName -NoNewline; Set-Content -Path ($root + 'temp_COPYRIGHT.txt') -Value $cfg.info.copyright -NoNewline"
+  "$root = '%~dp0'; if (Test-Path ($root + 'build_number')) { $n = [int](Get-Content ($root + 'build_number')) + 1 } else { $n = 1 }; Set-Content -Path ($root + 'build_number') -Value $n -NoNewline; $cfg = Get-Content ($root + 'wails.json') -Raw | ConvertFrom-Json; $parts = $cfg.info.productVersion.Split('.'); if ($parts.Length -eq 3) { $parts += '0' }; if ($parts.Length -ne 4) { throw 'productVersion must contain 3 or 4 numeric parts.' }; $parts[3] = [string]$n; $ver = $parts -join '.'; Set-Content -Path ($root + 'temp_VERSION.txt') -Value $ver -NoNewline; Set-Content -Path ($root + 'temp_BUILD_NUM.txt') -Value ([string]$n) -NoNewline; Set-Content -Path ($root + 'temp_PRODUCT_NAME.txt') -Value '%APP_NAME%' -NoNewline; Set-Content -Path ($root + 'temp_COMPANY_NAME.txt') -Value $cfg.info.companyName -NoNewline; Set-Content -Path ($root + 'temp_COPYRIGHT.txt') -Value $cfg.info.copyright -NoNewline"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to update version info.
     goto :error
@@ -91,19 +90,15 @@ if !errorlevel! neq 0 (
 REM -- Generate Windows Resources (icon + version info) --
 echo [Step 5/14] Generating Windows resources...
 del /q "%~dp0gui\resource_windows_*.syso" 2>nul
+del /q "%~dp0gui\wails_window_icon_*.syso" 2>nul
+REM Only remove the legacy Wails resource object for this product. A wildcard
+REM here could delete a separately maintained resource object in gui\.
+del /q "%~dp0gui\MaClaw-res.syso" 2>nul
 del /q "%~dp0resource_windows_*.syso" 2>nul
 del /q "%~dp0tmp*.syso" 2>nul
 del /q "%~dp0tmp*.json" 2>nul
 del /q "%~dp0build\windows\wails.exe.manifest.tmp" 2>nul
 del /q "%~dp0build\windows\versioninfo.json.tmp" 2>nul
-if not exist "%GOVERSIONINFO_PATH%" (
-    echo [INFO] goversioninfo not found. Installing...
-    "%GO_EXE%" install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
-    if !errorlevel! neq 0 (
-        echo [ERROR] Failed to install goversioninfo.
-        goto :error
-    )
-)
 
 "%POWERSHELL_EXE%" -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $safeName = ($cfg.name -replace '[^a-zA-Z0-9._-]',''); if (-not $safeName) { $safeName = 'MaClaw' }; $clampedBuild = [Math]::Min([int]$parts[3], 65534); $manifestVer = $parts[0]+'.'+$parts[1]+'.'+$parts[2]+'.'+$clampedBuild; $manifest = Get-Content '%~dp0build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}', $safeName).Replace('{{.Info.ProductVersion}}', $manifestVer); [System.IO.File]::WriteAllText('%~dp0build\windows\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false)); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild }; ProductVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild } }; StringFileInfo = @{ Comments = $cfg.info.comments; CompanyName = $cfg.info.companyName; FileDescription = $cfg.info.productName; FileVersion = '%VERSION%'; InternalName = $cfg.info.productName; LegalCopyright = $cfg.info.copyright; OriginalFilename = '%APP_NAME%.exe'; ProductName = $cfg.info.productName; ProductVersion = '%VERSION%' }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%~dp0build\windows\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
 if !errorlevel! neq 0 (
@@ -129,11 +124,8 @@ set "GOOS=windows"
 set "GOARCH=amd64"
 set "CGO_ENABLED=0"
 set "CC="
-"%GOVERSIONINFO_PATH%" -64 -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_amd64.syso" "%~dp0build\windows\versioninfo.json.tmp"
-if !errorlevel! neq 0 (
-    echo [ERROR] Failed to generate amd64 resources.
-    goto :error
-)
+call :generate_windows_resources "amd64" "%~dp0gui\resource_windows_amd64.syso"
+if !errorlevel! neq 0 goto :error
 call :go_build -p 1 -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for GUI amd64 failed.
@@ -144,17 +136,16 @@ if !errorlevel! neq 0 (
     echo [ERROR] GUI amd64 welcome embed verification failed.
     goto :error
 )
+call :verify_windows_resources "%OUTPUT_DIR%\%APP_NAME%_amd64.exe"
+if !errorlevel! neq 0 goto :error
 del "%~dp0gui\resource_windows_amd64.syso"
 set "GOARCH=arm64"
 set "CGO_ENABLED=0"
 set "CC="
 if not exist "%~dp0build\windows\wails.exe.manifest.tmp" "%POWERSHELL_EXE%" -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $safeName = ($cfg.name -replace '[^a-zA-Z0-9._-]',''); if (-not $safeName) { $safeName = 'MaClaw' }; $clampedBuild = [Math]::Min([int]$parts[3], 65534); $manifestVer = $parts[0]+'.'+$parts[1]+'.'+$parts[2]+'.'+$clampedBuild; $manifest = Get-Content '%~dp0build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}', $safeName).Replace('{{.Info.ProductVersion}}', $manifestVer); [System.IO.File]::WriteAllText('%~dp0build\windows\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false))"
 if not exist "%~dp0build\windows\versioninfo.json.tmp" "%POWERSHELL_EXE%" -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $clampedBuild = [Math]::Min([int]$parts[3], 65534); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild }; ProductVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild } }; StringFileInfo = @{ Comments = $cfg.info.comments; CompanyName = $cfg.info.companyName; FileDescription = $cfg.info.productName; FileVersion = '%VERSION%'; InternalName = $cfg.info.productName; LegalCopyright = $cfg.info.copyright; OriginalFilename = '%APP_NAME%.exe'; ProductName = $cfg.info.productName; ProductVersion = '%VERSION%' }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%~dp0build\windows\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
-"%GOVERSIONINFO_PATH%" -64 -arm -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_arm64.syso" "%~dp0build\windows\versioninfo.json.tmp"
-if !errorlevel! neq 0 (
-    echo [ERROR] Failed to generate arm64 resources.
-    goto :error
-)
+call :generate_windows_resources "arm64" "%~dp0gui\resource_windows_arm64.syso"
+if !errorlevel! neq 0 goto :error
 call :go_build -p 1 -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for GUI arm64 failed.
@@ -165,6 +156,8 @@ if !errorlevel! neq 0 (
     echo [ERROR] GUI arm64 welcome embed verification failed.
     goto :error
 )
+call :verify_windows_resources "%OUTPUT_DIR%\%APP_NAME%_arm64.exe"
+if !errorlevel! neq 0 goto :error
 del "%~dp0gui\resource_windows_arm64.syso"
 del "%~dp0build\windows\wails.exe.manifest.tmp"
 del "%~dp0build\windows\versioninfo.json.tmp"
@@ -334,7 +327,15 @@ REM -- Copy/Rename Main Binaries for convenience --
 :copy_binaries
 if /i "%~1"=="compile-only" echo [INFO] Compile-only mode: skipping NSIS installers.
 echo   - Creating main executable copies (amd64)...
-copy /Y "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" "%OUTPUT_DIR%\%APP_NAME%.exe" >nul
+REM The running GUI keeps its executable locked. Do not report a stale binary as
+REM successful: retry briefly, then stop with a clear actionable error so the
+REM caller launches the newly-built MaClaw_amd64.exe or closes MaClaw and retries.
+call :copy_main_gui "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" "%OUTPUT_DIR%\%APP_NAME%.exe"
+if !errorlevel! neq 0 (
+    echo [ERROR] Failed to update %OUTPUT_DIR%\%APP_NAME%.exe because it is in use.
+    echo [ERROR] Close MaClaw and rerun this script, or launch %OUTPUT_DIR%\%APP_NAME%_amd64.exe.
+    goto :error
+)
 copy /Y "%OUTPUT_DIR%\maclaw-tui_amd64.exe" "%OUTPUT_DIR%\maclaw-tui.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-cli_amd64.exe" "%OUTPUT_DIR%\maclaw-cli.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-acp-bridge_amd64.exe" "%OUTPUT_DIR%\maclaw-acp-bridge.exe" >nul
@@ -365,6 +366,38 @@ if exist "%OUTPUT_DIR%\maclaw-data-srv.exe" (
 )
 
 goto :success
+
+:copy_main_gui
+set "GUI_SOURCE=%~1"
+set "GUI_TARGET=%~2"
+if not exist "%GUI_SOURCE%" exit /b 1
+for /L %%I in (1,1,10) do (
+    copy /Y "%GUI_SOURCE%" "%GUI_TARGET%" >nul 2>nul
+    if !errorlevel! equ 0 exit /b 0
+    timeout /t 1 /nobreak >nul
+)
+exit /b 1
+
+:generate_windows_resources
+set "RESOURCE_ARCH=%~1"
+set "RESOURCE_OUTPUT=%~2"
+del /q "%RESOURCE_OUTPUT%" 2>nul
+setlocal
+set "GOARCH=amd64"
+"%GO_EXE%" -C "%~dp0tools\windowsresgen" run . -arch "%RESOURCE_ARCH%" -ico "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -versioninfo "%~dp0build\windows\versioninfo.json.tmp" -out "%RESOURCE_OUTPUT%"
+set "RESOURCE_RESULT=!errorlevel!"
+endlocal & if %RESOURCE_RESULT% equ 0 exit /b 0
+echo [ERROR] Failed to generate the unified %RESOURCE_ARCH% Windows resource object.
+exit /b 1
+
+:verify_windows_resources
+setlocal
+set "GOARCH=amd64"
+"%GO_EXE%" -C "%~dp0tools\windowsresgen" run . -verify "%~1" -ico "%~dp0build\windows\icon.ico"
+set "RESOURCE_RESULT=!errorlevel!"
+endlocal & if %RESOURCE_RESULT% equ 0 exit /b 0
+echo [ERROR] Final executable does not contain the expected Explorer, Wails, and IDI_APPLICATION icon groups.
+exit /b 1
 
 :go_build
 set "GO_BUILD_ATTEMPT=1"

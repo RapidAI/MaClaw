@@ -141,6 +141,19 @@ func (h *IMMessageHandler) getMaclawLLMConfig() corelib.MaclawLLMConfig {
 	return h.app.GetMaclawLLMConfig()
 }
 
+// getCodingLLMConfig resolves the coding profile for CodingSubAgent work. It
+// intentionally remains separate from the general assistant accessor: a
+// coding profile may follow assistant, but it may also be independently set.
+func (h *IMMessageHandler) getCodingLLMConfig() corelib.MaclawLLMConfig {
+	if h.standaloneConfig != nil && h.standaloneConfig.LLMConfigFunc != nil {
+		return h.standaloneConfig.LLMConfigFunc()
+	}
+	if h.app == nil {
+		return corelib.MaclawLLMConfig{}
+	}
+	return h.app.GetCodingLLMConfig()
+}
+
 // getLightweightLLMConfig returns a non-reasoning model config for classification
 // tasks. It uses the same provider URL/key but substitutes a lighter model name.
 // Reasoning models (deepseek-reasoner, o1-*, etc.) generate chain-of-thought
@@ -150,12 +163,23 @@ func (h *IMMessageHandler) getMaclawLLMConfig() corelib.MaclawLLMConfig {
 // the corresponding chat model from the same provider. Otherwise return the
 // main config unchanged (it's already a chat model).
 func (h *IMMessageHandler) getLightweightLLMConfig() corelib.MaclawLLMConfig {
+	return h.getLightweightLLMConfigFromBase(h.getMaclawLLMConfig())
+}
+
+// getCodingLightweightLLMConfig is the lightweight companion of the coding
+// profile. Coding intent/planning requests are real coding-workbench calls;
+// they must not spend or route through the assistant profile merely because
+// their prompts are short.
+func (h *IMMessageHandler) getCodingLightweightLLMConfig() corelib.MaclawLLMConfig {
+	return h.getLightweightLLMConfigFromBase(h.getCodingLLMConfig())
+}
+
+func (h *IMMessageHandler) getLightweightLLMConfigFromBase(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
 	// OpenHuman-inspired: try ModelRouter first for fast tasks.
 	if h.app != nil && h.app.ohModules.modelRouter != nil && h.app.ohModules.modelRouter.HasRoute("fast") {
-		return h.routeLLMConfig("fast")
+		return h.routeLLMConfigFromBase("fast", cfg)
 	}
 
-	cfg := h.getMaclawLLMConfig()
 	if cfg.URL == "" || cfg.Model == "" {
 		return cfg
 	}

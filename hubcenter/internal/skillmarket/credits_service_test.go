@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -62,6 +63,30 @@ func TestCredits_InsufficientBalance(t *testing.T) {
 	bal, _ := svc.GetBalance(ctx, u.ID)
 	if bal != 50 {
 		t.Errorf("balance should be unchanged: got %d, want 50", bal)
+	}
+}
+
+func TestCompleteExpertMarketPurchaseRejectsPrivateListing(t *testing.T) {
+	store, svc := setupCreditsTest(t)
+	ctx := context.Background()
+	buyer := createTestUser(t, store, "private-buyer@example.test", 100)
+	seller := createTestUser(t, store, "private-seller@example.test", 0)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().ExecContext(ctx, `CREATE TABLE sm_expert_market_listings (id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, price INTEGER NOT NULL, visibility TEXT NOT NULL, status TEXT NOT NULL, purchase_count INTEGER NOT NULL DEFAULT 0, sales_amount INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `CREATE TABLE sm_expert_market_purchases (id TEXT PRIMARY KEY, listing_id TEXT NOT NULL, buyer_user_id TEXT NOT NULL, buyer_email TEXT NOT NULL, amount_paid INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(listing_id, buyer_user_id))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO sm_expert_market_listings (id, owner_user_id, price, visibility, status, updated_at) VALUES ('private-expert', ?, 20, 'private', 'listed', ?)`, seller.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	err := svc.CompleteExpertMarketPurchase(ctx, buyer.ID, buyer.Email, seller.ID, "private-expert", "entitlement-private", "purchase-private", 20)
+	if !errors.Is(err, ErrExpertMarketUnavailable) {
+		t.Fatalf("private listing purchase error=%v, want %v", err, ErrExpertMarketUnavailable)
+	}
+	if balance, balanceErr := svc.GetBalance(ctx, buyer.ID); balanceErr != nil || balance != 100 {
+		t.Fatalf("private listing changed buyer balance=%d err=%v", balance, balanceErr)
 	}
 }
 

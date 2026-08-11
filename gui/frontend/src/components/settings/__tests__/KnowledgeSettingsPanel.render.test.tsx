@@ -10,10 +10,16 @@ import {
     KnowledgeSaveText,
     KnowledgeShareToHub,
     KnowledgeSearchStructured,
+    KnowledgeSearch,
+    KnowledgeGetImageAssetPaths,
+    KnowledgeOpenImageAsset,
     KnowledgeSyncStatus,
     KnowledgeSyncUpload,
     KnowledgeSyncVerifyPassword,
     KnowledgeStructuredCatalog,
+    EnterpriseKnowledgeListLibraries,
+	EnterpriseSyncNow,
+    EnterpriseSyncStatus,
     GetHubLLMServiceStatus,
     LoadConfig,
     OpenSystemUrl,
@@ -49,6 +55,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeExplain',
         'KnowledgeFactGraph',
         'KnowledgeFactIndex',
+        'KnowledgeGetImageAssetPaths',
         'KnowledgeExportSnapshotWithOptions',
         'KnowledgeHealth',
         'KnowledgeImportDirectory',
@@ -66,7 +73,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeListURLDomainPolicies',
         'KnowledgeListImportBatches',
         'KnowledgeListImportItems',
-        'KnowledgeListNodesBySource',
+        'KnowledgePreviewNodesBySource',
         'KnowledgeListSourceLinks',
         'KnowledgeListSourceLabels',
         'KnowledgeListSourceLinkEvents',
@@ -78,6 +85,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeListSources',
         'KnowledgeLinkSources',
         'KnowledgeMaintain',
+        'KnowledgeOpenImageAsset',
         'KnowledgePreviewSourceRefresh',
         'KnowledgePreviewSourcesRefreshByFilter',
         'KnowledgePreviewSourceTopicLinks',
@@ -126,6 +134,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeSyncStatus',
         'KnowledgeSyncUpload',
         'KnowledgeSyncVerifyPassword',
+        'EnterpriseKnowledgeListLibraries',
+        'EnterpriseKnowledgeSetLibraryUserSync',
+        'EnterprisePurgeRevokedLibrary',
+        'EnterpriseSetSyncPaused',
+        'EnterpriseSyncNow',
         'GetHubLLMServiceStatus',
         'SelectKnowledgeDirectory',
         'SelectKnowledgeFiles',
@@ -202,6 +215,13 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
             limit_bytes: 524288000,
             message: 'maclaw official service is active',
         })),
+        EnterpriseKnowledgeListLibraries: vi.fn(async () => [{
+            library_id: 'lib_policies', name: 'Policies', last_rev: 7,
+            access_state: 'active', user_sync_enabled: true, hub_sync_enabled: true,
+        }]),
+        EnterpriseSyncStatus: vi.fn(async () => ({
+            paused: false, last_outcome: 'skipped_no_credentials', library_count: 1,
+        })),
         GetHubLLMServiceStatus: vi.fn(async () => ({
             active: true,
             active_grants: [{ status: 'active', expires_at: '2099-01-01T00:00:00Z' }],
@@ -235,6 +255,41 @@ describe('KnowledgeSettingsPanel component', () => {
 
         await waitFor(() => expect(KnowledgeHealth).toHaveBeenCalled());
         expect(KnowledgeCapabilities).toHaveBeenCalled();
+    });
+
+    it('labels the GUI entry as Enterprise digital assets and explains a skipped sync', async () => {
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Enterprise digital assets' }));
+
+        expect(await screen.findByRole('heading', { name: 'Enterprise digital assets' })).toBeTruthy();
+        expect(await screen.findByText('Skipped: credentials missing')).toBeTruthy();
+        expect(screen.getByText('Hub credentials required')).toBeTruthy();
+        expect(screen.getByText('Policies')).toBeTruthy();
+        await waitFor(() => expect(EnterpriseKnowledgeListLibraries).toHaveBeenCalled());
+        expect(EnterpriseSyncStatus).toHaveBeenCalled();
+    });
+
+    it('explains when an administrator has disabled tenant digital-asset sync', async () => {
+        vi.mocked(EnterpriseSyncStatus).mockResolvedValueOnce({
+            paused: false, last_outcome: 'skipped_tenant_sync_disabled', library_count: 1,
+        } as any);
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Enterprise digital assets' }));
+
+        expect(await screen.findByText('Skipped: tenant sync disabled')).toBeTruthy();
+        expect(screen.getByText('Tenant sync is disabled')).toBeTruthy();
+    });
+
+    it('does not report a disabled tenant sync as a successful manual sync', async () => {
+        vi.mocked(EnterpriseSyncNow).mockResolvedValueOnce({
+            paused: false, last_outcome: 'skipped_tenant_sync_disabled', library_count: 1,
+        } as any);
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Enterprise digital assets' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Sync now' }));
+
+        expect(await screen.findByText('Tenant sync is disabled')).toBeTruthy();
+        expect(screen.queryByText('Digital-asset sync finished.')).toBeNull();
     });
 
     it('keeps document import as a full-width ingest section', async () => {
@@ -674,5 +729,98 @@ describe('KnowledgeSettingsPanel component', () => {
             limit: 20,
             include_disabled: false,
         }));
+    });
+
+    it('previews persisted OfficeRead Markdown nodes without reopening a document', async () => {
+        const { KnowledgePreviewNodesBySource } = await import('../../../../wailsjs/go/main/App');
+        vi.mocked(KnowledgeListSources).mockResolvedValue([{
+            id: 'ksrc_office',
+            kind: 'doc',
+            relative_path: 'contracts\\agreement.doc',
+            status: 'active',
+            node_count: 1,
+        }] as any);
+        vi.mocked(KnowledgePreviewNodesBySource).mockResolvedValue([{
+            id: 'kdn_office',
+            source_id: 'ksrc_office',
+            type: 'section',
+            title: 'Terms',
+            text: 'Structured agreement body',
+            extractor: 'officeread_structured_markdown',
+        }] as any);
+
+        render(<KnowledgeSettingsPanel lang="en" />);
+        await waitFor(() => expect(KnowledgeCapabilities).toHaveBeenCalled());
+        fireEvent.click(screen.getByRole('tab', { name: 'Sources' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Load Sources' }));
+        await waitFor(() => expect(KnowledgeListSources).toHaveBeenCalled());
+        expect(await screen.findAllByText(/agreement\.doc/)).toHaveLength(2);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+        await waitFor(() => expect(KnowledgePreviewNodesBySource).toHaveBeenCalledWith('ksrc_office', 100));
+        expect(await screen.findByRole('heading', { name: /Document Preview.*agreement\.doc/i })).toBeTruthy();
+        expect(screen.getByText(/OfficeRead Markdown/)).toBeTruthy();
+        expect(screen.getByText('Structured agreement body')).toBeTruthy();
+        expect(screen.getByText(/does not reopen the original file/i)).toBeTruthy();
+    });
+
+    it('does not restore a stale source preview after its filters change', async () => {
+        const { KnowledgePreviewNodesBySource } = await import('../../../../wailsjs/go/main/App');
+        let resolvePreview: ((nodes: any[]) => void) | undefined;
+        vi.mocked(KnowledgeListSources).mockResolvedValue([{
+            id: 'ksrc_office',
+            kind: 'doc',
+            relative_path: 'contracts\\agreement.doc',
+            status: 'active',
+            node_count: 1,
+        }] as any);
+        vi.mocked(KnowledgePreviewNodesBySource).mockImplementationOnce(() => new Promise<any[]>(resolve => {
+            resolvePreview = resolve;
+        }));
+
+        render(<KnowledgeSettingsPanel lang="en" />);
+        await waitFor(() => expect(KnowledgeCapabilities).toHaveBeenCalled());
+        fireEvent.click(screen.getByRole('tab', { name: 'Sources' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Load Sources' }));
+        expect(await screen.findAllByText(/agreement\.doc/)).toHaveLength(2);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+        await waitFor(() => expect(KnowledgePreviewNodesBySource).toHaveBeenCalledWith('ksrc_office', 100));
+        fireEvent.change(screen.getByPlaceholderText('Query'), { target: { value: 'different source' } });
+        await waitFor(() => expect(screen.queryByText('agreement.doc')).toBeNull());
+
+        resolvePreview?.([{
+            id: 'kdn_stale',
+            type: 'section',
+            title: 'Stale Terms',
+            text: 'This preview must not reappear.',
+            extractor: 'officeread_structured_markdown',
+        }]);
+        await waitFor(() => expect(screen.queryByTestId('knowledge-source-preview')).toBeNull());
+        expect(screen.queryByText('This preview must not reappear.')).toBeNull();
+    });
+
+    it('uses the stable image asset ID to render and open a knowledge image result', async () => {
+        vi.mocked(KnowledgeSearch).mockResolvedValueOnce([{
+            result_type: 'node',
+            node_id: 'generated-image-node',
+            node_type: 'image',
+            node_title: 'Gateway topology',
+            source: { id: 'architecture-doc', kind: 'docx', title: 'Architecture document' },
+            media: { asset_id: 'architecture-doc_media-image-7' },
+        }] as any);
+        vi.mocked(KnowledgeGetImageAssetPaths).mockResolvedValue({
+            thumb_data_url: 'data:image/jpeg;base64,AA==',
+        } as any);
+
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Search' }));
+        fireEvent.change(await screen.findByPlaceholderText('Search knowledge base...'), { target: { value: 'gateway topology' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+        const thumb = await screen.findByAltText('Gateway topology');
+        expect(KnowledgeGetImageAssetPaths).toHaveBeenCalledWith('architecture-doc_media-image-7');
+        fireEvent.click(thumb.closest('button')!);
+        await waitFor(() => expect(KnowledgeOpenImageAsset).toHaveBeenCalledWith('architecture-doc_media-image-7'));
     });
 });

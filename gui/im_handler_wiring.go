@@ -25,11 +25,14 @@ import (
 )
 
 type IMMessageHandler struct {
-	app        *App
-	manager    *RemoteSessionManager
-	memory     *agent.ConversationMemory
-	client     *http.Client // chat-priority HTTP client (optimised transport)
-	taskClient *http.Client // background-task HTTP client (separate pool)
+	app     *App
+	manager *RemoteSessionManager
+	memory  *agent.ConversationMemory
+	// Populated only on a private Lansenger profile runtime; not sourced from
+	// model tool arguments.
+	lansengerBotProfileID string
+	client                *http.Client // chat-priority HTTP client (optimised transport)
+	taskClient            *http.Client // background-task HTTP client (separate pool)
 
 	// --- Extracted App dependencies (agent-unification Phase 1) ---
 	// These fields are wired from App at construction time (GUI) or from

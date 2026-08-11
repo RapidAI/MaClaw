@@ -1018,6 +1018,9 @@ func (h *IMMessageHandler) doLLMRequestStream(
 				tokenBuffer.Discard()
 			} else {
 				tokenBuffer.Flush()
+				// A cache entry only exists after a successful upstream response,
+				// so it is valid health evidence just like a fresh completion.
+				h.app.markMaclawLLMProfileHealthyIfCurrent(cfg)
 			}
 			return cachedResp, nil
 		}
@@ -1051,6 +1054,10 @@ func (h *IMMessageHandler) doLLMRequestStream(
 		tokenBuffer.Flush()
 		if h.app != nil {
 			h.app.storeStreamResponse(cfg, messages, tools, resp)
+			// A completed real chat request is definitive evidence that this
+			// exact profile route is available. This also corrects providers
+			// which reject the optional health-probe endpoint.
+			h.app.markMaclawLLMProfileHealthyIfCurrent(cfg)
 		}
 	}
 	return resp, err

@@ -3,21 +3,27 @@ package knowledge
 import (
 	"encoding/base64"
 	"fmt"
-	"os"
-	"path/filepath"
+	"image"
+	"io"
 	"strings"
 )
 
 // KBImageMarkerPrefix is the special marker prefix for inline knowledge base images
 // in tool results. The frontend parses this marker to render inline image previews.
-// Format: [KB_IMAGE:assetID|dataURL|originalPath]  (pipe-separated)
+// Format: [KB_IMAGE:assetID|dataURL]  (pipe-separated)
 const KBImageMarkerPrefix = "[KB_IMAGE:"
+
+// MaxKBImageMarkerDataBytes limits the decoded JPEG thumbnail that can cross
+// the knowledge-search -> agent -> chat boundary. Asset-generated thumbnails
+// are at most 120px on either edge, so this remains comfortably above normal
+// output while preventing model-authored marker text from making a browser
+// decode an arbitrarily large data URL.
+const MaxKBImageMarkerDataBytes = 256 * 1024
 
 // SearchResultImageEmbed holds image data for embedding in search results.
 type SearchResultImageEmbed struct {
-	AssetID     string // identifier used to open the original image
-	DataURL     string // data:image/jpeg;base64,... (thumbnail)
-	OriginalPath string // absolute path for opening
+	AssetID string // identifier used to open the original image
+	DataURL string // data:image/jpeg;base64,... (thumbnail)
 }
 
 // EmbedImageThumbForSearchResult generates the inline image embed data for a
@@ -33,76 +39,126 @@ func EmbedImageThumbForSearchResult(result SearchResult, assetBaseDir string) *S
 		return nil
 	}
 
-	// Determine asset ID: for embedded images it's sourceID_nodeID, for standalone it's sourceID
+	// Determine asset ID from the persisted search-result metadata. The caller
+	// has already performed database authorization; this helper must not invent
+	// another source/node-derived ID, because a stale or forged result could
+	// otherwise render a different managed asset from the same local cache.
 	sourceID := result.Source.ID
-	nodeID := result.NodeID
-	if sourceID == "" {
+	if !IsSafeImageAssetID(sourceID) {
 		return nil
 	}
 
-	// Try sourceID_nodeID first (embedded images), then sourceID (standalone)
-	candidates := []string{}
-	if nodeID != "" {
-		candidates = append(candidates, sourceID+"_"+nodeID)
+	assetID := sourceID
+	if result.Media != nil {
+		// An image-node result must carry the authoritative persisted asset ID.
+		// If it is malformed, do not silently substitute the standalone source
+		// asset: that changes which evidence the model is shown.
+		if result.Media.AssetID == "" || !IsSafeImageAssetID(result.Media.AssetID) {
+			return nil
+		}
+		assetID = result.Media.AssetID
 	}
-	candidates = append(candidates, sourceID)
-
-	for _, assetID := range candidates {
-		assetDir := filepath.Join(assetBaseDir, assetID)
-		thumbPath := filepath.Join(assetDir, "thumb_120.jpg")
-		thumbData, err := os.ReadFile(thumbPath)
-		if err != nil || len(thumbData) == 0 {
-			continue
-		}
-
-		// Find original path
-		originalPath := ""
-		entries, err := os.ReadDir(assetDir)
-		if err == nil {
-			for _, entry := range entries {
-				if strings.HasPrefix(entry.Name(), "original") {
-					originalPath = filepath.Join(assetDir, entry.Name())
-					break
-				}
-			}
-		}
-
-		return &SearchResultImageEmbed{
-			AssetID:      assetID,
-			DataURL:      "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(thumbData),
-			OriginalPath: originalPath,
-		}
+	if !ImageAssetIDBelongsToSourceID(assetID, sourceID) {
+		return nil
 	}
-	return nil
+	thumbData, err := ReadKnowledgeImageThumbnail(assetBaseDir, assetID)
+	if err != nil {
+		return nil
+	}
+	return &SearchResultImageEmbed{
+		AssetID: assetID,
+		DataURL: "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(thumbData),
+	}
 }
 
-// FormatKBImageMarker generates the inline marker string for embedding in tool results.
-// Format: [KB_IMAGE:assetID|dataURL|originalPath]  (pipe-separated, since base64 never contains |)
+// FormatKBImageMarker generates the inline marker string for agent replies.
+// Format: [KB_IMAGE:assetID|dataURL] (pipe-separated, since base64 never contains |).
+// OriginalPath is deliberately excluded: markers cross the model boundary and
+// must never disclose host filesystem paths.
 func FormatKBImageMarker(embed *SearchResultImageEmbed) string {
-	if embed == nil || embed.DataURL == "" {
+	if embed == nil || !isSafeKBImageAssetID(embed.AssetID) || !isSafeKBImageDataURL(embed.DataURL) {
 		return ""
 	}
-	// Use | as separator since base64 doesn't contain |
-	return fmt.Sprintf("[KB_IMAGE:%s|%s|%s]", embed.AssetID, embed.DataURL, embed.OriginalPath)
+	// Use | as separator since base64 doesn't contain |.
+	return fmt.Sprintf("[KB_IMAGE:%s|%s]", embed.AssetID, embed.DataURL)
 }
 
-// ParseKBImageMarker extracts image embed data from a KB_IMAGE marker string.
-// Returns nil if the string doesn't match the expected format.
+// ParseKBImageMarker extracts a safe image embed from a KB_IMAGE marker string.
+// Markers are model-visible data, so accept only the two-field format generated
+// by FormatKBImageMarker. In particular, a caller must not be able to reattach
+// an arbitrary local OriginalPath through an old three-field marker form.
 func ParseKBImageMarker(marker string) *SearchResultImageEmbed {
 	if !strings.HasPrefix(marker, "[KB_IMAGE:") || !strings.HasSuffix(marker, "]") {
 		return nil
 	}
 	inner := marker[len("[KB_IMAGE:") : len(marker)-1]
-	parts := strings.SplitN(inner, "|", 3)
-	if len(parts) < 2 {
+	parts := strings.Split(inner, "|")
+	if len(parts) != 2 || !isSafeKBImageAssetID(parts[0]) || !isSafeKBImageDataURL(parts[1]) {
 		return nil
 	}
-	result := &SearchResultImageEmbed{
+	return &SearchResultImageEmbed{
 		AssetID: parts[0],
 		DataURL: parts[1],
 	}
-	if len(parts) >= 3 {
-		result.OriginalPath = parts[2]
+}
+
+func isSafeKBImageAssetID(value string) bool {
+	return IsSafeImageAssetID(value)
+}
+
+func isSafeKBImageDataURL(value string) bool {
+	const prefix = "data:image/jpeg;base64,"
+	if !strings.HasPrefix(strings.ToLower(value), prefix) {
+		return false
 	}
-	return result
+	encoded := value[len(prefix):]
+	// Four base64 input bytes decode to at most three bytes. Check the encoded
+	// length first so an attacker cannot force a large allocation in DecodeString.
+	if encoded == "" || len(encoded)%4 != 0 || len(encoded) > ((MaxKBImageMarkerDataBytes+2)/3)*4 {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) == 0 || len(decoded) > MaxKBImageMarkerDataBytes {
+		return false
+	}
+	return isSafeKBImageThumbnail(decoded)
+}
+
+// isSafeKBImageThumbnail verifies the producer/consumer contract, not merely
+// the data-URL syntax. A marker may only carry the derived JPEG thumbnail that
+// the knowledge asset manager creates; arbitrary base64 bytes and a full-size
+// JPEG cannot be promoted into agent-rendered media.
+func isSafeKBImageThumbnail(data []byte) bool {
+	if len(data) == 0 || len(data) > MaxKBImageMarkerDataBytes {
+		return false
+	}
+	config, format, err := image.DecodeConfig(&thumbnailBytesReader{data: data})
+	if err != nil || format != "jpeg" || config.Width <= 0 || config.Height <= 0 {
+		return false
+	}
+	return config.Width <= ThumbSize && config.Height <= ThumbSize
+}
+
+// IsSafeKnowledgeImageThumbnail verifies that data is a bounded JPEG thumbnail
+// produced by the managed knowledge image pipeline. It is exported for desktop
+// and HTTP presentation layers, which must never expose arbitrary bytes as an
+// image data URL.
+func IsSafeKnowledgeImageThumbnail(data []byte) bool {
+	return isSafeKBImageThumbnail(data)
+}
+
+// thumbnailBytesReader avoids an additional allocation while image.DecodeConfig parses
+// a thumbnail that is already held in memory.
+type thumbnailBytesReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *thumbnailBytesReader) Read(dst []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(dst, r.data[r.pos:])
+	r.pos += n
+	return n, nil
 }

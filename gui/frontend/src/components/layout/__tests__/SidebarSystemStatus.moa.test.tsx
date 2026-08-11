@@ -71,8 +71,8 @@ describe("SidebarSystemStatus provider dropdown UX", () => {
             <SidebarSystemStatus
                 {...baseProps}
                 availableProviders={[
-                    { name: "OpenAI", url: "https://x", isHubService: false },
-                    { name: "Anthropic", url: "https://y", isHubService: false },
+                    { id: "openai", name: "OpenAI", url: "https://x", isHubService: false },
+                    { id: "anthropic", name: "Anthropic", url: "https://y", isHubService: false },
                 ]}
             />,
         );
@@ -94,8 +94,8 @@ describe("SidebarSystemStatus provider dropdown UX", () => {
             <SidebarSystemStatus
                 {...baseProps}
                 availableProviders={[
-                    { name: "OpenAI", url: "https://x", isHubService: false },
-                    { name: "Anthropic", url: "https://y", isHubService: false },
+                    { id: "openai", name: "OpenAI", url: "https://x", isHubService: false },
+                    { id: "anthropic", name: "Anthropic", url: "https://y", isHubService: false },
                 ]}
             />,
         );
@@ -121,8 +121,8 @@ describe("SidebarSystemStatus provider dropdown UX", () => {
             <SidebarSystemStatus
                 {...baseProps}
                 availableProviders={[
-                    { name: "OpenAI", url: "https://x", isHubService: false },
-                    { name: "Anthropic", url: "https://y", isHubService: false },
+                    { id: "openai", name: "OpenAI", url: "https://x", isHubService: false },
+                    { id: "anthropic", name: "Anthropic", url: "https://y", isHubService: false },
                 ]}
             />,
         );
@@ -147,21 +147,78 @@ describe("SidebarSystemStatus provider dropdown UX", () => {
         expect(screen.getByText(/大模型设置/)).toBeTruthy();
     });
 
-    it("switches provider from the dropdown", () => {
+    it("stages a provider without closing the dropdown so a model can be chosen next", () => {
         const onSwitchProvider = vi.fn();
         render(
             <SidebarSystemStatus
                 {...baseProps}
                 availableProviders={[
-                    { name: "OpenAI", url: "https://x", isHubService: false },
-                    { name: "Anthropic", url: "https://y", isHubService: false },
+                    { id: "openai", name: "OpenAI", url: "https://x", isHubService: false },
+                    { id: "anthropic", name: "Anthropic", url: "https://y", isHubService: false },
                 ]}
                 onSwitchProvider={onSwitchProvider}
             />,
         );
         openProviderDropdown();
         fireEvent.click(screen.getByRole("option", { name: "Anthropic" }));
-        expect(onSwitchProvider).toHaveBeenCalledWith("Anthropic");
+        expect(onSwitchProvider).toHaveBeenCalledWith("anthropic");
+        expect(screen.getByRole("listbox")).toBeTruthy();
+    });
+
+    it("discards a staged provider when the dropdown is dismissed", () => {
+        const onDismissModelMenu = vi.fn();
+        render(
+            <SidebarSystemStatus
+                {...baseProps}
+                availableProviders={[{ name: "OpenAI", url: "https://x", isHubService: false }]}
+                currentModel="m1"
+                modelOptions={["m1"]}
+                onSwitchModel={vi.fn()}
+                providerSelectionPending
+                onDismissModelMenu={onDismissModelMenu}
+            />,
+        );
+
+        openProviderDropdown();
+        fireEvent.keyDown(document, { key: "Escape" });
+
+        expect(onDismissModelMenu).toHaveBeenCalledTimes(1);
+    });
+
+    it("discards a staged provider if the sidebar unmounts while its dropdown is open", () => {
+        const onDismissModelMenu = vi.fn();
+        const { unmount } = render(
+            <SidebarSystemStatus
+                {...baseProps}
+                availableProviders={[{ name: "OpenAI", url: "https://x", isHubService: false }]}
+                currentModel="m1"
+                modelOptions={["m1"]}
+                onSwitchModel={vi.fn()}
+                providerSelectionPending
+                onDismissModelMenu={onDismissModelMenu}
+            />,
+        );
+
+        openProviderDropdown();
+        unmount();
+
+        expect(onDismissModelMenu).toHaveBeenCalledTimes(1);
+    });
+
+    it("disables the quick picker while an atomic profile save is pending", () => {
+        render(
+            <SidebarSystemStatus
+                {...baseProps}
+                currentModel="m1"
+                modelOptions={["m1"]}
+                onSwitchModel={vi.fn()}
+                profileSavePending
+            />,
+        );
+
+        const chevron = screen.getAllByRole("button").find((b) => b.getAttribute("aria-haspopup") === "listbox") as HTMLButtonElement;
+        expect(chevron.disabled).toBe(true);
+        fireEvent.click(chevron);
         expect(screen.queryByRole("listbox")).toBeNull();
     });
 

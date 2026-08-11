@@ -40,7 +40,7 @@ func TestResolveEffectiveProjectPath_FilesWithinDeclared_ReturnsDeclared(t *test
 	}
 }
 
-func TestResolveEffectiveProjectPath_FilesOutsideDeclared_ReturnsCommonAncestor(t *testing.T) {
+func TestResolveEffectiveProjectPath_FilesOutsideDeclared_DoesNotExpandRoot(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific path test")
 	}
@@ -52,13 +52,16 @@ func TestResolveEffectiveProjectPath_FilesOutsideDeclared_ReturnsCommonAncestor(
 		},
 	}
 	result := resolveEffectiveProjectPathForTask(task, `D:\workprj\aicoder`)
-	expected := filepath.Clean(`D:\AI learning\AI coding\PII_detect`)
+	expected := filepath.Clean(`D:\workprj\aicoder`)
 	if !strings.EqualFold(result, expected) {
-		t.Fatalf("expected common ancestor %q, got %q", expected, result)
+		t.Fatalf("expected frozen project root %q, got %q", expected, result)
+	}
+	if !taskReferencesOutsideProjectPath(task, expected) {
+		t.Fatal("expected external reference to require scope approval")
 	}
 }
 
-func TestResolveEffectiveProjectPath_PathFromDescription(t *testing.T) {
+func TestResolveEffectiveProjectPath_PathFromDescription_DoesNotExpandRoot(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific path test")
 	}
@@ -68,12 +71,21 @@ func TestResolveEffectiveProjectPath_PathFromDescription(t *testing.T) {
 		Files:       []string{}, // Files may be empty but path is in description
 	}
 	result := resolveEffectiveProjectPathForTask(task, `D:\workprj\aicoder`)
-	// Should extract path from description and use its directory
-	if strings.EqualFold(result, `D:\workprj\aicoder`) {
-		t.Fatalf("expected adjusted path derived from description, got declared path %q", result)
+	if !strings.EqualFold(result, `D:\workprj\aicoder`) {
+		t.Fatalf("expected frozen declared path, got %q", result)
 	}
-	if !strings.Contains(strings.ToLower(result), `ai learning`) {
-		t.Fatalf("expected path containing 'ai learning', got %q", result)
+	if !taskReferencesOutsideProjectPath(task, result) {
+		t.Fatal("expected path from description to require scope approval")
+	}
+}
+
+func TestTaskReferencesOutsideProjectPath_WithinDeclaredPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific path test")
+	}
+	task := &TaskItem{Files: []string{`D:\workprj\aicoder\gui\main.go`}}
+	if taskReferencesOutsideProjectPath(task, `D:\workprj\aicoder`) {
+		t.Fatal("expected in-project reference not to require scope approval")
 	}
 }
 

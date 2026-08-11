@@ -156,6 +156,124 @@ type KnowledgeShareForceDeleteRequest struct {
 	DeletedAt   time.Time
 }
 
+// Digital asset library statuses.
+const (
+	DigitalAssetStatusActive   = "active"
+	DigitalAssetStatusArchived = "archived"
+	DigitalAssetStatusDeleted  = "deleted"
+)
+
+// Digital asset ACL modes.
+const (
+	DigitalAssetACLAllMembers = "all_members"
+	DigitalAssetACLRestricted = "restricted"
+)
+
+// DigitalAssetLibrary is a tenant-owned enterprise knowledge library.
+type DigitalAssetLibrary struct {
+	ID                 string
+	TenantID           string
+	Name               string
+	Description        string
+	Status             string
+	SyncEnabled        bool
+	ACLMode            string
+	ACLDepartmentsJSON string
+	ACLUsersJSON       string
+	ContentRev         int64
+	ContentHash        string
+	StorePath          string
+	SourceCount        int64
+	CardCount          int64
+	ByteSize           int64
+	CreatedBy          string
+	UpdatedBy          string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	DeletedAt          *time.Time
+}
+
+// DigitalAssetLibraryFilter lists libraries within a tenant.
+type DigitalAssetLibraryFilter struct {
+	TenantID       string
+	Status         string // empty = all non-deleted unless IncludeDeleted
+	IncludeDeleted bool
+	Keyword        string
+	Offset         int
+	Limit          int
+}
+
+// DigitalAssetChangelog is one content revision of a library.
+type DigitalAssetChangelog struct {
+	TenantID      string
+	LibraryID     string
+	Rev           int64
+	Op            string
+	PackageStatus string
+	PackageRef    string
+	PackageSHA256 string
+	PackageBytes  int64
+	PayloadJSON   string
+	ContentHash   string
+	ErrorMessage  string
+	CreatedAt     time.Time
+	ReadyAt       *time.Time
+}
+
+// DigitalAssetImportJob tracks admin import/export/merge work.
+type DigitalAssetImportJob struct {
+	ID           string
+	TenantID     string
+	LibraryID    string
+	Kind         string
+	Status       string
+	ProgressJSON string
+	ErrorMessage string
+	CreatedBy    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// DigitalAssetSyncCursor records last successful client pull.
+type DigitalAssetSyncCursor struct {
+	TenantID   string
+	LibraryID  string
+	UserID     string
+	DeviceID   string
+	LastRev    int64
+	LastSyncAt time.Time
+	LastStatus string
+}
+
+// DigitalAssetRepository persists digital asset libraries and related rows.
+type DigitalAssetRepository interface {
+	CreateLibrary(ctx context.Context, lib *DigitalAssetLibrary) error
+	GetLibrary(ctx context.Context, tenantID, libraryID string) (*DigitalAssetLibrary, error)
+	ListLibraries(ctx context.Context, filter DigitalAssetLibraryFilter) ([]*DigitalAssetLibrary, int, error)
+	UpdateLibrary(ctx context.Context, lib *DigitalAssetLibrary) error
+	SoftDeleteLibrary(ctx context.Context, tenantID, libraryID string, deletedAt time.Time, updatedBy string) error
+	ArchiveLibrary(ctx context.Context, tenantID, libraryID string, updatedAt time.Time, updatedBy string) error
+
+	InsertChangelog(ctx context.Context, row *DigitalAssetChangelog) error
+	UpdateChangelogPackage(ctx context.Context, tenantID, libraryID string, rev int64, status, ref, sha256 string, bytes int64, contentHash, errMsg string, readyAt *time.Time) error
+	ListChangelogSince(ctx context.Context, tenantID, libraryID string, sinceRev int64, readyOnly bool, limit int) ([]*DigitalAssetChangelog, error)
+	GetChangelog(ctx context.Context, tenantID, libraryID string, rev int64) (*DigitalAssetChangelog, error)
+	LatestReadyRev(ctx context.Context, tenantID, libraryID string) (int64, error)
+
+	CreateJob(ctx context.Context, job *DigitalAssetImportJob) error
+	GetJob(ctx context.Context, tenantID, jobID string) (*DigitalAssetImportJob, error)
+	UpdateJob(ctx context.Context, job *DigitalAssetImportJob) error
+	CountRunningJobs(ctx context.Context, tenantID string) (int, error)
+	// FailStaleRunningJobs marks queued/running jobs whose updated_at is older than before
+	// as failed (crash recovery so a tenant is not permanently blocked by ≤1 running job).
+	FailStaleRunningJobs(ctx context.Context, tenantID string, before time.Time, errMsg string) (int, error)
+	// ListJobs returns recent import/export jobs for a library (newest first).
+	ListJobs(ctx context.Context, tenantID, libraryID string, limit int) ([]*DigitalAssetImportJob, error)
+
+	UpsertSyncCursor(ctx context.Context, cur *DigitalAssetSyncCursor) error
+	GetSyncCursor(ctx context.Context, tenantID, libraryID, userID, deviceID string) (*DigitalAssetSyncCursor, error)
+}
+
 type User struct {
 	ID               string
 	TenantID         string
@@ -590,4 +708,5 @@ type Store struct {
 	WorkflowRepo    WorkflowRepository
 	LLMPromptCache  LLMPromptCacheRepository
 	KnowledgeShares KnowledgeShareRepository
+	DigitalAssets   DigitalAssetRepository
 }

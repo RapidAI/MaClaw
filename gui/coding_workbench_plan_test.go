@@ -198,7 +198,7 @@ func TestIsOperationalInspectionOnlyCommand(t *testing.T) {
 }
 
 func TestCodingInquiryToolFiltersAreReadOnly(t *testing.T) {
-	if !isCodingInquiryTool("read_file") || !isCodingInquiryTool("code_navigation") {
+	if !isCodingInquiryTool("read_file") || !isCodingInquiryTool("code_navigation") || !isCodingInquiryTool("knowledge_image_search") {
 		t.Fatal("local inquiry must retain read/navigation tools")
 	}
 	if isCodingInquiryTool("write_file") || isCodingInquiryTool("todo_write") {
@@ -207,13 +207,16 @@ func TestCodingInquiryToolFiltersAreReadOnly(t *testing.T) {
 	if !isRemoteCodingInquiryTool("ssh_read_file") || !isRemoteCodingInquiryTool("ssh_list_dir") {
 		t.Fatal("remote inquiry must retain SSH read tools")
 	}
+	if !isRemoteCodingInquiryTool("knowledge_image_search") {
+		t.Fatal("remote inquiry must retain read-only image knowledge search")
+	}
 	if isRemoteCodingInquiryTool("ssh_write_file") || isRemoteCodingInquiryTool("ssh_edit_file") {
 		t.Fatal("remote inquiry must not expose SSH write tools")
 	}
 }
 
 func TestCodingOperationalToolFiltersAreNonMutating(t *testing.T) {
-	for _, name := range []string{"bash", "read_file", "Glob", "ripgrep", "code_navigation"} {
+	for _, name := range []string{"bash", "read_file", "Glob", "ripgrep", "code_navigation", "knowledge_image_search"} {
 		if !isCodingOperationalTool(name) {
 			t.Fatalf("operational task should retain %q", name)
 		}
@@ -352,6 +355,13 @@ func TestParseCodingWorkbenchPlanJSON(t *testing.T) {
 	}
 }
 
+func TestParseCodingWorkbenchPlanJSONPreservesDeclaredFiles(t *testing.T) {
+	tasks := parseCodingWorkbenchPlan(`{"steps":[{"title":"change auth","description":"implement auth","files":["internal/auth/service.go"]}]}`)
+	if len(tasks) != 1 || len(tasks[0].Files) != 1 || tasks[0].Files[0] != "internal/auth/service.go" {
+		t.Fatalf("tasks=%+v", tasks)
+	}
+}
+
 func TestParseCodingWorkbenchPlanMarkdown(t *testing.T) {
 	raw := `### T1: 探查
 描述: 找入口
@@ -388,6 +398,13 @@ func TestFormatCodingWorkbenchPlanMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(md, "map routes") {
 		t.Fatalf("should keep real description: %q", md)
+	}
+}
+
+func TestFormatCodingWorkbenchPlanMarkdownIncludesDeclaredFiles(t *testing.T) {
+	md := formatCodingWorkbenchPlanMarkdown("ship auth", []*v2.TaskItem{{Index: 1, Title: "change auth", Files: []string{"internal/auth/service.go"}}})
+	if !strings.Contains(md, "Files:") || !strings.Contains(md, "internal/auth/service.go") {
+		t.Fatalf("md=%q", md)
 	}
 }
 

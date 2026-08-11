@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -318,7 +319,7 @@ func (s *SQLiteStore) Doctor(ctx context.Context) (DoctorResult, error) {
 		add("error", "failed_import_items", "Some files failed during import", "Failed files are not searchable until fixed and re-imported.", count, "Open the import batch items and inspect file-level errors.")
 	}
 	if count := stats.ImportItemsByStatus[ItemStatusSkippedType]; count > 0 {
-		add("warning", "unsupported_file_types", "Some files were skipped due to unsupported type", "Skipped unsupported files are not stored as searchable knowledge.", count, "Convert them to docx, pdf, xlsx, csv, markdown, or txt before importing.")
+		add("warning", "unsupported_file_types", "Some files were skipped due to unsupported type", "Skipped unsupported files are not stored as searchable knowledge.", count, "Convert them to DOC/DOCX, PPT/PPTX, XLS/XLSX, PDF, CSV, Markdown, or TXT before importing.")
 	}
 	if count := stats.ImportItemsByStatus[ItemStatusSkippedTooLarge]; count > 0 {
 		add("warning", "too_large_files", "Some files exceeded the import size limit", "Large files were skipped to protect local resources.", count, "Increase max file size intentionally or split the files before import.")
@@ -332,54 +333,65 @@ func (s *SQLiteStore) Doctor(ctx context.Context) (DoctorResult, error) {
 
 	// --- Image asset health checks ---
 	if s.imageAssets != nil {
-		imageSourceWhere := "s.kind = ? AND s.status IN (?, ?, ?)"
-		imageSourceCount, _ := s.doctorSourceCount(ctx, imageSourceWhere, SourceKindImage, StatusParsed, StatusDistilled, StatusStale)
-		if imageSourceCount > 0 {
-			// Check for missing original image files
-			missingAssets := 0
-			missingThumbCount := 0
-			rows, err := s.db.QueryContext(ctx, `SELECT n.source_id, n.metadata FROM document_nodes n WHERE n.type = ?`, NodeTypeImage)
-			if err == nil {
-				for rows.Next() {
-					var sourceID, metadataJSON string
-					if err := rows.Scan(&sourceID, &metadataJSON); err != nil {
-						continue
-					}
-					// Check asset path exists
-					assetPath := extractMetadataValue(metadataJSON, MetaImageAssetPath)
-					if assetPath != "" {
-						if _, err := os.Stat(assetPath); os.IsNotExist(err) {
-							missingAssets++
-						}
-					}
-					// Check thumbnail exists
-					thumbPath := s.imageAssets.ThumbPath(sourceID)
-					if _, err := os.Stat(thumbPath); os.IsNotExist(err) {
-						missingThumbCount++
-					}
+		// Image nodes may belong to a standalone image source or be embedded in a
+		// document source. Always use the import-time asset ID from node metadata:
+		// source_id is not a valid thumbnail ID for an embedded image.
+		missingAssets := 0
+		missingThumbCount := 0
+		rows, err := s.db.QueryContext(ctx, `SELECT n.source_id, COALESCE(n.metadata_json, '{}') FROM document_nodes n WHERE n.type = ?`, NodeTypeImage)
+		if err == nil {
+			for rows.Next() {
+				var sourceID, metadataJSON string
+				if err := rows.Scan(&sourceID, &metadataJSON); err != nil {
+					continue
 				}
-				rows.Close()
+				assetID := extractMetadataValue(metadataJSON, MetaImageAssetID)
+				if assetID == "" {
+					// Legacy standalone imports did not always store image_asset_id.
+					// Only use a source ID that is itself a valid opaque asset ID.
+					if IsSafeImageAssetID(sourceID) {
+						assetID = sourceID
+					} else {
+						assetID = ""
+					}
+				} else if !IsSafeImageAssetID(assetID) {
+					// A recorded ID is authoritative for embedded images. Do not
+					// normalize or replace malformed metadata with sourceID, which
+					// could hide a damaged asset mapping.
+					assetID = ""
+				}
+				// New imports persist only an opaque asset ID. Resolve the original
+				// via the asset manager so health checks remain valid after a data-dir
+				// move and never need a host path inside node metadata. The legacy
+				// metadata path is intentionally ignored here for the same reason.
+				if !imageAssetOriginalExists(s.imageAssets, assetID) {
+					missingAssets++
+				}
+				if _, err := s.imageAssets.DerivedImage(assetID, "thumbnail"); err != nil {
+					missingThumbCount++
+				}
 			}
-			if missingAssets > 0 {
-				add("warning", "missing_image_assets", "Some image assets are missing from disk",
-					"Image source entries exist in the database but the original image files were deleted or moved externally.",
-					missingAssets, "Re-import the images or delete the affected sources.")
-			}
-			if missingThumbCount > 0 {
-				add("info", "missing_image_thumbnails", "Some image thumbnails are missing",
-					"Thumbnails can be regenerated from original images.",
-					missingThumbCount, "Run knowledge maintenance or re-import to regenerate thumbnails.")
-			}
+			_ = rows.Close()
+		}
+		if missingAssets > 0 {
+			add("warning", "missing_image_assets", "Some image assets are missing from disk",
+				"Image source entries exist in the database but the original image files were deleted or moved externally.",
+				missingAssets, "Re-import the images or delete the affected sources.")
+		}
+		if missingThumbCount > 0 {
+			add("info", "missing_image_thumbnails", "Some image thumbnails are missing",
+				"Thumbnails can be regenerated from original images.",
+				missingThumbCount, "Run knowledge maintenance or re-import to regenerate thumbnails.")
+		}
 
-			// Check for image nodes without description (OCR/Vision not run)
-			emptyDescWhere := "n.type = ? AND (n.text IS NULL OR length(trim(n.text)) < 10)"
-			var emptyDescCount int
-			_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM document_nodes n WHERE `+emptyDescWhere, NodeTypeImage).Scan(&emptyDescCount)
-			if emptyDescCount > 0 {
-				add("info", "images_without_description", "Some images have no description",
-					"These images were imported but OCR/Vision description was not generated. They are searchable only by filename and context.",
-					emptyDescCount, "Configure Vision LLM or ensure the built-in OCR engine is available, then re-process affected images.")
-			}
+		// Check for image nodes without description (OCR/Vision not run)
+		emptyDescWhere := "n.type = ? AND (n.text IS NULL OR length(trim(n.text)) < 10)"
+		var emptyDescCount int
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM document_nodes n WHERE `+emptyDescWhere, NodeTypeImage).Scan(&emptyDescCount)
+		if emptyDescCount > 0 {
+			add("info", "images_without_description", "Some images have no description",
+				"These images were imported but OCR/Vision description was not generated. They are searchable only by filename and context.",
+				emptyDescCount, "Configure Vision LLM or ensure the built-in OCR engine is available, then re-process affected images.")
 		}
 	}
 
@@ -395,6 +407,14 @@ func (s *SQLiteStore) Doctor(ctx context.Context) (DoctorResult, error) {
 		}}
 	}
 	return result, nil
+}
+
+func imageAssetOriginalExists(assets *ImageAssetManager, assetID string) bool {
+	if assets == nil {
+		return false
+	}
+	_, _, err := assets.OriginalImage(assetID)
+	return err == nil
 }
 
 type localFileDrift struct {
@@ -574,18 +594,13 @@ func appendLimited(values []string, value string, limit int) []string {
 }
 
 // extractMetadataValue extracts a key's value from a JSON metadata string.
-// Used for quick field extraction without full JSON unmarshal.
 func extractMetadataValue(metadataJSON, key string) string {
-	// Simple string search for "key":"value" pattern.
-	searchKey := `"` + key + `":"`
-	idx := strings.Index(metadataJSON, searchKey)
-	if idx < 0 {
+	if strings.TrimSpace(metadataJSON) == "" || strings.TrimSpace(key) == "" {
 		return ""
 	}
-	start := idx + len(searchKey)
-	end := strings.Index(metadataJSON[start:], `"`)
-	if end < 0 {
+	var metadata map[string]string
+	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
 		return ""
 	}
-	return metadataJSON[start : start+end]
+	return metadata[key]
 }

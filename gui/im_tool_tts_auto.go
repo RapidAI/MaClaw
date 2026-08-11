@@ -161,7 +161,7 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 		log.Printf("[tts-auto] skip reason=not_im platform=%s voice_reply=%v", platform, voiceReply)
 		return
 	}
-	if h.app == nil || h.app.ttsManager == nil {
+	if h.app == nil {
 		log.Printf("[tts-auto] skip reason=tts_manager_nil platform=%s voice_reply=%v", platform, voiceReply)
 		return
 	}
@@ -178,6 +178,11 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 		log.Printf("[tts-auto] skip reason=text_too_short platform=%s voice_reply=%v text_len=%d", platform, voiceReply, utf8.RuneCountInString(resp.Text))
 		return
 	}
+	manager := h.app.ttsManagerForSynthesis()
+	if manager == nil {
+		log.Printf("[tts-auto] skip reason=tts_manager_nil platform=%s voice_reply=%v", platform, voiceReply)
+		return
+	}
 
 	// Auto-summary must stay short (IM latency / payload limits). Explicit tts tool
 	// handles true long-form reading. Voice-input replies may be a bit longer.
@@ -192,7 +197,7 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 		log.Printf("[tts-auto] skip reason=empty_after_clean platform=%s voice_reply=%v", platform, voiceReply)
 		return
 	}
-	ogg, wav, err := tts.SynthesizeVoiceOGG(h.app.ttsManager, speak, 0)
+	ogg, wav, err := tts.SynthesizeVoiceOGG(manager, speak, 0)
 	amr := synthesizeAMRForPlatform(platform, wav)
 	voiceData, voiceName, voiceMime := selectTTSVoicePayload(platform, ogg, wav, amr)
 	if voiceData != nil {
@@ -229,7 +234,7 @@ func isThirdPartyVoicePlatform(platform string) bool {
 // minimum text length). Any failure degrades silently: the text reply is still
 // delivered without voice.
 func (h *IMMessageHandler) attachDeviceVoiceReply(resp *IMAgentResponse, platform string) {
-	if h.app == nil || h.app.ttsManager == nil {
+	if h.app == nil {
 		log.Printf("[tts-auto] device skip reason=tts_manager_nil platform=%s", platform)
 		return
 	}
@@ -238,7 +243,11 @@ func (h *IMMessageHandler) attachDeviceVoiceReply(resp *IMAgentResponse, platfor
 		log.Printf("[tts-auto] device skip reason=tts_disabled_or_config_error platform=%s config_err=%v", platform, err)
 		return
 	}
-	attachDeviceVoicePayload(h.app.ttsManager, resp, platform)
+	if manager := h.app.ttsManagerForSynthesis(); manager != nil {
+		attachDeviceVoicePayload(manager, resp, platform)
+	} else {
+		log.Printf("[tts-auto] device skip reason=tts_manager_nil platform=%s", platform)
+	}
 }
 
 // attachDeviceVoicePayload synthesizes the complete cleaned reply as ordered,

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/enterpriseknowledge"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -19,6 +20,7 @@ import (
 // corelib/memory.Store. Satisfied by *knowledge.SQLiteStore.
 type KnowledgeStore interface {
 	Search(ctx context.Context, opts knowledge.SearchOptions) ([]knowledge.SearchResult, error)
+	SearchImages(ctx context.Context, opts knowledge.ImageSearchOptions) ([]knowledge.SearchResult, error)
 	ContextPack(ctx context.Context, opts knowledge.ContextPackOptions) (knowledge.ContextPackResult, error)
 	SaveURL(ctx context.Context, req knowledge.URLSaveRequest) (knowledge.Source, error)
 	SaveText(ctx context.Context, req knowledge.TextSaveRequest) (knowledge.Source, error)
@@ -47,6 +49,21 @@ type KnowledgeStore interface {
 	DeleteImportBatch(ctx context.Context, req knowledge.ImportBatchDeleteRequest) (knowledge.ImportBatchDeleteResult, error)
 }
 
+// officeReadScopedKnowledgeRefresher is optional so existing knowledge-store
+// implementations retain the public management contract. Multi-tenant hosts
+// implement it to bind refresh and preview parsing to a request policy.
+type officeReadScopedKnowledgeRefresher interface {
+	RefreshSourceWithOfficeReadConfig(ctx context.Context, id string, config *agent.OfficeReadConfig) (knowledge.Source, error)
+	PreviewSourceRefreshWithOfficeReadConfig(ctx context.Context, id string, config *agent.OfficeReadConfig) (knowledge.SourceChangePreview, error)
+}
+
+// knowledgeImageAssetBaseDirProvider is intentionally optional so existing
+// knowledge-store implementations retain compatibility. A process-level
+// server store may keep its assets outside the per-instance agent DataDir.
+type knowledgeImageAssetBaseDirProvider interface {
+	ImageAssetBaseDir() string
+}
+
 // SetKnowledgeStore wires the knowledge store into the executor.
 // Must be called before Execute() to enable knowledge tools and auto-recall.
 func (e *CoreAgentExecutor) SetKnowledgeStore(store KnowledgeStore) {
@@ -65,67 +82,73 @@ func (c *coreAgentCallbacks) parentContext() context.Context {
 	return context.Background()
 }
 func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string) {
-	if c.knowledgeStore == nil || userMsg == "" {
+	if userMsg == "" {
 		return
 	}
 	if !c.appCfg.IsKnowledgeAutoRecallEnabled() {
 		return
 	}
 	minScore := c.appCfg.EffectiveKnowledgeAutoRecallMinScore()
-
 	prior := agent.PriorUserMessagesFromHistory(c.history, agent.KnowledgeAutoRecallPriorUserTurns)
-	query := agent.ExpandKnowledgeAutoRecallQuery(userMsg, prior)
 
-	ctx, cancel := context.WithTimeout(c.parentContext(), 3*time.Second)
-	defer cancel()
+	// Personal / multi-tenant knowledge store (optional).
+	if c.knowledgeStore != nil {
+		query := agent.ExpandKnowledgeAutoRecallQuery(userMsg, prior)
 
-	results, err := c.knowledgeStore.Search(ctx, knowledge.SearchOptions{
-		Query:    query,
-		OwnerID:  c.principal.UserID,
-		TenantID: c.principal.TenantID,
-		Limit:    agent.KnowledgeAutoRecallSearchLimit,
-	})
-	if err != nil {
-		log.Printf("[knowledge_auto_recall] search error: %v", err)
+		ctx, cancel := context.WithTimeout(c.parentContext(), 3*time.Second)
+		results, err := c.knowledgeStore.Search(ctx, knowledge.SearchOptions{
+			Query:    query,
+			OwnerID:  c.principal.UserID,
+			TenantID: c.principal.TenantID,
+			Limit:    agent.KnowledgeAutoRecallSearchLimit,
+		})
+		cancel()
+		if err != nil {
+			log.Printf("[knowledge_auto_recall] search error: %v", err)
+		} else if len(results) == 0 {
+			// FTS returned nothing. Stay silent for empty personal KB.
+		} else {
+			topScore := results[0].Score
+			maxInject := agent.KnowledgeAutoRecallMaxInjectWithMin(topScore, minScore)
+			if maxInject == 0 {
+				// Results exist but scores are below injection threshold.
+				b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
+			} else {
+				b.WriteString(agent.KnowledgeAutoRecallHeader)
+				injected := 0
+				for _, r := range results {
+					if injected >= maxInject {
+						break
+					}
+					if r.Score < minScore {
+						break
+					}
+					text := knowledgeSnippet(r)
+					if text == "" {
+						continue
+					}
+					if len([]rune(text)) > agent.KnowledgeAutoRecallSnippetMaxRunes {
+						text = string([]rune(text)[:agent.KnowledgeAutoRecallSnippetMaxRunes]) + "..."
+					}
+					b.WriteString(fmt.Sprintf("- Source: %s; Citation: %s; Evidence: %s\n", knowledgeSourceLabel(r), knowledgeCitationLabel(r), text))
+					injected++
+				}
+			}
+		}
+	}
+
+	// Enterprise digital assets (Hub→local cache under user dataDir).
+	// Runs even when personal knowledge store is not configured.
+	c.appendEnterpriseKnowledgeAutoRecall(b, userMsg, prior, minScore)
+}
+
+// appendEnterpriseKnowledgeAutoRecall injects Hub-synced enterprise libraries
+// from the principal's local dataDir (enterprise_knowledge.db).
+func (c *coreAgentCallbacks) appendEnterpriseKnowledgeAutoRecall(b *strings.Builder, userMsg string, prior []string, minScore float64) {
+	if c == nil || b == nil || strings.TrimSpace(c.dataDir) == "" {
 		return
 	}
-	if len(results) == 0 {
-		// FTS returned nothing. This could mean the knowledge base is empty OR
-		// the query terms don't match any indexed content. Without a cheap
-		// existence check we cannot distinguish the two cases, so stay silent
-		// to avoid confusing users with an empty knowledge base.
-		return
-	}
-
-	topScore := results[0].Score
-	maxInject := agent.KnowledgeAutoRecallMaxInjectWithMin(topScore, minScore)
-	if maxInject == 0 {
-		// Results exist but scores are below injection threshold. The knowledge
-		// base definitely has content — hint the LLM to try deeper search.
-		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
-		return
-	}
-
-	b.WriteString(agent.KnowledgeAutoRecallHeader)
-
-	injected := 0
-	for _, r := range results {
-		if injected >= maxInject {
-			break
-		}
-		if r.Score < minScore {
-			break
-		}
-		text := knowledgeSnippet(r)
-		if text == "" {
-			continue
-		}
-		if len([]rune(text)) > agent.KnowledgeAutoRecallSnippetMaxRunes {
-			text = string([]rune(text)[:agent.KnowledgeAutoRecallSnippetMaxRunes]) + "..."
-		}
-		b.WriteString(fmt.Sprintf("- Source: %s; Citation: %s; Evidence: %s\n", knowledgeSourceLabel(r), knowledgeCitationLabel(r), text))
-		injected++
-	}
+	enterpriseknowledge.AppendAutoRecallFromDataDir(c.dataDir, b, userMsg, prior, minScore)
 }
 
 func knowledgeSourceLabel(r knowledge.SearchResult) string {
@@ -145,21 +168,74 @@ func knowledgeSnippet(r knowledge.SearchResult) string {
 // --- Knowledge tool execution ---
 
 func (c *coreAgentCallbacks) executeKnowledgeSearch(args map[string]interface{}) string {
-	if c.knowledgeStore == nil {
-		return "Error: knowledge base is not configured"
-	}
 	opts := buildSearchOptions(args, c.principal.TenantID, c.principal.UserID)
 	ctx, cancel := context.WithTimeout(c.parentContext(), 10*time.Second)
 	defer cancel()
 
-	results, err := c.knowledgeStore.Search(ctx, opts)
-	if err != nil {
-		return fmt.Sprintf("Error: knowledge search failed: %v", err)
+	var results []knowledge.SearchResult
+	var personalErr error
+	if c.knowledgeStore != nil {
+		results, personalErr = c.knowledgeStore.Search(ctx, opts)
+		if personalErr != nil {
+			log.Printf("[knowledge_search] personal search error: %v", personalErr)
+		}
+	}
+
+	// Merge enterprise digital-asset hits (active libraries only) from user dataDir.
+	entHits := c.searchEnterpriseKnowledge(ctx, opts.Query)
+	if len(entHits) > 0 {
+		results = enterpriseknowledge.MergeSearchResults(results, entHits, opts.Limit, true)
+	}
+
+	if c.knowledgeStore == nil && strings.TrimSpace(c.dataDir) == "" {
+		return "Error: knowledge base is not configured"
+	}
+	if personalErr != nil && len(results) == 0 {
+		return fmt.Sprintf("Error: knowledge search failed: %v", personalErr)
 	}
 	if len(results) == 0 {
 		return knowledge.EmptySearchResultMessage
 	}
-	return formatSearchResults(results)
+	return c.formatSearchResults(results, false)
+}
+
+// executeKnowledgeImageSearch is the explicit image-evidence route. Unlike
+// knowledge_search with source_kinds=image, it guarantees image-node results,
+// so an agent can reliably use the accompanying display marker when a user asks
+// to view, select, or compare stored images.
+func (c *coreAgentCallbacks) executeKnowledgeImageSearch(args map[string]interface{}) string {
+	if c.knowledgeStore == nil {
+		return "Error: knowledge base is not configured"
+	}
+	opts := knowledge.ImageSearchOptions{SearchOptions: buildSearchOptions(args, c.principal.TenantID, c.principal.UserID)}
+	ctx, cancel := context.WithTimeout(c.parentContext(), 10*time.Second)
+	defer cancel()
+	results, err := c.knowledgeStore.SearchImages(ctx, opts)
+	if err != nil {
+		return fmt.Sprintf("Error: knowledge image search failed: %v", err)
+	}
+	if len(results) == 0 {
+		return knowledge.EmptySearchResultMessage
+	}
+	return c.formatSearchResults(results, true)
+}
+
+// searchEnterpriseKnowledge returns active-library enterprise hits for the tool surface.
+func (c *coreAgentCallbacks) searchEnterpriseKnowledge(ctx context.Context, query string) []knowledge.SearchResult {
+	if c == nil || strings.TrimSpace(c.dataDir) == "" || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	hits, err := enterpriseknowledge.SearchActiveFromDataDir(ctx, c.dataDir, query, "")
+	if err != nil {
+		log.Printf("[knowledge_search] enterprise search error: %v", err)
+		return nil
+	}
+	return hits
+}
+
+// mergeKnowledgeSearchResults kept for tests; delegates to shared package helper.
+func mergeKnowledgeSearchResults(personal, enterprise []knowledge.SearchResult, limit int) []knowledge.SearchResult {
+	return enterpriseknowledge.MergeSearchResults(personal, enterprise, limit, true)
 }
 
 func (c *coreAgentCallbacks) executeKnowledgeContextPack(args map[string]interface{}) string {
@@ -260,6 +336,7 @@ func (c *coreAgentCallbacks) executeKnowledgeImportDirectory(args map[string]int
 		return "Error: knowledge base is not configured"
 	}
 	req := buildDirectoryImportRequest(args, c.principal.TenantID, c.principal.UserID, "root_path", "path", "dir", "directory", "folder", "root")
+	req.OfficeReadConfig = officeReadConfigPtrFromAppConfig(c.appCfg)
 	if req.RootPath == "" {
 		return "Error: root_path parameter is required (aliases: path, dir, directory, folder, root)"
 	}
@@ -309,6 +386,7 @@ func (c *coreAgentCallbacks) executeKnowledgeImportFiles(args map[string]interfa
 		return "Error: file_paths parameter is required (aliases: paths, files, file_path, path)"
 	}
 	req := buildDirectoryImportRequest(args, c.principal.TenantID, c.principal.UserID, "root_path", "dir", "directory", "folder", "root")
+	req.OfficeReadConfig = officeReadConfigPtrFromAppConfig(c.appCfg)
 	action, err := knowledgeImportAction(args)
 	if err != nil {
 		return fmt.Sprintf("Error: %v", err)
@@ -522,6 +600,57 @@ func buildSearchOptions(args map[string]interface{}, tenantID, userID string) kn
 
 func formatSearchResults(results []knowledge.SearchResult) string {
 	return knowledge.FormatSearchResultsForLLM(results)
+}
+
+// formatSearchResults appends a small number of display-safe image markers to
+// the evidence text. The agent can copy an exact marker into its final answer
+// when the user asks to see an image; desktop chat recognizes the marker and
+// renders its thumbnail. No original file path crosses into model context.
+func (c *coreAgentCallbacks) formatSearchResults(results []knowledge.SearchResult, includeImageMarkers bool) string {
+	formatted := formatSearchResults(results)
+	// A general text search may return image nodes incidentally. Do not copy
+	// thumbnail bytes into the model context in that case: image display is an
+	// explicit user-facing capability, so only knowledge_image_search receives
+	// renderable markers. Text evidence remains available through both routes.
+	if c == nil || !includeImageMarkers {
+		return formatted
+	}
+	assetBaseDir := c.knowledgeImageAssetBaseDir()
+	if assetBaseDir == "" {
+		return formatted
+	}
+	var markers []string
+	const maxImageMarkers = 3
+	for _, result := range results {
+		if len(markers) >= maxImageMarkers {
+			break
+		}
+		embed := knowledge.EmbedImageThumbForSearchResult(result, assetBaseDir)
+		if embed == nil {
+			continue
+		}
+		if marker := knowledge.FormatKBImageMarker(embed); marker != "" {
+			markers = append(markers, marker)
+		}
+	}
+	if len(markers) == 0 {
+		return formatted
+	}
+	return formatted + "\nImage display markers (copy an exact marker onto its own line only when the user asks to see the image):\n" + strings.Join(markers, "\n")
+}
+
+func (c *coreAgentCallbacks) knowledgeImageAssetBaseDir() string {
+	if c != nil && c.knowledgeStore != nil {
+		if provider, ok := c.knowledgeStore.(knowledgeImageAssetBaseDirProvider); ok {
+			if baseDir := strings.TrimSpace(provider.ImageAssetBaseDir()); baseDir != "" {
+				return baseDir
+			}
+		}
+	}
+	if c == nil || strings.TrimSpace(c.dataDir) == "" {
+		return ""
+	}
+	return filepath.Join(c.dataDir, "knowledge_assets")
 }
 
 func stringArg(args map[string]interface{}, key string) string {

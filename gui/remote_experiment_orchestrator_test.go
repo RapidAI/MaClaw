@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -418,6 +420,7 @@ func TestExperimentTargetDeltaThresholdUsesRelativePaperMetric(t *testing.T) {
 
 func TestRemoteExperimentOrchestratorCodingExperienceForRoundClassifiesOutcomes(t *testing.T) {
 	o := &RemoteExperimentOrchestrator{
+		projectDir: "/repo",
 		state: ExperimentOrchestratorState{
 			Params: ExperimentOrchestratorParams{
 				BaselineMetricName:  "Accuracy",
@@ -439,7 +442,7 @@ func TestRemoteExperimentOrchestratorCodingExperienceForRoundClassifiesOutcomes(
 		VerificationCommand: "pytest eval.py",
 		VerificationResult:  "exit=0 accuracy=91",
 	})
-	if !ok || exp.Status != knowledge.CodingStatusCandidate || exp.Category != "optimization" || exp.Confidence >= 0.85 {
+	if !ok || exp.Status != knowledge.CodingStatusCandidate || exp.Category != knowledge.CodingCategoryDecision || exp.Scope != knowledge.CodingScopeProject || exp.Confidence >= 0.85 {
 		t.Fatalf("non-target completed round should be candidate optimization knowledge, got ok=%v exp=%#v", ok, exp)
 	}
 	if exp.SuccessCount != 1 || !experimentTestContainsString(exp.Labels, "completed") || experimentTestContainsString(exp.Labels, "target_reached") {
@@ -461,8 +464,8 @@ func TestRemoteExperimentOrchestratorCodingExperienceForRoundClassifiesOutcomes(
 		DeltaFromPaper: 5,
 		Config:         "smoothing=0.1",
 	})
-	if !ok || exp.Status != knowledge.CodingStatusActive || exp.Confidence < 0.85 || !experimentTestContainsString(exp.Labels, "target_reached") {
-		t.Fatalf("target-reaching completed round should be active knowledge, got ok=%v exp=%#v", ok, exp)
+	if !ok || exp.Status != knowledge.CodingStatusCandidate || exp.Confidence < 0.85 || !experimentTestContainsString(exp.Labels, "target_reached") {
+		t.Fatalf("target-reaching completed round should remain reviewable candidate knowledge, got ok=%v exp=%#v", ok, exp)
 	}
 
 	exp, ok = o.codingExperienceForRound(ExperimentRoundResult{
@@ -473,11 +476,63 @@ func TestRemoteExperimentOrchestratorCodingExperienceForRoundClassifiesOutcomes(
 		Error:        "training crashed",
 		Config:       "adamw",
 	})
-	if !ok || exp.Status != knowledge.CodingStatusCandidate || exp.Category != "pitfall" || exp.FailureCount != 1 {
+	if !ok || exp.Status != knowledge.CodingStatusCandidate || exp.Category != knowledge.CodingCategoryPitfall || exp.Scope != knowledge.CodingScopeProject || exp.FailureCount != 1 {
 		t.Fatalf("failed round should be candidate pitfall knowledge, got ok=%v exp=%#v", ok, exp)
 	}
 	if len(exp.FailedAttempts) != 1 || exp.FailedAttempts[0] != "training crashed" || len(exp.Contraindications) == 0 {
 		t.Fatalf("failed round should preserve failed attempt and contraindication, got %#v", exp)
+	}
+}
+
+func TestRemoteExperimentRoundExperiencePersistsWithRuntimeProvenance(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		closeCodingKnowledgeStore(t, app)
+		app.closeCodingRuntimeStore()
+	})
+	ledger := app.ensureCodingRuntimeStore()
+	if ledger == nil {
+		t.Fatal("runtime ledger unavailable")
+	}
+	now := time.Now().UTC()
+	task, err := ledger.CreateTask(codingruntime.Task{TaskID: "experiment-runtime", ProjectRef: "/repo", Mode: "remote", PolicyDigest: "policy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := ledger.StartAttempt(task.TaskID, "test", time.Minute, codingruntime.PolicySnapshot{Digest: "policy", ProjectRoot: "/repo", Mode: "remote"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.AppendEvent(attempt.AttemptID, "test", "verification", "sha256:experiment-verification", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test", codingruntime.FinishInput{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectConfirmed}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	store := app.ensureCodingKnowledgeStore()
+	agent := &RemoteCodingSubAgent{handler: &IMMessageHandler{app: app}, codingKB: store}
+	o := &RemoteExperimentOrchestrator{
+		projectDir: "/repo",
+		subAgent:   agent,
+		state:      ExperimentOrchestratorState{Params: ExperimentOrchestratorParams{BaselineMetricName: "Accuracy"}},
+	}
+	o.saveRoundExperience(ExperimentRoundResult{
+		RoundNumber: 1, Status: "completed", RuntimeTaskID: task.TaskID,
+		Modification: "add dropout", Reason: "reduce overfit", MetricValue: 91, Config: "dropout=0.2",
+		VerificationCommand: "pytest eval.py", VerificationResult: "exit=0",
+	})
+
+	experiences, err := store.ListExperiences(context.Background(), knowledge.CodingListFilter{Limit: 10})
+	if err != nil || len(experiences) != 1 {
+		t.Fatalf("saved experiment experiences=%#v err=%v", experiences, err)
+	}
+	got, err := store.GetExperience(context.Background(), experiences[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != knowledge.CodingStatusCandidate || got.Scope != knowledge.CodingScopeProject || got.Category != knowledge.CodingCategoryDecision || got.ProjectPath != "/repo" || got.SourceRuntimeTaskID != task.TaskID || got.SourceRuntimeAttemptID != attempt.AttemptID || !strings.HasPrefix(got.EvidenceDigest, "sha256:") {
+		t.Fatalf("runtime-backed experiment was not persisted as a review candidate: %#v", got)
 	}
 }
 

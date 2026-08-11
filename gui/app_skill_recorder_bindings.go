@@ -21,7 +21,7 @@ func (a *App) StartSkillRecording(tabID string) string {
 	ownerID := a.resolveSkillRecordingOwnerID(tabID)
 	workDir := a.GetCurrentProjectPath()
 	// For project tabs, use the project path as workDir.
-	if projectPath := a.resolveProjectPathForTab(tabID); projectPath != "" {
+	if projectPath := a.resolveProjectPathForTab(tabID, ""); projectPath != "" {
 		workDir = projectPath
 	}
 
@@ -44,25 +44,12 @@ func (a *App) resolveSkillRecordingOwnerID(tabID string) string {
 	if tabID == "" || tabID == "local" {
 		return desktopUserID
 	}
-	// Project tabs: look up cached projectPath → synthesize ownerID
-	if projectPath := a.resolveProjectPathForTab(tabID); projectPath != "" {
+	// Project tabs: look up cached/session projectPath → synthesize ownerID
+	if projectPath := a.resolveProjectPathForTab(tabID, ""); projectPath != "" {
 		return desktopUserID + ":" + projectPath
 	}
 	// Fallback: use desktop-user (local tab behavior)
 	return desktopUserID
-}
-
-// resolveProjectPathForTab returns the project path for a given tabID, or empty string.
-func (a *App) resolveProjectPathForTab(tabID string) string {
-	if tabID == "" || tabID == "local" {
-		return ""
-	}
-	if v, ok := a.tabProjectPaths.Load(tabID); ok {
-		if path, ok := v.(string); ok && path != "" {
-			return path
-		}
-	}
-	return ""
 }
 
 // StopSkillRecording stops recording and returns data for the inline card.

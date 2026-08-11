@@ -45,6 +45,9 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 			if strArg(args, "passphrase") == "" && entry.Passphrase != "" {
 				args["passphrase"] = entry.Passphrase
 			}
+			if strArg(args, "host_key_fingerprint") == "" && entry.HostKeyFingerprint != "" {
+				args["host_key_fingerprint"] = entry.HostKeyFingerprint
+			}
 			label = entry.Label
 		}
 	}
@@ -98,14 +101,15 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 	}
 
 	cfg := remote.SSHHostConfig{
-		Host:       host,
-		User:       user,
-		Port:       port,
-		AuthMethod: strArg(args, "auth_method"),
-		KeyPath:    strArg(args, "key_path"),
-		Password:   strArg(args, "password"),
-		Passphrase: strArg(args, "passphrase"),
-		Label:      label,
+		Host:               host,
+		User:               user,
+		Port:               port,
+		AuthMethod:         strArg(args, "auth_method"),
+		KeyPath:            strArg(args, "key_path"),
+		Password:           strArg(args, "password"),
+		Passphrase:         strArg(args, "passphrase"),
+		Label:              label,
+		HostKeyFingerprint: strArg(args, "host_key_fingerprint"),
 	}
 
 	spec := remote.SSHSessionSpec{

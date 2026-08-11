@@ -296,6 +296,44 @@ func opReduceMean(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
 			outShape = append(outShape, keptShape[d])
 		}
 	}
+
+	// Fast path: the reduced axes form a contiguous suffix (e.g. [2,3] on
+	// NCHW feature maps or [-1] layer-norm rows), so every output element is
+	// the mean of a contiguous run of `inner` floats — vectorized sum instead
+	// of the generic per-element index walk.
+	k := 0
+	for k < rank && reduce[rank-1-k] {
+		k++
+	}
+	suffixReduce := k > 0
+	for d := 0; d < rank-k; d++ {
+		if reduce[d] {
+			suffixReduce = false
+			break
+		}
+	}
+	if suffixReduce {
+		inner := numElements(x.Shape[rank-k:])
+		outer := numElements(x.Shape[:rank-k])
+		if inner > 0 && outer*inner == len(xf) {
+			out := rc.newFloat(n, 0, keptShape...)
+			rowFn := func(o0, o1 int) {
+				for o := o0; o < o1; o++ {
+					out.F32[o] = vek32.Sum(xf[o*inner:(o+1)*inner]) / float32(inner)
+				}
+			}
+			if outer >= 4 && outer*inner >= parThreshold {
+				xt.ParallelRanges(outer, rowFn)
+			} else {
+				rowFn(0, outer)
+			}
+			if !shapeEqual(keptShape, outShape) {
+				out = out.Reshape(outShape...)
+			}
+			return []*Tensor{out}, nil
+		}
+	}
+
 	// The accumulation below relies on a zeroed output; arena checkouts for
 	// this node are cleared (arenaPlan.needsZero), heap fallbacks are zeroed.
 	out := rc.newFloat(n, 0, keptShape...)

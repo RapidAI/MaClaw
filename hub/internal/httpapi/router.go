@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/digitalasset"
 	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 	"github.com/RapidAI/CodeClaw/hub/internal/expert"
@@ -163,6 +165,28 @@ func NewRouter(
 	welcomeSyncPackageDir := filepath.Join(runtimeDataDir, "welcome-sync")
 	virtualRepositorySyncDir := filepath.Join(runtimeDataDir, "virtual-repository-sync")
 	StartKnowledgeSyncCleanup(knowledgeSyncPackageDir)
+
+	// Enterprise digital assets.
+	// Process config/env only seeds defaults; tenant admins toggle enabled in System Settings (persisted).
+	var digitalAssetSvc *digitalasset.Service
+	if hubDB != nil {
+		settings := digitalasset.DefaultTenantSettings()
+		enabled := hubCfg != nil && hubCfg.DigitalAssets.Enabled
+		if v := strings.TrimSpace(os.Getenv("MACLAW_DIGITAL_ASSETS_ENABLED")); v == "1" || strings.EqualFold(v, "true") {
+			enabled = true
+		}
+		settings.Enabled = enabled
+		host := digitalasset.NewKnowledgeHost(runtimeDataDir, settings.MaxOpenLibraries)
+		digitalAssetSvc = &digitalasset.Service{
+			Repo:     storesqlite.NewDigitalAssetRepository(hubDB, hubDB),
+			Host:     host,
+			ACL:      &digitalasset.Evaluator{Groups: digitalasset.SecurityGroupLookup{Service: securitySvc}, AncestorMatch: true},
+			Limiter:  digitalasset.NewSyncLimiter(settings.PerUserPullRPM, settings.PerTenantConcurrentPulls),
+			System:   system,
+			Settings: settings,
+			Enabled:  enabled,
+		}
+	}
 	if hubDB != nil && identity != nil {
 		NewMigrationAPI(hubDB, runtimeDataDir, identity, identity.MachinesRepo(), system).RegisterRoutes(mux, requireTenantAdmin)
 	}
@@ -292,6 +316,37 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/failure-logs", requireAdmin(ListFailureLogsHandler(failureLogs)))
 	mux.HandleFunc("GET /api/admin/knowledge/shares", requireAdmin(ListKnowledgeSharesAdminHandler(knowledgeShares)))
 	mux.HandleFunc("DELETE /api/admin/knowledge/shares/{knowledgeID}", requireAdmin(ForceDeleteKnowledgeShareAdminHandler(knowledgeShares, adminAudit)))
+	// Digital assets (enterprise knowledge libraries). Routes always registered; handlers 404 when disabled.
+	if digitalAssetSvc != nil {
+		shareLoader := digitalasset.KnowledgeShareFileLoader{
+			Repo: knowledgeShares, PackageDir: knowledgeSharePackageDir,
+		}
+		mux.HandleFunc("GET /api/admin/digital-assets/libraries", requireAdmin(ListDigitalAssetLibrariesAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries", requireAdmin(CreateDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("PATCH /api/admin/digital-assets/libraries/{id}", requireAdmin(PatchDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("DELETE /api/admin/digital-assets/libraries/{id}", requireAdmin(DeleteDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/libraries/{id}/search", requireAdmin(SearchDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/libraries/{id}/sources", requireAdmin(ListDigitalAssetLibrarySourcesAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("DELETE /api/admin/digital-assets/libraries/{id}/sources/{source_id}", requireAdmin(DeleteDigitalAssetLibrarySourceAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/sources/delete", requireAdmin(DeleteDigitalAssetLibrarySourcesBatchAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/libraries/{id}/import-jobs", requireAdmin(ListDigitalAssetLibraryImportJobsAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/upload", requireAdmin(ImportDigitalAssetUploadAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/archive", requireAdmin(ImportDigitalAssetArchiveAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/local-dir", requireAdmin(ImportDigitalAssetLocalDirAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/browser-dir", requireAdmin(ImportDigitalAssetBrowserDirAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/knowledge-share", requireAdmin(ImportDigitalAssetKnowledgeShareAdminHandler(digitalAssetSvc, shareLoader)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/merge", requireAdmin(MergeDigitalAssetLibrariesAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/export", requireAdmin(ExportDigitalAssetBackupAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/export/jobs/{job_id}/download", requireAdmin(DownloadDigitalAssetBackupAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/import/backup", requireAdmin(ImportDigitalAssetBackupAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/import/jobs/{job_id}", requireAdmin(GetDigitalAssetImportJobAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/settings", requireAdmin(GetDigitalAssetSettingsAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("PUT /api/admin/digital-assets/settings", requireAdmin(PutDigitalAssetSettingsAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/digital-assets/libraries", ListDigitalAssetLibrariesUserHandler(digitalAssetSvc, identity))
+		mux.HandleFunc("GET /api/digital-assets/sync/manifest", DigitalAssetSyncManifestHandler(digitalAssetSvc, identity))
+		mux.HandleFunc("POST /api/digital-assets/sync/pull", DigitalAssetSyncPullHandler(digitalAssetSvc, identity))
+		mux.HandleFunc("GET /api/digital-assets/libraries/{id}/sync/packages/{rev}", DigitalAssetSyncPackageHandler(digitalAssetSvc, identity))
+	}
 	mux.HandleFunc("GET /api/knowledge/shares/mine", ListMyKnowledgeSharesHandler(knowledgeShares, identity))
 	mux.HandleFunc("POST /api/knowledge/shares", CreateKnowledgeShareHandler(knowledgeShares, identity, knowledgeSharePackageDir))
 	mux.HandleFunc("GET /api/knowledge/shares/{knowledgeID}", GetKnowledgeSharePublicHandler(knowledgeShares, identity))

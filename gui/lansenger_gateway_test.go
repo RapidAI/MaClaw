@@ -1,17 +1,23 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/improactive"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
+	"github.com/RapidAI/CodeClaw/corelib/lansengerwatch"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
 func TestLansengerStatusNeedsWatchdogRestart(t *testing.T) {
@@ -35,6 +41,106 @@ func TestLansengerStatusNeedsWatchdogRestart(t *testing.T) {
 		if lansengerStatusNeedsWatchdogRestart(status) {
 			t.Fatalf("status %q should not trigger stale-status watchdog restart", status)
 		}
+	}
+}
+
+func TestGetLansengerStatusAggregatesCustomBotProfiles(t *testing.T) {
+	connected := newLansengerGatewayManager(nil)
+	connected.status = gatewayConnectionStatusConnected
+	disconnected := newLansengerGatewayManager(nil)
+	disconnected.status = gatewayConnectionStatusDisconnected
+	registry := newLansengerGatewayRegistry(nil)
+	registry.bots["support"] = connected
+	registry.bots["sales"] = disconnected
+
+	app := &App{lansengerGateways: registry}
+	if got := app.GetLansengerStatus(); got != "connected" {
+		t.Fatalf("aggregate status = %q, want connected", got)
+	}
+
+	connected.status = gatewayConnectionStatusDisconnected
+	disconnected.status = gatewayConnectionStatusReconnecting
+	if got := app.GetLansengerStatus(); got != "reconnecting" {
+		t.Fatalf("aggregate status = %q, want reconnecting", got)
+	}
+}
+
+func TestLansengerWatchJobsAreProfileScoped(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{LansengerBots: []corelib.LansengerBotProfile{
+		{ID: "support", Enabled: true},
+		{ID: "sales", Enabled: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, profileID := range []string{"support", "sales"} {
+		raw, err := app.UpsertLansengerWatchJobForBot(profileID, fmt.Sprintf(`{
+			"name":%q,"enabled":true,"group_id":"same-group",
+			"target_staff_ids":["u1"],"record_all":true
+		}`, profileID))
+		if err != nil {
+			t.Fatalf("save %s watch: %v", profileID, err)
+		}
+		if !strings.Contains(raw, `"bot_profile_id":"`+profileID+`"`) {
+			t.Fatalf("save payload missing profile id: %s", raw)
+		}
+	}
+
+	for _, profileID := range []string{"support", "sales"} {
+		raw, err := app.ListLansengerWatchJobsForBot(profileID)
+		if err != nil {
+			t.Fatalf("list %s watch: %v", profileID, err)
+		}
+		var jobs []lansengerwatch.Job
+		if err := json.Unmarshal([]byte(raw), &jobs); err != nil {
+			t.Fatal(err)
+		}
+		if len(jobs) != 1 || jobs[0].BotProfileID != profileID {
+			t.Fatalf("%s jobs = %#v", profileID, jobs)
+		}
+	}
+
+	svc := app.watchService()
+	jobs := svc.listJobsCached()
+	if !lansengerwatch.AnyActiveWatchForBotGroup(jobs, "support", "same-group") ||
+		!lansengerwatch.AnyActiveWatchForBotGroup(jobs, "sales", "same-group") {
+		t.Fatalf("profile watch jobs did not reach hot cache: %#v", jobs)
+	}
+}
+
+func TestLansengerWatchRejectsUnknownBotProfile(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{LansengerBots: []corelib.LansengerBotProfile{{ID: "support", Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UpsertLansengerWatchJobForBot("missing", `{"name":"job","enabled":true,"group_id":"g","target_staff_ids":["u"],"record_all":true}`); err == nil {
+		t.Fatal("unknown bot profile must not create an orphaned watch job")
+	}
+	if err := app.AddLansengerWatchMemberForBot("missing", "g", "u", "User"); err == nil {
+		t.Fatal("unknown bot profile must not create an orphaned roster")
+	}
+}
+
+func TestDeletedLansengerBotRetainsWatchJobsForRecreation(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{LansengerBots: []corelib.LansengerBotProfile{{ID: "support", Enabled: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UpsertLansengerWatchJobForBot("support", `{"name":"job","enabled":true,"group_id":"g","target_staff_ids":["u"],"record_all":true}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeleteLansengerBot("support"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ListLansengerWatchJobsForBot("support"); err == nil {
+		t.Fatal("deleted bot must not expose its jobs through the scoped API")
+	}
+	if _, err := app.SaveLansengerBot(corelib.LansengerBotProfile{ID: "support", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := app.ListLansengerWatchJobsForBot("support")
+	if err != nil || !strings.Contains(raw, `"name":"job"`) {
+		t.Fatalf("recreated bot should recover its watch jobs: raw=%s err=%v", raw, err)
 	}
 }
 
@@ -65,6 +171,63 @@ func TestRecordGroupFileAuditDoesNotDependOnAgentRouting(t *testing.T) {
 	}
 }
 
+func TestLansengerProfileGroupFileAuditUsesProfileScopedAttachmentPath(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", root)
+	app := &App{testHomeDir: root}
+	mgr := newLansengerGatewayManagerForProfile(app, corelib.LansengerBotProfile{ID: "support"})
+	msg := lansenger.IncomingMessage{ChatType: "group", GroupID: "g1", FromUserID: "u1", MessageID: "m1", MediaType: "file", MediaName: "report.txt", MediaData: []byte("hello")}
+	if !mgr.recordGroupFileAudit(msg) {
+		t.Fatal("audit was not recorded")
+	}
+	store := app.getIMAuditStore()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewIMAuditStore(filepath.Join(app.GetDataDir(), "im_audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Close()
+	page, err := result.QueryForBot("lansenger", "support", "", "", 1)
+	if err != nil || len(page.Messages) != 1 {
+		t.Fatalf("page=%#v err=%v", page, err)
+	}
+	attachmentPath := filepath.ToSlash(page.Messages[0].AttachmentPath)
+	if !strings.Contains(attachmentPath, "/lansenger_support/") {
+		t.Fatalf("attachment path %q is not profile scoped", attachmentPath)
+	}
+}
+
+func TestLansengerProfilePrivateMediaUsesProfileScopedTempPath(t *testing.T) {
+	root := t.TempDir()
+	oldBaseDir := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(root)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBaseDir) })
+	support, err := saveMediaToTempDirForScope("lansenger", "ls_", "same-user", "file", []byte("support"), "guide.pdf", "support")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sales, err := saveMediaToTempDirForScope("lansenger", "ls_", "same-user", "file", []byte("sales"), "guide.pdf", "sales")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if support == sales {
+		t.Fatalf("profile media paths collided: %q", support)
+	}
+	if !strings.Contains(filepath.ToSlash(support), "/temp/lansenger/support/") || !strings.Contains(filepath.ToSlash(sales), "/temp/lansenger/sales/") {
+		t.Fatalf("profile media paths are not scoped: support=%q sales=%q", support, sales)
+	}
+	supportData, err := os.ReadFile(support)
+	if err != nil || string(supportData) != "support" {
+		t.Fatalf("support media=%q err=%v", supportData, err)
+	}
+	salesData, err := os.ReadFile(sales)
+	if err != nil || string(salesData) != "sales" {
+		t.Fatalf("sales media=%q err=%v", salesData, err)
+	}
+}
+
 func TestLansengerInboundMediaLimitUsesLiveSnapshot(t *testing.T) {
 	mgr := newLansengerGatewayManager(nil)
 	file := lansenger.IncomingMediaInfo{ChatType: "group", GroupID: " group-1 ", MediaType: "file"}
@@ -87,6 +250,142 @@ func TestLansengerInboundMediaLimitUsesLiveSnapshot(t *testing.T) {
 	if got, ok := mgr.inboundMediaLimit(image); !ok || got != 0 {
 		t.Fatalf("image limit = %d, ok=%v; want legacy image policy", got, ok)
 	}
+}
+
+func TestLansengerProfileBotDoesNotOwnLegacyHubClaim(t *testing.T) {
+	legacy := newLansengerGatewayManager(nil)
+	if !legacy.ownsLegacyHubClaim() {
+		t.Fatal("legacy manager should own the singleton Hub claim")
+	}
+	profile := newLansengerGatewayManagerForProfile(nil, corelib.LansengerBotProfile{ID: "support"})
+	if profile.ownsLegacyHubClaim() {
+		t.Fatal("profile bot must not own the singleton Hub claim")
+	}
+}
+
+func TestLansengerProfilePrivatePeersDoNotSharePersistence(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", root)
+	legacyPeer := "legacy-user"
+	if err := improactive.NewStore("").Patch(func(peers *improactive.Peers) {
+		peers.LansengerPrivateUserID = legacyPeer
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	support := newLansengerGatewayManagerForProfile(nil, corelib.LansengerBotProfile{ID: "support"})
+	sales := newLansengerGatewayManagerForProfile(nil, corelib.LansengerBotProfile{ID: "sales"})
+	if support.LastPrivatePeerID() != "" || sales.LastPrivatePeerID() != "" {
+		t.Fatalf("custom profiles inherited legacy peer: support=%q sales=%q", support.LastPrivatePeerID(), sales.LastPrivatePeerID())
+	}
+	support.noteLastPrivatePeer("support-user")
+	if support.LastPrivatePeerID() != "support-user" {
+		t.Fatalf("support peer = %q", support.LastPrivatePeerID())
+	}
+	if sales.LastPrivatePeerID() != "" {
+		t.Fatalf("sales leaked support peer = %q", sales.LastPrivatePeerID())
+	}
+
+	reloadedSupport := newLansengerGatewayManagerForProfile(nil, corelib.LansengerBotProfile{ID: "support"})
+	reloadedSales := newLansengerGatewayManagerForProfile(nil, corelib.LansengerBotProfile{ID: "sales"})
+	if reloadedSupport.LastPrivatePeerID() != "support-user" || reloadedSales.LastPrivatePeerID() != "" {
+		t.Fatalf("reloaded profile peers = support:%q sales:%q", reloadedSupport.LastPrivatePeerID(), reloadedSales.LastPrivatePeerID())
+	}
+
+	defaultBot := newLansengerGatewayManagerForProfile(nil, corelib.LansengerBotProfile{ID: corelib.DefaultLansengerBotProfileID})
+	if defaultBot.LastPrivatePeerID() != legacyPeer {
+		t.Fatalf("default profile did not retain legacy peer: %q", defaultBot.LastPrivatePeerID())
+	}
+}
+
+func TestLansengerProfileDeliveryNeverFallsBackToDefaultGatewayOrPeer(t *testing.T) {
+	defaultManager := newLansengerGatewayManager(nil)
+	defaultManager.lastPrivateUserID = "default-user"
+	supportManager := newLansengerGatewayManagerForProfile(nil, corelib.LansengerBotProfile{ID: "support"})
+	supportManager.lastPrivateUserID = "support-user"
+	registry := newLansengerGatewayRegistry(nil)
+	registry.bots[corelib.DefaultLansengerBotProfileID] = defaultManager
+	registry.bots["support"] = supportManager
+	app := &App{lansengerGateway: defaultManager, lansengerGateways: registry}
+
+	if got := app.resolveLansengerDeliverySelfPeer("support", "self"); got != "support-user" {
+		t.Fatalf("support self peer = %q, want support-user", got)
+	}
+	if _, err := app.lansengerGatewayManagerForSend("missing"); err == nil {
+		t.Fatal("missing profile must not fall back to default gateway")
+	}
+	if manager, err := app.lansengerGatewayManagerForSend("support"); err != nil || manager != supportManager {
+		t.Fatalf("support manager = %#v err=%v", manager, err)
+	}
+}
+
+func TestLansengerProfileFileDeliveryUsesOwnGatewayAndPrivatePeer(t *testing.T) {
+	var defaultSends, supportSends int
+	defaultAPI := newLansengerFileDeliveryTestServer(t, &defaultSends)
+	defer defaultAPI.Close()
+	supportAPI := newLansengerFileDeliveryTestServer(t, &supportSends)
+	defer supportAPI.Close()
+
+	defaultGateway := lansenger.NewGateway(lansenger.Config{AppID: "default", AppSecret: "secret", ApiGatewayURL: defaultAPI.URL}, nil)
+	supportGateway := lansenger.NewGateway(lansenger.Config{AppID: "support", AppSecret: "secret", ApiGatewayURL: supportAPI.URL}, nil)
+	defaultManager := newLansengerGatewayManager(nil)
+	defaultManager.gateway = defaultGateway
+	defaultManager.lastPrivateUserID = "default-user"
+	supportManager := newLansengerGatewayManagerForProfile(nil, corelib.LansengerBotProfile{ID: "support"})
+	supportManager.gateway = supportGateway
+	supportManager.lastPrivateUserID = "support-user"
+	registry := newLansengerGatewayRegistry(nil)
+	registry.bots[corelib.DefaultLansengerBotProfileID] = defaultManager
+	registry.bots["support"] = supportManager
+	app := &App{lansengerGateway: defaultManager, lansengerGateways: registry}
+
+	err := app.sendLocalIMFileToTarget(agent.IMFileDeliveryRequest{
+		Data:         base64.StdEncoding.EncodeToString([]byte("file")),
+		FileName:     "report.txt",
+		MIMEType:     "text/plain",
+		Target:       agent.IMFileDeliveryTarget{Channel: scheduler.DeliveryChannelLansenger, UserID: "self"},
+		BotProfileID: "support",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultSends != 0 || supportSends != 1 {
+		t.Fatalf("file send used default=%d support=%d; want default=0 support=1", defaultSends, supportSends)
+	}
+}
+
+func TestLansengerProfileFileDeliveryMissingProfileFailsClosed(t *testing.T) {
+	defaultManager := newLansengerGatewayManager(nil)
+	registry := newLansengerGatewayRegistry(nil)
+	registry.bots[corelib.DefaultLansengerBotProfileID] = defaultManager
+	app := &App{lansengerGateway: defaultManager, lansengerGateways: registry}
+	err := app.sendLocalIMFileToTarget(agent.IMFileDeliveryRequest{
+		Data:         base64.StdEncoding.EncodeToString([]byte("file")),
+		FileName:     "report.txt",
+		MIMEType:     "text/plain",
+		Target:       agent.IMFileDeliveryTarget{Channel: scheduler.DeliveryChannelLansenger, UserID: "self"},
+		BotProfileID: "missing",
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing profile err=%v; want fail-closed profile error", err)
+	}
+}
+
+func newLansengerFileDeliveryTestServer(t *testing.T, sends *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apptoken/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"appToken": "token", "expiresIn": 3600}})
+		case "/v1/app/medias/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"mediaId": "media-1"}})
+		case "/v1/bot/messages/create":
+			*sends++
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
 }
 
 func TestSetLansengerGroupFileMaxBytesUpdatesRunningManager(t *testing.T) {
@@ -643,6 +942,9 @@ func TestLansengerLocalStartMenuSessionKeyIsUnambiguous(t *testing.T) {
 	if got := lansengerLocalStartMenuSessionKey(first); got != lansengerLocalStartMenuSessionKey(first) {
 		t.Fatalf("session key is not stable: %q", got)
 	}
+	if firstKey, secondKey := lansengerLocalStartMenuSessionKeyForProfile("support", first), lansengerLocalStartMenuSessionKeyForProfile("sales", first); firstKey == secondKey {
+		t.Fatalf("different bot profiles shared a start-menu session key: %q", firstKey)
+	}
 }
 
 func TestLansengerConversationUserIDIsolatesGroupsAndPrivateChats(t *testing.T) {
@@ -664,6 +966,23 @@ func TestLansengerConversationUserIDIsolatesGroupsAndPrivateChats(t *testing.T) 
 	}
 	if got := lansengerConversationUserID(groupA); got != lansengerConversationUserID(groupA) {
 		t.Fatalf("group conversation ID is not stable: %q", got)
+	}
+}
+
+func TestLansengerAnswerCacheQuestionEligibilityRejectsContextualGroupTurns(t *testing.T) {
+	if !lansengerAnswerCacheQuestionEligible(lansenger.IncomingMessage{ChatType: "p2p", Text: "What is the policy?"}) {
+		t.Fatal("independent private question was not cache eligible")
+	}
+	if !lansengerAnswerCacheQuestionEligible(lansenger.IncomingMessage{ChatType: "group", GroupID: "g", Text: "What is the policy?", MentionedBots: []lansenger.MentionedBot{{ID: "self"}}}) {
+		t.Fatal("bot mention should not make an independent group question contextual")
+	}
+	for name, msg := range map[string]lansenger.IncomingMessage{
+		"quoted":        {ChatType: "group", GroupID: "g", Text: "What is the policy?", ReferenceText: "Earlier question"},
+		"staff mention": {ChatType: "group", GroupID: "g", Text: "What is the policy?", MentionedStaffs: []lansenger.MentionedStaff{{ID: "alice"}}},
+	} {
+		if lansengerAnswerCacheQuestionEligible(msg) {
+			t.Fatalf("%s group turn was cache eligible", name)
+		}
 	}
 }
 

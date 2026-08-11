@@ -29,7 +29,16 @@ type TaskRunResult struct {
 	FilesCreated  []string      `json:"files_created,omitempty"`
 	FilesModified []string      `json:"files_modified,omitempty"`
 	Error         string        `json:"error,omitempty"`
-	Duration      time.Duration `json:"duration"`
+	// RuntimeTaskID is an opaque reference to the durable coding execution
+	// ledger. It deliberately excludes commands, prompts, credentials and any
+	// replay payload; host code uses it only to prepare an explicit recovery.
+	RuntimeTaskID string `json:"runtime_task_id,omitempty"`
+	// RuntimeHandoff marks a parent attempt that admitted read-only children.
+	// It is intentionally separate from TaskSkipped: a host must offer an
+	// explicit, fresh review attempt after the Runtime has delivered bounded
+	// child results. It never authorizes TaskRunner to replay the old attempt.
+	RuntimeHandoff bool          `json:"runtime_handoff,omitempty"`
+	Duration       time.Duration `json:"duration"`
 }
 
 // TaskRunnerConfig holds configuration for the task runner.
@@ -37,8 +46,12 @@ type TaskRunnerConfig struct {
 	ProjectPath     string
 	RequirementsCtx string // truncated requirements summary
 	DesignCtx       string // truncated design summary
-	MaxRetries      int    // per-task retry limit (default 2)
-	TDDMode         bool   // if true, each task runs in two phases: test-first → implement
+	MaxRetries      int    // per-task retry limit; 0 means do not retry
+	// AllowAutomaticRetries must be explicitly enabled only for a phase proven
+	// free of side effects. Coding tasks may write files or invoke shell/SSH,
+	// so their safe default is no automatic replay.
+	AllowAutomaticRetries bool
+	TDDMode               bool // if true, each task runs in two phases: test-first → implement
 	// MaxParallel is the max concurrent tasks in a ready wave (default 1 = sequential).
 	// Only tasks that are simultaneously dependency-ready run together; writers should
 	// keep MaxParallel low (2–3). SubAgentFunc must be concurrency-safe when > 1.
@@ -47,6 +60,11 @@ type TaskRunnerConfig struct {
 	// are running in the current ready wave (1 for sequential). SubAgent hosts
 	// may use this to decide isolation (e.g. git worktree only when WaveSize>1).
 	WaveSize int
+	// CanRunParallelWave is an optional host-owned, fail-closed admission
+	// predicate. It is evaluated on the dependency-ready wave before any
+	// goroutine starts. A false result serializes that wave; it must never be
+	// treated as permission to fall back to concurrent shared-workspace writes.
+	CanRunParallelWave func([]*TaskItem) bool
 }
 
 // SubAgentFunc is the function signature for running a single task with a SubAgent.
@@ -61,8 +79,8 @@ type TaskRunner struct {
 }
 
 func NewTaskRunner(config TaskRunnerConfig, subAgentFunc SubAgentFunc) *TaskRunner {
-	if config.MaxRetries <= 0 {
-		config.MaxRetries = 2
+	if config.MaxRetries < 0 {
+		config.MaxRetries = 0
 	}
 	return &TaskRunner{
 		config:       config,
@@ -210,6 +228,18 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 		}
 
 		waveSize := len(ready)
+		if waveSize > 1 && r.config.CanRunParallelWave != nil {
+			wave := make([]*TaskItem, 0, waveSize)
+			for _, i := range ready {
+				wave = append(wave, tasks[i])
+			}
+			if !r.config.CanRunParallelWave(wave) {
+				// Preserve deterministic plan order when a host cannot prove the
+				// whole ready group is concurrency-safe.
+				ready = ready[:1]
+				waveSize = 1
+			}
+		}
 		r.config.WaveSize = waveSize
 
 		if waveSize == 1 {
@@ -319,8 +349,10 @@ func (r *TaskRunner) dependenciesFailed(task *TaskItem, allTasks []*TaskItem) bo
 
 // runWithRetry runs a task with retries on failure.
 // When TDDMode is enabled, splits execution into two phases:
-//   Phase 1 (test-first): SubAgent generates test cases only (no implementation)
-//   Phase 2 (implement): SubAgent writes implementation and runs tests
+//
+//	Phase 1 (test-first): SubAgent generates test cases only (no implementation)
+//	Phase 2 (implement): SubAgent writes implementation and runs tests
+//
 // Transient errors (HTTP 502/503/504/429, network timeouts) get extra retries
 // with exponential backoff before counting as a permanent failure.
 func (r *TaskRunner) runWithRetry(ctx context.Context, task *TaskItem, onToken func(string), onProgress func(string)) TaskRunResult {
@@ -340,6 +372,18 @@ func (r *TaskRunner) runWithRetry(ctx context.Context, task *TaskItem, onToken f
 			onToken("\n\n#### TDD Red Phase: Writing Tests\n\n")
 		}
 		testResult := r.runSingleAttempt(ctx, testTask, onToken, onProgress)
+		// A skipped red phase is a control-plane handoff (for example, scope
+		// approval, cancellation, or a Runtime waiting_child transition), not a
+		// failed test that the green phase may repair. Starting implementation in
+		// that state could create a new writer while the prior Runtime parent has
+		// deliberately released its lease for child review.
+		if testResult != nil && testResult.Status == TaskSkipped {
+			result := *testResult
+			// The runner reports one logical task, even though the red phase uses a
+			// synthetic prompt title internally.
+			result.Title = task.Title
+			return result
+		}
 		if testResult != nil && testResult.Status == TaskFailed {
 			if onProgress != nil {
 				onProgress(fmt.Sprintf("T%d: test generation failed, continuing to implementation", task.Index))
@@ -367,7 +411,7 @@ func (r *TaskRunner) runWithRetry(ctx context.Context, task *TaskItem, onToken f
 // runSingleAttempt runs a task with at most one retry for transient errors.
 func (r *TaskRunner) runSingleAttempt(ctx context.Context, task *TaskItem, onToken func(string), onProgress func(string)) *TaskRunResult {
 	result := r.subAgentFunc(ctx, task, r.config, onToken, onProgress)
-	if result != nil && result.Status == TaskFailed && isTransientTaskError(result.Error) {
+	if r.config.AllowAutomaticRetries && result != nil && result.Status == TaskFailed && isTransientTaskError(result.Error) {
 		// One retry for transient errors in test generation phase
 		select {
 		case <-ctx.Done():
@@ -388,6 +432,9 @@ func (r *TaskRunner) runSingleAttempt(ctx context.Context, task *TaskItem, onTok
 func (r *TaskRunner) runSingleTaskWithRetry(ctx context.Context, task *TaskItem, onToken func(string), onProgress func(string)) TaskRunResult {
 	var lastResult *TaskRunResult
 	maxRetries := r.config.MaxRetries
+	if !r.config.AllowAutomaticRetries {
+		maxRetries = 0
+	}
 	const maxTransientRetries = 5
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -429,7 +476,7 @@ func (r *TaskRunner) runSingleTaskWithRetry(ctx context.Context, task *TaskItem,
 		}
 
 		// For transient errors (502/503/504/429/timeout), allow extra retries beyond MaxRetries
-		if isTransientTaskError(result.Error) && attempt == maxRetries && maxRetries < maxTransientRetries {
+		if r.config.AllowAutomaticRetries && isTransientTaskError(result.Error) && attempt == maxRetries && maxRetries < maxTransientRetries {
 			if onProgress != nil {
 				onProgress(fmt.Sprintf("T%d: 临时网络错误，额外重试...", task.Index))
 			}

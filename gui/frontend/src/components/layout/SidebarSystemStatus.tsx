@@ -10,6 +10,17 @@ import {
     type ProviderDropdownPos,
 } from './sidebarProviderDropdownPos';
 
+export type LLMProfileStatusSummary = {
+    profile: 'assistant' | 'coding';
+    provider_name?: string;
+    model?: string;
+    inherit_assistant?: boolean;
+    configured?: boolean;
+    health?: string;
+    checked_at?: string;
+    reason_code?: string;
+};
+
 type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     lang: string;
     maclawLLMOnline: boolean;
@@ -38,8 +49,8 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     isDark?: boolean;
     /** List of providers that are confirmed available (configured + tested online, or official with valid credits). */
     availableProviders?: SidebarLLMProviderSummary[];
-    /** Called when user selects a different provider from the dropdown. */
-    onSwitchProvider?: (providerName: string) => void;
+    /** Called with a stable provider id when user selects a different provider. */
+    onSwitchProvider?: (providerID: string) => void;
     /** Current model id for the active provider (from LLM settings). */
     currentModel?: string;
     /** Model options for the active provider (fetched catalog + configured fallback). */
@@ -49,6 +60,8 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     onSwitchModel?: (modelId: string) => void;
     /** Called when the dropdown opens so the parent can refresh model options. */
     onOpenModelMenu?: () => void;
+    /** Discards an uncommitted provider choice when the menu closes. */
+    onDismissModelMenu?: () => void;
     /** Multi-model council (MoA) session sticky state for the quick menu. */
     moaSticky?: {
         available: boolean;
@@ -59,6 +72,12 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     };
     /** Toggle sticky multi-model council for this session (optional preset id). */
     onToggleMoASticky?: (on: boolean, presetId?: string) => void;
+    /** Both profiles remain visible even while quick controls focus one scope. */
+    profileSummaries?: { assistant?: LLMProfileStatusSummary; coding?: LLMProfileStatusSummary } | null;
+    activeProfile?: 'assistant' | 'coding' | 'none';
+    codingInheritsAssistant?: boolean;
+    providerSelectionPending?: boolean;
+    profileSavePending?: boolean;
 };
 
 const STATUS_DOT = String.fromCharCode(0x25cf);
@@ -140,8 +159,14 @@ export const SidebarSystemStatus = ({
     modelsLoading = false,
     onSwitchModel,
     onOpenModelMenu,
+    onDismissModelMenu,
     moaSticky,
     onToggleMoASticky,
+    profileSummaries,
+    activeProfile = 'none',
+    codingInheritsAssistant = false,
+    providerSelectionPending = false,
+    profileSavePending = false,
 }: SidebarSystemStatusProps) => {
     const baseProviderLabel = sidebarCurrentProviderTokenUsage.provider || textForLang(lang, 'Provider', '\u667a\u8c31\u7f16\u7a0b', '\u667a\u8b5c\u7de8\u7a0b');
     const moaBadge = moaSticky?.active
@@ -149,24 +174,84 @@ export const SidebarSystemStatus = ({
         : '';
     const providerLabel = moaBadge ? `${baseProviderLabel} · ${moaBadge}` : baseProviderLabel;
     const isOfficialProvider = !!sidebarCurrentProviderTokenUsage.isHubService;
+    const profileStatusLabel = (summary: LLMProfileStatusSummary | undefined, fallback: string) => {
+        const provider = String(summary?.provider_name || '').trim();
+        const model = String(summary?.model || '').trim();
+        return provider && model ? `${provider}${CREDIT_SEPARATOR}${model}` : fallback;
+    };
+    const assistantSummary = profileSummaries?.assistant;
+    const codingSummary = profileSummaries?.coding;
+    const onlineText = textForLang(lang, 'Online', '\u5728\u7ebf', '\u5728\u7dda');
+    const offlineText = textForLang(lang, 'Offline', '\u79bb\u7ebf', '\u96e2\u7dda');
+    const profileHealthText = (health?: string) => {
+        switch (health) {
+            case 'configured': return textForLang(lang, 'Available', '可用', '可用');
+            case 'unavailable': return textForLang(lang, 'Unavailable', '不可用', '不可用');
+            case 'invalid': return textForLang(lang, 'Invalid', '配置无效', '設定無效');
+            default: return textForLang(lang, 'Unverified', '未验证', '未驗證');
+        }
+    };
+    const profileHealthColor = (health?: string) => health === 'configured'
+        ? 'var(--theme-success, #4f7f6f)'
+        : health === 'unavailable' || health === 'invalid'
+            ? 'var(--theme-danger, #b74a4a)'
+            : 'var(--theme-text-secondary)';
+    const assistantProfileLabel = profileStatusLabel(assistantSummary, textForLang(lang, 'Not configured', '未配置', '未設定'));
+    // Inherit is a relationship, not a second assignment. Showing the same
+    // provider/model again makes the compact sidebar look like there are two
+    // independently configured values, so keep the visual label concise.
+    // The button's accessible name and title still include the effective
+    // provider/model below for screen readers and hover inspection.
+    const codingProfileLabel = codingSummary?.inherit_assistant
+        ? textForLang(lang, 'Follows assistant', '跟随助手', '跟隨助手')
+        : profileStatusLabel(codingSummary, textForLang(lang, 'Not configured', '未配置', '未設定'));
+    // Older callers do not provide profile summaries. Preserve their existing
+    // quick-switch menu rather than treating the default `none` profile as
+    // a read-only profile state.
+    const profileQuickReadOnly = !!profileSummaries && (
+        activeProfile === 'none' || (activeProfile === 'coding' && codingInheritsAssistant)
+    );
+    const activeProfileSummary = activeProfile === 'assistant' ? assistantSummary : activeProfile === 'coding' ? codingSummary : undefined;
+    const activeProfileHealth = activeProfileSummary?.health;
+    // Some restored or externally-created tasks deliberately have no execution
+    // profile. They still use the configured assistant route, so a profile-less
+    // task must retain the legacy connectivity result instead of presenting a
+    // false offline LLM signal.
+    const activeProfileOnline = activeProfile === 'none'
+        ? maclawLLMOnline
+        : activeProfileHealth === 'configured';
+    const activeProfileName = activeProfile === 'coding'
+        ? textForLang(lang, 'Coding', '编程', '編程')
+        : textForLang(lang, 'Assistant', '助手', '助手');
+    const llmSignalLabel = activeProfile === 'none' ? 'LLM' : `LLM · ${activeProfileName}`;
+    const llmSignalAriaLabel = activeProfile === 'none'
+        ? `${llmSignalLabel}: ${maclawLLMOnline ? onlineText : offlineText}`
+        : textForLang(
+            lang,
+            `LLM: ${activeProfileName} · ${profileHealthText(activeProfileHealth)}`,
+            `LLM：${activeProfileName}，${profileHealthText(activeProfileHealth)}`,
+            `LLM：${activeProfileName}，${profileHealthText(activeProfileHealth)}`,
+        );
 
     // ── Provider switch dropdown state ──
     const [dropdownOpen, setDropdownOpen] = useState(false);
-    const [switching, setSwitching] = useState(false);
+    // Imperative mirror for unmount cleanup. The staged provider belongs to
+    // App, so it must not outlive the sidebar that exposed the picker.
+    const dropdownOpenRef = useRef(false);
+    const dismissModelMenuRef = useRef(onDismissModelMenu);
     const dropdownRef = useRef<HTMLDivElement>(null);
     const chevronBtnRef = useRef<HTMLButtonElement>(null);
     const usageRowRef = useRef<HTMLDivElement>(null);
-    // Snapshot the list when dropdown opens to prevent mid-interaction mutations.
-    const snapshotRef = useRef<SidebarLLMProviderSummary[]>([]);
     // Fixed position for the dropdown (calculated from usage-row / chevron anchor).
     const [dropdownPos, setDropdownPos] = useState<ProviderDropdownPos | null>(null);
-    const switchingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const repositionRafRef = useRef<number | null>(null);
 
     const closeDropdown = useCallback(() => {
+        dropdownOpenRef.current = false;
         setDropdownOpen(false);
         setDropdownPos(null);
-    }, []);
+        if (!profileSavePending) onDismissModelMenu?.();
+    }, [onDismissModelMenu, profileSavePending]);
 
     const updateDropdownPosition = useCallback(() => {
         const anchorEl = usageRowRef.current || chevronBtnRef.current;
@@ -181,14 +266,30 @@ export const SidebarSystemStatus = ({
         setDropdownPos(prev => (providerDropdownPosEqual(prev, next) ? prev : next));
     }, []);
 
-    // Cleanup timers / rAF on unmount.
+    useEffect(() => {
+        dismissModelMenuRef.current = onDismissModelMenu;
+    }, [onDismissModelMenu]);
+
+    // Cleanup timers / rAF on unmount. Treat a disappearing sidebar like an
+    // explicit dismissal, without re-firing after an ordinary close.
     useEffect(() => () => {
-        if (switchingTimerRef.current) clearTimeout(switchingTimerRef.current);
         if (repositionRafRef.current != null) cancelAnimationFrame(repositionRafRef.current);
+        if (dropdownOpenRef.current) dismissModelMenuRef.current?.();
     }, []);
 
-    // While open, freeze the alternative list from open-time snapshot (avoids mid-flight list thrash).
-    const switchableProviders = dropdownOpen ? snapshotRef.current : [];
+    // The parent moves a newly staged provider to the front before the model is
+    // chosen. Keep this list live while the menu is open so that choice becomes
+    // the visible context immediately; freezing the open-time snapshot leaves
+    // the old provider marked current and invites an accidental cross-provider
+    // model choice.
+    // Profile-scoped callers deliberately place the current provider first;
+    // this also preserves the legacy directory ordering.
+    const menuCurrentProvider = availableProviders[0];
+    const menuCurrentProviderID = String(menuCurrentProvider?.id || menuCurrentProvider?.name || '').trim();
+    const menuCurrentProviderName = String(menuCurrentProvider?.name || '').trim() || baseProviderLabel;
+    const switchableProviders = dropdownOpen
+        ? availableProviders.filter(p => String(p.id || p.name || '').trim() !== menuCurrentProviderID)
+        : [];
 
     // Precompute MoA rows so empty/disabled preset lists don't leave orphan separators.
     const moaMenuRows = (() => {
@@ -247,30 +348,28 @@ export const SidebarSystemStatus = ({
         updateDropdownPosition();
     }, [dropdownOpen, updateDropdownPosition, switchableProviders.length, moaMenuRows.length, modelOptions.length, modelsLoading, moaSticky?.active, moaSticky?.preset]);
 
-    const handleSelectProvider = useCallback((name: string) => {
-        if (switching) return; // Prevent double-click during pending switch
-        setSwitching(true);
-        closeDropdown();
-        onSwitchProvider?.(name);
-        if (switchingTimerRef.current) clearTimeout(switchingTimerRef.current);
-        switchingTimerRef.current = setTimeout(() => setSwitching(false), 2000);
-    }, [onSwitchProvider, switching, closeDropdown]);
+    const handleSelectProvider = useCallback((providerID: string) => {
+        if (profileSavePending) return;
+        // A provider choice is only a staging step in the profile-scoped
+        // quick picker. Leave the menu open so the user can immediately pick
+        // a model; the model click is the atomic persisted assignment.
+        onSwitchProvider?.(providerID);
+    }, [onSwitchProvider, profileSavePending]);
 
     const handleSelectModel = useCallback((modelId: string) => {
-        if (switching) return;
+        if (profileSavePending) return;
         const next = String(modelId || '').trim();
         if (!next || next === currentModel) {
             closeDropdown();
             return;
         }
-        setSwitching(true);
         closeDropdown();
         onSwitchModel?.(next);
-        if (switchingTimerRef.current) clearTimeout(switchingTimerRef.current);
-        switchingTimerRef.current = setTimeout(() => setSwitching(false), 2000);
-    }, [onSwitchModel, switching, closeDropdown, currentModel]);
+    }, [onSwitchModel, profileSavePending, closeDropdown, currentModel]);
 
-    const chevronTitle = availableProviders.length > 1
+    const chevronTitle = providerSelectionPending
+        ? textForLang(lang, 'Choose a model to apply the provider', '选择模型以应用服务商', '選擇模型以套用服務商')
+        : availableProviders.length > 1
         ? textForLang(lang, 'Switch LLM provider / model', '\u5207\u6362\u670d\u52a1\u5546/\u6a21\u578b', '\u5207\u63db\u670d\u52d9\u5546/\u6a21\u578b')
         : (onSwitchModel || currentModel)
             ? textForLang(lang, 'Switch LLM model', '\u5207\u6362\u6a21\u578b', '\u5207\u63db\u6a21\u578b')
@@ -282,18 +381,19 @@ export const SidebarSystemStatus = ({
     const openProviderTarget = isOfficialProvider ? openServiceRedeemPage : openLLMSettingsPage;
 
     const handleToggleDropdown = useCallback(() => {
+        if (profileSavePending) return;
         if (dropdownOpen) {
             closeDropdown();
             return;
         }
-        // Snapshot the switchable list at open time
-        snapshotRef.current = availableProviders.filter(p => p.name !== baseProviderLabel);
-        const hasAlternatives = snapshotRef.current.length > 0;
+        const hasAlternatives = !profileQuickReadOnly
+            && availableProviders.some(p => String(p.id || p.name || '').trim() !== menuCurrentProviderID);
         const hasMoA = moaMenuRows.length > 0;
-        const hasModels = !!(onSwitchModel && (modelOptions.length > 0 || currentModel || onOpenModelMenu));
+        const hasModels = !profileQuickReadOnly && !!(onSwitchModel && (modelOptions.length > 0 || currentModel || onOpenModelMenu));
         const hasSettingsAction = !!(openLLMSettingsPage || openProviderTarget);
         if (!hasAlternatives && !hasMoA && !hasModels && !hasSettingsAction) return;
         // Position is applied in useLayoutEffect after the menu mounts (avoids open/clear races).
+        dropdownOpenRef.current = true;
         setDropdownOpen(true);
         // Refresh model catalog (fetch when possible; parent falls back to settings model name).
         onOpenModelMenu?.();
@@ -301,7 +401,7 @@ export const SidebarSystemStatus = ({
         dropdownOpen,
         closeDropdown,
         availableProviders,
-        baseProviderLabel,
+        menuCurrentProviderID,
         moaMenuRows.length,
         openLLMSettingsPage,
         openProviderTarget,
@@ -309,6 +409,8 @@ export const SidebarSystemStatus = ({
         modelOptions.length,
         currentModel,
         onOpenModelMenu,
+        profileQuickReadOnly,
+        profileSavePending,
     ]);
     const cardStoreTitle = textForLang(lang, 'Open MaClaw card store', '\u6253\u5f00 MaClaw \u670d\u52a1\u5361\u5546\u5e97', '\u6253\u958b MaClaw \u670d\u52d9\u5361\u5546\u5e97');
     const spendableCredits = sidebarHubCredits?.showPeriodAvailable
@@ -343,14 +445,17 @@ export const SidebarSystemStatus = ({
         : isLocalCacheRate
             ? `${textForLang(lang, 'Local cache hit', '\u672c\u5730\u7f13\u5b58\u547d\u4e2d', '\u672c\u5730\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Hits', '\u547d\u4e2d', '\u547d\u4e2d')} ${cachedRequests}/${cacheRequests}`
             : `${textForLang(lang, 'Cache hit', '\u7f13\u5b58\u547d\u4e2d', '\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Read', '\u8bfb\u53d6', '\u8b80\u53d6')} ${formatSidebarTokens(cachedInput)}${CREDIT_SEPARATOR}${textForLang(lang, 'Write', '\u5199\u5165', '\u5beb\u5165')} ${formatSidebarTokens(cacheWrite)}`;
-    const onlineText = textForLang(lang, 'Online', '\u5728\u7ebf', '\u5728\u7dda');
-    const offlineText = textForLang(lang, 'Offline', '\u79bb\u7ebf', '\u96e2\u7dda');
     const imOnline = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || (showLansenger && lansengerStatus === 'connected');
     const backgroundTaskLabel = textForLang(lang, 'Background tasks', '\u540e\u53f0\u4efb\u52a1', '\u5f8c\u53f0\u4efb\u52d9');
     const isChineseLang = lang === 'zh-Hans' || lang === 'zh-Hant' || lang === 'zh';
     const backgroundTaskText = `${backgroundTaskLabel}${isChineseLang ? '\uff1a ' : ': '}${backgroundTaskCount}`;
-    const renderStatusSignal = (label: string, on: boolean, extraTitle?: string) => (
-        <span className="sidebar-system-status__signal" data-online={on ? 'true' : 'false'} title={extraTitle || `${STATUS_DOT} ${label} ${on ? onlineText : offlineText}`}>
+    const renderStatusSignal = (label: string, on: boolean, extraTitle?: string, ariaLabel?: string, kind?: 'llm' | 'hub' | 'im') => (
+        <span
+            className={`sidebar-system-status__signal${kind ? ` sidebar-system-status__signal--${kind}` : ''}`}
+            data-online={on ? 'true' : 'false'}
+            aria-label={ariaLabel || `${label}: ${on ? onlineText : offlineText}`}
+            title={extraTitle || `${STATUS_DOT} ${label} ${on ? onlineText : offlineText}`}
+        >
             <span className="sidebar-system-status__dot" aria-hidden="true" />
             <span className="sidebar-system-status__signal-label">{label}</span>
         </span>
@@ -414,9 +519,9 @@ export const SidebarSystemStatus = ({
         <div className="sidebar-system-status">
             <div className="sidebar-system-status__panel">
                 <div className="sidebar-system-status__signals" aria-label="System status">
-                    {renderStatusSignal('LLM', maclawLLMOnline)}
-                    {renderStatusSignal('HUB', hubOn, hubTooltip)}
-                    {renderStatusSignal('IM', imOnline)}
+                    {renderStatusSignal(llmSignalLabel, profileSummaries ? activeProfileOnline : maclawLLMOnline, undefined, llmSignalAriaLabel, 'llm')}
+                    {renderStatusSignal('HUB', hubOn, hubTooltip, undefined, 'hub')}
+                    {renderStatusSignal('IM', imOnline, undefined, undefined, 'im')}
                     <button
                         type="button"
                         className="sidebar-system-status__signal sidebar-system-status__background-tasks"
@@ -429,6 +534,48 @@ export const SidebarSystemStatus = ({
                     </button>
                 </div>
 
+                {profileSummaries && (
+                    <div
+                        className="sidebar-system-status__profiles"
+                        data-testid="sidebar-llm-profile-statuses"
+                        aria-label={textForLang(lang, 'LLM profile status', '大模型档案状态', '大模型檔案狀態')}
+                    >
+                        {([
+                            { summary: assistantSummary, label: assistantProfileLabel, name: textForLang(lang, 'Assistant', '助手', '助手'), profile: 'assistant' },
+                            { summary: codingSummary, label: codingProfileLabel, name: textForLang(lang, 'Coding', '编程', '編程'), profile: 'coding' },
+                        ] as const).map(({ summary, label, name, profile }) => {
+                            const followsAssistant = profile === 'coding' && summary?.inherit_assistant === true;
+                            const effectiveDetail = followsAssistant
+                                ? profileStatusLabel(summary, '')
+                                : label;
+                            const fullProfileStatus = followsAssistant && effectiveDetail
+                                ? `${label}${CREDIT_SEPARATOR}${effectiveDetail}`
+                                : label;
+                            return (
+                            <button
+                                key={name}
+                                type="button"
+                                onClick={openLLMSettingsPage}
+                                disabled={!openLLMSettingsPage}
+                                title={`${fullProfileStatus}${CREDIT_SEPARATOR}${profileHealthText(summary?.health)}`}
+                                className="sidebar-system-status__profile"
+                            >
+                                <span className="sidebar-system-status__profile-name" aria-hidden="true">
+                                    <span aria-hidden="true" className="sidebar-system-status__profile-dot" style={{ color: profileHealthColor(summary?.health) }}>{STATUS_DOT}</span>
+                                    {name}
+                                </span>
+                                <span className="sidebar-system-status__profile-detail">
+                                    <span className="sidebar-system-status__profile-detail-visual" aria-hidden="true">{label}</span>
+                                    <span className="sidebar-system-status__profile-detail-accessible">
+                                        {`${name}: ${fullProfileStatus}${CREDIT_SEPARATOR}${profileHealthText(summary?.health)}${activeProfile === profile ? `${CREDIT_SEPARATOR}${textForLang(lang, 'current', '当前', '目前')}` : ''}`}
+                                    </span>
+                                </span>
+                            </button>
+                            );
+                        })}
+                    </div>
+                )}
+
                 {codingAgentProgress && (
                     <CodingAgentSidebarStatus
                         progress={codingAgentProgress}
@@ -438,7 +585,7 @@ export const SidebarSystemStatus = ({
                     />
                 )}
 
-                <div className="sidebar-system-status__usage" ref={usageRowRef}>
+                <div className={`sidebar-system-status__usage${isOfficialProvider && openHubCardStorePage ? ' sidebar-system-status__usage--with-cart' : ''}`} ref={usageRowRef}>
                     {isOfficialProvider && openHubCardStorePage && (
                         <button
                             type="button"
@@ -474,6 +621,7 @@ export const SidebarSystemStatus = ({
                             type="button"
                             className="sidebar-system-status__provider-chevron"
                             onClick={handleToggleDropdown}
+                            disabled={profileSavePending}
                             title={chevronTitle}
                             aria-label={chevronTitle}
                             aria-expanded={dropdownOpen}
@@ -508,26 +656,26 @@ export const SidebarSystemStatus = ({
                                 {switchableProviders.length > 0 && (
                                     <div className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--current" role="option" aria-selected="true">
                                         <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">{DROPDOWN_CHECK}</span>
-                                        <span className="sidebar-system-status__provider-dropdown-label" title={providerLabel}>{providerLabel}</span>
+                                        <span className="sidebar-system-status__provider-dropdown-label" title={menuCurrentProviderName}>{menuCurrentProviderName}</span>
                                     </div>
                                 )}
                                 {/* Switchable providers */}
                                 {switchableProviders.map(p => (
                                     <button
-                                        key={p.name}
+                                            key={String(p.id || p.name)}
                                         type="button"
                                         className="sidebar-system-status__provider-dropdown-item"
                                         role="option"
                                         aria-selected="false"
                                         title={p.name}
-                                        onClick={() => handleSelectProvider(p.name)}
+                                            onClick={() => handleSelectProvider(String(p.id || p.name).trim())}
                                     >
                                         <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" />
                                         <span className="sidebar-system-status__provider-dropdown-label">{p.name}</span>
                                     </button>
                                 ))}
                                 {/* Models for the current provider */}
-                                {onSwitchModel && (modelOptions.length > 0 || modelsLoading || currentModel) && (
+                                {!profileQuickReadOnly && onSwitchModel && (modelOptions.length > 0 || modelsLoading || currentModel) && (
                                     <>
                                         {switchableProviders.length > 0 && (
                                             <div className="sidebar-system-status__provider-dropdown-sep" />
@@ -600,7 +748,7 @@ export const SidebarSystemStatus = ({
                                 {/* Settings: separator only when provider and/or MoA rows exist above. */}
                                 {(openLLMSettingsPage || openProviderTarget) && (
                                     <>
-                                        {(switchableProviders.length > 0 || moaMenuRows.length > 0 || !!(onSwitchModel && (modelOptions.length > 0 || currentModel || modelsLoading))) && (
+                                        {(switchableProviders.length > 0 || moaMenuRows.length > 0 || !!(!profileQuickReadOnly && onSwitchModel && (modelOptions.length > 0 || currentModel || modelsLoading))) && (
                                             <div className="sidebar-system-status__provider-dropdown-sep" />
                                         )}
                                         <button

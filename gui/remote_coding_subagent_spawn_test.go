@@ -1,8 +1,13 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
 func TestCanSpawnRemoteCodingAgentDepthAndRole(t *testing.T) {
@@ -22,22 +27,27 @@ func TestCanSpawnRemoteCodingAgentDepthAndRole(t *testing.T) {
 
 func TestRemoteToolAllowedForRole(t *testing.T) {
 	ex := &RemoteCodingSubAgent{role: codingRoleExplorer, nestDepth: 1}
-	if !ex.remoteToolAllowedForRole("ssh_read_file") || !ex.remoteToolAllowedForRole("ssh_bash") {
-		t.Fatal("explorer should read/bash explore")
+	if !ex.remoteToolAllowedForRole("ssh_read_file") {
+		t.Fatal("explorer should read")
 	}
-	if ex.remoteToolAllowedForRole("ssh_write_file") || ex.remoteToolAllowedForRole("ssh_edit_file") {
-		t.Fatal("explorer must not write/edit")
+	if ex.remoteToolAllowedForRole("ssh_write_file") || ex.remoteToolAllowedForRole("ssh_edit_file") || ex.remoteToolAllowedForRole("ssh_bash") {
+		t.Fatal("explorer must be strictly read-only")
 	}
 	if ex.remoteToolAllowedForRole(codingSubAgentSpawnToolName) {
 		t.Fatal("explorer must not spawn")
 	}
 
 	rev := &RemoteCodingSubAgent{role: codingRoleReviewer, nestDepth: 1}
-	if !rev.remoteToolAllowedForRole("ssh_bash") || !rev.remoteToolAllowedForRole("ssh_check_task") {
-		t.Fatal("reviewer should bash/check_task")
+	if !rev.remoteToolAllowedForRole("ssh_check_task") {
+		t.Fatal("reviewer should check task")
 	}
-	if rev.remoteToolAllowedForRole("ssh_write_file") {
-		t.Fatal("reviewer must not write")
+	if rev.remoteToolAllowedForRole("ssh_write_file") || rev.remoteToolAllowedForRole("ssh_bash") {
+		t.Fatal("reviewer must be strictly read-only")
+	}
+	for _, key := range []string{"save_path", "output", "dest", "path", "filename"} {
+		if ok, _ := rev.remoteToolCallAllowedForRole("web_fetch", map[string]interface{}{key: "report.pdf"}); ok {
+			t.Fatalf("remote reviewer web_fetch %s must not write through host", key)
+		}
 	}
 
 	worker := &RemoteCodingSubAgent{nestDepth: 0, role: codingRoleWorker}
@@ -78,14 +88,22 @@ func TestFilterRemoteCodingToolsForRole(t *testing.T) {
 	if names["ssh_write_file"] || names["ssh_edit_file"] || names[codingSubAgentSpawnToolName] {
 		t.Fatalf("explorer leaked write/spawn: %#v", names)
 	}
-	if !names["ssh_read_file"] || !names["ssh_bash"] {
+	if !names["ssh_read_file"] {
 		t.Fatalf("explorer missing read tools: %#v", names)
+	}
+	if names["ssh_bash"] {
+		t.Fatalf("explorer leaked ssh_bash: %#v", names)
 	}
 }
 
 func TestRemoteBuildToolsIncludesSpawnOnRoot(t *testing.T) {
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
 	cb := &remoteCodingCallbacks{
-		agent: &RemoteCodingSubAgent{nestDepth: 0, projectDir: "/tmp/app", workDir: "/tmp/app"},
+		agent: &RemoteCodingSubAgent{nestDepth: 0, projectDir: "/tmp/app", workDir: "/tmp/app", generalKB: store},
 		task:  "implement feature",
 	}
 	tools := cb.BuildTools("implement feature")
@@ -100,6 +118,9 @@ func TestRemoteBuildToolsIncludesSpawnOnRoot(t *testing.T) {
 	}
 	if !names["ssh_bash"] || !names["web_search"] {
 		t.Fatalf("expected baseline remote tools, got %#v", names)
+	}
+	if !names["knowledge_image_search"] {
+		t.Fatalf("remote root BuildTools missing knowledge_image_search; got %#v", names)
 	}
 }
 
@@ -116,6 +137,75 @@ func TestRemoteInquiryToolSurfaceDoesNotExposeLocalExtensions(t *testing.T) {
 		if name == "ssh_write_file" || name == "ssh_edit_file" || name == "manage_skill" || name == "call_mcp_tool" || name == "todo_write" {
 			t.Fatalf("repository inquiry exposed a mutating or unavailable tool: %s", name)
 		}
+	}
+}
+
+func TestRemoteFocusedToolSurfacesIncludeConfiguredKnowledgeSearch(t *testing.T) {
+	codingStore, err := knowledge.NewCodingKnowledgeStore(filepath.Join(t.TempDir(), "coding_knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewCodingKnowledgeStore: %v", err)
+	}
+	t.Cleanup(func() { _ = codingStore.Close() })
+	generalStore, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = generalStore.Close() })
+
+	for _, mode := range []struct {
+		name  string
+		agent *RemoteCodingSubAgent
+	}{
+		{
+			name:  "inquiry",
+			agent: &RemoteCodingSubAgent{readOnlyInquiry: true, projectDir: "/tmp/app", workDir: "/tmp/app", codingKB: codingStore, generalKB: generalStore},
+		},
+		{
+			name:  "operational",
+			agent: &RemoteCodingSubAgent{operationalRequest: true, projectDir: "/tmp/app", workDir: "/tmp/app", codingKB: codingStore, generalKB: generalStore},
+		},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			cb := &remoteCodingCallbacks{agent: mode.agent, task: "inspect the configured project"}
+			names := map[string]bool{}
+			for _, name := range codingSubAgentToolDefinitionNamesForTest(cb.BuildTools(cb.task)) {
+				names[name] = true
+			}
+			for _, want := range []string{"coding_knowledge_search", "knowledge_search", "knowledge_image_search"} {
+				if !names[want] {
+					t.Fatalf("configured knowledge tool %q missing from %s surface: %#v", want, mode.name, names)
+				}
+			}
+		})
+	}
+}
+
+func TestRemoteRuntimeSpawnRejectsClosedParentAttempt(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	now := time.Now().UTC()
+	task, err := store.CreateTask(codingruntime.Task{TaskID: "remote-spawn-closed", ProjectRef: "/srv/repo", Mode: "remote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "/srv/repo", Mode: "remote"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CancelTask(task.TaskID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{runtimeStore: store, runtimeAttempt: attempt}}
+	result := cb.executeSpawnRemoteCodingAgent(map[string]interface{}{"role": "explorer", "task": "inspect"})
+	if !strings.Contains(result, "runtime parent attempt is no longer running") {
+		t.Fatalf("closed Runtime attempt must reject spawn, got %q", result)
+	}
+}
+
+func TestRemoteReadOnlyChildDoesNotInheritPreviewLifecycle(t *testing.T) {
+	parent := &RemoteCodingSubAgent{sourcePreviewEnabled: true, sourcePreviewSessionID: "root-preview"}
+	child := parent.newReadOnlyNestedRemoteCodingAgent(codingSpawnSpec{Role: codingRoleExplorer, Task: "inspect"}, nil)
+	if child == nil || child.sourcePreviewEnabled || child.sourcePreviewSessionID != "" {
+		t.Fatalf("read-only child must not inherit root preview lifecycle: %#v", child)
 	}
 }
 

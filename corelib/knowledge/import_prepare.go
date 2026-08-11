@@ -74,6 +74,7 @@ func prepareNodesForInsert(nodes []DocumentNode) []lightPreparedNode {
 		if node.ID == "" {
 			node.ID = NewID("kdn")
 		}
+		node = sanitizeSnapshotDocumentNode(node)
 		meta, _ := json.Marshal(node.Metadata)
 		out[i] = lightPreparedNode{
 			node:     node,

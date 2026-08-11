@@ -232,6 +232,34 @@ func TestHandleRegisteredToolAgentViewSubmitMergesAndRuns(t *testing.T) {
 	}
 }
 
+func TestHandleRegisteredToolAgentViewSubmitRejectsComputerUseForLocalFileWork(t *testing.T) {
+	called := false
+	ownerID := "agent-view-local-file"
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	if err := h.registry.Register(RegisteredTool{
+		Name: "computer_click",
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "desktop clicked"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewLoopContext("local attachment", 1, nil)
+	ctx.ComputerUseBlockedForLocalFileWork = true
+	h.setSessionLoopCtx(ownerID, ctx)
+
+	resp := h.handleRegisteredToolAgentViewSubmit("computer_click", map[string]interface{}{
+		registeredToolAgentViewArgsField: map[string]interface{}{registeredToolPolicyOwnerIDField: ownerID},
+	})
+	if called {
+		t.Fatal("task panel must not invoke Computer Use for current local-file work")
+	}
+	if resp == nil || !strings.Contains(resp.Text, "local attachment") || !strings.Contains(resp.Error, "local attachment") {
+		t.Fatalf("expected local attachment policy rejection, got %#v", resp)
+	}
+}
+
 func TestHandleRegisteredToolAgentViewSubmitHonorsWorkflowPolicy(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	h.registry = NewToolRegistry()

@@ -4,9 +4,9 @@ import "time"
 
 func Capabilities() KnowledgeCapabilities {
 	docLegacyStatus := "supported_native"
-	docLegacyNotes := "Parsed natively via built-in pure-Go DOC reader (LegacyOfficeReader). Full paragraph/heading/header/footer extraction."
+	docLegacyNotes := "Uses the built-in pure-Go DOC reader as the knowledge-import fallback; explicit OfficeRead rich-content opt-in can instead persist structured Markdown. Full paragraph/heading/header/footer extraction."
 	xlsLegacyStatus := "supported_native"
-	xlsLegacyNotes := "Parsed natively via built-in pure-Go BIFF reader (LegacyOfficeReader). Full sheet/row/cell extraction."
+	xlsLegacyNotes := "Uses the built-in pure-Go BIFF reader as the knowledge-import fallback for structured sheet/row/cell extraction; explicit OfficeRead rich-content opt-in additionally persists structured Markdown and managed images."
 	return KnowledgeCapabilities{
 		DefaultIncludeExts: append([]string(nil), DefaultIncludeExts...),
 		DefaultAutoLabels:  true,
@@ -19,7 +19,16 @@ func Capabilities() KnowledgeCapabilities {
 		LocalIndexes:       []string{"cards_fts", "facts_fts", "document_nodes_fts", "search_facets", "fact_graph", "fact_index_entities", "fact_index_predicates", "entity_profile"},
 		StorageBackend:     "sqlite",
 		SearchBackend:      "sqlite_fts5_cards_facts_nodes",
-		GeneratedAt:        time.Now().UTC(),
+		ImageRetrieval: ImageRetrievalCapabilities{
+			TextToImage:        true,
+			ImageToImage:       false,
+			SearchEndpoint:     "/api/v1/knowledge/images/search",
+			AgentTool:          "knowledge_image_search",
+			IndexEvidence:      []string{"ocr", "vision_caption", "filename", "document_context"},
+			Ranking:            "hybrid_text_ocr_caption",
+			ImageToImageReason: "requires a configured shared multimodal image/text embedding model; the built-in embedding model is text-only",
+		},
+		GeneratedAt: time.Now().UTC(),
 		Formats: []FormatCapability{
 			{
 				Kind:          SourceKindURL,
@@ -52,37 +61,47 @@ func Capabilities() KnowledgeCapabilities {
 			{
 				Kind:          SourceKindDOCX,
 				Extensions:    []string{".docx"},
-				Parser:        "docx_xml_paragraphs",
+				Parser:        "docx_native_or_officeread_structured_markdown_opt_in",
 				SearchUnit:    "paragraph nodes/cards/facts",
 				Status:        "supported",
 				Refreshable:   true,
 				DefaultImport: true,
-				Notes:         "Embedded images are extracted from word/media/ and processed via OCR/Vision.",
+				Notes:         "Uses native DOCX paragraph nodes by default; explicit OfficeRead rich-content opt-in persists structured Markdown and managed images. Native embedded images from word/media/ are processed via OCR/Vision.",
 			},
 			{
 				Kind:          SourceKindPDF,
 				Extensions:    []string{".pdf"},
-				Parser:        "pdf_text_pages",
+				Parser:        "pdf_inspector_native_text_or_local_ocr",
 				SearchUnit:    "page/paragraph nodes/cards/facts",
 				Status:        "supported",
 				Refreshable:   true,
 				DefaultImport: true,
-				Notes:         "Text PDFs are supported; OCR for scanned image PDFs is a later enhancement. Embedded images extracted via pdfcpu (if available).",
+				Notes:         "Pure-Go inspection routes native-text pages to local extraction and scanned/mixed pages to the built-in local OCR engine. Decodable embedded images are extracted in-process through GoPDF2.",
+			},
+			{
+				Kind:          SourceKindPPT,
+				Extensions:    []string{".ppt"},
+				Parser:        "officeread_structured_markdown_opt_in",
+				SearchUnit:    "markdown section nodes/cards/facts",
+				Status:        "staged_opt_in",
+				Refreshable:   true,
+				DefaultImport: true,
+				Notes:         "Knowledge import has no native PPT parser. It requires OfficeRead rich-content opt-in; otherwise the source remains pending. Chat/read_document can still use the configured plain-text OfficeRead route.",
 			},
 			{
 				Kind:          SourceKindPPTX,
 				Extensions:    []string{".pptx"},
-				Parser:        "pptx_slide_text",
+				Parser:        "pptx_native_or_officeread_structured_markdown_opt_in",
 				SearchUnit:    "slide paragraph nodes/cards/facts",
 				Status:        "supported",
 				Refreshable:   true,
 				DefaultImport: true,
-				Notes:         "Extracts text, tables, and notes from each slide. Embedded images from ppt/media/ are extracted and processed via OCR/Vision.",
+				Notes:         "Uses native slide text, tables, and notes by default; explicit OfficeRead rich-content opt-in persists structured Markdown and managed images. Native embedded images from ppt/media/ are processed via OCR/Vision.",
 			},
 			{
 				Kind:          SourceKindXLSX,
 				Extensions:    []string{".xlsx"},
-				Parser:        "spreadsheet_row_blocks",
+				Parser:        "xlsx_native_or_officeread_structured_markdown_opt_in",
 				SearchUnit:    "sheet row-range nodes/cards/facts",
 				Status:        "supported",
 				Refreshable:   true,
@@ -100,7 +119,7 @@ func Capabilities() KnowledgeCapabilities {
 			{
 				Kind:          SourceKindDOC,
 				Extensions:    []string{".doc"},
-				Parser:        "native_legacy_doc_reader",
+				Parser:        "doc_native_or_officeread_structured_markdown_opt_in",
 				SearchUnit:    "paragraph nodes/cards/facts",
 				Status:        docLegacyStatus,
 				Refreshable:   true,
@@ -110,7 +129,7 @@ func Capabilities() KnowledgeCapabilities {
 			{
 				Kind:          SourceKindXLS,
 				Extensions:    []string{".xls"},
-				Parser:        "native_biff_xls_reader",
+				Parser:        "xls_native_or_officeread_structured_markdown_opt_in",
 				SearchUnit:    "sheet row-range nodes/cards/facts",
 				Status:        xlsLegacyStatus,
 				Refreshable:   true,

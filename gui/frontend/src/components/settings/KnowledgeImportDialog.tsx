@@ -13,12 +13,19 @@ import {
 import { EventsOn } from '../../../wailsjs/runtime';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 
+const dialogFocusableSelector = 'button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [href]:not([tabindex="-1"])';
+
 // Fallback only used if capabilities haven't loaded yet (e.g. dialog opened before API returns).
 // The authoritative list comes from the backend via the supportedExts prop.
-const fallbackExts = ['.pdf', '.pptx', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.md', '.txt'];
+const fallbackExts = ['.pdf', '.ppt', '.pptx', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.md', '.txt'];
 
 export type KnowledgeImportTFunc = (en: string, zhHans: string, zhHant?: string) => string;
 type TFunc = KnowledgeImportTFunc;
+
+export const knowledgeImportSupportedFormatsHint =
+    'Supported: PDF, PPT/PPTX, DOC/DOCX, XLS/XLSX, CSV, Markdown, TXT (.ppt rich content requires OfficeRead Knowledge rollout)';
+export const knowledgeImportSupportedFormatsHintZhHans =
+    '支持格式：PDF、PPT/PPTX、DOC/DOCX、XLS/XLSX、CSV、Markdown、TXT（.ppt 富内容需启用 OfficeRead 知识库灰度）';
 
 export type ImportFailedItem = {
     file_path?: string;
@@ -162,6 +169,9 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
         distillMode: '',
     });
     const [showAdvanced, setShowAdvanced] = useState(false);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+    const closeHandlerRef = useRef<() => void>(() => {});
 
     // Sync includeExts when backend capabilities arrive (supportedExts prop changes).
     const prevExtsRef = useRef(allExts);
@@ -304,6 +314,42 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
         onClose();
     };
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(handleClose);
+    closeHandlerRef.current = handleClose;
+
+    useEffect(() => {
+        if (!open) return;
+        const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        const focusFrame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+        const onKeyDown = (event: KeyboardEvent) => {
+            const activeElement = document.activeElement;
+            if (!(activeElement instanceof HTMLElement) || !dialogRef.current?.contains(activeElement)) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                closeHandlerRef.current();
+                return;
+            }
+            if (event.key !== 'Tab') return;
+            const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(dialogFocusableSelector));
+            if (!focusable.length) return;
+            const activeIndex = focusable.indexOf(activeElement);
+            const nextIndex = event.shiftKey
+                ? (activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1)
+                : (activeIndex === focusable.length - 1 ? 0 : activeIndex + 1);
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            focusable[nextIndex].focus();
+        };
+        document.addEventListener('keydown', onKeyDown);
+        return () => {
+            window.cancelAnimationFrame(focusFrame);
+            document.body.style.overflow = previousOverflow;
+            document.removeEventListener('keydown', onKeyDown);
+            if (previousFocus?.isConnected) previousFocus.focus();
+        };
+    }, [open]);
 
     const buildPayload = () => {
         // When all formats are selected, send empty array to let backend use its DefaultIncludeExts.
@@ -454,9 +500,11 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
             {...backdropProps}
         >
             <div
+                ref={dialogRef}
                 className="knowledge-import-modal"
                 role="dialog"
                 aria-modal="true"
+                aria-labelledby="knowledge-import-title"
                 {...dialogProps}
             >
                 {/* Header */}
@@ -468,7 +516,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
                         <button className="knowledge-import-icon-button" aria-label={t('Back', '返回')} onClick={() => { setStep('choose'); setJob(null); setLogEntries([]); }}>←</button>
                     )}
                     <div className="knowledge-import-title-wrap">
-                        <h3 className="knowledge-import-title">
+                        <h3 id="knowledge-import-title" className="knowledge-import-title">
                             {step === 'choose' && t('Import to Knowledge Base', '导入知识到知识库')}
                             {step === 'configure' && t('Review & Configure', '预检与配置')}
                             {step === 'progress' && (isIndexing
@@ -480,6 +528,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
                         </h3>
                     </div>
                     <button
+                        ref={closeButtonRef}
                         className="knowledge-import-icon-button"
                         aria-label={
                             step === 'progress' && ['running', 'queued', 'pending', 'indexing'].includes(String(job?.status || '').toLowerCase())
@@ -509,7 +558,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
                                 <span className="knowledge-import-choice-desc">{t('Pick one or more document files', '选择一个或多个文档文件')}</span>
                             </button>
                             <div className="knowledge-import-format-hint">
-                                {t('Supported: PDF, PPTX, DOCX, XLSX, CSV, Markdown, TXT', '支持格式：PDF、PPTX、DOCX、XLSX、CSV、Markdown、TXT')}
+                                {t(knowledgeImportSupportedFormatsHint, knowledgeImportSupportedFormatsHintZhHans)}
                             </div>
                         </div>
                     )}

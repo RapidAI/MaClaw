@@ -154,10 +154,7 @@ func memorySourceDesc(e memory.Entry) string {
 }
 
 func knowledgeSourceDesc(r knowledge.SearchResult) string {
-	title := r.Source.Title
-	if title == "" {
-		title = r.Source.URI
-	}
+	title := knowledge.FormatSourceLabel(r)
 	if title != "" {
 		return "来自知识库: " + title
 	}

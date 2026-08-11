@@ -5,14 +5,34 @@ import { lightTheme } from "../aiAssistantPanelTheme";
 import type { AgentView } from "../agentViewTypes";
 
 const SelectWorkingDirMock = vi.fn();
+const SelectAIAssistantFileMock = vi.fn();
+const ParseResumeForWorkflowFormMock = vi.fn();
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     SelectWorkingDir: (...args: unknown[]) => SelectWorkingDirMock(...args),
+    SelectAIAssistantFile: (...args: unknown[]) => SelectAIAssistantFileMock(...args),
+    ParseResumeForWorkflowForm: (...args: unknown[]) => ParseResumeForWorkflowFormMock(...args),
 }));
 
 describe("AgentTaskPanel", () => {
     beforeEach(() => {
         SelectWorkingDirMock.mockReset();
+        SelectAIAssistantFileMock.mockReset();
+        ParseResumeForWorkflowFormMock.mockReset();
+    });
+
+    it("describes all six Office formats for resume parsing", () => {
+        const view: AgentView = {
+            type: "form",
+            id: "resume-six-office-formats",
+            title: "Academic application",
+            accepts_resume: true,
+            fields: [{ name: "name", label: "Name", type: "text" }],
+        };
+
+        render(<AgentTaskPanel view={view} theme={lightTheme} />);
+
+        expect(screen.getByText(/PDF、Word、PowerPoint、Excel、Markdown、TXT/)).toBeTruthy();
     });
 
     it("keeps the task panel header draggable while close stays clickable", () => {

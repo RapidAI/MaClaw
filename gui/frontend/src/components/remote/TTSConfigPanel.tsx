@@ -2,17 +2,9 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { GetTTSEnabled, SetTTSEnabled, GetTTSVoiceID, SetTTSVoiceID, CheckTTSModel, DownloadTTSModel, SynthesizeTTSPreview } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { ModelStatusBox } from "./ModelStatusBox";
+import { ttsVoiceOptions } from '../../constants/ttsVoices';
 
 type Props = { lang: string };
-
-const ttsVoiceOptions = [
-    { id: 'zf_xiaoyi', label: 'zf_xiaoyi', zh: '小艺，中文女声，默认' },
-    { id: 'zf_xiaoxiao', label: 'zf_xiaoxiao', zh: '晓晓，中文女声' },
-    { id: 'zm_yunxi', label: 'zm_yunxi', zh: '云希，中文男声' },
-    { id: 'zm_yunyang', label: 'zm_yunyang', zh: '云扬，中文男声' },
-    { id: 'am_adam', label: 'Adam · American English', zh: 'Adam · 美式英语男声' },
-    { id: 'af_heart', label: 'Heart · Sweet American English', zh: 'Heart · 甜美美式英语女声' },
-];
 
 export function TTSConfigPanel({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>

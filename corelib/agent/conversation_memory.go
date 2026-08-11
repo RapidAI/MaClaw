@@ -40,6 +40,11 @@ const (
 	UnfinishedTaskSlotSourceInFlightRecovery     UnfinishedTaskSlotSource = "in_flight_recovery"
 	UnfinishedTaskSlotSourceInFlightLeaseExpired UnfinishedTaskSlotSource = "in_flight_lease_expired"
 	UnfinishedTaskSlotSourceMaxRounds            UnfinishedTaskSlotSource = "max_rounds"
+	// UnfinishedTaskSlotSourceAppExit marks a slot written during graceful app
+	// shutdown for a session whose agent loop was still running. Unlike crash
+	// recovery, the restored tab IS the user's resume intent, so the pipeline
+	// binds these slots automatically without showing a resume banner.
+	UnfinishedTaskSlotSourceAppExit UnfinishedTaskSlotSource = "app_exit"
 )
 
 // ConversationEntry represents a single message in a conversation.
@@ -113,9 +118,13 @@ type UnfinishedTaskSlot struct {
 	ResumePrompt     string                   `json:"resume_prompt,omitempty"`
 	Source           UnfinishedTaskSlotSource `json:"source,omitempty"`
 	EvidenceScopeKey string                   `json:"evidence_scope_key,omitempty"`
-	CreatedAt        time.Time                `json:"created_at"`
-	UpdatedAt        time.Time                `json:"updated_at"`
-	BoundAt          time.Time                `json:"bound_at,omitempty"`
+	// RuntimeTaskID links UI-facing recovery state to the durable coding
+	// execution ledger. It is an opaque identifier only—never a command,
+	// tool payload, prompt, credential, or replay plan.
+	RuntimeTaskID string    `json:"runtime_task_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	BoundAt       time.Time `json:"bound_at,omitempty"`
 }
 
 func (s UnfinishedTaskSlotSource) IsSessionExit() bool {
@@ -125,6 +134,10 @@ func (s UnfinishedTaskSlotSource) IsSessionExit() bool {
 func (s UnfinishedTaskSlotSource) IsInFlightRecovery() bool {
 	return s == UnfinishedTaskSlotSourceInFlightRecovery ||
 		s == UnfinishedTaskSlotSourceInFlightLeaseExpired
+}
+
+func (s UnfinishedTaskSlotSource) IsAppExit() bool {
+	return s == UnfinishedTaskSlotSourceAppExit
 }
 
 // CloneUnfinishedTaskSlot returns a deep copy of the slot.
@@ -251,6 +264,9 @@ func (cm *ConversationMemory) evictionLoop() {
 }
 
 // EvictExpired removes conversations that haven't been accessed within MemoryTTL.
+// Exempt sessions (see conversationSessionEvictExempt) are kept: desktop app
+// sessions are persistent by design, and a session holding a resumable
+// unfinished slot must survive until the user decides.
 func (cm *ConversationMemory) EvictExpired() {
 	now := time.Now()
 	type expiredEntry struct {
@@ -264,6 +280,9 @@ func (cm *ConversationMemory) EvictExpired() {
 		sh.mu.Lock()
 		for uid, s := range sh.sessions {
 			if now.Sub(s.lastAccess) > MemoryTTL {
+				if conversationSessionEvictExempt(uid, s) {
+					continue
+				}
 				if cm.Archiver != nil {
 					toArchive = append(toArchive, expiredEntry{uid, s.entries})
 				}
@@ -283,6 +302,25 @@ func (cm *ConversationMemory) EvictExpired() {
 			fmt.Fprintf(os.Stderr, "conversation_archiver: failed to archive user %s: %v\n", e.userID, err)
 		}
 	}
+}
+
+// conversationSessionEvictExempt reports whether a session is immune to the
+// in-memory MemoryTTL eviction. Desktop app sessions ("desktop-user" family:
+// the main assistant tab and project/expert tabs) are persistent across
+// restarts — project-tab sessions are already bounded by the 30-day rule in
+// loadFromDisk and every session is turn-trimmed, so the 2h IM-oriented TTL
+// would only cause "amnesia" after an idle gap or an overnight restart.
+// Any session holding an unfinished task slot is also exempt regardless of
+// platform: the slot is an explicit resume entry point and must not silently
+// vanish while awaiting the user's decision.
+func conversationSessionEvictExempt(userID string, s *conversationSession) bool {
+	if userID == "desktop-user" || strings.HasPrefix(userID, "desktop-user:") {
+		return true
+	}
+	if s != nil && s.unfinishedSlot != nil {
+		return true
+	}
+	return false
 }
 
 func (cm *ConversationMemory) persistLoop() {

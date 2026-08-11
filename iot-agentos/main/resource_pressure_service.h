@@ -13,6 +13,11 @@
 
 device_status_t resource_pressure_service_init(const char *storage_label,
                                                bool storage_available);
+/* Closes observation admission before the Storage/VFS owner is released. The
+ * static lifecycle lock remains valid for late callers; after success every
+ * query fails closed instead of sampling an unmounted storage volume. Init's
+ * construction publication shares this same bounded stop deadline. */
+device_status_t resource_pressure_service_deinit(uint32_t timeout_ms);
 void resource_pressure_service_set_storage_available(bool available);
 bool resource_pressure_service_get_snapshot(device_resource_pressure_snapshot_t *out_snapshot);
 

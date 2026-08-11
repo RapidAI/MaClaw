@@ -142,6 +142,32 @@ func TestSSHSessionManager_WriteInput_NotFound(t *testing.T) {
 	}
 }
 
+func TestSSHSessionManager_WriteInputNeverReconnects(t *testing.T) {
+	mgr := NewSSHSessionManager(nil)
+	// This deliberately unusable handle is enough to exercise the direct
+	// WriteInput path. In contrast to WriteInputChecked, it must return the
+	// write failure without swapping the session handle or consulting the pool.
+	handle := &SSHPTYSession{started: true}
+	session := &SSHManagedSession{
+		ID:     "bound",
+		Status: SessionRunning,
+		Spec: SSHSessionSpec{HostConfig: SSHHostConfig{
+			Host: "build.example.test", User: "deploy", HostKeyFingerprint: "SHA256:pin",
+		}},
+		Handle: handle,
+	}
+	mgr.mu.Lock()
+	mgr.sessions[session.ID] = session
+	mgr.mu.Unlock()
+
+	if err := mgr.WriteInput(session.ID, "git status"); err == nil {
+		t.Fatal("expected direct write failure from unusable handle")
+	}
+	if session.Handle != handle {
+		t.Fatal("WriteInput replaced the bound SSH session handle")
+	}
+}
+
 func TestNormalizeSSHPTYSize(t *testing.T) {
 	cols, rows := normalizeSSHPTYSize(0, 0)
 	if cols != 120 || rows != 40 {

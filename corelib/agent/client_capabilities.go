@@ -72,6 +72,11 @@ type ClientFeatureCapabilities struct {
 	AmbientDisplay    bool `json:"ambientDisplay,omitempty"`
 	MeetingRecorder   bool `json:"meetingRecorder,omitempty"`
 	VolumeControl     bool `json:"volumeControl,omitempty"`
+	BrightnessControl bool `json:"brightnessControl,omitempty"`
+	// ScreenSleepControl declares that the client accepts an idle screen-off
+	// timeout in hardware_config messages. It is separate from brightness: a
+	// device may support a backlight level without owning its idle timer.
+	ScreenSleepControl bool `json:"screenSleepControl,omitempty"`
 }
 
 const (

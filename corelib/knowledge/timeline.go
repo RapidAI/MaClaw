@@ -37,7 +37,7 @@ func (s *SQLiteStore) SourceTimeline(ctx context.Context, sourceID string, limit
 			SourceID:   source.ID,
 			Kind:       "source_created",
 			Action:     "created",
-			Title:      firstNonEmpty(source.Title, source.RelativePath, source.CanonicalURI, source.URI, source.ID),
+			Title:      sourceCitationLabel(source),
 			Detail:     source.Kind,
 			Status:     source.Status,
 			NodeCount:  source.NodeCount,
@@ -52,8 +52,8 @@ func (s *SQLiteStore) SourceTimeline(ctx context.Context, sourceID string, limit
 			SourceID:   source.ID,
 			Kind:       "source_updated",
 			Action:     "updated",
-			Title:      firstNonEmpty(source.Title, source.RelativePath, source.CanonicalURI, source.URI, source.ID),
-			Detail:     source.ErrorMessage,
+			Title:      sourceCitationLabel(source),
+			Detail:     SafeImageDisplayTextForSource(source, source.ErrorMessage),
 			Status:     source.Status,
 			NodeCount:  source.NodeCount,
 			CardCount:  source.CardCount,
@@ -75,7 +75,7 @@ func (s *SQLiteStore) SourceTimeline(ctx context.Context, sourceID string, limit
 			SourceID:    version.SourceID,
 			Kind:        "source_version",
 			Action:      action,
-			Title:       firstNonEmpty(version.Title, source.Title, source.RelativePath, source.ID),
+			Title:       SafeImageDisplayTextForSource(source, firstNonEmpty(version.Title, source.Title, source.RelativePath, source.ID)),
 			Detail:      version.Kind,
 			Status:      version.Status,
 			VersionID:   version.ID,
@@ -121,6 +121,16 @@ func (s *SQLiteStore) SourceTimeline(ctx context.Context, sourceID string, limit
 	result.Events = events
 	result.Count = len(events)
 	return result, nil
+}
+
+// SafeImageDisplayTextForSource applies the stricter display guard only to
+// image-source timeline metadata; non-image timelines retain their existing
+// descriptive contract.
+func SafeImageDisplayTextForSource(source Source, value string) string {
+	if source.Kind != SourceKindImage {
+		return value
+	}
+	return SafeImageDisplayText(value)
 }
 
 func sameTimelineInstant(a, b time.Time) bool {

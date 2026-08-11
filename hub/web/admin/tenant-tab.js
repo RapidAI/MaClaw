@@ -941,6 +941,9 @@
     if (tenantSenderCard) tenantSenderCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
     var tenantMigrationCard = byID('tenantMigrationSettingsCard');
     if (tenantMigrationCard) tenantMigrationCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
+    var tenantDigitalAssetsCard = byID('tenantDigitalAssetsSettingsCard');
+    // Tenant admins always; global admins also (default-tenant / single-tenant hubs).
+    if (tenantDigitalAssetsCard) tenantDigitalAssetsCard.classList.toggle('hidden', !hasProfile);
     var tenantLLMDefaultsCard = byID('tenantSystemLLMDefaultsCard');
     if (tenantLLMDefaultsCard) tenantLLMDefaultsCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
     if (typeof global.applyImScopeUI === 'function') global.applyImScopeUI();

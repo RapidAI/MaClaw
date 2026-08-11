@@ -96,11 +96,12 @@ type CapabilityDeclaration struct {
 
 // MessageAttachment represents a file/image/audio attachment in an inbound message.
 type MessageAttachment struct {
-	Type     string `json:"type"`      // "image", "file", "audio", "video"
-	FileName string `json:"file_name"` // Display name (e.g. "report.docx")
-	MimeType string `json:"mime_type"` // MIME type (e.g. "image/png", "application/pdf")
-	Data     string `json:"data"`      // Base64-encoded file content
-	Size     int64  `json:"size"`      // Original file size in bytes (before base64)
+	Type          string `json:"type"`                      // "image", "file", "audio", "video"
+	FileName      string `json:"file_name"`                 // Display name (e.g. "report.docx")
+	MimeType      string `json:"mime_type"`                 // MIME type (e.g. "image/png", "application/pdf")
+	Data          string `json:"data"`                      // Base64-encoded file content
+	Size          int64  `json:"size"`                      // Original file size in bytes (before base64)
+	SourceMediaID string `json:"source_media_id,omitempty"` // authenticated originating-GUI media reference
 }
 
 // MaxAttachmentSize is the maximum allowed size for a single attachment (10 MB).

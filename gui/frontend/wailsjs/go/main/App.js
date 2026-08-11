@@ -34,6 +34,10 @@ export function AddLansengerWatchMember(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddLansengerWatchMember'](arg1, arg2, arg3);
 }
 
+export function AddLansengerWatchMemberForBot(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['AddLansengerWatchMemberForBot'](arg1, arg2, arg3, arg4);
+}
+
 export function AddSkill(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['AddSkill'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -120,6 +124,10 @@ export function BatchTriggerSkillSelfRepair(arg1, arg2) {
 
 export function BeginWindowDrag() {
   return window['go']['main']['App']['BeginWindowDrag']();
+}
+
+export function DeletePrivateExpertMarketListing(arg1) {
+  return window['go']['main']['App']['DeletePrivateExpertMarketListing'](arg1);
 }
 
 export function BeginLiveRecordedAudioUpload(arg1) {
@@ -386,6 +394,10 @@ export function CloseProjectTabSession(arg1) {
   return window['go']['main']['App']['CloseProjectTabSession'](arg1);
 }
 
+export function CloseAssistantTabSession(arg1) {
+  return window['go']['main']['App']['CloseAssistantTabSession'](arg1);
+}
+
 export function CloseSurvey(arg1) {
   return window['go']['main']['App']['CloseSurvey'](arg1);
 }
@@ -400,6 +412,10 @@ export function CodingKnowledgeCapacity() {
 
 export function CodingKnowledgeConfirm(arg1) {
   return window['go']['main']['App']['CodingKnowledgeConfirm'](arg1);
+}
+
+export function CodingKnowledgeCreateRevisionCandidate(arg1, arg2) {
+  return window['go']['main']['App']['CodingKnowledgeCreateRevisionCandidate'](arg1, arg2);
 }
 
 export function CodingKnowledgeDelete(arg1) {
@@ -436,6 +452,14 @@ export function CodingKnowledgeImportFromFile(arg1) {
 
 export function CodingKnowledgeList(arg1) {
   return window['go']['main']['App']['CodingKnowledgeList'](arg1);
+}
+
+export function CodingKnowledgeLifecycle(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeLifecycle'](arg1);
+}
+
+export function CodingKnowledgeMarkConflict(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CodingKnowledgeMarkConflict'](arg1, arg2, arg3);
 }
 
 export function CodingKnowledgeReset() {
@@ -602,12 +626,20 @@ export function DeleteExpert(arg1) {
   return window['go']['main']['App']['DeleteExpert'](arg1);
 }
 
+export function DeleteLansengerBot(arg1) {
+  return window['go']['main']['App']['DeleteLansengerBot'](arg1);
+}
+
 export function DeleteIMAuditMessagesBefore(arg1) {
   return window['go']['main']['App']['DeleteIMAuditMessagesBefore'](arg1);
 }
 
 export function DeleteLansengerWatchJob(arg1) {
   return window['go']['main']['App']['DeleteLansengerWatchJob'](arg1);
+}
+
+export function DeleteLansengerWatchJobForBot(arg1, arg2) {
+  return window['go']['main']['App']['DeleteLansengerWatchJobForBot'](arg1, arg2);
 }
 
 export function DeleteMemory(arg1) {
@@ -814,6 +846,10 @@ export function ExportIMAuditCSV(arg1, arg2, arg3) {
   return window['go']['main']['App']['ExportIMAuditCSV'](arg1, arg2, arg3);
 }
 
+export function ExportIMAuditCSVForBot(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExportIMAuditCSVForBot'](arg1, arg2, arg3);
+}
+
 export function ExportLearnedSkillsZip(arg1) {
   return window['go']['main']['App']['ExportLearnedSkillsZip'](arg1);
 }
@@ -848,6 +884,10 @@ export function FetchNews() {
 
 export function FetchProviderModels(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['FetchProviderModels'](arg1, arg2, arg3, arg4);
+}
+
+export function FetchMaclawLLMProfileModels(arg1) {
+  return window['go']['main']['App']['FetchMaclawLLMProfileModels'](arg1);
 }
 
 export function FindRemoteCodingTaskByMeta(arg1, arg2, arg3) {
@@ -904,6 +944,10 @@ export function GetAdaptiveWindowSize() {
 
 export function GetAllLLMTokenUsage() {
   return window['go']['main']['App']['GetAllLLMTokenUsage']();
+}
+
+export function GetAllLLMProfileTokenUsage() {
+  return window['go']['main']['App']['GetAllLLMProfileTokenUsage']();
 }
 
 export function GetAllowedSkillSources() {
@@ -1114,6 +1158,30 @@ export function GetHubLLMServiceStatus() {
   return window['go']['main']['App']['GetHubLLMServiceStatus']();
 }
 
+export function EnterpriseKnowledgeListLibraries() {
+  return window['go']['main']['App']['EnterpriseKnowledgeListLibraries']();
+}
+
+export function EnterpriseKnowledgeSetLibraryUserSync(arg1, arg2) {
+  return window['go']['main']['App']['EnterpriseKnowledgeSetLibraryUserSync'](arg1, arg2);
+}
+
+export function EnterprisePurgeRevokedLibrary(arg1) {
+  return window['go']['main']['App']['EnterprisePurgeRevokedLibrary'](arg1);
+}
+
+export function EnterpriseSetSyncPaused(arg1) {
+  return window['go']['main']['App']['EnterpriseSetSyncPaused'](arg1);
+}
+
+export function EnterpriseSyncNow() {
+  return window['go']['main']['App']['EnterpriseSyncNow']();
+}
+
+export function EnterpriseSyncStatus() {
+  return window['go']['main']['App']['EnterpriseSyncStatus']();
+}
+
 export function GetHubMCPHubSecrets(arg1) {
   return window['go']['main']['App']['GetHubMCPHubSecrets'](arg1);
 }
@@ -1150,6 +1218,10 @@ export function GetIMAuditUsers(arg1) {
   return window['go']['main']['App']['GetIMAuditUsers'](arg1);
 }
 
+export function GetIMAuditUsersForBot(arg1) {
+  return window['go']['main']['App']['GetIMAuditUsersForBot'](arg1);
+}
+
 export function GetInferenceDiagnostics() {
   return window['go']['main']['App']['GetInferenceDiagnostics']();
 }
@@ -1176,6 +1248,10 @@ export function GetLansengerLocalMode() {
 
 export function GetLansengerStatus() {
   return window['go']['main']['App']['GetLansengerStatus']();
+}
+
+export function GetLansengerBotStatus(arg1) {
+  return window['go']['main']['App']['GetLansengerBotStatus'](arg1);
 }
 
 export function GetLansengerWatchStorePath() {
@@ -1236,6 +1312,10 @@ export function GetMaclawLLMConfig() {
 
 export function GetMaclawLLMPanelState() {
   return window['go']['main']['App']['GetMaclawLLMPanelState']();
+}
+
+export function GetMaclawLLMProfilePanelState() {
+  return window['go']['main']['App']['GetMaclawLLMProfilePanelState']();
 }
 
 export function GetMaclawLLMProviders() {
@@ -1598,6 +1678,14 @@ export function SendHardwareDeviceVolume(arg1, arg2) {
   return window['go']['main']['App']['SendHardwareDeviceVolume'](arg1, arg2);
 }
 
+export function SendHardwareDeviceBrightness(arg1, arg2) {
+  return window['go']['main']['App']['SendHardwareDeviceBrightness'](arg1, arg2);
+}
+
+export function SendHardwareDeviceScreenSleepTimeout(arg1, arg2) {
+  return window['go']['main']['App']['SendHardwareDeviceScreenSleepTimeout'](arg1, arg2);
+}
+
 export function SendHardwareDevicePetProfile(arg1, arg2) {
   return window['go']['main']['App']['SendHardwareDevicePetProfile'](arg1, arg2);
 }
@@ -1938,8 +2026,16 @@ export function PurchaseExpertMarketListing(arg1) {
   return window['go']['main']['App']['PurchaseExpertMarketListing'](arg1);
 }
 
-export function SubmitExpertMarketListing(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SubmitExpertMarketListing'](arg1, arg2, arg3);
+export function SubmitExpertMarketListing(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SubmitExpertMarketListing'](arg1, arg2, arg3, arg4);
+}
+
+export function PublishExpertMarketListing(arg1) {
+  return window['go']['main']['App']['PublishExpertMarketListing'](arg1);
+}
+
+export function MakeExpertMarketListingPrivate(arg1) {
+  return window['go']['main']['App']['MakeExpertMarketListingPrivate'](arg1);
 }
 
 export function WithdrawExpertMarketListing(arg1) {
@@ -2302,6 +2398,10 @@ export function KnowledgeListNodesBySource(arg1, arg2) {
   return window['go']['main']['App']['KnowledgeListNodesBySource'](arg1, arg2);
 }
 
+export function KnowledgePreviewNodesBySource(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgePreviewNodesBySource'](arg1, arg2);
+}
+
 export function KnowledgeListSourceLabels(arg1) {
   return window['go']['main']['App']['KnowledgeListSourceLabels'](arg1);
 }
@@ -2336,6 +2436,10 @@ export function KnowledgeMaintain(arg1) {
 
 export function KnowledgeOpenImageFile(arg1) {
   return window['go']['main']['App']['KnowledgeOpenImageFile'](arg1);
+}
+
+export function KnowledgeOpenImageAsset(arg1) {
+  return window['go']['main']['App']['KnowledgeOpenImageAsset'](arg1);
 }
 
 export function KnowledgePreviewSourceRefresh(arg1) {
@@ -2598,6 +2702,14 @@ export function ListExperts() {
   return window['go']['main']['App']['ListExperts']();
 }
 
+export function GetHardwareAgentBinding(arg1) {
+  return window['go']['main']['App']['GetHardwareAgentBinding'](arg1);
+}
+
+export function SetHardwareAgentBinding(arg1, arg2) {
+  return window['go']['main']['App']['SetHardwareAgentBinding'](arg1, arg2);
+}
+
 export function ListExternalSkillDirs() {
   return window['go']['main']['App']['ListExternalSkillDirs']();
 }
@@ -2614,20 +2726,44 @@ export function ListLansengerGroups() {
   return window['go']['main']['App']['ListLansengerGroups']();
 }
 
+export function ListLansengerGroupsForBot(arg1) {
+  return window['go']['main']['App']['ListLansengerGroupsForBot'](arg1);
+}
+
+export function ListLansengerBots() {
+  return window['go']['main']['App']['ListLansengerBots']();
+}
+
 export function ListLansengerWatchChannels() {
   return window['go']['main']['App']['ListLansengerWatchChannels']();
+}
+
+export function ListLansengerWatchChannelsForBot(arg1) {
+  return window['go']['main']['App']['ListLansengerWatchChannelsForBot'](arg1);
 }
 
 export function ListLansengerWatchForwardResults() {
   return window['go']['main']['App']['ListLansengerWatchForwardResults']();
 }
 
+export function ListLansengerWatchForwardResultsForBot(arg1) {
+  return window['go']['main']['App']['ListLansengerWatchForwardResultsForBot'](arg1);
+}
+
 export function ListLansengerWatchJobs() {
   return window['go']['main']['App']['ListLansengerWatchJobs']();
 }
 
+export function ListLansengerWatchJobsForBot(arg1) {
+  return window['go']['main']['App']['ListLansengerWatchJobsForBot'](arg1);
+}
+
 export function ListLansengerWatchRoster(arg1, arg2) {
   return window['go']['main']['App']['ListLansengerWatchRoster'](arg1, arg2);
+}
+
+export function ListLansengerWatchRosterForBot(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ListLansengerWatchRosterForBot'](arg1, arg2, arg3);
 }
 
 export function ListLansengerWatchTranscripts(arg1) {
@@ -3066,6 +3202,10 @@ export function PingMaclawLLM() {
   return window['go']['main']['App']['PingMaclawLLM']();
 }
 
+export function RefreshMaclawLLMProfileHealth() {
+  return window['go']['main']['App']['RefreshMaclawLLMProfileHealth']();
+}
+
 export function PingSkillHub(arg1) {
   return window['go']['main']['App']['PingSkillHub'](arg1);
 }
@@ -3200,6 +3340,10 @@ export function QueryExperienceTraceDetails(arg1) {
 
 export function QueryIMAuditMessages(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['QueryIMAuditMessages'](arg1, arg2, arg3, arg4);
+}
+
+export function QueryIMAuditMessagesForBot(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['QueryIMAuditMessagesForBot'](arg1, arg2, arg3, arg4);
 }
 
 export function RevealIMAuditAttachment(arg1) {
@@ -3430,6 +3574,10 @@ export function RestartLansenger() {
   return window['go']['main']['App']['RestartLansenger']();
 }
 
+export function RestartLansengerBot(arg1) {
+  return window['go']['main']['App']['RestartLansengerBot'](arg1);
+}
+
 export function RestartQQBot() {
   return window['go']['main']['App']['RestartQQBot']();
 }
@@ -3586,6 +3734,10 @@ export function SaveExpert(arg1) {
   return window['go']['main']['App']['SaveExpert'](arg1);
 }
 
+export function SaveLansengerBot(arg1) {
+  return window['go']['main']['App']['SaveLansengerBot'](arg1);
+}
+
 export function SaveHubMCPHubSecret(arg1) {
   return window['go']['main']['App']['SaveHubMCPHubSecret'](arg1);
 }
@@ -3612,6 +3764,14 @@ export function SaveMaclawLLMConfig(arg1) {
 
 export function SaveMaclawLLMProviders(arg1, arg2) {
   return window['go']['main']['App']['SaveMaclawLLMProviders'](arg1, arg2);
+}
+
+export function SaveMaclawLLMProfiles(arg1, arg2) {
+  return window['go']['main']['App']['SaveMaclawLLMProfiles'](arg1, arg2);
+}
+
+export function QuickSaveMaclawLLMProfile(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['QuickSaveMaclawLLMProfile'](arg1, arg2, arg3, arg4);
 }
 
 export function SaveMemory(arg1, arg2, arg3) {
@@ -3918,12 +4078,24 @@ export function SetLansengerGroupAllowed(arg1, arg2) {
   return window['go']['main']['App']['SetLansengerGroupAllowed'](arg1, arg2);
 }
 
+export function SetLansengerBotGroupAllowed(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetLansengerBotGroupAllowed'](arg1, arg2, arg3);
+}
+
 export function SetLansengerGroupFileMaxBytes(arg1, arg2) {
   return window['go']['main']['App']['SetLansengerGroupFileMaxBytes'](arg1, arg2);
 }
 
+export function SetLansengerBotGroupFileMaxBytes(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetLansengerBotGroupFileMaxBytes'](arg1, arg2, arg3);
+}
+
 export function SetLansengerGroupIgnored(arg1, arg2) {
   return window['go']['main']['App']['SetLansengerGroupIgnored'](arg1, arg2);
+}
+
+export function SetLansengerBotGroupIgnored(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetLansengerBotGroupIgnored'](arg1, arg2, arg3);
 }
 
 export function SetLansengerLocalMode(arg1) {
@@ -3964,6 +4136,10 @@ export function SetNLSkillStatus(arg1, arg2) {
 
 export function SetOCREnabled(arg1) {
   return window['go']['main']['App']['SetOCREnabled'](arg1);
+}
+
+export function SetOCRModelTier(arg1) {
+  return window['go']['main']['App']['SetOCRModelTier'](arg1);
 }
 
 export function SetPassthroughCommandEnabled(arg1, arg2) {
@@ -4266,6 +4442,10 @@ export function TestLansengerWatchForward(arg1) {
   return window['go']['main']['App']['TestLansengerWatchForward'](arg1);
 }
 
+export function TestLansengerWatchForwardForBot(arg1, arg2) {
+  return window['go']['main']['App']['TestLansengerWatchForwardForBot'](arg1, arg2);
+}
+
 export function TestMCPEndpoint(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['TestMCPEndpoint'](arg1, arg2, arg3, arg4);
 }
@@ -4276,6 +4456,10 @@ export function TestMISDataConnection(arg1) {
 
 export function TestMaclawLLM(arg1) {
   return window['go']['main']['App']['TestMaclawLLM'](arg1);
+}
+
+export function TestMaclawLLMProfile(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TestMaclawLLMProfile'](arg1, arg2, arg3);
 }
 
 export function TestRemoteSSHConnection(arg1, arg2, arg3, arg4, arg5) {
@@ -4424,6 +4608,10 @@ export function UploadSupplementaryDocs(arg1) {
 
 export function UpsertLansengerWatchJob(arg1) {
   return window['go']['main']['App']['UpsertLansengerWatchJob'](arg1);
+}
+
+export function UpsertLansengerWatchJobForBot(arg1, arg2) {
+  return window['go']['main']['App']['UpsertLansengerWatchJobForBot'](arg1, arg2);
 }
 
 export function UserDataMigrationInstances() {

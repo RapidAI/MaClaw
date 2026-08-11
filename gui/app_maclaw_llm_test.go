@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"pgregory.net/rapid"
 )
@@ -403,6 +404,612 @@ func TestGetMaclawLLMConfigPrefersRefreshedCredentialStoreJWT(t *testing.T) {
 
 	if got := app.GetMaclawLLMConfig().Key; got != "eyJhbGciOiJub25lIn0.fresh.sig" {
 		t.Fatalf("GetMaclawLLMConfig().Key = %q, want refreshed credential-store JWT", got)
+	}
+}
+
+func TestDualLLMProfilesResolveIndependentCodingModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	providers := []corelib.MaclawLLMProvider{
+		{ID: "provider-assistant", Name: "Assistant Provider", URL: "https://assistant.example.test/v1", Key: "assistant-key", Model: "assistant-default"},
+		{ID: "provider-coding", Name: "Coding Provider", URL: "https://coding.example.test/v1", Key: "coding-key", Model: "coding-default"},
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       providers,
+		MaclawLLMCurrentProvider: "Assistant Provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "provider-assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "provider-coding", Model: "coding-model"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	assistantCfg := app.GetMaclawLLMConfig()
+	if assistantCfg.ProviderName != "Assistant Provider" || assistantCfg.Model != "assistant-model" || assistantCfg.Profile != maclawLLMProfileAssistant {
+		t.Fatalf("assistant config = %#v", assistantCfg)
+	}
+	codingCfg := app.GetCodingLLMConfig()
+	if codingCfg.ProviderName != "Coding Provider" || codingCfg.Model != "coding-model" || codingCfg.Profile != maclawLLMProfileCoding {
+		t.Fatalf("coding config = %#v", codingCfg)
+	}
+}
+
+func TestDualLLMProfilesCodingFollowsAssistant(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "provider-assistant", Name: "Assistant Provider", URL: "https://assistant.example.test/v1", Key: "assistant-key", Model: "assistant-default"},
+			{ID: "provider-next", Name: "Next Provider", URL: "https://next.example.test/v1", Key: "next-key", Model: "next-default"},
+		},
+		MaclawLLMCurrentProvider: "Assistant Provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "provider-assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	codingCfg := app.GetCodingLLMConfig()
+	if codingCfg.ProviderName != "Assistant Provider" || codingCfg.Model != "assistant-model" || codingCfg.Profile != maclawLLMProfileCoding {
+		t.Fatalf("coding follow config = %#v", codingCfg)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	updated := state.Profiles
+	updated.Assistant.ProviderID = "provider-next"
+	updated.Assistant.Model = "next-model"
+	if err := app.SaveMaclawLLMProfiles(updated, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles: %v", err)
+	}
+
+	if codingCfg = app.GetCodingLLMConfig(); codingCfg.ProviderName != "Next Provider" || codingCfg.Model != "next-model" || codingCfg.Profile != maclawLLMProfileCoding {
+		t.Fatalf("coding follow config after assistant change = %#v", codingCfg)
+	}
+	state, err = app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState after save: %v", err)
+	}
+	if state.Coding.ProviderName != "Next Provider" || state.Coding.Model != "next-model" || !state.Coding.InheritAssistant {
+		t.Fatalf("coding follow panel summary after assistant change = %#v", state.Coding)
+	}
+}
+
+func TestSaveMaclawLLMProfilesPreservesIndependentCodingModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "assistant-provider", Name: "Assistant", URL: "https://assistant.example.test/v1", Key: "assistant-key", Model: "assistant-old"},
+			{ID: "coding-provider", Name: "Coding", URL: "https://coding.example.test/v1", Key: "coding-key", Model: "coding-old"},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant-provider", Model: "assistant-old"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "coding-provider", Model: "coding-old"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	updated := state.Profiles
+	updated.Coding.Model = "coding-new"
+	if err := app.SaveMaclawLLMProfiles(updated, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles: %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.MaclawLLMProfiles == nil || saved.MaclawLLMProfiles.Coding.Model != "coding-new" {
+		t.Fatalf("saved coding profile = %#v", saved.MaclawLLMProfiles)
+	}
+	if saved.MaclawLLMProviders[0].Model != "assistant-old" {
+		t.Fatalf("coding save changed assistant compatibility projection: %#v", saved.MaclawLLMProviders)
+	}
+	if got := app.GetCodingLLMConfig().Model; got != "coding-new" {
+		t.Fatalf("coding model = %q, want coding-new", got)
+	}
+}
+
+func TestSaveMaclawLLMProfilesRejectsStaleRevision(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://example.test/v1", Key: "key", Model: "model-a"}},
+		MaclawLLMCurrentProvider: "Provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "provider", Model: "model-a"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	first, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("first panel state: %v", err)
+	}
+	changed := first.Profiles
+	changed.Assistant.Model = "model-b"
+	if err := app.SaveMaclawLLMProfiles(changed, first.Revision); err != nil {
+		t.Fatalf("first SaveMaclawLLMProfiles: %v", err)
+	}
+
+	stale := first.Profiles
+	stale.Assistant.Model = "model-c"
+	if err := app.SaveMaclawLLMProfiles(stale, first.Revision); err == nil || !strings.Contains(err.Error(), "changed elsewhere") {
+		t.Fatalf("stale SaveMaclawLLMProfiles error = %v, want conflict", err)
+	}
+	if got := app.GetMaclawLLMConfig().Model; got != "model-b" {
+		t.Fatalf("stale save overwrote model: %q", got)
+	}
+}
+
+func TestQuickSaveMaclawLLMProfileScopesWritesAndRejectsFollowingCoding(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "assistant", Name: "Assistant", URL: "https://assistant.example.test/v1", Key: "assistant-key", Model: "assistant-a"},
+			{ID: "coding", Name: "Coding", URL: "https://coding.example.test/v1", Key: "coding-key", Model: "coding-a"},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-a"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "coding", Model: "coding-a"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	next, err := app.QuickSaveMaclawLLMProfile(maclawLLMProfileCoding, "coding", "coding-b", state.Revision)
+	if err != nil {
+		t.Fatalf("QuickSaveMaclawLLMProfile(coding): %v", err)
+	}
+	if next.Coding.Model != "coding-b" || next.Assistant.Model != "assistant-a" {
+		t.Fatalf("quick save state = %#v", next)
+	}
+	if got := app.GetMaclawLLMConfig().Model; got != "assistant-a" {
+		t.Fatalf("coding quick save changed assistant projection: %q", got)
+	}
+
+	profiles := next.Profiles
+	profiles.Coding.InheritAssistant = true
+	if err := app.SaveMaclawLLMProfiles(profiles, next.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles(follow): %v", err)
+	}
+	following, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState(following): %v", err)
+	}
+	if _, err := app.QuickSaveMaclawLLMProfile(maclawLLMProfileCoding, "coding", "coding-c", following.Revision); err == nil || !strings.Contains(err.Error(), "follows assistant") {
+		t.Fatalf("following coding quick save error = %v, want follows-assistant rejection", err)
+	}
+}
+
+func TestFetchMaclawLLMProfileModelsResolvesProviderByStableID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"selected-model"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "assistant", Name: "Assistant", URL: "https://assistant.example.test/v1", Key: "assistant-key", Model: "assistant-model"},
+			{ID: "catalog-target", Name: "Catalog target", URL: srv.URL + "/v1", Key: "target-key", Model: "target-model"},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "catalog-target", Model: "target-model"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	items, err := app.FetchMaclawLLMProfileModels("catalog-target")
+	if err != nil {
+		t.Fatalf("FetchMaclawLLMProfileModels: %v", err)
+	}
+	if gotPath != "/v1/models" {
+		t.Fatalf("path = %q, want /v1/models", gotPath)
+	}
+	if gotAuth != "Bearer target-key" {
+		t.Fatalf("authorization = %q, want target provider key", gotAuth)
+	}
+	if len(items) != 1 || items[0].ID != "selected-model" {
+		t.Fatalf("items = %+v", items)
+	}
+	if _, err := app.FetchMaclawLLMProfileModels("removed-provider"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing provider error = %v, want not found", err)
+	}
+}
+
+func TestLegacyModelWritesAreRejectedForProfileManagedConfig(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Key: "key", Model: "assistant-model"},
+			{ID: "coding", Name: "Coding", URL: "https://coding.example/v1", Key: "key", Model: "coding-model"},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "coding", Model: "coding-model"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	if err := app.SetMaclawLLMCurrentModel("assistant-new"); err == nil || !strings.Contains(err.Error(), "LLM profiles are enabled") {
+		t.Fatalf("SetMaclawLLMCurrentModel error = %v, want profile-managed rejection", err)
+	}
+	if err := app.SaveMaclawLLMConfig(corelib.MaclawLLMConfig{URL: "https://changed.example/v1", Key: "changed-key", Model: "assistant-new"}); err == nil || !strings.Contains(err.Error(), "LLM profiles are enabled") {
+		t.Fatalf("SaveMaclawLLMConfig error = %v, want profile-managed rejection", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := saved.MaclawLLMProfiles; got == nil || got.Assistant.Model != "assistant-model" || got.Coding.Model != "coding-model" {
+		t.Fatalf("legacy model write changed profile-managed assignments: %#v", got)
+	}
+	if saved.MaclawLLMUrl != "" || saved.MaclawLLMKey != "" {
+		t.Fatalf("legacy flat config write changed profile-managed config: %#v", saved)
+	}
+}
+
+func TestSaveMaclawLLMProvidersRejectsRemovingIndependentCodingProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	providers := []corelib.MaclawLLMProvider{
+		{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Key: "key", Model: "assistant-model"},
+		{ID: "coding", Name: "Coding", URL: "https://coding.example/v1", Key: "key", Model: "coding-model"},
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: providers, MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "coding", Model: "coding-model"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{providers[0]}, "Assistant"); err == nil || !strings.Contains(err.Error(), "independent coding profile") {
+		t.Fatalf("SaveMaclawLLMProviders removal error = %v, want coding-profile reference rejection", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if _, found := resolveMaclawLLMProviderByID(saved.MaclawLLMProviders, "coding"); !found {
+		t.Fatal("failed provider save removed coding provider")
+	}
+}
+
+func TestSaveMaclawLLMProvidersPreservesProfilesWhenEditingProviderCatalog(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	providers := []corelib.MaclawLLMProvider{
+		{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Key: "assistant-key", Model: "assistant-default"},
+		{ID: "coding", Name: "Coding", URL: "https://coding.example/v1", Key: "coding-key", Model: "coding-default"},
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: providers, MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-selected"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "coding", Model: "coding-selected"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider management is allowed to change catalog/connection fields, but
+	// its legacy current argument cannot overwrite either selected profile.
+	updated := append([]corelib.MaclawLLMProvider(nil), providers...)
+	updated[0].Models = []string{"assistant-selected", "assistant-new"}
+	updated[1].Models = []string{"coding-selected", "coding-new"}
+	updated[1].URL = "https://coding-updated.example/v1"
+	if err := app.SaveMaclawLLMProviders(updated, "Coding"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.MaclawLLMProfiles == nil || saved.MaclawLLMProfiles.Assistant.Model != "assistant-selected" || saved.MaclawLLMProfiles.Coding.Model != "coding-selected" {
+		t.Fatalf("provider save overwrote profile assignment: %#v", saved.MaclawLLMProfiles)
+	}
+	if got := app.GetMaclawLLMConfig(); got.ProviderID != "assistant" || got.Model != "assistant-selected" {
+		t.Fatalf("assistant resolution after provider save = %#v", got)
+	}
+	if got := app.GetCodingLLMConfig(); got.ProviderID != "coding" || got.Model != "coding-selected" || got.URL != "https://coding-updated.example/v1" {
+		t.Fatalf("coding resolution after provider save = %#v", got)
+	}
+}
+
+func TestSaveMaclawLLMProvidersRejectsRemovingAssistantProfileProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	providers := []corelib.MaclawLLMProvider{
+		{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Key: "key", Model: "assistant-model"},
+		{ID: "other", Name: "Other", URL: "https://other.example/v1", Key: "key", Model: "other-model"},
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: providers, MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{providers[1]}, "Other"); err == nil || !strings.Contains(err.Error(), "assistant profile") {
+		t.Fatalf("assistant provider removal error = %v, want assistant-profile reference rejection", err)
+	}
+}
+
+func TestMaclawLLMProfileHealthSeparatesIndependentProfilesAndReusesFollow(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Key: "key", Model: "assistant-model"},
+			{ID: "coding", Name: "Coding", URL: "https://coding.example/v1", Key: "key", Model: "coding-model"},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "coding", Model: "coding-model"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	app.setMaclawLLMProfileHealth(maclawLLMProfileAssistant, "assistant", "assistant-model", maclawLLMProfileHealthRecord{Health: "configured", CheckedAt: "2026-01-01T00:00:00Z"})
+	app.setMaclawLLMProfileHealth(maclawLLMProfileCoding, "coding", "coding-model", maclawLLMProfileHealthRecord{Health: "unavailable", CheckedAt: "2026-01-01T00:00:00Z", ReasonCode: "authentication_failed"})
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if state.Assistant.Health != "configured" || state.Coding.Health != "unavailable" {
+		t.Fatalf("independent health = assistant:%q coding:%q, want configured/unavailable", state.Assistant.Health, state.Coding.Health)
+	}
+	if state.Coding.ReasonCode != "authentication_failed" {
+		t.Fatalf("coding reason = %q, want authentication_failed", state.Coding.ReasonCode)
+	}
+
+	profiles := state.Profiles
+	profiles.Coding.InheritAssistant = true
+	if err := app.SaveMaclawLLMProfiles(profiles, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles(follow): %v", err)
+	}
+	// Saving invalidates stale results; a fresh assistant probe is then the
+	// single source for the following coding profile.
+	app.setMaclawLLMProfileHealth(maclawLLMProfileAssistant, "assistant", "assistant-model", maclawLLMProfileHealthRecord{Health: "configured", CheckedAt: "2026-01-02T00:00:00Z"})
+	following, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState(follow): %v", err)
+	}
+	if following.Coding.Health != "configured" || following.Coding.CheckedAt != following.Assistant.CheckedAt {
+		t.Fatalf("following coding health = %#v, assistant = %#v; want assistant health projection", following.Coding, following.Assistant)
+	}
+}
+
+func TestMaclawLLMProfileHealthFromPingDoesNotMakeTransientFailuresUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   MaclawLLMStatus
+		want string
+	}{
+		{name: "online", in: MaclawLLMStatus{Online: true, Configured: true}, want: "configured"},
+		{name: "auth", in: MaclawLLMStatus{Configured: true, Error: "HTTP 401 unauthorized"}, want: "unavailable"},
+		{name: "timeout", in: MaclawLLMStatus{Configured: true, Error: "request failed: timeout"}, want: "unverified"},
+		{name: "invalid", in: MaclawLLMStatus{Configured: false}, want: "invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := maclawLLMProfileHealthFromPing(tc.in).Health; got != tc.want {
+				t.Fatalf("health = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSuccessfulLLMRequestMarksCurrentProfileHealthy(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Key: "key", Model: "assistant-model"}},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles:        &corelib.MaclawLLMProfiles{Version: 1, Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"}, Coding: corelib.MaclawLLMProfile{InheritAssistant: true}},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	resolved, err := app.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
+	if err != nil {
+		t.Fatalf("ResolveMaclawLLMProfile: %v", err)
+	}
+	app.markMaclawLLMProfileHealthyIfCurrent(resolved)
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if state.Assistant.Health != "configured" || state.Coding.Health != "configured" {
+		t.Fatalf("health after successful request = assistant:%q coding:%q, want configured/configured", state.Assistant.Health, state.Coding.Health)
+	}
+
+	stale := resolved
+	stale.Model = "different-model"
+	app.markMaclawLLMProfileHealthyIfCurrent(stale)
+	if _, ok := app.maclawLLMProfileHealthFor(maclawLLMProfileAssistant, stale.ProviderID, stale.Model); ok {
+		t.Fatal("a stale successful request created health for a non-current model")
+	}
+}
+
+func TestTransientProbeDoesNotOverrideSuccessfulLLMRequestHealth(t *testing.T) {
+	app := &App{}
+	app.setMaclawLLMProfileHealth(maclawLLMProfileAssistant, "assistant", "assistant-model", maclawLLMProfileHealthRecord{Health: "configured", CheckedAt: "2026-08-10T10:00:00Z"})
+	app.setMaclawLLMProfileHealth(maclawLLMProfileAssistant, "assistant", "assistant-model", maclawLLMProfileHealthRecord{Health: "unverified", CheckedAt: "2026-08-10T10:01:00Z", ReasonCode: "probe_retryable"})
+	record, ok := app.maclawLLMProfileHealthFor(maclawLLMProfileAssistant, "assistant", "assistant-model")
+	if !ok || record.Health != "configured" || record.CheckedAt != "2026-08-10T10:00:00Z" {
+		t.Fatalf("transient probe overwrote successful request health: %#v", record)
+	}
+
+	app.setMaclawLLMProfileHealth(maclawLLMProfileAssistant, "assistant", "assistant-model", maclawLLMProfileHealthRecord{Health: "unavailable", ReasonCode: "authentication_failed"})
+	record, _ = app.maclawLLMProfileHealthFor(maclawLLMProfileAssistant, "assistant", "assistant-model")
+	if record.Health != "unavailable" {
+		t.Fatalf("authentication failure must override previous success, got %#v", record)
+	}
+}
+
+func TestMarkMaclawLLMProfileHealthyDoesNotEmitForUnchangedHealth(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Key: "key", Model: "assistant-model"}},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles:        &corelib.MaclawLLMProfiles{Version: 1, Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"}, Coding: corelib.MaclawLLMProfile{InheritAssistant: true}},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	resolved, err := app.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
+	if err != nil {
+		t.Fatalf("ResolveMaclawLLMProfile: %v", err)
+	}
+	if !app.setMaclawLLMProfileHealthIfCurrent(maclawLLMProfileAssistant, resolved, maclawLLMProfileHealthRecord{Health: "configured", CheckedAt: "2026-08-10T10:00:00Z"}) {
+		t.Fatal("initial health write was unexpectedly suppressed")
+	}
+	if app.setMaclawLLMProfileHealthIfCurrent(maclawLLMProfileAssistant, resolved, maclawLLMProfileHealthRecord{Health: "unverified", ReasonCode: "probe_retryable"}) {
+		t.Fatal("a transient probe should not replace successful request health")
+	}
+	if app.setMaclawLLMProfileHealthIfCurrent(maclawLLMProfileAssistant, resolved, maclawLLMProfileHealthRecord{Health: "configured", CheckedAt: "2026-08-10T10:01:00Z"}) {
+		t.Fatal("a repeated successful request should not create a redundant health update")
+	}
+}
+
+func TestRefreshMaclawLLMProfileHealthProbesAssistantAndIndependentCodingSeparately(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	oldClient := maclawLLMPingClient
+	defer func() { maclawLLMPingClient = oldClient }()
+
+	var assistantRequests, codingRequests atomic.Int32
+	maclawLLMPingClient = &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "assistant.health.test":
+			assistantRequests.Add(1)
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: req}, nil
+		case "coding.health.test":
+			codingRequests.Add(1)
+			return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: req}, nil
+		default:
+			return nil, fmt.Errorf("unexpected host %q", req.URL.Host)
+		}
+	})}
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "assistant", Name: "Assistant", URL: "https://assistant.health.test/v1", Key: "key", Model: "assistant-model"},
+			{ID: "coding", Name: "Coding", URL: "https://coding.health.test/v1", Key: "key", Model: "coding-model"},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "coding", Model: "coding-model"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.RefreshMaclawLLMProfileHealth()
+	if err != nil {
+		t.Fatalf("RefreshMaclawLLMProfileHealth: %v", err)
+	}
+	if state.Assistant.Health != "configured" || state.Coding.Health != "unavailable" {
+		t.Fatalf("health = assistant:%q coding:%q, want configured/unavailable", state.Assistant.Health, state.Coding.Health)
+	}
+	if got := assistantRequests.Load(); got == 0 {
+		t.Fatal("assistant was not probed")
+	}
+	if got := codingRequests.Load(); got == 0 {
+		t.Fatal("independent coding was not probed")
+	}
+
+	profiles := state.Profiles
+	profiles.Coding.InheritAssistant = true
+	if err := app.SaveMaclawLLMProfiles(profiles, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles(follow): %v", err)
+	}
+	assistantRequests.Store(0)
+	codingRequests.Store(0)
+	following, err := app.RefreshMaclawLLMProfileHealth()
+	if err != nil {
+		t.Fatalf("RefreshMaclawLLMProfileHealth(follow): %v", err)
+	}
+	if following.Coding.Health != following.Assistant.Health {
+		t.Fatalf("following coding health = %q, assistant = %q", following.Coding.Health, following.Assistant.Health)
+	}
+	if codingRequests.Load() != 0 {
+		t.Fatalf("following coding sent %d duplicate probes", codingRequests.Load())
 	}
 }
 
@@ -2011,6 +2618,83 @@ func TestMaclawLLMTokenUsageCalculatesCost(t *testing.T) {
 	}
 	if stat.InputCostRMB != 2 || stat.OutputCostRMB != 2 || stat.TotalCostRMB != 4 {
 		t.Fatalf("cost = input %.2f output %.2f total %.2f", stat.InputCostRMB, stat.OutputCostRMB, stat.TotalCostRMB)
+	}
+}
+
+func TestMaclawLLMProfileTokenUsageSeparatesProfilesAndFinalModels(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+		ID: "provider", Name: "Provider", InputPricePerMTokensRMB: 2, OutputPricePerMTokensRMB: 4,
+	}}}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.AccumulateLLMProfileTokenUsageWithCache(corelib.MaclawLLMConfig{
+		Profile: "assistant", ProviderID: "provider", ProviderName: "Provider", Model: "assistant-model", RouteSource: "base",
+	}, 100, 20, 0, 0)
+	app.AccumulateLLMProfileTokenUsageWithCache(corelib.MaclawLLMConfig{
+		Profile: "coding", ProviderID: "provider", ProviderName: "Provider", Model: "coding-route-model", RouteSource: "vision",
+	}, 200, 40, 0, 0)
+	app.flushPendingTokenUsage()
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(saved.LLMProfileTokenUsage) != 2 {
+		t.Fatalf("profile usage = %#v, want two attributed rows", saved.LLMProfileTokenUsage)
+	}
+	assistant := saved.LLMProfileTokenUsage["profile:assistant|provider|assistant-model"]
+	if assistant == nil || assistant.Profile != "assistant" || assistant.FinalModel != "assistant-model" || assistant.TotalTokens != 120 {
+		t.Fatalf("assistant profile usage = %#v", assistant)
+	}
+	coding := saved.LLMProfileTokenUsage["profile:coding|provider|coding-route-model"]
+	if coding == nil || coding.Profile != "coding" || coding.FinalModel != "coding-route-model" || coding.RouteSource != "vision" || coding.TotalTokens != 240 {
+		t.Fatalf("coding profile usage = %#v", coding)
+	}
+	if len(saved.LLMTokenUsage) != 0 {
+		t.Fatalf("profile-only recorder should not fabricate legacy attribution: %#v", saved.LLMTokenUsage)
+	}
+	all := app.GetAllLLMProfileTokenUsage()
+	if len(all) != 2 || all["profile:coding|provider|coding-route-model"] == nil {
+		t.Fatalf("profile usage API = %#v", all)
+	}
+}
+
+func TestRecordLLMUsageSnapshotKeepsCapturedCodingProfile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{MaclawLLMProviders: []corelib.MaclawLLMProvider{
+		{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Key: "assistant-key", Model: "assistant-model"},
+		{ID: "coding", Name: "Coding", URL: "https://coding.example/v1", Key: "coding-key", Model: "coding-model"},
+	}, MaclawLLMCurrentProvider: "Assistant", MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+		Version:   maclawLLMProfilesVersion,
+		Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"},
+		Coding:    corelib.MaclawLLMProfile{ProviderID: "coding", Model: "coding-model"},
+	}}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := &IMMessageHandler{app: app}
+	// This response belongs to an in-flight coding request. The persisted
+	// assistant selection is deliberately different, proving the recorder must
+	// use the request snapshot rather than resolving current settings again.
+	codingCfg := corelib.MaclawLLMConfig{
+		Profile: "coding", ProviderID: "coding", ProviderName: "Coding", Model: "coding-model", RouteSource: "base",
+	}
+	h.recordLLMUsageSnapshot("coding_round", codingCfg, &llm.Response{Usage: &llm.Usage{PromptTokens: 12, CompletionTokens: 4}}, nil)
+	app.flushPendingTokenUsage()
+
+	usage := app.GetAllLLMProfileTokenUsage()
+	if usage["profile:coding|coding|coding-model"] == nil {
+		t.Fatalf("coding usage missing or attributed to assistant: %#v", usage)
+	}
+	if usage["profile:assistant|assistant|assistant-model"] != nil {
+		t.Fatalf("coding request was attributed to assistant: %#v", usage)
 	}
 }
 

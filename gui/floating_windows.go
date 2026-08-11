@@ -270,7 +270,36 @@ func newFloatingWindow(app *App) floatingWindow {
 	return &windowsFloatingWindow{app: app}
 }
 
-var globalFloatingWin *windowsFloatingWindow
+// globalFloatingWin is the callback target for the Win32 class procedure.
+// Window creation/destruction happens on worker threads while the procedure
+// runs on its owning OS thread, so this pointer needs its own synchronization;
+// an individual window's mutex cannot protect a global pointer read before the
+// procedure knows which window to lock.
+var globalFloatingWin struct {
+	sync.RWMutex
+	window *windowsFloatingWindow
+}
+
+func setGlobalFloatingWindow(w *windowsFloatingWindow) {
+	globalFloatingWin.Lock()
+	globalFloatingWin.window = w
+	globalFloatingWin.Unlock()
+}
+
+func clearGlobalFloatingWindow(w *windowsFloatingWindow) {
+	globalFloatingWin.Lock()
+	if globalFloatingWin.window == w {
+		globalFloatingWin.window = nil
+	}
+	globalFloatingWin.Unlock()
+}
+
+func currentGlobalFloatingWindow() *windowsFloatingWindow {
+	globalFloatingWin.RLock()
+	w := globalFloatingWin.window
+	globalFloatingWin.RUnlock()
+	return w
+}
 
 func init() {
 	// Use SPI_GETWORKAREA to get the usable desktop area (excludes taskbar,
@@ -408,7 +437,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 			w.distMap[py*sz+px] = math.Sqrt(dx*dx + dy*dy)
 		}
 	}
-	globalFloatingWin = w
+	setGlobalFloatingWindow(w)
 	w.mu.Unlock()
 
 	// Create window and start message loop on a dedicated OS thread.
@@ -423,9 +452,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 			w.hwnd = 0
 			w.created = false
 			w.destroying = false
-			if globalFloatingWin == w {
-				globalFloatingWin = nil
-			}
+			clearGlobalFloatingWindow(w)
 			if w.stopCh != nil {
 				close(w.stopCh)
 				w.stopCh = nil
@@ -511,9 +538,7 @@ func (w *windowsFloatingWindow) Destroy() {
 			w.hwnd = 0
 			w.created = false
 			w.destroying = false
-			if globalFloatingWin == w {
-				globalFloatingWin = nil
-			}
+			clearGlobalFloatingWindow(w)
 			w.mu.Unlock()
 		case <-time.After(2 * time.Second):
 			log.Printf("[floating-assistant] Destroy timed out waiting for window thread")
@@ -2009,7 +2034,7 @@ func applyNRGBAToLayeredWindow(hwnd uintptr, img *image.NRGBA, sz int) {
 // Win32 window procedure
 
 func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
-	w := globalFloatingWin
+	w := currentGlobalFloatingWindow()
 
 	switch msg {
 	case wmNchittest:
@@ -2190,9 +2215,7 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				w.hwnd = 0
 				w.created = false
 				w.destroying = false
-				if globalFloatingWin == w {
-					globalFloatingWin = nil
-				}
+				clearGlobalFloatingWindow(w)
 			}
 			w.mu.Unlock()
 		}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	_ "modernc.org/sqlite"
@@ -28,6 +30,7 @@ type SQLiteStore struct {
 	db                     *sql.DB
 	dbPath                 string // for background post-import work on a separate connection
 	distiller              CardDistiller
+	progressMu             sync.Mutex // serializes callback installation and delivery
 	importProgress         ImportProgressFunc
 	scanProgress           ScanProgressFunc
 	embedder               embedding.Embedder
@@ -37,6 +40,8 @@ type SQLiteStore struct {
 	vectorANNEnabled       bool // opt-in: exact scan remains the safe default
 	imageAssets            *ImageAssetManager
 	imageDescriber         ImageDescriber
+	pdfOCR                 OCRProvider   // local OCR used only for scanned/mixed PDF pages
+	pdfOCRMu               sync.RWMutex  // protects live OCR-provider reconfiguration
 	imageDescSem           chan struct{} // semaphore for concurrent image description calls
 	bgWG                   sync.WaitGroup
 	backgroundMu           sync.Mutex // serializes background starts, waits, and shutdown
@@ -212,13 +217,56 @@ func (s *SQLiteStore) SetCardDistiller(distiller CardDistiller) {
 
 func (s *SQLiteStore) SetImportProgressCallback(callback ImportProgressFunc) {
 	if s != nil {
+		s.progressMu.Lock()
 		s.importProgress = callback
+		s.progressMu.Unlock()
 	}
 }
 
 func (s *SQLiteStore) SetScanProgressCallback(callback ScanProgressFunc) {
 	if s != nil {
+		s.progressMu.Lock()
 		s.scanProgress = callback
+		s.progressMu.Unlock()
+	}
+}
+
+// emitImportProgress serializes callback invocation as well as callback reads.
+// Directory import post-work intentionally continues in the background after
+// the foreground function returns, so callers may otherwise observe their own
+// progress state mutate concurrently. Callbacks run under this lock by design:
+// progress is advisory and must remain ordered; they must not call a setter on
+// the same store.
+func (s *SQLiteStore) emitImportProgress(progress DirectoryImportResult) {
+	if s == nil {
+		return
+	}
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
+	if s.importProgress != nil {
+		s.importProgress(progress)
+	}
+}
+
+func (s *SQLiteStore) hasImportProgressCallback() bool {
+	if s == nil {
+		return false
+	}
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
+	return s.importProgress != nil
+}
+
+func (s *SQLiteStore) currentScanProgressCallback() ScanProgressFunc {
+	if s == nil {
+		return nil
+	}
+	return func(phase string, done, total int, path string) {
+		s.progressMu.Lock()
+		defer s.progressMu.Unlock()
+		if s.scanProgress != nil {
+			s.scanProgress(phase, done, total, path)
+		}
 	}
 }
 
@@ -299,12 +347,106 @@ func (s *SQLiteStore) SetImageDescriber(describer ImageDescriber) {
 	}
 }
 
+// SetPDFOCRProvider configures the local OCR engine used to turn scanned PDF
+// pages into searchable knowledge nodes. The provider is process-owned; this
+// store only borrows it and never closes it.
+func (s *SQLiteStore) SetPDFOCRProvider(provider OCRProvider) {
+	if s != nil {
+		s.pdfOCRMu.Lock()
+		s.pdfOCR = provider
+		s.pdfOCRMu.Unlock()
+	}
+}
+
+// currentPDFOCRProvider returns one stable provider snapshot for an OCR job.
+// The GUI may replace the shared runtime while imports are active, so callers
+// must not read pdfOCR directly after this boundary.
+func (s *SQLiteStore) currentPDFOCRProvider() OCRProvider {
+	if s == nil {
+		return nil
+	}
+	s.pdfOCRMu.RLock()
+	provider := s.pdfOCR
+	s.pdfOCRMu.RUnlock()
+	return provider
+}
+
 // ImageAssets returns the configured image asset manager (may be nil).
 func (s *SQLiteStore) ImageAssets() *ImageAssetManager {
 	if s == nil {
 		return nil
 	}
 	return s.imageAssets
+}
+
+// ImageAssetBaseDir returns the configured image asset root for consumers that
+// need to build an in-process display thumbnail. It is intentionally only a
+// local capability: HTTP/API callers must use authenticated image URLs instead
+// of exposing this filesystem location.
+func (s *SQLiteStore) ImageAssetBaseDir() string {
+	if assets := s.ImageAssets(); assets != nil {
+		return assets.BaseDir()
+	}
+	return ""
+}
+
+// FindImageAssetSource resolves an image asset to its owning source. This is
+// used by authenticated HTTP handlers before serving a thumbnail or original.
+// It supports canonical metadata-backed assets plus standalone image sources.
+func (s *SQLiteStore) FindImageAssetSource(ctx context.Context, assetID string) (Source, error) {
+	// Asset IDs are external lookup tokens at this boundary. Do not trim them:
+	// otherwise a request for " asset-id " could authorize the distinct
+	// managed asset named "asset-id".
+	if s == nil || s.db == nil || !IsSafeImageAssetID(assetID) {
+		return Source{}, sql.ErrNoRows
+	}
+	// Standalone images use source ID as the asset ID. They may also own embedded
+	// assets from legacy image-source imports, so enforce the same ownership
+	// relation as document-backed image nodes instead of treating the source ID
+	// as an unconditional authorization token.
+	if source, err := s.GetSource(ctx, assetID); err == nil && source.Kind == SourceKindImage {
+		return source, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
+		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
+		FROM document_nodes n JOIN knowledge_sources s ON s.id = n.source_id
+	WHERE n.type = ? AND json_extract(COALESCE(n.metadata_json, '{}'), '$.image_asset_id') = ?`, NodeTypeImage, assetID)
+	if err != nil {
+		return Source{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		source, err := scanSource(rows)
+		if err != nil {
+			return Source{}, err
+		}
+		if imageAssetBelongsToSource(assetID, source) {
+			return source, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return Source{}, err
+	}
+	return Source{}, sql.ErrNoRows
+}
+
+// imageAssetBelongsToSource verifies the import-time asset ownership contract
+// before a source is used for authorization. A standalone image owns the asset
+// named after its source ID; embedded assets use the owning document source ID
+// plus an underscore suffix. This prevents a malformed database node from
+// borrowing another source's asset ID and bypassing source-level read scopes.
+func imageAssetBelongsToSource(assetID string, source Source) bool {
+	return ImageAssetIDBelongsToSourceID(assetID, source.ID)
+}
+
+// ImageAssetIDBelongsToSourceID is the common ownership rule for image
+// authorization and filesystem lifecycle work. Keep it centralized so an
+// untrusted metadata row cannot cause cleanup to delete a different source's
+// asset even if lookup correctly rejects the same claim. It is also used by
+// delivery layers before publishing a media reference for a search result.
+func ImageAssetIDBelongsToSourceID(assetID, sourceID string) bool {
+	return IsSafeImageAssetID(assetID) && IsSafeImageAssetID(sourceID) &&
+		(assetID == sourceID || strings.HasPrefix(assetID, sourceID+"_"))
 }
 
 // WaitBackground blocks until async import post-work (linking/embedding) finishes.
@@ -541,6 +683,17 @@ func createTables(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			FOREIGN KEY(card_id) REFERENCES knowledge_cards(id) ON DELETE CASCADE
 		)`,
+		// Lifecycle audit is intentionally bounded. Recall evidence needs its own
+		// durable uniqueness boundary so an old callback cannot be counted again
+		// after audit entries have been compacted.
+		`CREATE TABLE IF NOT EXISTS coding_experience_recall_outcomes (
+			experience_id TEXT NOT NULL,
+			evidence_id TEXT NOT NULL,
+			task_succeeded INTEGER NOT NULL,
+			recorded_at TEXT NOT NULL,
+			PRIMARY KEY(experience_id, evidence_id),
+			FOREIGN KEY(experience_id) REFERENCES knowledge_sources(id) ON DELETE CASCADE
+		)`,
 		`CREATE TABLE IF NOT EXISTS knowledge_url_domain_policies (
 			domain TEXT PRIMARY KEY,
 			action TEXT NOT NULL,
@@ -598,6 +751,7 @@ func createTables(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_cards_scope ON knowledge_cards(tenant_id, owner_id, project_path, updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject ON knowledge_facts(subject)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_object ON knowledge_facts(object)`,
+		`CREATE INDEX IF NOT EXISTS idx_coding_experience_recall_outcomes_experience ON coding_experience_recall_outcomes(experience_id, recorded_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_import_items_batch ON knowledge_import_items(batch_id, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_import_items_hash ON knowledge_import_items(file_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_url_domain_policies_action ON knowledge_url_domain_policies(action)`,
@@ -713,6 +867,7 @@ func deleteDocumentNodeTreeTx(ctx context.Context, tx *sql.Tx, rootID string) er
 }
 
 func saveDocumentNodeTx(ctx context.Context, tx *sql.Tx, node DocumentNode) error {
+	node = sanitizeSnapshotDocumentNode(node)
 	meta, _ := json.Marshal(node.Metadata)
 	_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO document_nodes
 		(id, source_id, parent_id, type, title, text, level, page, sheet_name, row_range, col_range, xpath, offset, metadata_json, token_count)
@@ -836,6 +991,9 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 	if opts.Limit > 5000 {
 		opts.Limit = 5000
 	}
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
 	where := []string{"1=1"}
 	args := make([]interface{}, 0)
 	if opts.TenantID != "" {
@@ -930,10 +1088,11 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 			args = append(args, pattern)
 		}
 	}
-	args = append(args, opts.Limit)
+	args = append(args, opts.Limit, opts.Offset)
+	// Tie-break on id so OFFSET pagination does not skip/duplicate rows with equal updated_at.
 	q := `SELECT id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at, content_hash,
 		owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path, status, error_message, created_at, updated_at
-		FROM knowledge_sources WHERE ` + strings.Join(where, " AND ") + ` ORDER BY updated_at DESC LIMIT ?`
+		FROM knowledge_sources WHERE ` + strings.Join(where, " AND ") + ` ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -1028,6 +1187,60 @@ func (s *SQLiteStore) UpdateSourceMetadata(ctx context.Context, req SourceUpdate
 		}
 	}
 	return s.GetSource(ctx, id)
+}
+
+// recordCodingExperienceRecallOutcome atomically claims an immutable Runtime
+// outcome and saves the metadata resulting from that claim. The compact
+// lifecycle audit is not a durable de-duplication ledger.
+func (s *SQLiteStore) recordCodingExperienceRecallOutcome(ctx context.Context, experienceID, evidenceID string, taskSucceeded bool, topicHint string, labels []string) (bool, error) {
+	experienceID = strings.TrimSpace(experienceID)
+	evidenceID = strings.TrimSpace(evidenceID)
+	if experienceID == "" || evidenceID == "" {
+		return false, fmt.Errorf("coding recall outcome requires experience and evidence ids")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	succeeded := 0
+	if taskSucceeded {
+		succeeded = 1
+	}
+	now := time.Now().UTC()
+	claim, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO coding_experience_recall_outcomes
+		(experience_id, evidence_id, task_succeeded, recorded_at) VALUES (?, ?, ?, ?)`,
+		experienceID, evidenceID, succeeded, formatTime(now))
+	if err != nil {
+		return false, err
+	}
+	claimed, err := claim.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if claimed == 0 {
+		return false, nil
+	}
+
+	updated, err := tx.ExecContext(ctx, `UPDATE knowledge_sources SET topic_hint = ?, updated_at = ? WHERE id = ?`, topicHint, formatTime(now), experienceID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := updated.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 0 {
+		return false, fmt.Errorf("source %s not found", experienceID)
+	}
+	if err := replaceSourceLabelsTx(ctx, tx, experienceID, labels); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *SQLiteStore) ReplaceSourceLabels(ctx context.Context, sourceID string, labels []string) error {
@@ -1461,6 +1674,52 @@ func (s *SQLiteStore) ListNodesBySource(ctx context.Context, sourceID string, li
 	return nodes, rows.Err()
 }
 
+const (
+	maxSourceNodePreviewCount = 100
+	maxSourceNodePreviewTitle = 512
+	maxSourceNodePreviewRunes = 2_000
+)
+
+// ListNodePreviewsBySource returns an IPC-safe projection for the GUI source
+// inspector. Unlike ListNodesBySource it never transfers arbitrary metadata
+// or a full multi-megabyte node body. SQLite's length/substr functions operate
+// on characters for TEXT values, preserving UTF-8 boundaries for the preview.
+func (s *SQLiteStore) ListNodePreviewsBySource(ctx context.Context, sourceID string, limit int) ([]DocumentNodePreview, error) {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return nil, fmt.Errorf("source id is required")
+	}
+	if limit <= 0 || limit > maxSourceNodePreviewCount {
+		limit = maxSourceNodePreviewCount
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, type,
+		CASE WHEN length(COALESCE(title, '')) > ? THEN substr(COALESCE(title, ''), 1, ?) || '...' ELSE COALESCE(title, '') END,
+		CASE WHEN length(COALESCE(text, '')) > ? THEN substr(COALESCE(text, ''), 1, ?) || '...' ELSE COALESCE(text, '') END,
+		page, COALESCE(sheet_name, ''), offset,
+		COALESCE(json_extract(COALESCE(metadata_json, '{}'), '$.extractor'), ''),
+		CASE WHEN length(COALESCE(title, '')) > ? OR length(COALESCE(text, '')) > ? THEN 1 ELSE 0 END
+		FROM document_nodes WHERE source_id = ? ORDER BY offset ASC, level ASC, id ASC LIMIT ?`,
+		maxSourceNodePreviewTitle, maxSourceNodePreviewTitle,
+		maxSourceNodePreviewRunes, maxSourceNodePreviewRunes,
+		maxSourceNodePreviewTitle, maxSourceNodePreviewRunes,
+		sourceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	previews := make([]DocumentNodePreview, 0)
+	for rows.Next() {
+		var preview DocumentNodePreview
+		var truncated int
+		if err := rows.Scan(&preview.ID, &preview.Type, &preview.Title, &preview.Text, &preview.Page, &preview.SheetName, &preview.Offset, &preview.Extractor, &truncated); err != nil {
+			return nil, err
+		}
+		preview.Truncated = truncated != 0
+		previews = append(previews, preview)
+	}
+	return previews, rows.Err()
+}
+
 func (s *SQLiteStore) ListSourceVersions(ctx context.Context, sourceID string, limit int) ([]SourceVersion, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
@@ -1547,6 +1806,10 @@ func (s *SQLiteStore) DeleteSource(ctx context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("source id is required")
 	}
+	assetIDs, err := s.imageAssetIDsForSources(ctx, []string{id})
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1555,14 +1818,93 @@ func (s *SQLiteStore) DeleteSource(ctx context.Context, id string) error {
 	if err := deleteSourceDerivedRows(ctx, tx, id); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_sources WHERE id = ?`, id); err != nil {
+	deleted, err := tx.ExecContext(ctx, `DELETE FROM knowledge_sources WHERE id = ?`, id)
+	if err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	if rows, _ := deleted.RowsAffected(); rows > 0 {
+		s.deleteImageAssetsForSources([]string{id}, assetIDs)
+	}
 	s.invalidateVectorANN()
 	return nil
+}
+
+// DeleteSourcesByIDPrefix deletes every knowledge_sources row whose id starts with prefix
+// (and derived rows). Used by enterprise digital-asset purge for dal_{libraryID}_* cleanup.
+// Unlike ListSources, this is not subject to the 5000-row list cap. IDs are deleted in
+// batches so very large libraries do not materialize a single huge slice.
+func (s *SQLiteStore) DeleteSourcesByIDPrefix(ctx context.Context, prefix string) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("store not open")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return 0, fmt.Errorf("prefix required")
+	}
+	// Escape LIKE meta-characters so library IDs containing _ or % match literally.
+	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+	like := esc + "%"
+	const batch = 500
+	total := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT id FROM knowledge_sources WHERE id LIKE ? ESCAPE '\' LIMIT ?`, like, batch)
+		if err != nil {
+			return total, err
+		}
+		ids := make([]string, 0, batch)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return total, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return total, err
+		}
+		if err := rows.Close(); err != nil {
+			return total, err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		assetIDs, err := s.imageAssetIDsForSources(ctx, ids)
+		if err != nil {
+			return total, err
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return total, err
+		}
+		if err := deleteSourcesByIDsTx(ctx, tx, ids); err != nil {
+			_ = tx.Rollback()
+			return total, err
+		}
+		if err := tx.Commit(); err != nil {
+			return total, err
+		}
+		s.deleteImageAssetsForSources(ids, assetIDs)
+		total += len(ids)
+		// Last partial batch means we are done.
+		if len(ids) < batch {
+			break
+		}
+	}
+	if total > 0 {
+		s.invalidateVectorANN()
+	}
+	return total, nil
 }
 
 // DeleteSourcesByFilter deletes all sources matching the given owner/tenant filter
@@ -1576,6 +1918,10 @@ func (s *SQLiteStore) DeleteSourcesByFilter(ctx context.Context, opts ListSource
 	if len(ids) == 0 {
 		return 0, nil
 	}
+	assetIDs, err := s.imageAssetIDsForSources(ctx, ids)
+	if err != nil {
+		return 0, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -1587,8 +1933,168 @@ func (s *SQLiteStore) DeleteSourcesByFilter(ctx context.Context, opts ListSource
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	s.deleteImageAssetsForSources(ids, assetIDs)
 	s.invalidateVectorANN()
 	return len(ids), nil
+}
+
+// deleteImageAssetsForSources runs only after the SQLite transaction has
+// committed. Database state remains authoritative if filesystem cleanup fails;
+// logging keeps any orphan visible to operators without reporting a
+// rolled-back database operation.
+type imageAssetIDQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func (s *SQLiteStore) imageAssetIDsForSources(ctx context.Context, sourceIDs []string) (map[string][]string, error) {
+	if s == nil || s.db == nil {
+		return map[string][]string{}, nil
+	}
+	return imageAssetIDsForSourcesQuery(ctx, s.db, sourceIDs)
+}
+
+func imageAssetIDsForSourcesTx(ctx context.Context, tx *sql.Tx, sourceIDs []string) (map[string][]string, error) {
+	if tx == nil {
+		return map[string][]string{}, nil
+	}
+	return imageAssetIDsForSourcesQuery(ctx, tx, sourceIDs)
+}
+
+func imageAssetIDsForSourcesQuery(ctx context.Context, queryer imageAssetIDQueryer, sourceIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(sourceIDs))
+	if queryer == nil || len(sourceIDs) == 0 {
+		return result, nil
+	}
+	const chunkSize = 400
+	for start := 0; start < len(sourceIDs); start += chunkSize {
+		end := start + chunkSize
+		if end > len(sourceIDs) {
+			end = len(sourceIDs)
+		}
+		ids := sourceIDs[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+		args := make([]interface{}, len(ids))
+		for i, id := range ids {
+			args[i] = id
+		}
+		rows, err := queryer.QueryContext(ctx, `SELECT source_id, json_extract(COALESCE(metadata_json, '{}'), '$.image_asset_id')
+			FROM document_nodes WHERE source_id IN (`+placeholders+`) AND type = ? AND json_extract(COALESCE(metadata_json, '{}'), '$.image_asset_id') IS NOT NULL`, append(args, NodeTypeImage)...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var sourceID, assetID string
+			if err := rows.Scan(&sourceID, &assetID); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			if ImageAssetIDBelongsToSourceID(assetID, sourceID) {
+				result[sourceID] = append(result[sourceID], assetID)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) deleteImageAssetsForSources(ids []string, assetIDs map[string][]string) {
+	if s == nil || s.imageAssets == nil {
+		return
+	}
+	for _, id := range ids {
+		if err := s.imageAssets.DeleteAssetsForSource(id, assetIDs[id]...); err != nil {
+			log.Printf("[knowledge-image] delete assets for source %s: %v", id, err)
+		}
+	}
+}
+
+// officeReadImageAssetIDs returns only opaque asset IDs generated from an
+// OfficeRead rich payload in this transaction. It deliberately does not try
+// to clean legacy or standalone image assets: those may retain historical
+// deterministic IDs and could still be referenced if the transaction rolls
+// back.
+func officeReadImageAssetIDs(nodes []DocumentNode) []string {
+	ids := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, node := range nodes {
+		if node.Type != NodeTypeImage || node.Metadata == nil || node.Metadata["extractor"] != "officeread" {
+			continue
+		}
+		assetID := node.Metadata[MetaImageAssetID]
+		if !IsSafeImageAssetID(assetID) {
+			continue
+		}
+		if _, ok := seen[assetID]; ok {
+			continue
+		}
+		seen[assetID] = struct{}{}
+		ids = append(ids, assetID)
+	}
+	return ids
+}
+
+// deleteProvisionalEmbeddedImageAssets reclaims assets that were created
+// during an import transaction but have not been proven durable by a commit.
+// It is intentionally best-effort: the database transaction remains the
+// authority, while failures are logged for the image-asset doctor to surface.
+func (s *SQLiteStore) deleteProvisionalEmbeddedImageAssets(assetIDs []string) {
+	if s == nil || s.imageAssets == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(assetIDs))
+	for _, assetID := range assetIDs {
+		if !IsSafeImageAssetID(assetID) {
+			continue
+		}
+		if _, ok := seen[assetID]; ok {
+			continue
+		}
+		seen[assetID] = struct{}{}
+		if err := s.imageAssets.DeleteAssets(assetID); err != nil {
+			log.Printf("[knowledge-image] delete provisional asset %s: %v", assetID, err)
+		}
+	}
+}
+
+// deleteSupersededImageAssets removes only embedded image asset IDs that
+// belonged to a prior revision but are absent from the committed database
+// rows. It is used by refresh and duplicate re-import, where a source stays
+// in place and DeleteAssetsForSource would otherwise remove newly saved
+// assets as well.
+func (s *SQLiteStore) deleteSupersededImageAssets(ctx context.Context, sourceID string, oldAssetIDs []string) {
+	if s == nil || s.imageAssets == nil || len(oldAssetIDs) == 0 {
+		return
+	}
+	currentAssetIDs, err := s.imageAssetIDsForSources(ctx, []string{sourceID})
+	if err != nil {
+		log.Printf("[knowledge-image] inspect superseded assets for source %s: %v", sourceID, err)
+		return
+	}
+	active := make(map[string]struct{}, len(currentAssetIDs[sourceID]))
+	for _, assetID := range currentAssetIDs[sourceID] {
+		active[assetID] = struct{}{}
+	}
+	stale := make([]string, 0, len(oldAssetIDs))
+	for _, assetID := range oldAssetIDs {
+		if !IsSafeImageAssetID(assetID) {
+			continue
+		}
+		if _, retained := active[assetID]; !retained {
+			stale = append(stale, assetID)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	if err := s.imageAssets.DeleteAssetsForSource(sourceID, stale...); err != nil {
+		log.Printf("[knowledge-image] delete superseded assets for source %s: %v", sourceID, err)
+	}
 }
 
 func (s *SQLiteStore) sourceIDsByFilter(ctx context.Context, opts ListSourcesOptions) ([]string, error) {
@@ -1716,6 +2222,10 @@ func (s *SQLiteStore) DeleteImportBatch(ctx context.Context, req ImportBatchDele
 	if err != nil {
 		return ImportBatchDeleteResult{}, err
 	}
+	assetIDs, err := s.imageAssetIDsForSources(ctx, ids)
+	if err != nil {
+		return ImportBatchDeleteResult{}, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ImportBatchDeleteResult{}, err
@@ -1735,6 +2245,8 @@ func (s *SQLiteStore) DeleteImportBatch(ctx context.Context, req ImportBatchDele
 	if err := tx.Commit(); err != nil {
 		return ImportBatchDeleteResult{}, err
 	}
+	s.deleteImageAssetsForSources(ids, assetIDs)
+	s.invalidateVectorANN()
 	return ImportBatchDeleteResult{BatchID: batch.ID, DeletedSources: len(ids), DeletedBatches: int(deletedBatches64)}, nil
 }
 
@@ -2263,6 +2775,19 @@ func (s *SQLiteStore) hydrateSearchResultNodeMetadata(ctx context.Context, resul
 		results[i].ParentNodeID = parentID
 		results[i].Language = metadata["language"]
 		results[i].Script = metadata["script"]
+		// Image assets have a stable, opaque identifier recorded at import time.
+		// Surface it through Media as soon as the result is hydrated so callers do
+		// not have to reconstruct an embedded-image asset ID from source/node IDs.
+		// The field is safe to expose: it is an asset lookup key, never a host path
+		// or image payload.
+		if results[i].NodeType == NodeTypeImage {
+			if assetID := metadata[MetaImageAssetID]; ImageAssetIDBelongsToSourceID(assetID, results[i].Source.ID) {
+				if results[i].Media == nil {
+					results[i].Media = &SearchResultMedia{}
+				}
+				results[i].Media.AssetID = assetID
+			}
+		}
 	}
 	return nil
 }
@@ -2311,8 +2836,10 @@ func (s *SQLiteStore) Explain(ctx context.Context, opts SearchOptions) (ExplainR
 	}
 	citations := make([]Citation, 0, len(results))
 	seen := make(map[string]struct{})
-	for _, result := range results {
+	for i, result := range results {
+		results[i] = ProjectImageSearchResultForTool(result)
 		citation := citationFromResult(result)
+		citation = ProjectImageCitationForTool(citation, result)
 		key := citationKey(citation)
 		if _, ok := seen[key]; ok {
 			continue
@@ -2692,6 +3219,9 @@ func sourceFacetDomain(source Source) string {
 func facetExample(hit SearchResult) string {
 	for _, candidate := range []string{hit.Citation, hit.Snippet, hit.Claim, hit.Summary, hit.NodeTitle, hit.CardTitle} {
 		candidate = strings.TrimSpace(candidate)
+		if hit.NodeType == NodeTypeImage || hit.Source.Kind == SourceKindImage {
+			candidate = SafeImageDisplayText(candidate)
+		}
 		if candidate != "" {
 			if len(candidate) > 160 {
 				candidate = strings.TrimSpace(candidate[:160]) + "..."
@@ -3562,6 +4092,9 @@ func formatResultCitation(result SearchResult) string {
 }
 
 func sourceCitationLabel(source Source) string {
+	if source.Kind == SourceKindImage {
+		return FormatImageSourceLabel(SearchResult{Source: source})
+	}
 	for _, candidate := range []string{source.Title, source.RelativePath, source.CanonicalURI, source.URI, source.ID} {
 		candidate = strings.TrimSpace(candidate)
 		if candidate != "" {
@@ -3864,7 +4397,7 @@ func (s *SQLiteStore) KnownContentHashes(ctx context.Context, req DirectoryImpor
 func (s *SQLiteStore) ScanDirectory(ctx context.Context, req DirectoryImportRequest) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
 	// Hash files first, then look up only those hashes (avoids loading entire KB hash set).
-	result, items, err := ScanDirectoryProgress(ctx, req, nil, s.scanProgress)
+	result, items, err := ScanDirectoryProgress(ctx, req, nil, s.currentScanProgressCallback())
 	if err != nil {
 		return result, err
 	}
@@ -3986,17 +4519,18 @@ func (s *SQLiteStore) RetryImportBatch(ctx context.Context, req ImportRetryReque
 		}, nil
 	}
 	importReq := DirectoryImportRequest{
-		RootPath:     batch.RootPath,
-		OwnerID:      batch.OwnerID,
-		TenantID:     batch.TenantID,
-		ProjectPath:  batch.ProjectPath,
-		TopicHint:    firstNonEmpty(strings.TrimSpace(req.TopicHint), batch.TopicHint),
-		DistillMode:  req.DistillMode,
-		SaveScope:    SaveScopeProject,
-		Recursive:    batch.Recursive,
-		IncludeExts:  batch.IncludeExts,
-		ExcludeGlobs: batch.ExcludeGlobs,
-		MaxFileBytes: batch.MaxFileBytes,
+		RootPath:         batch.RootPath,
+		OwnerID:          batch.OwnerID,
+		TenantID:         batch.TenantID,
+		ProjectPath:      batch.ProjectPath,
+		TopicHint:        firstNonEmpty(strings.TrimSpace(req.TopicHint), batch.TopicHint),
+		DistillMode:      req.DistillMode,
+		SaveScope:        SaveScopeProject,
+		Recursive:        batch.Recursive,
+		IncludeExts:      batch.IncludeExts,
+		ExcludeGlobs:     batch.ExcludeGlobs,
+		MaxFileBytes:     batch.MaxFileBytes,
+		OfficeReadConfig: agent.CloneOfficeReadConfigPtr(req.OfficeReadConfig),
 	}
 	if len(req.IncludeExts) > 0 {
 		importReq.IncludeExts = req.IncludeExts
@@ -4084,7 +4618,7 @@ func retryImportFilePaths(items []ImportItem, req ImportRetryRequest) []string {
 
 func (s *SQLiteStore) ScanFiles(ctx context.Context, req DirectoryImportRequest, filePaths []string) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
-	result, items, err := ScanFilesProgress(ctx, req, filePaths, nil, s.scanProgress)
+	result, items, err := ScanFilesProgress(ctx, req, filePaths, nil, s.currentScanProgressCallback())
 	if err != nil {
 		return result, err
 	}
@@ -4095,7 +4629,7 @@ func (s *SQLiteStore) ScanFiles(ctx context.Context, req DirectoryImportRequest,
 func (s *SQLiteStore) ImportDirectory(ctx context.Context, req DirectoryImportRequest) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
 	// Targeted DB hash lookup after scanning — do not load all content hashes.
-	result, items, err := ScanDirectoryProgress(ctx, req, nil, s.scanProgress)
+	result, items, err := ScanDirectoryProgress(ctx, req, nil, s.currentScanProgressCallback())
 	if err != nil {
 		return result, err
 	}
@@ -4108,7 +4642,7 @@ func (s *SQLiteStore) ImportDirectory(ctx context.Context, req DirectoryImportRe
 
 func (s *SQLiteStore) ImportFiles(ctx context.Context, req DirectoryImportRequest, filePaths []string) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
-	result, items, err := ScanFilesProgress(ctx, req, filePaths, nil, s.scanProgress)
+	result, items, err := ScanFilesProgress(ctx, req, filePaths, nil, s.currentScanProgressCallback())
 	if err != nil {
 		return result, err
 	}
@@ -4195,6 +4729,18 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		return result, err
 	}
 	defer tx.Rollback()
+	// Embedded image files are written before their nodes can be inserted: image
+	// decoding and optional descriptions must not hold a SQLite write lock. Keep
+	// their opaque IDs until this import transaction commits so a later failure
+	// (including one in a different file in the same batch) cannot leave assets
+	// that no committed node can reference.
+	committed := false
+	provisionalImageAssetIDs := make([]string, 0)
+	defer func() {
+		if !committed {
+			s.deleteProvisionalEmbeddedImageAssets(provisionalImageAssetIDs)
+		}
+	}()
 	if err := insertBatch(ctx, tx, batch); err != nil {
 		return result, err
 	}
@@ -4203,6 +4749,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	failed := result.FailedFiles
 	processed := 0
 	importedSourceIDs := make([]string, 0)
+	supersededAssets := make(map[string][]string)
 	const maxFailedItems = 20
 	failedItems := make([]ImportFailedItem, 0)
 	recordFailedItem := func(item ImportItem) {
@@ -4219,7 +4766,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		})
 	}
 	emitImportProgress := func(current ImportItem) {
-		if s == nil || s.importProgress == nil {
+		if s == nil || !s.hasImportProgressCallback() {
 			return
 		}
 		snapshot := result
@@ -4244,10 +4791,10 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			snapshot.LastItemStatus = status
 			snapshot.LastItemReason = reason
 		}
-		s.importProgress(snapshot)
+		s.emitImportProgress(snapshot)
 	}
 	emitStepProgress := func(current ImportItem, stepName string, stepNum, totalSteps int) {
-		if s == nil || s.importProgress == nil {
+		if s == nil || !s.hasImportProgressCallback() {
 			return
 		}
 		snapshot := result
@@ -4264,7 +4811,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		snapshot.TotalSteps = totalSteps
 		snapshot.StepProgress = (stepNum - 1) * 100 / totalSteps // progress at start of step N = (N-1)/total
 		snapshot.Items = nil
-		s.importProgress(snapshot)
+		s.emitImportProgress(snapshot)
 	}
 	markImportItemProcessed := func(index int, item ImportItem) {
 		items[index] = item
@@ -4279,6 +4826,12 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 
 	for i := 0; i < len(items); {
 		item := items[i]
+		var replacedAssetIDs []string
+		var preParsedPDFNodes []DocumentNode
+		var preParsedPDFErr error
+		preParsedPDF := false
+		var preParsedOffice *officeReadImportParse
+		var preParsedOfficeErr error
 		item.BatchID = batchID
 		if item.Status != ItemStatusQueued {
 			if item.Status == ItemStatusFailed {
@@ -4327,8 +4880,101 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			if source.SourceTrust == 0 {
 				source.SourceTrust = existingSource.SourceTrust
 			}
+			// A changed Office file must be bound to its verified private snapshot
+			// before this re-import deletes the existing derived rows. The scan
+			// hash is also a duplicate decision; if the live file changed after
+			// scanning, reject it rather than replacing an existing source with
+			// bytes that were never eligible for this import batch.
+			if isSnapshotBoundKnowledgeKind(item.Kind) {
+				preParsedOffice, preParsedOfficeErr = parseDocumentNodesForOfficeReadImportWithOfficeReadConfig(source, item.FilePath, item.Kind, req.OfficeReadConfig)
+				if preParsedOffice != nil && preParsedOffice.contentHash != item.FileHash {
+					preParsedOffice.close()
+					preParsedOffice = nil
+					preParsedOfficeErr = agent.ErrOfficeReadSourceChanged
+				}
+				// A scanned PDF has no native text by design. Keep that partial
+				// result until the OCR merge below can either recover every content
+				// page or return its own actionable failure.
+				if preParsedOfficeErr != nil && item.Kind != SourceKindPDF {
+					item.SourceID = source.ID
+					item.Status = ItemStatusFailed
+					item.ErrorMessage = sanitizeKnowledgeParseError(item.Kind, preParsedOfficeErr).Error()
+					item.UpdatedAt = time.Now().UTC()
+					failed++
+					recordFailedItem(item)
+					if err := insertImportItem(ctx, tx, item); err != nil {
+						return result, err
+					}
+					markImportItemProcessed(i, item)
+					i++
+					continue
+				}
+			}
+			// A changed PDF is a replacement of the existing source. Parse and OCR
+			// it before deleting any existing derived rows so a temporary OCR,
+			// renderer, or parser failure cannot destroy searchable content.
+			if item.Kind == SourceKindPDF {
+				item.SourceID = source.ID
+				item.Status = ItemStatusImported
+				item.UpdatedAt = time.Now().UTC()
+				preParsedPDF = true
+				// PDF is snapshot-bound too: its native reader, inspector, renderer,
+				// and OCR must all consume the verified bytes accepted for this
+				// re-import. Re-parsing item.FilePath here would reopen a mutable path
+				// and could combine nodes from version A with OCR from version B.
+				if preParsedOffice != nil {
+					preParsedPDFNodes = preParsedOffice.nodes
+					preParsedPDFErr = preParsedOfficeErr
+				} else {
+					preParsedPDFNodes, _, _, preParsedPDFErr = parseDocumentNodesWithOfficeReadRichContent(source, item.FilePath, item.Kind)
+				}
+				ocrPath := item.FilePath
+				if preParsedOffice != nil && preParsedOffice.input != nil {
+					ocrPath = preParsedOffice.input.path
+				}
+				ocr, ocrErr := s.extractPDFOCRNodesWithNativeFallback(ctx, source, ocrPath, preParsedPDFNodes, preParsedPDFErr, true)
+				if ocrErr != nil {
+					preParsedPDFErr = ocrErr
+				} else {
+					preParsedPDFNodes, preParsedPDFErr = mergePDFNodes(preParsedPDFNodes, preParsedPDFErr, ocr)
+				}
+				if preParsedPDFErr != nil {
+					preParsedOffice.close()
+					item.Status = ItemStatusFailed
+					item.ErrorMessage = preParsedPDFErr.Error()
+					failed++
+					recordFailedItem(item)
+					if err := insertImportItem(ctx, tx, item); err != nil {
+						return result, err
+					}
+					markImportItemProcessed(i, item)
+					i++
+					continue
+				}
+			}
+			oldAssets, assetErr := imageAssetIDsForSourcesTx(ctx, tx, []string{existingSource.ID})
+			if assetErr != nil {
+				preParsedOffice.close()
+				return result, assetErr
+			}
+			replacedAssetIDs = oldAssets[existingSource.ID]
+			if len(replacedAssetIDs) > 0 {
+				supersededAssets[source.ID] = replacedAssetIDs
+			}
 			if err := deleteSourceDerivedRows(ctx, tx, existingSource.ID); err != nil {
+				preParsedOffice.close()
 				return result, err
+			}
+		} else if isSnapshotBoundKnowledgeKind(item.Kind) {
+			// First-time imports are subject to the same scan-to-parse identity
+			// rule. Without this check a file replaced after scanning could evade
+			// duplicate qualification merely because there is no older Source to
+			// protect yet.
+			preParsedOffice, preParsedOfficeErr = parseDocumentNodesForOfficeReadImportWithOfficeReadConfig(source, item.FilePath, item.Kind, req.OfficeReadConfig)
+			if preParsedOffice != nil && preParsedOffice.contentHash != item.FileHash {
+				preParsedOffice.close()
+				preParsedOffice = nil
+				preParsedOfficeErr = agent.ErrOfficeReadSourceChanged
 			}
 		}
 		item.SourceID = source.ID
@@ -4336,6 +4982,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		item.UpdatedAt = time.Now().UTC()
 		emitStepProgress(item, "saving", 2, 5)
 		if err := insertSource(ctx, tx, source); err != nil {
+			preParsedOffice.close()
 			item.Status = ItemStatusFailed
 			item.ErrorMessage = err.Error()
 			failed++
@@ -4348,6 +4995,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			continue
 		}
 		if err := addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels)); err != nil {
+			preParsedOffice.close()
 			item.Status = ItemStatusFailed
 			item.ErrorMessage = err.Error()
 			failed++
@@ -4363,21 +5011,97 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		if isImmediatelyParsedKind(item.Kind) {
 			emitStepProgress(item, "parsing", 3, 5)
 			var nodes []DocumentNode
-			nodes, parseErr := ParseDocumentNodes(source, item.FilePath, item.Kind)
+			var richOfficeContent agent.OfficeReadRichContent
+			var richOfficeContentAvailable bool
+			parseErr := preParsedOfficeErr
+			officeImportParse := preParsedOffice
+			imageParsePath := item.FilePath
+			// The source row is inserted before parsing so failures can be
+			// recorded. Hold the verified Office digest separately and persist it
+			// only after the parser has bound its input to the private snapshot.
+			// This prevents an intermediate source write from claiming live-path
+			// bytes that were replaced after the scan hash.
+			verifiedContentHash := ""
+			if item.Kind == SourceKindPDF && preParsedPDF {
+				nodes = preParsedPDFNodes
+				// The changed-PDF pre-parse above owns the same verified snapshot
+				// used by native text and OCR. Embedded-image extraction is another
+				// PDF parser phase, so it must not reopen item.FilePath after a
+				// replacement has already been accepted for this import.
+				if preParsedOffice != nil && preParsedOffice.input != nil {
+					imageParsePath = preParsedOffice.input.path
+				}
+			} else if officeImportParse != nil {
+				nodes = officeImportParse.nodes
+				richOfficeContent = officeImportParse.content
+				richOfficeContentAvailable = officeImportParse.richEnabled
+				verifiedContentHash = officeImportParse.contentHash
+				if officeImportParse.input != nil {
+					imageParsePath = officeImportParse.input.path
+				}
+			} else if officeImportParse == nil && parseErr == nil {
+				officeImportParse, parseErr = parseDocumentNodesForOfficeReadImportWithOfficeReadConfig(source, item.FilePath, item.Kind, req.OfficeReadConfig)
+				if officeImportParse != nil {
+					nodes = officeImportParse.nodes
+					richOfficeContent = officeImportParse.content
+					richOfficeContentAvailable = officeImportParse.richEnabled
+					if officeImportParse.contentHash != "" {
+						verifiedContentHash = officeImportParse.contentHash
+					}
+					if officeImportParse.input != nil {
+						imageParsePath = officeImportParse.input.path
+					}
+				}
+			}
+			if verifiedContentHash != "" {
+				source.ContentHash = verifiedContentHash
+				// The first source write above is intentionally early so parser
+				// failures have a durable status. Replace its scan-time digest now
+				// that a verified Office snapshot exists, even if the document has
+				// no text nodes and therefore skips later node/card writes.
+				if err := insertSource(ctx, tx, source); err != nil {
+					return result, err
+				}
+			}
+			// Classify PDFs after native extraction. Text pages retain the existing
+			// GoPDF2 path; only the selected scanned/mixed pages are rendered and
+			// recognized through the configured built-in OCR engine.
+			if item.Kind == SourceKindPDF && !preParsedPDF {
+				ocrPath := item.FilePath
+				if officeImportParse != nil && officeImportParse.input != nil {
+					ocrPath = officeImportParse.input.path
+				}
+				ocr, ocrErr := s.extractPDFOCRNodesWithNativeFallback(ctx, source, ocrPath, nodes, parseErr, true)
+				if ocrErr != nil {
+					// Never silently omit scanned pages from a mixed PDF. A PDF that
+					// needs OCR must wait until the configured local OCR path can
+					// complete, even when native extraction found partial text.
+					parseErr = ocrErr
+				} else {
+					nodes, parseErr = mergePDFNodes(nodes, parseErr, ocr)
+				}
+			}
 			if parseErr != nil {
+				// A parse error never reaches the later spreadsheet row-import
+				// phase. Close the private Office snapshot here for every format;
+				// otherwise an XLS/XLSX rich-parse failure can return early with a
+				// temporary plaintext snapshot still retained. Successful spreadsheet
+				// imports deliberately keep it open until that later phase finishes.
+				officeImportParse.close()
 				if IsUnsupportedParserError(parseErr) {
 					source.Status = StatusPending
 					if err := insertSource(ctx, tx, source); err != nil {
 						return result, err
 					}
 				} else {
+					persistedParseErr := sanitizeKnowledgeParseError(item.Kind, parseErr)
 					source.Status = StatusFailed
-					source.ErrorMessage = parseErr.Error()
+					source.ErrorMessage = persistedParseErr.Error()
 					if err := insertSource(ctx, tx, source); err != nil {
 						return result, err
 					}
 					item.Status = ItemStatusFailed
-					item.ErrorMessage = parseErr.Error()
+					item.ErrorMessage = persistedParseErr.Error()
 					failed++
 					recordFailedItem(item)
 					if err := insertImportItem(ctx, tx, item); err != nil {
@@ -4389,9 +5113,23 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				}
 			}
 			if len(nodes) > 0 {
-				// Extract embedded images from the document (DOCX/PPTX/PDF).
-				if imageNodes := s.ExtractAndProcessDocumentImages(ctx, source, item.FilePath, item.Kind, nodes); len(imageNodes) > 0 {
-					nodes = append(nodes, imageNodes...)
+				// Extract embedded images from the document. For explicitly enabled
+				// OfficeRead rich content this consumes the payload already captured
+				// with the text parse, including XLS/XLSX, so a spreadsheet's images
+				// become searchable without reopening its container before the
+				// authoritative table import. Legacy spreadsheet imports retain their
+				// established no-image behavior because richContentAvailable is false.
+				if !isSpreadsheetKind(item.Kind) || richOfficeContentAvailable {
+					if imageNodes := s.extractAndProcessDocumentImagesUsingRichOfficeContent(ctx, source, imageParsePath, item.Kind, nodes, richOfficeContent, richOfficeContentAvailable); len(imageNodes) > 0 {
+						provisionalImageAssetIDs = append(provisionalImageAssetIDs, officeReadImageAssetIDs(imageNodes)...)
+						nodes = append(nodes, imageNodes...)
+					}
+				}
+				// The spreadsheet row importer still needs the private snapshot
+				// below. Every other kind has completed all pathname-based parser
+				// phases once its images are collected.
+				if !isSpreadsheetKind(item.Kind) {
+					officeImportParse.close()
 				}
 				// Parser nodes are already normalized/chunked; this also brings
 				// extracted image nodes onto the same metadata and token policy.
@@ -4399,6 +5137,11 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				source.NodeCount = len(nodes)
 				emitStepProgress(item, "indexing", 4, 5)
 				if err := insertDocumentNodes(ctx, tx, nodes); err != nil {
+					officeImportParse.close()
+					// This item's nodes will not be committed. Remove only its newly
+					// generated embedded assets now; the outer defer also protects the
+					// batch-wide rollback path.
+					s.deleteProvisionalEmbeddedImageAssets(officeReadImageAssetIDs(nodes))
 					source.Status = StatusFailed
 					source.ErrorMessage = err.Error()
 					if saveErr := insertSource(ctx, tx, source); saveErr != nil {
@@ -4416,8 +5159,8 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					continue
 				}
 				if isSpreadsheetKind(item.Kind) {
-					if nextSource, err := importSpreadsheetSourceV2WithProgress(ctx, tx, source, item.FilePath, item.Kind, func(processedRows, totalRows int) {
-						if s == nil || s.importProgress == nil {
+					if nextSource, err := importSpreadsheetSourceV2WithProgress(ctx, tx, source, imageParsePath, item.Kind, func(processedRows, totalRows int) {
+						if s == nil || !s.hasImportProgressCallback() {
 							return
 						}
 						snapshot := result
@@ -4434,15 +5177,17 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						snapshot.CurrentStepNum = 4
 						snapshot.StepProgress = (processedRows * 100) / totalRows
 						snapshot.Items = nil
-						s.importProgress(snapshot)
+						s.emitImportProgress(snapshot)
 					}); err != nil {
+						officeImportParse.close()
+						persistedParseErr := sanitizeKnowledgeParseError(item.Kind, err)
 						source.Status = StatusFailed
-						source.ErrorMessage = err.Error()
+						source.ErrorMessage = persistedParseErr.Error()
 						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
 							return result, saveErr
 						}
 						item.Status = ItemStatusFailed
-						item.ErrorMessage = err.Error()
+						item.ErrorMessage = persistedParseErr.Error()
 						failed++
 						recordFailedItem(item)
 						if err := insertImportItem(ctx, tx, item); err != nil {
@@ -4454,6 +5199,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					} else {
 						source = nextSource
 					}
+					officeImportParse.close()
 				}
 				emitStepProgress(item, "distilling", 5, 5)
 				nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, nodes, req.DistillMode)
@@ -4475,49 +5221,52 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					continue
 				}
 				source = nextSource
-			} else if item.Kind == SourceKindImage && parseErr == nil {
-				// Standalone image: no text nodes from parsing, process as image.
-				emitStepProgress(item, "processing image", 4, 5)
-				imageNodes := s.ProcessStandaloneImage(ctx, source, item.FilePath, nil)
-				if len(imageNodes) > 0 {
-					if err := insertDocumentNodes(ctx, tx, imageNodes); err != nil {
-						source.Status = StatusFailed
-						source.ErrorMessage = err.Error()
-						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
-							return result, saveErr
+			} else {
+				officeImportParse.close()
+				if item.Kind == SourceKindImage && parseErr == nil {
+					// Standalone image: no text nodes from parsing, process as image.
+					emitStepProgress(item, "processing image", 4, 5)
+					imageNodes := s.ProcessStandaloneImage(ctx, source, item.FilePath, nil)
+					if len(imageNodes) > 0 {
+						if err := insertDocumentNodes(ctx, tx, imageNodes); err != nil {
+							source.Status = StatusFailed
+							source.ErrorMessage = err.Error()
+							if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+								return result, saveErr
+							}
+							item.Status = ItemStatusFailed
+							item.ErrorMessage = err.Error()
+							failed++
+							recordFailedItem(item)
+							if err := insertImportItem(ctx, tx, item); err != nil {
+								return result, err
+							}
+							markImportItemProcessed(i, item)
+							i++
+							continue
 						}
-						item.Status = ItemStatusFailed
-						item.ErrorMessage = err.Error()
-						failed++
-						recordFailedItem(item)
-						if err := insertImportItem(ctx, tx, item); err != nil {
-							return result, err
+						source.NodeCount = len(imageNodes)
+						emitStepProgress(item, "distilling", 5, 5)
+						nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, imageNodes, req.DistillMode)
+						if err != nil {
+							source.Status = StatusFailed
+							source.ErrorMessage = err.Error()
+							if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+								return result, saveErr
+							}
+							item.Status = ItemStatusFailed
+							item.ErrorMessage = err.Error()
+							failed++
+							recordFailedItem(item)
+							if err := insertImportItem(ctx, tx, item); err != nil {
+								return result, err
+							}
+							markImportItemProcessed(i, item)
+							i++
+							continue
 						}
-						markImportItemProcessed(i, item)
-						i++
-						continue
+						source = nextSource
 					}
-					source.NodeCount = len(imageNodes)
-					emitStepProgress(item, "distilling", 5, 5)
-					nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, imageNodes, req.DistillMode)
-					if err != nil {
-						source.Status = StatusFailed
-						source.ErrorMessage = err.Error()
-						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
-							return result, saveErr
-						}
-						item.Status = ItemStatusFailed
-						item.ErrorMessage = err.Error()
-						failed++
-						recordFailedItem(item)
-						if err := insertImportItem(ctx, tx, item); err != nil {
-							return result, err
-						}
-						markImportItemProcessed(i, item)
-						i++
-						continue
-					}
-					source = nextSource
 				}
 			}
 		}
@@ -4558,6 +5307,10 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
+	committed = true
+	for sourceID, oldAssetIDs := range supersededAssets {
+		s.deleteSupersededImageAssets(ctx, sourceID, oldAssetIDs)
+	}
 	s.invalidateVectorANN()
 	// File ingest is done. Post-work (linking + node embeddings) runs in the
 	// background with status "indexing" so the UI can show
@@ -4565,7 +5318,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	result.Items = items
 	terminalStatus := result.Status // completed or failed (batch outcome)
 	if len(importedSourceIDs) == 0 {
-		if s.importProgress != nil {
+		if s.hasImportProgressCallback() {
 			finalSnapshot := result
 			finalSnapshot.CurrentFile = ""
 			finalSnapshot.CurrentStep = ""
@@ -4573,7 +5326,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			finalSnapshot.TotalSteps = 0
 			finalSnapshot.CurrentStepNum = 0
 			finalSnapshot.Items = nil
-			s.importProgress(finalSnapshot)
+			s.emitImportProgress(finalSnapshot)
 		}
 		return result, nil
 	}
@@ -4587,7 +5340,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	base.Items = nil
 
 	emitPost := func(phase string, progress int) {
-		if s == nil || s.importProgress == nil {
+		if s == nil || !s.hasImportProgressCallback() {
 			return
 		}
 		snap := base
@@ -4601,10 +5354,10 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			progress = 100
 		}
 		snap.StepProgress = progress
-		s.importProgress(snap)
+		s.emitImportProgress(snap)
 	}
 	emitDone := func() {
-		if s == nil || s.importProgress == nil {
+		if s == nil || !s.hasImportProgressCallback() {
 			return
 		}
 		snap := base
@@ -4614,10 +5367,10 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		}
 		snap.CurrentStep = ""
 		snap.StepProgress = 0
-		s.importProgress(snap)
+		s.emitImportProgress(snap)
 	}
 
-	if s.importProgress != nil {
+	if s.hasImportProgressCallback() {
 		// Surface indexing state before returning so the job is not toasted as done yet.
 		result.Status = ImportStatusIndexing
 		emitPost("linking", 0)
@@ -4701,6 +5454,7 @@ func insertDocumentNode(ctx context.Context, tx *sql.Tx, node DocumentNode) erro
 	if node.ID == "" {
 		node.ID = NewID("kdn")
 	}
+	node = sanitizeSnapshotDocumentNode(node)
 	meta, _ := json.Marshal(node.Metadata)
 	_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO document_nodes
 		(id, source_id, parent_id, type, title, text, level, page, sheet_name, row_range, col_range, xpath, offset, metadata_json, token_count)
@@ -5206,6 +5960,11 @@ func scanDocumentNode(row sourceScanner) (DocumentNode, error) {
 	if metadataJSON != "" && metadataJSON != "null" {
 		_ = json.Unmarshal([]byte(metadataJSON), &node.Metadata)
 	}
+	// Rows may be inserted by a restored snapshot, an older binary, or direct
+	// maintenance tooling after the open-time migration has run. Reapply the
+	// persistence boundary on every read so those values cannot reach a GUI,
+	// export, or agent projection as a malformed image lookup token.
+	node.Metadata = sanitizeDocumentNodeMetadata(node.Metadata)
 	return node, nil
 }
 

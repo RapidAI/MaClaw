@@ -1,4 +1,5 @@
 import type { ChatMessage } from "./useAIAssistant";
+import { expertTabId } from "./expertTypes";
 
 const MAX_PROJECT_CONTEXT_MESSAGES_TO_SEND = 12;
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
@@ -39,6 +40,19 @@ export function projectSessionKey(projectPath?: string | null): string {
 /** Session key prefix shared by all expert conversations: desktop-user:expert:<id>. */
 const EXPERT_SESSION_KEY_PREFIX = "desktop-user:expert:";
 const ACP_SESSION_KEY_PREFIX = "desktop-user:acp:";
+/** Durable task-management tag that binds a workspace row to an expert id. */
+const EXPERT_TASK_SOURCE_PREFIX = "source:expert:";
+
+/** Return the expert identity carried by a durable task-management row. */
+export function expertIDFromTaskTags(tags?: string[] | null): string {
+    for (const rawTag of tags || []) {
+        const tag = String(rawTag || "").trim();
+        if (!tag.startsWith(EXPERT_TASK_SOURCE_PREFIX)) continue;
+        const expertID = tag.slice(EXPERT_TASK_SOURCE_PREFIX.length).trim();
+        if (expertID) return expertID;
+    }
+    return "";
+}
 
 /** Session key for an expert tab conversation. Aligns with the backend userID (ExpertID branch). */
 export function expertSessionKey(expertId?: string | null): string {
@@ -94,6 +108,41 @@ export function normalizeProjectSessionPath(projectPath?: string | null): string
     return joined || ".";
 }
 
+/** Remove matching tab metadata and history blobs from localStorage. */
+function purgeLocalTabCacheByIDs(deletedIDs: Set<string>): void {
+    if (deletedIDs.size === 0 || typeof localStorage === "undefined") return;
+    try {
+        const rawTabs = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
+        if (rawTabs) {
+            const tabs = JSON.parse(rawTabs);
+            if (Array.isArray(tabs)) {
+                const keptTabs = tabs.filter(tab => !deletedIDs.has(String(tab?.id || "")));
+                if (keptTabs.length === 0) localStorage.removeItem(PROJECT_TABS_STORAGE_KEY);
+                else if (keptTabs.length !== tabs.length) {
+                    localStorage.setItem(PROJECT_TABS_STORAGE_KEY, JSON.stringify(keptTabs));
+                }
+            }
+        }
+
+        const rawHistories = localStorage.getItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
+        if (!rawHistories) return;
+        const histories = JSON.parse(rawHistories);
+        if (!histories || typeof histories !== "object") return;
+        let changed = false;
+        for (const id of deletedIDs) {
+            if (Object.prototype.hasOwnProperty.call(histories, id)) {
+                delete histories[id];
+                changed = true;
+            }
+        }
+        if (!changed) return;
+        if (Object.keys(histories).length === 0) localStorage.removeItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
+        else localStorage.setItem(PROJECT_TAB_HISTORY_STORAGE_KEY, JSON.stringify(histories));
+    } catch {
+        // A malformed or unavailable browser cache must not block task deletion.
+    }
+}
+
 // A task deletion is stronger than closing a tab: no browser-side tab metadata
 // or orphaned history for that project may survive to be restored later.
 export function purgeDeletedProjectTabLocalCache(projectPath?: string | null): void {
@@ -111,19 +160,37 @@ export function purgeDeletedProjectTabLocalCache(projectPath?: string | null): v
                 .map(tab => String(tab.id || ""))
                 .filter(Boolean),
         );
-        if (deletedIDs.size === 0) return;
+        purgeLocalTabCacheByIDs(deletedIDs);
+    } catch {
+        // A malformed or unavailable browser cache must not block task deletion.
+    }
+}
 
-        const keptTabs = tabs.filter(tab => !deletedIDs.has(String(tab?.id || "")));
-        if (keptTabs.length === 0) localStorage.removeItem(PROJECT_TABS_STORAGE_KEY);
-        else localStorage.setItem(PROJECT_TABS_STORAGE_KEY, JSON.stringify(keptTabs));
-
-        const rawHistories = localStorage.getItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
-        if (!rawHistories) return;
-        const histories = JSON.parse(rawHistories);
-        if (!histories || typeof histories !== "object") return;
-        for (const id of deletedIDs) delete histories[id];
-        if (Object.keys(histories).length === 0) localStorage.removeItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
-        else localStorage.setItem(PROJECT_TAB_HISTORY_STORAGE_KEY, JSON.stringify(histories));
+/**
+ * Expert tabs are keyed by expert id (tab id `expert-<id>`), not by the durable
+ * task workspace path. Deleting an expert task must purge this separate cache or
+ * the next open resurrects the closed conversation from localStorage.
+ */
+export function purgeDeletedExpertTabLocalCache(expertId?: string | null): void {
+    const id = String(expertId || "").trim();
+    if (!id || typeof localStorage === "undefined") return;
+    const tabId = expertTabId(id);
+    try {
+        const rawTabs = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
+        const deletedIDs = new Set<string>([tabId]);
+        if (rawTabs) {
+            const tabs = JSON.parse(rawTabs);
+            if (Array.isArray(tabs)) {
+                for (const tab of tabs) {
+                    const tabExpertId = String(tab?.expertId || "").trim();
+                    const storedId = String(tab?.id || "").trim();
+                    if (tab?.type === "expert" && (tabExpertId === id || storedId === tabId)) {
+                        if (storedId) deletedIDs.add(storedId);
+                    }
+                }
+            }
+        }
+        purgeLocalTabCacheByIDs(deletedIDs);
     } catch {
         // A malformed or unavailable browser cache must not block task deletion.
     }

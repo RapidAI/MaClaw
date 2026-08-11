@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,42 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestResolveHubThirdPartyMediaReferencesRestoresOwnedOfficeDocument(t *testing.T) {
+	app := &App{}
+	gateway := newThirdPartyGatewayManager(app)
+	gateway.media["office-media"] = &thirdPartyMediaObject{
+		ClientID: "pet-1", ID: "office-media", Type: "file", FileName: "report.docx",
+		MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Data: []byte("office"), Uploaded: true,
+	}
+	app.thirdPartyGateway = gateway
+	client := &RemoteHubClient{app: app}
+	message := IMUserMessage{
+		Platform: "thirdparty", ClientToolContext: &agent.ClientToolContext{ClientID: "pet-1"},
+		Attachments: []MessageAttachment{{Type: "image", SourceMediaID: "office-media"}},
+	}
+	if err := client.resolveHubThirdPartyMediaReferences(&message); err != nil {
+		t.Fatal(err)
+	}
+	attachment := message.Attachments[0]
+	if attachment.SourceMediaID != "" || attachment.Type != "file" || attachment.FileName != "report.docx" || attachment.MimeType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || attachment.Size != 6 {
+		t.Fatalf("resolved attachment = %#v", attachment)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(attachment.Data)
+	if err != nil || string(decoded) != "office" {
+		t.Fatalf("resolved data = %q, err=%v", decoded, err)
+	}
+}
+
+func TestResolveHubThirdPartyMediaReferencesRejectsDifferentClient(t *testing.T) {
+	app := &App{}
+	gateway := newThirdPartyGatewayManager(app)
+	gateway.media["other-client-media"] = &thirdPartyMediaObject{ClientID: "pet-2", ID: "other-client-media", Data: []byte("office"), Uploaded: true}
+	app.thirdPartyGateway = gateway
+	message := IMUserMessage{Platform: "thirdparty", ClientToolContext: &agent.ClientToolContext{ClientID: "pet-1"}, Attachments: []MessageAttachment{{SourceMediaID: "other-client-media"}}}
+	if err := (&RemoteHubClient{app: app}).resolveHubThirdPartyMediaReferences(&message); err == nil || !strings.Contains(err.Error(), "does not belong") {
+		t.Fatalf("foreign media resolution error = %v", err)
+	}
+}
 func TestRemoteHubClientListsAndDeletesHardwareBindings(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -154,6 +191,91 @@ func TestRemoteHubClientHardwareRequestsPropagateCorrelatedErrors(t *testing.T) 
 	client.mu.Unlock()
 }
 
+func TestSendDeviceGatewayPairingWaitsForHubConfirmation(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	messageCh := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		var message map[string]any
+		if err := conn.ReadJSON(&message); err != nil {
+			t.Errorf("read websocket message: %v", err)
+			return
+		}
+		messageCh <- message
+		if err := conn.WriteJSON(map[string]any{
+			"type": "ack", "request_id": message["request_id"], "payload": map[string]any{"ok": true},
+		}); err != nil {
+			t.Errorf("write websocket ack: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	client := &RemoteHubClient{app: app, conn: conn, connected: true, machineID: "gui-a"}
+	go client.readLoop()
+
+	if err := client.SendDeviceGatewayPairing("123456"); err != nil {
+		t.Fatalf("SendDeviceGatewayPairing: %v", err)
+	}
+	message := <-messageCh
+	if message["type"] != "im.device_gateway_pairing" || strings.TrimSpace(fmt.Sprint(message["request_id"])) == "" {
+		t.Fatalf("pairing message is not Hub-confirmed: %#v", message)
+	}
+	payload, _ := message["payload"].(map[string]any)
+	if payload["pairCode"] != "123456" {
+		t.Fatalf("pairing payload=%#v", payload)
+	}
+}
+
+func TestSendDeviceGatewayPairingPropagatesHubRejection(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		var message map[string]any
+		if err := conn.ReadJSON(&message); err != nil {
+			t.Errorf("read websocket message: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "error", "request_id": message["request_id"], "payload": map[string]any{"code": "PAIRING_CODE_COLLISION", "message": "rejected for test"},
+		})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	client := &RemoteHubClient{app: app, conn: conn, connected: true, machineID: "gui-a"}
+	go client.readLoop()
+	if err := client.SendDeviceGatewayPairing("123456"); err == nil || !strings.Contains(err.Error(), "PAIRING_CODE_COLLISION") {
+		t.Fatalf("pairing rejection error=%v", err)
+	}
+}
+
 func TestRemoteHubClientIndependentHardwareRequestsDoNotSerialize(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	requests := make(chan HubEnvelope, 2)
@@ -212,6 +334,23 @@ func TestRemoteHubClientIndependentHardwareRequestsDoNotSerialize(t *testing.T) 
 	for range 2 {
 		if err := <-errCh; err != nil {
 			t.Fatalf("independent hardware request failed: %v", err)
+		}
+	}
+}
+
+func TestRemoteHubClientRejectsInvalidHardwareConfigBeforeSending(t *testing.T) {
+	client := &RemoteHubClient{}
+	for _, extra := range []map[string]any{
+		nil,
+		{},
+		{"unknown": 1},
+		{"volume": 100.5},
+		{"brightness": -1},
+		{"volume": 101},
+		{"screenSleepSeconds": 120},
+	} {
+		if err := client.SendDeviceGatewayHardwareConfigForClient("esp32-a", extra); err == nil {
+			t.Fatalf("invalid hardware config was accepted: %#v", extra)
 		}
 	}
 }
@@ -315,7 +454,14 @@ func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {
 	}
 	defer func() { _ = client.Disconnect() }()
 
-	messages := collectMessages(t, messageCh, 8, 5*time.Second)
+	messages := collectMessagesUntilTypes(t, messageCh, []string{
+		"auth.machine",
+		"machine.hello",
+		"session.created",
+		"session.important_event",
+		"session.summary",
+		"session.preview_delta",
+	}, 5*time.Second)
 	gotTypes := messageTypes(messages)
 	assertContainsType(t, gotTypes, "auth.machine")
 	assertContainsType(t, gotTypes, "machine.hello")
@@ -465,7 +611,11 @@ func TestRemoteHubClientConnectAndSyncToolsWithMissingConfigSelector(t *testing.
 	}
 	defer func() { _ = client.Disconnect() }()
 
-	gotMessages := collectMessages(t, messageCh, 4, 5*time.Second)
+	gotMessages := collectMessagesUntilTypes(t, messageCh, []string{
+		"auth.machine",
+		"machine.hello",
+		"machine.tools",
+	}, 5*time.Second)
 	gotTypes := messageTypes(gotMessages)
 	assertContainsType(t, gotTypes, "auth.machine")
 	assertContainsType(t, gotTypes, "machine.hello")
@@ -1044,6 +1194,36 @@ func TestSendDeviceGatewayHardwareEnabledUsesDurableControlMessage(t *testing.T)
 	}
 }
 
+func TestSyncDeviceGatewayHardwareStateWaitsForHardwareMutation(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HardwareEnabled = true
+	}); err != nil {
+		t.Fatalf("seed hardware state: %v", err)
+	}
+
+	client := &RemoteHubClient{app: app}
+	app.imGatewaySyncMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		client.syncDeviceGatewayHardwareState()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("reconnect hardware sync ran while a hardware mutation held the lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	app.imGatewaySyncMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect hardware sync did not finish after the mutation lock was released")
+	}
+}
+
 func TestSendDeviceGatewayTextReplyMarksTerminalTurn(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	messageCh := make(chan map[string]any, 1)
@@ -1207,6 +1387,35 @@ func collectMessages(t *testing.T, messageCh <-chan map[string]any, count int, t
 			got = append(got, msg)
 		case <-deadline:
 			t.Fatalf("timed out waiting for %d websocket messages, got %v", count, messageTypes(got))
+		}
+	}
+	return got
+}
+
+func collectMessagesUntilTypes(t *testing.T, messageCh <-chan map[string]any, required []string, timeout time.Duration) []map[string]any {
+	t.Helper()
+	missing := make(map[string]struct{}, len(required))
+	for _, messageType := range required {
+		missing[messageType] = struct{}{}
+	}
+
+	got := make([]map[string]any, 0, len(required))
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for len(missing) != 0 {
+		select {
+		case msg := <-messageCh:
+			got = append(got, msg)
+			if messageType, _ := msg["type"].(string); messageType != "" {
+				delete(missing, messageType)
+			}
+		case <-deadline.C:
+			unreceived := make([]string, 0, len(missing))
+			for messageType := range missing {
+				unreceived = append(unreceived, messageType)
+			}
+			sort.Strings(unreceived)
+			t.Fatalf("timed out waiting for websocket message types %v; got %v", unreceived, messageTypes(got))
 		}
 	}
 	return got

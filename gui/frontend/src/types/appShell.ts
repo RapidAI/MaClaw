@@ -9,6 +9,11 @@ export interface RemoteCenterHubOption {
 }
 
 export interface SidebarTokenUsageStat {
+    profile?: string;
+    provider_id?: string;
+    provider_display_name?: string;
+    final_model?: string;
+    route_source?: string;
     input_tokens?: number;
     output_tokens?: number;
     total_tokens?: number;
@@ -141,6 +146,8 @@ export interface SidebarCreditDisplayFormatters {
 }
 
 export interface SidebarLLMProviderSummary {
+    /** Stable provider identity used by profile-scoped saves. */
+    id?: string;
     name: string;
     url: string;
     isHubService: boolean;

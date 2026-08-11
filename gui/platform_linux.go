@@ -80,6 +80,10 @@ func (a *App) setPowerOptimizationEnabled(enabled bool) {
 	a.powerStateProcess = cmd
 }
 
+func (a *App) reconcilePlatformPowerState(powerOptimization, _ bool) {
+	a.setPowerOptimizationEnabled(powerOptimization)
+}
+
 // platformInitConsole is a no-op on Linux (console is already available)
 func (a *App) platformInitConsole() {
 	// No-op on Linux

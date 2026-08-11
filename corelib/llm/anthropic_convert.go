@@ -5,7 +5,10 @@ package llm
 //
 // Migrated from gui/im_llm_client.go as part of the agent-unification plan.
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // AnthropicConvertedMessages holds the result of converting OpenAI-style
 // messages into Anthropic API format.
@@ -85,6 +88,15 @@ func ConvertToAnthropicMessages(messages []interface{}) AnthropicConvertedMessag
 			}
 		default:
 			content := mm["content"]
+			// Preserve image blocks (multimodal user input). Without this the
+			// text extraction below would silently drop every image — breaking
+			// vision probes and image chat for Anthropic-protocol providers.
+			if blocks, ok := convertUserContentToAnthropicBlocks(content); ok {
+				result.Messages = append(result.Messages, map[string]interface{}{
+					"role": role, "content": blocks,
+				})
+				continue
+			}
 			if text := extractContentString(mm); text != "" {
 				content = text
 			}
@@ -94,6 +106,118 @@ func ConvertToAnthropicMessages(messages []interface{}) AnthropicConvertedMessag
 		}
 	}
 	return result
+}
+
+// convertUserContentToAnthropicBlocks converts an OpenAI-style user content
+// block array to Anthropic content blocks when it contains at least one image.
+// Text blocks are kept as-is; OpenAI image_url blocks become Anthropic image
+// blocks with a base64 (data URL) or url source; Anthropic-native image blocks
+// pass through. Returns ok=false when the array has no image block or holds an
+// unrecognized block shape, so the caller keeps its legacy flattening.
+func convertUserContentToAnthropicBlocks(raw interface{}) ([]interface{}, bool) {
+	items := toInterfaceSlice(raw)
+	if len(items) == 0 {
+		return nil, false
+	}
+	hasImage := false
+	out := make([]interface{}, 0, len(items))
+	for _, item := range items {
+		block := toStringInterfaceMap(item)
+		if block == nil {
+			return nil, false
+		}
+		switch stringField(block, "type") {
+		case "text", "input_text":
+			// Anthropic rejects empty text blocks — drop them (only reachable
+			// when an image is present, so the message stays non-empty).
+			if stringField(block, "text") == "" {
+				continue
+			}
+			// Copy the block so extra keys (e.g. cache_control) survive, and
+			// normalize Responses-style input_text to Anthropic's text type.
+			cp := make(map[string]interface{}, len(block))
+			for k, v := range block {
+				cp[k] = v
+			}
+			cp["type"] = "text"
+			out = append(out, cp)
+		case "image":
+			hasImage = true
+			out = append(out, block)
+		case "image_url":
+			source := openAIImageURLToAnthropicSource(block)
+			if source == nil {
+				return nil, false
+			}
+			hasImage = true
+			out = append(out, map[string]interface{}{"type": "image", "source": source})
+		default:
+			return nil, false
+		}
+	}
+	if !hasImage {
+		return nil, false
+	}
+	return out, true
+}
+
+// openAIImageURLToAnthropicSource maps an OpenAI image_url block to an
+// Anthropic image source. Data URLs become base64 sources; remote URLs become
+// url sources. Returns nil when no usable URL is present.
+func openAIImageURLToAnthropicSource(block map[string]interface{}) map[string]interface{} {
+	u := stringField(block, "url")
+	switch iu := block["image_url"].(type) {
+	case string:
+		// OpenAI also accepts image_url as a plain URL string.
+		u = iu
+	default:
+		if m := toStringInterfaceMap(block["image_url"]); m != nil {
+			u = stringField(m, "url")
+		}
+	}
+	if u == "" {
+		return nil
+	}
+	if strings.HasPrefix(u, "data:") {
+		rest := strings.TrimPrefix(u, "data:")
+		idx := strings.Index(rest, ",")
+		if idx < 0 {
+			return nil
+		}
+		meta, data := rest[:idx], rest[idx+1:]
+		// Only base64 payloads map to an Anthropic base64 source; URL-encoded
+		// data URLs are not valid base64.
+		if !strings.HasSuffix(strings.ToLower(meta), ";base64") {
+			return nil
+		}
+		mime := meta[:len(meta)-len(";base64")]
+		if mime == "" {
+			mime = "image/png"
+		}
+		return map[string]interface{}{"type": "base64", "media_type": mime, "data": data}
+	}
+	return map[string]interface{}{"type": "url", "url": u}
+}
+
+// anthropicImageSourceToDataURL maps an Anthropic image source back to an
+// OpenAI-compatible URL (data URL for base64 sources, plain URL otherwise).
+// Returns "" when the source holds no usable payload.
+func anthropicImageSourceToDataURL(source map[string]interface{}) string {
+	switch strings.ToLower(stringField(source, "type")) {
+	case "base64":
+		data := stringField(source, "data")
+		if data == "" {
+			return ""
+		}
+		mime := stringField(source, "media_type")
+		if mime == "" {
+			mime = "image/png"
+		}
+		return "data:" + mime + ";base64," + data
+	case "url":
+		return stringField(source, "url")
+	}
+	return ""
 }
 
 // ConvertToAnthropicTools converts OpenAI-style tool definitions to Anthropic format.

@@ -1,0 +1,39 @@
+{
+  "name": "codegraph_search",
+  "description": "Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Symbol name or partial name (e.g., \"auth\", \"signIn\", \"UserService\")"
+      },
+      "kind": {
+        "type": "string",
+        "description": "Filter by node kind",
+        "enum": [
+          "function",
+          "method",
+          "class",
+          "interface",
+          "type",
+          "variable",
+          "route",
+          "component"
+        ]
+      },
+      "limit": {
+        "type": "number",
+        "description": "Maximum results (default: 10)",
+        "default": 10
+      },
+      "projectPath": {
+        "type": "string",
+        "description": "Path to a different project with .codegraph/ initialized. If omitted, uses current project. Use this to query other codebases."
+      }
+    },
+    "required": [
+      "query"
+    ]
+  }
+}

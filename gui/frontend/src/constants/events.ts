@@ -26,6 +26,13 @@ export const EVENT_PROJECT_TASK_CLOSED = "project-task:closed";
 /** Emitted before task-close when the task was permanently deleted. */
 export const EVENT_PROJECT_TASK_DELETED = "project-task:deleted";
 
+/**
+ * Emitted when an AI-expert durable task is permanently deleted.
+ * Payload is the expert id string. Frontend uses it to drop expert tab
+ * history caches that are keyed by expert id rather than project path.
+ */
+export const EVENT_EXPERT_TASK_DELETED = "expert-task:deleted";
+
 /** Emitted when the background update checker (startup delay + periodic re-check) finds a newer application release. */
 export const EVENT_APP_UPDATE_AVAILABLE = "app-update-available";
 

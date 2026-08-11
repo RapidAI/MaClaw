@@ -30,7 +30,10 @@ const defaultExecutionTimeout = 30 * time.Minute
 
 // ScheduledTask represents a single scheduled task.
 type ScheduledTask struct {
-	ID              string `json:"id"`
+	ID string `json:"id"`
+	// BotProfileID owns a task created by a profile-bound Lansenger agent.
+	// It scopes task execution and management; empty is a legacy/desktop task.
+	BotProfileID    string `json:"bot_profile_id,omitempty"`
 	Name            string `json:"name"`
 	Action          string `json:"action"`                     // what the agent should do (natural language)
 	Hour            int    `json:"hour"`                       // 0-23

@@ -465,6 +465,35 @@ func TestNormalizeThirdPartyMediaPrepareRequest(t *testing.T) {
 	}
 }
 
+func TestThirdPartyMediaMaxBytesForDocuments(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fileName string
+		mimeType string
+		want     int64
+	}{
+		{name: "pdf", fileName: "report.pdf", want: agent.MaxOfficeReadFileBytes},
+		{name: "docx mime", fileName: "image.png", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", want: agent.MaxOfficeReadFileBytes},
+		{name: "xlsx", fileName: "book.xlsx", want: agent.MaxOfficeReadFileBytes},
+		{name: "ordinary media", fileName: "photo.png", mimeType: "image/png", want: ThirdPartyMaxMediaBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ThirdPartyMediaMaxBytesFor(tc.fileName, tc.mimeType); got != tc.want {
+				t.Fatalf("ThirdPartyMediaMaxBytesFor(%q, %q) = %d, want %d", tc.fileName, tc.mimeType, got, tc.want)
+			}
+		})
+	}
+
+	req := ThirdPartyMediaPrepareRequest{ClientID: "client-a", FileName: "report.pptx", SizeBytes: agent.MaxOfficeReadFileBytes + 1}
+	if err := NormalizeThirdPartyMediaPrepareRequest(&req, ThirdPartyMaxMediaBytes); err == nil || !strings.Contains(err.Error(), "sizeBytes exceeds") {
+		t.Fatalf("expected Office document limit error, got %v", err)
+	}
+
+	incoming := ThirdPartyIncomingRequest{ClientID: "client-a", EventID: "evt-office-size", Message: ThirdPartyMessagePayload{Type: "file", Attachments: []ThirdPartyMediaReference{{ID: "media-a", Type: "file", FileName: "image.png", MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", SizeBytes: agent.MaxOfficeReadFileBytes + 1}}}}
+	if err := NormalizeThirdPartyIncomingRequest(&incoming, ThirdPartyNormalizeOptions{DefaultConversationID: "default"}); err == nil || !strings.Contains(err.Error(), "sizeBytes exceeds") {
+		t.Fatalf("expected Office reference limit error, got %v", err)
+	}
+}
 func TestThirdPartyToolProtocolValidation(t *testing.T) {
 	hs := ThirdPartyHandshakeRequest{
 		ClientID: " demo-client ",

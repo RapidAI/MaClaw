@@ -11,6 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -38,6 +39,20 @@ func TestRuntimeContextFromIMMessageSeparatesChannelSessionAndActor(t *testing.T
 	}
 	if !strings.Contains(weixin.LockKey, weixin.Conversation.SessionKey) || !strings.Contains(weixin.LockKey, weixin.Actor.ActorID) {
 		t.Fatalf("lock key should include session and actor, got %q", weixin.LockKey)
+	}
+}
+
+func TestRuntimeContextTreatsProfileScheduledOwnerAsSystem(t *testing.T) {
+	owner := scheduledTaskConversationOwner(&scheduler.ScheduledTask{ID: "daily", BotProfileID: "support"})
+	runtime := runtimeContextFromIMMessage(IMUserMessage{UserID: owner, Platform: "scheduler", Text: "run report"})
+	if runtime.Source.Channel != "system" || runtime.Source.Provider != "scheduler" {
+		t.Fatalf("profile scheduled source = %+v", runtime.Source)
+	}
+	if runtime.Actor.ActorID != "system" || runtime.Actor.ActorType != "system" {
+		t.Fatalf("profile scheduled actor = %+v", runtime.Actor)
+	}
+	if !isScheduledTaskConversationOwner(owner) {
+		t.Fatalf("profile owner %q was not recognized", owner)
 	}
 }
 

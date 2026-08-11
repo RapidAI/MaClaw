@@ -6,6 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"log"
 	"os"
 	"os/exec"
@@ -20,6 +23,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/security"
@@ -3715,6 +3719,377 @@ func TestRemoteCodingSubAgentKnowledgeSearchDoesNotRequireSSHHandler(t *testing.
 	if !strings.Contains(unknownResult, "unknown tool") || strings.Contains(unknownResult, "handler unavailable") {
 		t.Fatalf("unknown tools should report unknown without requiring handler, got %q", unknownResult)
 	}
+}
+
+func TestRemoteCodingKnowledgePromptScopesExperiencesToProject(t *testing.T) {
+	store, err := knowledge.NewCodingKnowledgeStore(filepath.Join(t.TempDir(), "coding_knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewCodingKnowledgeStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	for _, exp := range []knowledge.CodingExperience{
+		{Title: "shared remote guidance", Scope: knowledge.CodingScopeUniversal, TriggerCondition: "remote project knowledge", Content: "shared remote project knowledge", Status: knowledge.CodingStatusActive},
+		{Title: "target remote guidance", Scope: knowledge.CodingScopeProject, ProjectPath: "/repo/target", TriggerCondition: "remote project knowledge", Content: "target remote project knowledge", Status: knowledge.CodingStatusActive},
+		{Title: "other remote guidance", Scope: knowledge.CodingScopeProject, ProjectPath: "/repo/other", TriggerCondition: "remote project knowledge", Content: "other remote project knowledge", Status: knowledge.CodingStatusActive},
+		{Title: "candidate remote guidance", Scope: knowledge.CodingScopeProject, ProjectPath: "/repo/target", TriggerCondition: "remote project knowledge", Content: "candidate remote project knowledge", Status: knowledge.CodingStatusCandidate},
+	} {
+		if _, err := store.SaveExperience(ctx, exp); err != nil {
+			t.Fatalf("SaveExperience(%q): %v", exp.Title, err)
+		}
+	}
+
+	sections := (&remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{codingKB: store, projectDir: "/repo/target"},
+		task:  "remote project knowledge",
+	}).buildRemoteKnowledgePromptSections()
+	for _, want := range []string{"shared remote guidance", "target remote guidance"} {
+		if !strings.Contains(sections, want) {
+			t.Fatalf("remote prompt omitted %q: %q", want, sections)
+		}
+	}
+	for _, forbidden := range []string{"other remote guidance", "candidate remote guidance"} {
+		if strings.Contains(sections, forbidden) {
+			t.Fatalf("remote prompt leaked %q: %q", forbidden, sections)
+		}
+	}
+}
+
+func TestRemoteCodingSubAgentImageKnowledgeSearchDoesNotRequireSSHHandler(t *testing.T) {
+	dataDir := t.TempDir()
+	assets, err := knowledge.NewImageAssetManager(dataDir)
+	if err != nil {
+		t.Fatalf("NewImageAssetManager: %v", err)
+	}
+	if _, err := assets.SaveImageFromBytes("image-source", onePixelPNGForKnowledgeImageToolTest(), ".png"); err != nil {
+		t.Fatalf("SaveImageFromBytes: %v", err)
+	}
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	store.SetImageAssetManager(assets)
+	ctx := context.Background()
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage, URI: "file://diagram.png", Title: "Gateway", Status: knowledge.StatusParsed}); err != nil {
+		t.Fatalf("SaveSource: %v", err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "image-node", SourceID: "image-source", Type: knowledge.NodeTypeImage, Title: "Gateway diagram", Text: "production gateway architecture diagram", Metadata: map[string]string{knowledge.MetaImageAssetID: "image-source"}}); err != nil {
+		t.Fatalf("SaveDocumentNode: %v", err)
+	}
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "other-image-source", Kind: knowledge.SourceKindImage, URI: "file://other-diagram.png", Title: "Other gateway", Status: knowledge.StatusParsed}); err != nil {
+		t.Fatalf("SaveSource(other): %v", err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "other-image-node", SourceID: "other-image-source", Type: knowledge.NodeTypeImage, Title: "Other gateway diagram", Text: "production gateway architecture diagram"}); err != nil {
+		t.Fatalf("SaveDocumentNode(other): %v", err)
+	}
+
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{generalKB: store}}
+	result := cb.executeRemoteTool("knowledge_image_search", `{"query":"gateway architecture","source_ids":["image-source"]}`)
+	if strings.Contains(result, "handler unavailable") {
+		t.Fatalf("image knowledge search should not require SSH handler, got %q", result)
+	}
+	if !strings.Contains(result, "Gateway diagram") || !strings.Contains(result, "[KB_IMAGE:image-source|") {
+		t.Fatalf("image knowledge search should return displayable evidence, got %q", result)
+	}
+	if strings.Contains(result, dataDir) {
+		t.Fatalf("image knowledge search leaked local asset path: %q", result)
+	}
+	if strings.Contains(result, "Other gateway diagram") {
+		t.Fatalf("image knowledge search ignored source filter: %q", result)
+	}
+
+	general := cb.executeRemoteTool("knowledge_search", `{"query":"gateway architecture"}`)
+	if !strings.Contains(general, "production gateway architecture diagram") {
+		t.Fatalf("general knowledge search should retain image text evidence, got %q", general)
+	}
+	if strings.Contains(general, "[KB_IMAGE:") || strings.Contains(general, "data:image/jpeg;base64,") || strings.Contains(general, dataDir) {
+		t.Fatalf("general knowledge search leaked display media or asset path: %q", general)
+	}
+}
+
+func TestCodingImageSearchNeverUsesAbsolutePathMetadataAsDisplayEvidence(t *testing.T) {
+	privatePath := `C:\\private\\knowledge_assets\\gateway.png`
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	if err := store.SaveSource(ctx, knowledge.Source{
+		ID:           "path-free-image",
+		Kind:         knowledge.SourceKindImage,
+		URI:          privatePath,
+		CanonicalURI: "file://" + strings.ReplaceAll(privatePath, `\\`, "/"),
+		RelativePath: privatePath,
+		Title:        privatePath,
+		Status:       knowledge.StatusParsed,
+	}); err != nil {
+		t.Fatalf("SaveSource: %v", err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{
+		ID:       "path-free-image-node",
+		SourceID: "path-free-image",
+		Type:     knowledge.NodeTypeImage,
+		Title:    privatePath,
+		Text:     "gateway architecture image evidence",
+	}); err != nil {
+		t.Fatalf("SaveDocumentNode: %v", err)
+	}
+
+	callbacks := &codingSubAgentCallbacks{subagent: &CodingSubAgent{generalKB: store}}
+	remoteCallbacks := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{generalKB: store}}
+	local := callbacks.executeKnowledgeImageSearch(`{"query":"gateway architecture"}`)
+	remote := remoteCallbacks.executeRemoteKnowledgeImageSearch(`{"query":"gateway architecture"}`)
+	localGeneral := callbacks.executeKnowledgeSearch(`{"query":"gateway architecture"}`)
+	remoteGeneral := remoteCallbacks.executeRemoteKnowledgeSearch(`{"query":"gateway architecture"}`)
+	for name, output := range map[string]string{"local_image": local.Text, "remote_image": remote, "local_general": localGeneral.Text, "remote_general": remoteGeneral} {
+		if strings.Contains(output, privatePath) || strings.Contains(output, "file://") {
+			t.Fatalf("%s coding image search leaked host path metadata: %q", name, output)
+		}
+		if !strings.Contains(output, "image evidence") {
+			t.Fatalf("%s coding image search lost safe evidence: %q", name, output)
+		}
+		if (name == "local_image" || name == "remote_image") && !strings.Contains(output, "path-free-image") {
+			t.Fatalf("%s dedicated image search lost safe source identity: %q", name, output)
+		}
+	}
+}
+
+func TestRemoteCodingKnowledgeUnavailableDoesNotFailToolTurn(t *testing.T) {
+	codingStore, err := knowledge.NewCodingKnowledgeStore(filepath.Join(t.TempDir(), "coding_knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewCodingKnowledgeStore: %v", err)
+	}
+	if err := codingStore.Close(); err != nil {
+		t.Fatalf("close coding knowledge store: %v", err)
+	}
+
+	generalStore, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := generalStore.Close(); err != nil {
+		t.Fatalf("close general knowledge store: %v", err)
+	}
+
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		codingKB:   codingStore,
+		generalKB:  generalStore,
+		projectDir: "/repo/project",
+	}}
+	for _, toolName := range []string{"coding_knowledge_search", "knowledge_search", "knowledge_image_search"} {
+		t.Run(toolName, func(t *testing.T) {
+			result := cb.ExecuteToolStructured(toolName, `{"query":"runtime evidence"}`)
+			if result.Outcome != agent.ToolExecutionOutcomeOK {
+				t.Fatalf("knowledge retrieval outage must be advisory, outcome=%q result=%q", result.Outcome, result.Result)
+			}
+			if !strings.Contains(result.Result, "知识库当前不可用") {
+				t.Fatalf("expected degraded knowledge guidance, got %q", result.Result)
+			}
+		})
+	}
+}
+
+func TestRemoteCodingKnowledgeUnavailableMarkerIsNotContentHeuristic(t *testing.T) {
+	if !remoteCodingKnowledgeUnavailableResult("coding_knowledge_search", "编程知识库当前不可用；请继续使用一手证据。") {
+		t.Fatal("fixed coding knowledge outage envelope should be recognized")
+	}
+	if remoteCodingKnowledgeUnavailableResult("coding_knowledge_search", "项目文档提到：编程知识库当前不可用；请改用本地文件。") {
+		t.Fatal("recalled document content must not change the tool execution outcome")
+	}
+	if remoteCodingKnowledgeUnavailableResult("coding_knowledge_search", "项目知识库当前不可用；请使用 ssh_read_file。") {
+		t.Fatal("an outage envelope from a different tool must not change the tool execution outcome")
+	}
+}
+
+func TestRemoteRuntimeShouldStopAfterDurableAttemptClosure(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	now := time.Now().UTC()
+	task, err := store.CreateTask(codingruntime.Task{TaskID: "remote-runtime-stop", ProjectRef: "/srv/repo", Mode: "remote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "/srv/repo", Mode: "remote"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{runtimeStore: store, runtimeAttempt: attempt}}
+	if cb.ShouldStop() {
+		t.Fatal("running Runtime attempt must keep the remote loop live")
+	}
+	if _, err := store.CancelTask(task.TaskID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if !cb.ShouldStop() {
+		t.Fatal("cancelled Runtime attempt must stop the remote loop before another tool turn")
+	}
+}
+
+func TestLocalRuntimeShouldStopAfterDurableAttemptClosure(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	now := time.Now().UTC()
+	task, err := store.CreateTask(codingruntime.Task{TaskID: "local-runtime-stop", ProjectRef: t.TempDir(), Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: task.ProjectRef, Mode: "local"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{runtimeStore: store, runtimeAttempt: attempt}}
+	if cb.ShouldStop() {
+		t.Fatal("running Runtime attempt must keep the local loop live")
+	}
+	if _, err := store.CancelTask(task.TaskID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if !cb.ShouldStop() {
+		t.Fatal("cancelled Runtime attempt must stop the local loop before another tool turn")
+	}
+}
+
+func TestRemoteCodingKnowledgeOutageEmitsSuccessfulAdvisoryEvent(t *testing.T) {
+	store, err := knowledge.NewCodingKnowledgeStore(filepath.Join(t.TempDir(), "coding_knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewCodingKnowledgeStore: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close coding knowledge store: %v", err)
+	}
+
+	var progress []string
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		codingKB: store,
+		onProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}}
+	result := cb.ExecuteToolStructured("coding_knowledge_search", `{"query":"runtime evidence"}`)
+	if result.Outcome != agent.ToolExecutionOutcomeOK {
+		t.Fatalf("knowledge retrieval outage must be advisory, outcome=%q result=%q", result.Outcome, result.Result)
+	}
+	for _, line := range progress {
+		event, ok := parseCodingAgentEventText(line)
+		if !ok || event.Event != codingAgentEventKindToolFinished.String() {
+			continue
+		}
+		if event.Outcome != "success" || event.Summary != "" {
+			t.Fatalf("advisory knowledge outage event=%#v, want success without failure summary", event)
+		}
+		return
+	}
+	t.Fatalf("missing tool finished event in %#v", progress)
+}
+
+func TestCodingKnowledgeUnavailableDoesNotFailToolTurn(t *testing.T) {
+	codingStore, err := knowledge.NewCodingKnowledgeStore(filepath.Join(t.TempDir(), "coding_knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewCodingKnowledgeStore: %v", err)
+	}
+	if err := codingStore.Close(); err != nil {
+		t.Fatalf("close coding knowledge store: %v", err)
+	}
+
+	generalStore, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := generalStore.Close(); err != nil {
+		t.Fatalf("close general knowledge store: %v", err)
+	}
+
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		codingKB:    codingStore,
+		generalKB:   generalStore,
+		projectPath: t.TempDir(),
+	}}
+	for _, toolName := range []string{"coding_knowledge_search", "knowledge_search", "knowledge_image_search"} {
+		t.Run(toolName, func(t *testing.T) {
+			result := cb.ExecuteToolStructured(toolName, `{"query":"runtime evidence"}`)
+			if result.Outcome != agent.ToolExecutionOutcomeOK {
+				t.Fatalf("knowledge retrieval outage must be advisory, outcome=%q result=%q", result.Outcome, result.Result)
+			}
+			if !strings.Contains(result.Result, "知识库当前不可用") {
+				t.Fatalf("expected degraded knowledge guidance, got %q", result.Result)
+			}
+		})
+	}
+}
+
+func TestCodingSubAgentGeneralKnowledgeSearchDoesNotIncludeImageMarker(t *testing.T) {
+	dataDir := t.TempDir()
+	assets, err := knowledge.NewImageAssetManager(dataDir)
+	if err != nil {
+		t.Fatalf("NewImageAssetManager: %v", err)
+	}
+	if _, err := assets.SaveImageFromBytes("image-source", onePixelPNGForKnowledgeImageToolTest(), ".png"); err != nil {
+		t.Fatalf("SaveImageFromBytes: %v", err)
+	}
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	store.SetImageAssetManager(assets)
+	ctx := context.Background()
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage, URI: "file://diagram.png", Title: "Gateway", Status: knowledge.StatusParsed}); err != nil {
+		t.Fatalf("SaveSource: %v", err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "image-node", SourceID: "image-source", Type: knowledge.NodeTypeImage, Title: "Gateway diagram", Text: "production gateway architecture diagram", Metadata: map[string]string{knowledge.MetaImageAssetID: "image-source"}}); err != nil {
+		t.Fatalf("SaveDocumentNode: %v", err)
+	}
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "other-image-source", Kind: knowledge.SourceKindImage, URI: "file://other-diagram.png", Title: "Other gateway", Status: knowledge.StatusParsed}); err != nil {
+		t.Fatalf("SaveSource(other): %v", err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "other-image-node", SourceID: "other-image-source", Type: knowledge.NodeTypeImage, Title: "Other gateway diagram", Text: "production gateway architecture diagram"}); err != nil {
+		t.Fatalf("SaveDocumentNode(other): %v", err)
+	}
+
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{generalKB: store}}
+	general := cb.executeKnowledgeSearch(`{"query":"gateway architecture"}`)
+	if general.Outcome != codingToolOutcomeSuccess || !strings.Contains(general.Text, "production gateway architecture diagram") {
+		t.Fatalf("general knowledge search = %#v, want image text evidence", general)
+	}
+	if strings.Contains(general.Text, "[KB_IMAGE:") || strings.Contains(general.Text, "data:image/jpeg;base64,") || strings.Contains(general.Text, dataDir) {
+		t.Fatalf("general knowledge search leaked display media or asset path: %q", general.Text)
+	}
+
+	images := cb.executeKnowledgeImageSearch(`{"query":"gateway architecture","source_ids":["image-source"]}`)
+	if images.Outcome != codingToolOutcomeSuccess || !strings.Contains(images.Text, "[KB_IMAGE:image-source|") {
+		t.Fatalf("dedicated image search = %#v, want safe display marker", images)
+	}
+	if strings.Contains(images.Text, dataDir) {
+		t.Fatalf("dedicated image search leaked local asset path: %q", images.Text)
+	}
+	if strings.Contains(images.Text, "Other gateway diagram") {
+		t.Fatalf("dedicated image search ignored source filter: %q", images.Text)
+	}
+}
+
+func TestCodingKnowledgeImageSearchDefinitionExposesOnlyNarrowingFilters(t *testing.T) {
+	definition := knowledgeImageSearchToolDef()
+	function, _ := definition["function"].(map[string]interface{})
+	parameters, _ := function["parameters"].(map[string]interface{})
+	properties, _ := parameters["properties"].(map[string]interface{})
+	for _, key := range []string{"query", "topic_hint", "context_terms", "source_kinds", "source_ids", "ids", "labels", "domain", "include_disabled", "limit"} {
+		if _, ok := properties[key]; !ok {
+			t.Fatalf("knowledge_image_search definition missing %q", key)
+		}
+	}
+	for _, forbidden := range []string{"project_path", "search_scope"} {
+		if _, ok := properties[forbidden]; ok {
+			t.Fatalf("knowledge_image_search must not expose a project-scope override %q", forbidden)
+		}
+	}
+}
+
+func onePixelPNGForKnowledgeImageToolTest() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	var out bytes.Buffer
+	_ = png.Encode(&out, img)
+	return out.Bytes()
 }
 
 func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {

@@ -3,8 +3,11 @@ package im
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +19,9 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
 type memoryDeviceCredentialStore struct {
@@ -36,6 +42,33 @@ func (s *memoryDeviceCredentialStore) Set(_ context.Context, key, value string) 
 
 func (s *memoryDeviceCredentialStore) Get(_ context.Context, key string) (string, error) {
 	return s.values[key], nil
+}
+
+type deviceGatewayIdentityStore struct {
+	provider *sqlite.Provider
+	store    *store.Store
+}
+
+func newDeviceGatewayIdentityStore(t *testing.T) *deviceGatewayIdentityStore {
+	t.Helper()
+	provider, err := sqlite.NewProvider(sqlite.Config{
+		DSN:               t.TempDir() + `\hub-device-recovery.db`,
+		WAL:               true,
+		BusyTimeoutMS:     5000,
+		MaxReadOpenConns:  2,
+		MaxReadIdleConns:  1,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		_ = provider.Close()
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	return &deviceGatewayIdentityStore{provider: provider, store: sqlite.NewStore(provider)}
 }
 
 func TestDeviceGatewayPairsUploadsForwardsAndPollsReply(t *testing.T) {
@@ -193,6 +226,100 @@ func TestDeviceGatewayPairAcceptsLegacyCode(t *testing.T) {
 		map[string]any{"clientId": "pet-legacy-code", "code": "223344"})
 	if pair.Code != http.StatusCreated {
 		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+}
+
+func TestDeviceGatewayRejectsMalformedPairCodeBeforeRateLimit(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	for attempt := 0; attempt < deviceCodePairAttemptLimit+2; attempt++ {
+		response := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "",
+			map[string]any{"clientId": "pet-malformed", "pairCode": "invalid"})
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "bad_pairing_code") {
+			t.Fatalf("attempt %d malformed pairing=%d body=%s", attempt, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestDeviceGatewayReplacingPairingCodeRevokesPreviousMachineCode(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "223345"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "223346"); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCode := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "",
+		map[string]any{"clientId": "pet-old-code", "pairCode": "223345"})
+	if oldCode.Code != http.StatusUnauthorized {
+		t.Fatalf("replaced pairing code status=%d body=%s", oldCode.Code, oldCode.Body.String())
+	}
+
+	newCode := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "",
+		map[string]any{"clientId": "pet-new-code", "pairCode": "223346"})
+	if newCode.Code != http.StatusCreated {
+		t.Fatalf("replacement pairing code status=%d body=%s", newCode.Code, newCode.Body.String())
+	}
+}
+
+func TestDeviceGatewayDisabledHardwareRejectsUnconsumedPairingCode(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "223348"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineHardwareEnabled("gui-a", false); err != nil {
+		t.Fatal(err)
+	}
+
+	disabled := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "",
+		map[string]any{"clientId": "pet-disabled-pair", "pairCode": "223348"})
+	if disabled.Code != http.StatusServiceUnavailable || !strings.Contains(disabled.Body.String(), "hardware_disabled") {
+		t.Fatalf("disabled pairing=%d body=%s", disabled.Code, disabled.Body.String())
+	}
+
+	if err := gateway.UpdateMachineHardwareEnabled("gui-a", true); err != nil {
+		t.Fatal(err)
+	}
+	enabled := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "",
+		map[string]any{"clientId": "pet-disabled-pair", "pairCode": "223348"})
+	if enabled.Code != http.StatusCreated {
+		t.Fatalf("pairing code was incorrectly consumed while disabled: status=%d body=%s", enabled.Code, enabled.Body.String())
+	}
+}
+
+func TestDeviceGatewayDisabledHardwareRejectsPairingRegistration(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.UpdateMachineHardwareEnabled("gui-a", false); err != nil {
+		t.Fatal(err)
+	}
+	err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "223349")
+	if err == nil {
+		t.Fatal("pairing registration succeeded while hardware was disabled")
+	}
+	var coded interface{ PairingErrorCode() string }
+	if !errors.As(err, &coded) || coded.PairingErrorCode() != "HARDWARE_DISABLED" {
+		t.Fatalf("disabled registration did not expose a stable code: %v", err)
+	}
+}
+
+func TestDeviceGatewayRejectsPairingCodeCollisionAcrossMachines(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "223347"); err != nil {
+		t.Fatal(err)
+	}
+	err := gateway.RegisterPairing("gui-b", "tenant-b", "user-b", "223347")
+	if err == nil {
+		t.Fatal("cross-machine pairing-code collision was accepted")
+	}
+	var coded interface{ PairingErrorCode() string }
+	if !errors.As(err, &coded) || coded.PairingErrorCode() != "PAIRING_CODE_COLLISION" {
+		t.Fatalf("collision error does not expose a stable code: %v", err)
+	}
+
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "",
+		map[string]any{"clientId": "pet-collision", "pairCode": "223347"})
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("original pairing changed after collision: status=%d body=%s", pair.Code, pair.Body.String())
 	}
 }
 
@@ -603,6 +730,673 @@ func TestDeviceGatewayTokenSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestDeviceGatewayRestoresCredentialsAfterLocalHubReinstall(t *testing.T) {
+	originalStore := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	original := NewPersistentDeviceGateway(nil, originalStore)
+	if err := original.RegisterPairing("gui-a", "tenant-a", "user-a", "654320"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, original, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-reinstall", "pairCode": "654320"})
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+	var paired map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&paired)
+	token, _ := paired["gatewayToken"].(string)
+	snapshot, err := original.ExportPersistedCredentials()
+	if err != nil {
+		t.Fatalf("ExportPersistedCredentials: %v", err)
+	}
+
+	// A reinstalled Hub starts with an empty database. It restores the opaque
+	// snapshot before its ESP32 performs the next authenticated handshake.
+	reinstalledStore := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	reinstalled := NewPersistentDeviceGateway(nil, reinstalledStore)
+	called := 0
+	if err := reinstalled.RestoreMissingCredentials(context.Background(), func(context.Context) (string, bool, error) {
+		called++
+		return snapshot, true, nil
+	}); err != nil {
+		t.Fatalf("RestoreMissingCredentials: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("recovery calls=%d, want 1", called)
+	}
+	handshake := deviceGatewayRequest(t, reinstalled, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-reinstall"})
+	if handshake.Code != http.StatusOK {
+		t.Fatalf("recovered token rejected: status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+
+	// Existing local state remains authoritative and is never replaced by an
+	// older remote recovery copy.
+	if err := reinstalled.RestoreMissingCredentials(context.Background(), func(context.Context) (string, bool, error) {
+		t.Fatal("recovery should not run when local credentials exist")
+		return "", false, nil
+	}); err != nil {
+		t.Fatalf("unexpected local-state recovery error: %v", err)
+	}
+}
+
+func TestDeviceGatewayRecoveryRestoresGUIIdentityAndHardwareCommandPath(t *testing.T) {
+	ctx := context.Background()
+	originalDB := newDeviceGatewayIdentityStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	// A newly created SQLite DB already contains this tenant. Deliberately
+	// customize its old-Hub metadata to prove recovery does not confuse that
+	// bootstrap row with a conflicting identity in the new database.
+	tenant, err := originalDB.store.Tenants.GetByID(ctx, store.DefaultTenantID)
+	if err != nil || tenant == nil {
+		t.Fatalf("load default tenant: tenant=%#v err=%v", tenant, err)
+	}
+	if _, err := originalDB.provider.Write.ExecContext(ctx, `UPDATE tenants SET name = ?, settings_json = ? WHERE id = ?`, "Old Hub Default Tenant", `{"hardware":true}`, tenant.ID); err != nil {
+		t.Fatalf("customize old default tenant: %v", err)
+	}
+	tenant, err = originalDB.store.Tenants.GetByID(ctx, tenant.ID)
+	if err != nil || tenant == nil {
+		t.Fatalf("reload default tenant: tenant=%#v err=%v", tenant, err)
+	}
+	user := &store.User{ID: "user-recovery", TenantID: tenant.ID, Email: "recovery@example.com", SN: "SN-recovery", Status: "active", EnrollmentStatus: "approved", EmailVerified: true, CreatedAt: now, UpdatedAt: now}
+	if err := originalDB.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	const machineToken = "existing-gui-machine-token"
+	machine := &store.Machine{ID: "machine-recovery", TenantID: tenant.ID, UserID: user.ID, ClientID: "gui-client-recovery", Name: "Recovery GUI", Platform: "windows", MachineTokenHash: tokenHashForDeviceGatewayTest(machineToken), Status: "offline", CreatedAt: now, UpdatedAt: now}
+	if err := originalDB.store.Machines.Create(ctx, machine); err != nil {
+		t.Fatalf("create machine: %v", err)
+	}
+
+	original := NewPersistentDeviceGateway(nil, &memoryDeviceCredentialStore{values: make(map[string]string)})
+	original.SetCredentialIdentityRepositories(originalDB.store.Tenants, originalDB.store.Users, originalDB.store.Machines)
+	original.SetCredentialIdentityRestorer(sqlite.NewDeviceCredentialIdentityRestorer(originalDB.provider))
+	if err := original.RegisterPairing(machine.ID, tenant.ID, user.ID, "654324"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, original, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-identity-recovery", "pairCode": "654324"})
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+	var paired map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&paired)
+	hardwareToken, _ := paired["gatewayToken"].(string)
+	snapshot, err := original.ExportPersistedCredentials()
+	if err != nil {
+		t.Fatalf("export snapshot: %v", err)
+	}
+	var exported persistedDeviceCredentials
+	if err := json.Unmarshal([]byte(snapshot), &exported); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if len(exported.Tenants) != 1 || len(exported.Users) != 1 || len(exported.Machines) != 1 || exported.Machines[0].MachineTokenHash != machine.MachineTokenHash {
+		t.Fatalf("identity snapshot missing or unsafe: %#v", exported)
+	}
+
+	// Model a fully reinstalled Hub: brand-new SQLite and no local credentials.
+	reinstalledDB := newDeviceGatewayIdentityStore(t)
+	reinstalled := NewPersistentDeviceGateway(nil, &memoryDeviceCredentialStore{values: make(map[string]string)})
+	reinstalled.SetCredentialIdentityRepositories(reinstalledDB.store.Tenants, reinstalledDB.store.Users, reinstalledDB.store.Machines)
+	reinstalledRestorer := sqlite.NewDeviceCredentialIdentityRestorer(reinstalledDB.provider)
+	reinstalled.SetCredentialIdentityRestorer(reinstalledRestorer)
+	reinstalled.SetCredentialSnapshotRestorer(reinstalledRestorer)
+	if err := reinstalled.RestoreMissingCredentials(ctx, func(context.Context) (string, bool, error) { return snapshot, true, nil }); err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+
+	identity := auth.NewIdentityService(reinstalledDB.store.Users, reinstalledDB.store.Enrollments, reinstalledDB.store.EmailBlocks, reinstalledDB.store.Machines, reinstalledDB.store.ViewerTokens, reinstalledDB.store.LoginTokens, reinstalledDB.store.System, nil, "open", true, nil, "")
+	principal, err := identity.AuthenticateMachine(ctx, machine.ID, machineToken)
+	if err != nil || principal == nil || principal.TenantID != tenant.ID || principal.UserID != user.ID {
+		t.Fatalf("existing GUI did not authenticate after recovery: principal=%#v err=%v", principal, err)
+	}
+	if handshake := deviceGatewayRequest(t, reinstalled, http.MethodPost, "/api/im-gateway/v1/handshake", hardwareToken, map[string]any{"clientId": "pet-identity-recovery"}); handshake.Code != http.StatusOK {
+		t.Fatalf("recovered hardware bearer rejected: status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+	if delivered := reinstalled.EnqueueMachineReplyCount(machine.ID, "control", map[string]any{"type": "text", "text": "recovered command"}); delivered != 1 {
+		t.Fatalf("recovered GUI command delivery count=%d, want 1", delivered)
+	}
+	poll := deviceGatewayRequest(t, reinstalled, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-identity-recovery&cursor=0", hardwareToken, nil)
+	if poll.Code != http.StatusOK || !strings.Contains(poll.Body.String(), "recovered command") {
+		t.Fatalf("recovered command not delivered: status=%d body=%s", poll.Code, poll.Body.String())
+	}
+}
+
+func TestDeviceGatewayRecoveryPersistsLegacyHardwareOnlySnapshot(t *testing.T) {
+	db := newDeviceGatewayIdentityStore(t)
+	legacyToken := "legacy-hardware-token"
+	legacySnapshot, err := json.Marshal(persistedDeviceCredentials{
+		Tokens: map[string]devicePrincipal{
+			legacyToken: {
+				ClientID:  "pet-legacy-recovery",
+				MachineID: "legacy-machine",
+				TenantID:  "tenant-legacy",
+				UserID:    "user-legacy",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal legacy snapshot: %v", err)
+	}
+
+	// This models a Hub Center backup produced before GUI identity snapshots
+	// were added. Recover it into a new SQLite database, then recreate the
+	// gateway to prove the token was made durable rather than merely loaded in
+	// memory for the current process.
+	restorer := sqlite.NewDeviceCredentialIdentityRestorer(db.provider)
+	recovered := NewPersistentDeviceGateway(nil, db.store.System)
+	recovered.SetCredentialSnapshotRestorer(restorer)
+	if err := recovered.RestorePersistedCredentials(string(legacySnapshot)); err != nil {
+		t.Fatalf("restore legacy snapshot: %v", err)
+	}
+	restarted := NewPersistentDeviceGateway(nil, db.store.System)
+	handshake := deviceGatewayRequest(t, restarted, http.MethodPost, "/api/im-gateway/v1/handshake", legacyToken, map[string]any{"clientId": "pet-legacy-recovery"})
+	if handshake.Code != http.StatusOK {
+		t.Fatalf("legacy recovered token did not survive restart: status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+}
+
+func TestDeviceGatewayRecoveryRejectsIdentitySnapshotWithoutMachineClientID(t *testing.T) {
+	db := newDeviceGatewayIdentityStore(t)
+	snapshot, err := json.Marshal(persistedDeviceCredentials{
+		Tokens: map[string]devicePrincipal{
+			"hardware-token": {ClientID: "pet-missing-machine-client", MachineID: "machine-missing-client", TenantID: "tenant-missing-client", UserID: "user-missing-client"},
+		},
+		Tenants: []store.Tenant{{ID: "tenant-missing-client"}},
+		Users:   []store.User{{ID: "user-missing-client", TenantID: "tenant-missing-client", Email: "missing-client@example.com"}},
+		Machines: []store.Machine{{
+			ID: "machine-missing-client", TenantID: "tenant-missing-client", UserID: "user-missing-client",
+			MachineTokenHash: tokenHashForDeviceGatewayTest("machine-token"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal malformed identity snapshot: %v", err)
+	}
+
+	gateway := NewPersistentDeviceGateway(nil, db.store.System)
+	gateway.SetCredentialSnapshotRestorer(sqlite.NewDeviceCredentialIdentityRestorer(db.provider))
+	if err := gateway.RestorePersistedCredentials(string(snapshot)); err == nil || !strings.Contains(err.Error(), "invalid recovered machine identity") {
+		t.Fatalf("missing machine client ID recovery error=%v, want invalid identity", err)
+	}
+	if raw, err := db.store.System.Get(context.Background(), deviceGatewayCredentialsKey); err != nil || raw != "" {
+		t.Fatalf("invalid snapshot was persisted: raw=%q err=%v", raw, err)
+	}
+}
+
+func TestDeviceGatewayRecoveryNormalizesIdentitySnapshotBeforePersisting(t *testing.T) {
+	db := newDeviceGatewayIdentityStore(t)
+	snapshot, err := json.Marshal(persistedDeviceCredentials{
+		Tokens: map[string]devicePrincipal{
+			" hardware-token ": {ClientID: " pet-normalized ", MachineID: " machine-normalized ", TenantID: " tenant-normalized ", UserID: " user-normalized "},
+		},
+		Tenants: []store.Tenant{{ID: " tenant-normalized ", Slug: " normalized "}},
+		Users:   []store.User{{ID: " user-normalized ", TenantID: " tenant-normalized ", Email: " normalized@example.com "}},
+		Machines: []store.Machine{{
+			ID: " machine-normalized ", TenantID: " tenant-normalized ", UserID: " user-normalized ", ClientID: " desktop-normalized ",
+			MachineTokenHash: " " + tokenHashForDeviceGatewayTest("machine-token") + " ",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal whitespace snapshot: %v", err)
+	}
+
+	gateway := NewPersistentDeviceGateway(nil, db.store.System)
+	gateway.SetCredentialSnapshotRestorer(sqlite.NewDeviceCredentialIdentityRestorer(db.provider))
+	if err := gateway.RestorePersistedCredentials(string(snapshot)); err != nil {
+		t.Fatalf("restore whitespace snapshot: %v", err)
+	}
+	restarted := NewPersistentDeviceGateway(nil, db.store.System)
+	if handshake := deviceGatewayRequest(t, restarted, http.MethodPost, "/api/im-gateway/v1/handshake", "hardware-token", map[string]any{"clientId": "pet-normalized"}); handshake.Code != http.StatusOK {
+		t.Fatalf("normalized recovered token rejected: status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+	machine, err := db.store.Machines.GetByUserAndClientID(context.Background(), "user-normalized", "desktop-normalized")
+	if err != nil || machine == nil {
+		t.Fatalf("normalized machine was not restored: machine=%#v err=%v", machine, err)
+	}
+	if raw, err := db.store.System.Get(context.Background(), deviceGatewayCredentialsKey); err != nil || strings.Contains(raw, " hardware-token ") {
+		t.Fatalf("recovered snapshot was not normalized: raw=%q err=%v", raw, err)
+	}
+}
+
+func TestDeviceGatewayRecoveryNormalizesEveryWhitespaceTokenKey(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	snapshot := persistedDeviceCredentials{
+		Tokens: map[string]devicePrincipal{
+			" first-hardware-token ":  {ClientID: "pet-first", MachineID: "machine-whitespace-tokens", TenantID: "tenant-recovery", UserID: "user-recovery"},
+			" second-hardware-token ": {ClientID: "pet-second", MachineID: "machine-whitespace-tokens", TenantID: "tenant-recovery", UserID: "user-recovery"},
+		},
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.RestorePersistedCredentials(string(raw)); err != nil {
+		t.Fatalf("restore whitespace token keys: %v", err)
+	}
+	if got := len(gateway.tokens); got != 2 {
+		t.Fatalf("normalized token count=%d, want 2", got)
+	}
+	for _, token := range []string{"first-hardware-token", "second-hardware-token"} {
+		if _, ok := gateway.tokens[token]; !ok {
+			t.Fatalf("normalized token %q missing: %#v", token, gateway.tokens)
+		}
+	}
+	if _, ok := gateway.tokens[" first-hardware-token "]; ok {
+		t.Fatalf("whitespace token key survived normalization: %#v", gateway.tokens)
+	}
+}
+
+func TestDeviceGatewayRecoveryRejectsMalformedHardwareStateBeforePersisting(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	base := persistedDeviceCredentials{
+		Tokens: map[string]devicePrincipal{
+			"hardware-token": {ClientID: "pet-recovery", MachineID: "machine-recovery", TenantID: "tenant-recovery", UserID: "user-recovery"},
+		},
+		MachineHardware: map[string]deviceHardwareConfig{
+			"machine-recovery": {DeviceVolumes: map[string]int{"pet-recovery": 50}},
+		},
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*persistedDeviceCredentials)
+		message string
+	}{
+		{
+			name: "out of range volume",
+			mutate: func(snapshot *persistedDeviceCredentials) {
+				snapshot.MachineHardware["machine-recovery"] = deviceHardwareConfig{DeviceVolumes: map[string]int{"pet-recovery": 101}}
+			},
+			message: "invalid recovered hardware device volume",
+		},
+		{
+			name: "orphaned client override",
+			mutate: func(snapshot *persistedDeviceCredentials) {
+				snapshot.MachineHardware["machine-recovery"] = deviceHardwareConfig{DeviceBrightness: map[string]int{"other-pet": 50}}
+			},
+			message: "recovered hardware setting is not owned by its machine",
+		},
+		{
+			name: "invalid welcome audio",
+			mutate: func(snapshot *persistedDeviceCredentials) {
+				snapshot.MachineHardware["machine-recovery"] = deviceHardwareConfig{WelcomeEnabled: true, WelcomeAudio: "not-base64"}
+			},
+			message: "invalid recovered hardware welcome audio",
+		},
+		{
+			name: "duplicate client bearer",
+			mutate: func(snapshot *persistedDeviceCredentials) {
+				snapshot.Tokens["second-hardware-token"] = devicePrincipal{ClientID: "pet-recovery", MachineID: "machine-recovery", TenantID: "tenant-recovery", UserID: "user-recovery"}
+			},
+			message: "duplicate recovered hardware client",
+		},
+		{
+			name: "too many recovered machine bindings",
+			mutate: func(snapshot *persistedDeviceCredentials) {
+				for index := 0; index < maxMachineHardwareDevices; index++ {
+					snapshot.Tokens[fmt.Sprintf("extra-hardware-token-%d", index)] = devicePrincipal{
+						ClientID:  fmt.Sprintf("pet-recovery-%d", index),
+						MachineID: "machine-recovery",
+						TenantID:  "tenant-recovery",
+						UserID:    "user-recovery",
+					}
+				}
+			},
+			message: "recovered hardware binding limit exceeded",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := base
+			snapshot.Tokens = make(map[string]devicePrincipal, len(base.Tokens))
+			for token, principal := range base.Tokens {
+				snapshot.Tokens[token] = principal
+			}
+			snapshot.MachineHardware = make(map[string]deviceHardwareConfig, len(base.MachineHardware))
+			for machineID, config := range base.MachineHardware {
+				snapshot.MachineHardware[machineID] = cloneDeviceHardwareConfig(config)
+			}
+			test.mutate(&snapshot)
+			raw, err := json.Marshal(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gateway := NewPersistentDeviceGateway(nil, store)
+			if err := gateway.RestorePersistedCredentials(string(raw)); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("RestorePersistedCredentials error=%v, want %q", err, test.message)
+			}
+			if persisted := store.values[deviceGatewayCredentialsKey]; persisted != "" {
+				t.Fatalf("invalid recovered snapshot was persisted: %s", persisted)
+			}
+		})
+	}
+}
+
+func TestDeviceGatewayRecoveryRejectsOversizedSnapshotBeforePersisting(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	oversized := strings.Repeat(" ", deviceGatewayCredentialsMaxBytes+1)
+	gateway := NewPersistentDeviceGateway(nil, store)
+
+	err := gateway.RestorePersistedCredentials(oversized)
+	if err == nil || !strings.Contains(err.Error(), "recovered device credentials exceed") {
+		t.Fatalf("RestorePersistedCredentials error=%v, want snapshot size error", err)
+	}
+	if persisted := store.values[deviceGatewayCredentialsKey]; persisted != "" {
+		t.Fatalf("oversized snapshot was persisted: %d bytes", len(persisted))
+	}
+
+	store.values[deviceGatewayCredentialsKey] = oversized
+	restarted := NewPersistentDeviceGateway(nil, store)
+	if devices := restarted.ListMachineDevices("machine-oversized"); len(devices) != 0 {
+		t.Fatalf("oversized local credentials were loaded: %#v", devices)
+	}
+}
+
+func TestNewPersistentDeviceGatewayRejectsMalformedLocalHardwareState(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	raw, err := json.Marshal(persistedDeviceCredentials{
+		Tokens: map[string]devicePrincipal{
+			"hardware-token": {ClientID: "pet-local-corrupt", MachineID: "machine-local-corrupt", TenantID: "tenant-local-corrupt", UserID: "user-local-corrupt"},
+		},
+		MachineHardware: map[string]deviceHardwareConfig{
+			"machine-local-corrupt": {DeviceScreenSleepSeconds: map[string]int{"pet-local-corrupt": -1}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.values[deviceGatewayCredentialsKey] = string(raw)
+
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if devices := gateway.ListMachineDevices("machine-local-corrupt"); len(devices) != 0 {
+		t.Fatalf("invalid local credentials were loaded: %#v", devices)
+	}
+	if response := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", "hardware-token", map[string]any{"clientId": "pet-local-corrupt"}); response.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid local hardware token was accepted: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestDeviceGatewayRecoveryRejectsConflictingIdentityWithoutPartialRestore(t *testing.T) {
+	ctx := context.Background()
+	originalDB := newDeviceGatewayIdentityStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	tenant := &store.Tenant{ID: "tenant-conflict", Slug: "conflict", Name: "Conflict", Status: "active", SettingsJSON: "{}", CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now}
+	if err := originalDB.store.Tenants.Create(ctx, tenant); err != nil {
+		t.Fatal(err)
+	}
+	user := &store.User{ID: "user-conflict", TenantID: tenant.ID, Email: "conflict@example.com", SN: "SN-conflict", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := originalDB.store.Users.Create(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	machine := &store.Machine{ID: "machine-conflict", TenantID: tenant.ID, UserID: user.ID, ClientID: "gui-conflict", Name: "Conflict GUI", MachineTokenHash: tokenHashForDeviceGatewayTest("conflict-token"), Status: "offline", CreatedAt: now, UpdatedAt: now}
+	if err := originalDB.store.Machines.Create(ctx, machine); err != nil {
+		t.Fatal(err)
+	}
+	original := NewPersistentDeviceGateway(nil, &memoryDeviceCredentialStore{values: make(map[string]string)})
+	original.SetCredentialIdentityRepositories(originalDB.store.Tenants, originalDB.store.Users, originalDB.store.Machines)
+	original.SetCredentialIdentityRestorer(sqlite.NewDeviceCredentialIdentityRestorer(originalDB.provider))
+	if err := original.RegisterPairing(machine.ID, tenant.ID, user.ID, "654325"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, original, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-conflict", "pairCode": "654325"})
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+	snapshot, err := original.ExportPersistedCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localDB := newDeviceGatewayIdentityStore(t)
+	// Same natural-key email but a different user ID models local state that
+	// must never be overwritten by a remote recovery snapshot.
+	if err := localDB.store.Tenants.Create(ctx, tenant); err != nil {
+		t.Fatal(err)
+	}
+	if err := localDB.store.Users.Create(ctx, &store.User{ID: "other-user", TenantID: tenant.ID, Email: user.Email, SN: "SN-other", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	reinstalled := NewPersistentDeviceGateway(nil, &memoryDeviceCredentialStore{values: make(map[string]string)})
+	reinstalled.SetCredentialIdentityRepositories(localDB.store.Tenants, localDB.store.Users, localDB.store.Machines)
+	localRestorer := sqlite.NewDeviceCredentialIdentityRestorer(localDB.provider)
+	reinstalled.SetCredentialIdentityRestorer(localRestorer)
+	reinstalled.SetCredentialSnapshotRestorer(localRestorer)
+	if err := reinstalled.RestoreMissingCredentials(ctx, func(context.Context) (string, bool, error) { return snapshot, true, nil }); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("conflicting recovery error=%v, want conflict", err)
+	}
+	if got := reinstalled.ListMachineDevices(machine.ID); len(got) != 0 {
+		t.Fatalf("hardware credentials restored despite identity conflict: %#v", got)
+	}
+	if restored, err := localDB.store.Users.GetByID(ctx, user.ID); err != nil || restored != nil {
+		t.Fatalf("recovery partially created user: user=%#v err=%v", restored, err)
+	}
+}
+
+func TestDeviceGatewayRecoveryRejectsConflictingCustomTenantWithoutPartialRestore(t *testing.T) {
+	ctx := context.Background()
+	originalDB := newDeviceGatewayIdentityStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	tenant := &store.Tenant{ID: "tenant-custom-conflict", Slug: "custom-conflict", Name: "Original Tenant", Status: "active", SettingsJSON: `{"plan":"original"}`, CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now}
+	if err := originalDB.store.Tenants.Create(ctx, tenant); err != nil {
+		t.Fatal(err)
+	}
+	user := &store.User{ID: "user-custom-conflict", TenantID: tenant.ID, Email: "custom-conflict@example.com", SN: "SN-custom-conflict", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := originalDB.store.Users.Create(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	machine := &store.Machine{ID: "machine-custom-conflict", TenantID: tenant.ID, UserID: user.ID, ClientID: "gui-custom-conflict", Name: "Custom Conflict GUI", MachineTokenHash: tokenHashForDeviceGatewayTest("custom-conflict-token"), Status: "offline", CreatedAt: now, UpdatedAt: now}
+	if err := originalDB.store.Machines.Create(ctx, machine); err != nil {
+		t.Fatal(err)
+	}
+	original := NewPersistentDeviceGateway(nil, &memoryDeviceCredentialStore{values: make(map[string]string)})
+	original.SetCredentialIdentityRepositories(originalDB.store.Tenants, originalDB.store.Users, originalDB.store.Machines)
+	if err := original.RegisterPairing(machine.ID, tenant.ID, user.ID, "654326"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, original, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-custom-conflict", "pairCode": "654326"})
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+	snapshot, err := original.ExportPersistedCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localDB := newDeviceGatewayIdentityStore(t)
+	if err := localDB.store.Tenants.Create(ctx, &store.Tenant{ID: tenant.ID, Slug: tenant.Slug, Name: "Local Tenant", Status: "disabled", SettingsJSON: `{"plan":"local"}`, CreatedByAdminID: "local", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	reinstalled := NewPersistentDeviceGateway(nil, &memoryDeviceCredentialStore{values: make(map[string]string)})
+	reinstalled.SetCredentialIdentityRepositories(localDB.store.Tenants, localDB.store.Users, localDB.store.Machines)
+	if err := reinstalled.RestoreMissingCredentials(ctx, func(context.Context) (string, bool, error) { return snapshot, true, nil }); err == nil || !strings.Contains(err.Error(), "tenant") || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("custom tenant conflict error=%v, want tenant conflict", err)
+	}
+	if got := reinstalled.ListMachineDevices(machine.ID); len(got) != 0 {
+		t.Fatalf("hardware credentials restored despite custom tenant conflict: %#v", got)
+	}
+	if restored, err := localDB.store.Users.GetByID(ctx, user.ID); err != nil || restored != nil {
+		t.Fatalf("custom tenant conflict partially created user: user=%#v err=%v", restored, err)
+	}
+}
+
+func tokenHashForDeviceGatewayTest(raw string) string {
+	// Authentication intentionally uses SHA-256 without a salt so the same
+	// existing GUI token can be verified by a recovered machine record.
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestDeviceGatewayRecoveryErrorDoesNotResolveEmptyState(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	resolved, err := gateway.RestoreMissingCredentialsResult(context.Background(), func(context.Context) (string, bool, error) {
+		return "", false, fmt.Errorf("hub center unavailable")
+	})
+	if err == nil || resolved {
+		t.Fatalf("RestoreMissingCredentialsResult() = (%v, %v), want unresolved error", resolved, err)
+	}
+	if raw := store.values[deviceGatewayCredentialsKey]; raw != "" {
+		t.Fatalf("failed recovery wrote local credentials: %s", raw)
+	}
+}
+
+func TestDeviceGatewayCredentialBackupIsOrderedAndCoalescesLatestSnapshot(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	started := make(chan string, 1)
+	releaseFirst := make(chan struct{})
+	completed := make(chan string, 2)
+	gateway.SetCredentialBackup(func(_ context.Context, snapshot string) error {
+		started <- snapshot
+		if len(completed) == 0 {
+			<-releaseFirst
+		}
+		completed <- snapshot
+		return nil
+	})
+
+	gateway.mu.Lock()
+	gateway.tokens["first-token"] = devicePrincipal{ClientID: "pet", MachineID: "machine"}
+	if err := gateway.persistTokensLocked(); err != nil {
+		gateway.mu.Unlock()
+		t.Fatalf("persist first snapshot: %v", err)
+	}
+	gateway.mu.Unlock()
+	first := <-started
+
+	gateway.mu.Lock()
+	gateway.tokens["second-token"] = devicePrincipal{ClientID: "pet", MachineID: "machine"}
+	if err := gateway.persistTokensLocked(); err != nil {
+		gateway.mu.Unlock()
+		t.Fatalf("persist second snapshot: %v", err)
+	}
+	gateway.tokens["third-token"] = devicePrincipal{ClientID: "pet", MachineID: "machine"}
+	if err := gateway.persistTokensLocked(); err != nil {
+		gateway.mu.Unlock()
+		t.Fatalf("persist third snapshot: %v", err)
+	}
+	gateway.mu.Unlock()
+	close(releaseFirst)
+
+	select {
+	case got := <-completed:
+		if got != first {
+			t.Fatal("first backup completion did not match its started snapshot")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first backup did not complete")
+	}
+	select {
+	case latest := <-completed:
+		var saved persistedDeviceCredentials
+		if err := json.Unmarshal([]byte(latest), &saved); err != nil {
+			t.Fatalf("decode latest backup: %v", err)
+		}
+		if len(saved.Tokens) != 3 {
+			t.Fatalf("latest backup tokens=%d, want 3", len(saved.Tokens))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("latest coalesced backup did not complete")
+	}
+	select {
+	case unexpected := <-completed:
+		t.Fatalf("unexpected redundant backup: %s", unexpected)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestDeviceGatewayCredentialBackupOutboxSurvivesRestart(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	failed := make(chan struct{}, 1)
+	gateway.SetCredentialBackup(func(context.Context, string) error {
+		failed <- struct{}{}
+		return fmt.Errorf("hub center unavailable")
+	})
+	gateway.mu.Lock()
+	gateway.tokens["pending-token"] = devicePrincipal{ClientID: "pet", MachineID: "machine"}
+	if err := gateway.persistTokensLocked(); err != nil {
+		gateway.mu.Unlock()
+		t.Fatalf("persist credentials: %v", err)
+	}
+	gateway.mu.Unlock()
+	select {
+	case <-failed:
+	case <-time.After(time.Second):
+		t.Fatal("expected failed backup attempt")
+	}
+	if strings.TrimSpace(store.values[deviceGatewayCredentialOutboxKey]) == "" {
+		t.Fatal("pending backup snapshot was not persisted")
+	}
+
+	restarted := NewPersistentDeviceGateway(nil, store)
+	delivered := make(chan string, 1)
+	restarted.SetCredentialBackup(func(_ context.Context, snapshot string) error {
+		delivered <- snapshot
+		return nil
+	})
+	select {
+	case snapshot := <-delivered:
+		var saved persistedDeviceCredentials
+		if err := json.Unmarshal([]byte(snapshot), &saved); err != nil || len(saved.Tokens) != 1 {
+			t.Fatalf("restored outbox snapshot = %q, err=%v", snapshot, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("restarted gateway did not flush pending backup")
+	}
+	deadline := time.Now().Add(time.Second)
+	for strings.TrimSpace(store.values[deviceGatewayCredentialOutboxKey]) != "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pending := store.values[deviceGatewayCredentialOutboxKey]; pending != "" {
+		t.Fatalf("outbox not cleared after successful backup: %q", pending)
+	}
+}
+
+func TestDeviceGatewayRestoreDoesNotOverwritePairingCompletedDuringFetch(t *testing.T) {
+	remoteStore := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	remote := NewPersistentDeviceGateway(nil, remoteStore)
+	if err := remote.RegisterPairing("gui-remote", "tenant-a", "user-remote", "654321"); err != nil {
+		t.Fatal(err)
+	}
+	remotePair := deviceGatewayRequest(t, remote, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-remote", "pairCode": "654321"})
+	if remotePair.Code != http.StatusCreated {
+		t.Fatalf("remote pair status=%d body=%s", remotePair.Code, remotePair.Body.String())
+	}
+	snapshot, err := remote.ExportPersistedCredentials()
+	if err != nil {
+		t.Fatalf("ExportPersistedCredentials: %v", err)
+	}
+
+	localStore := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	local := NewPersistentDeviceGateway(nil, localStore)
+	if err := local.RegisterPairing("gui-local", "tenant-a", "user-local", "654322"); err != nil {
+		t.Fatal(err)
+	}
+	restoreStarted := make(chan struct{})
+	allowRestore := make(chan struct{})
+	restoreDone := make(chan error, 1)
+	go func() {
+		restoreDone <- local.RestoreMissingCredentials(context.Background(), func(context.Context) (string, bool, error) {
+			close(restoreStarted)
+			<-allowRestore
+			return snapshot, true, nil
+		})
+	}()
+	<-restoreStarted
+	localPair := deviceGatewayRequest(t, local, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-local", "pairCode": "654322"})
+	if localPair.Code != http.StatusCreated {
+		t.Fatalf("local pair status=%d body=%s", localPair.Code, localPair.Body.String())
+	}
+	var paired map[string]any
+	_ = json.NewDecoder(localPair.Body).Decode(&paired)
+	localToken, _ := paired["gatewayToken"].(string)
+	close(allowRestore)
+	if err := <-restoreDone; err != nil {
+		t.Fatalf("RestoreMissingCredentials: %v", err)
+	}
+	if handshake := deviceGatewayRequest(t, local, http.MethodPost, "/api/im-gateway/v1/handshake", localToken, map[string]any{"clientId": "pet-local"}); handshake.Code != http.StatusOK {
+		t.Fatalf("local pairing was overwritten by recovery: status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+}
+
 func TestDeviceGatewayListsMultipleBindingsAndDeleteRevokesOnlyTarget(t *testing.T) {
 	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
 	gateway := NewPersistentDeviceGateway(nil, store)
@@ -778,6 +1572,25 @@ func TestDeviceGatewayDoesNotMigrateAnotherOwnerOrMergeActiveMachine(t *testing.
 	}
 }
 
+func TestDeviceGatewaySelectedPreviewReportsOfflineRatherThanOwnershipFailure(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("machine-recovered", "tenant-a", "user-a", "610108"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-recovered", "pairCode": "610108"})
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+
+	result := gateway.EnqueueMachineClientReplyResult("machine-recovered", "pet-recovered", "system", map[string]any{
+		"reply_type": "audio", "mime_type": "audio/wav", "file_data": base64.StdEncoding.EncodeToString([]byte("wav")),
+		"extra": map[string]any{"hardware_audio_preview": true},
+	})
+	if result.Queued != 0 || result.Reason != MachineClientReplyOffline {
+		t.Fatalf("selected offline preview result=%+v", result)
+	}
+}
+
 func TestDeviceGatewayMigrationMergesOnlyMovedDeviceVolumesIntoCurrentConfig(t *testing.T) {
 	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
 	gateway := NewPersistentDeviceGateway(nil, store)
@@ -792,6 +1605,9 @@ func TestDeviceGatewayMigrationMergesOnlyMovedDeviceVolumesIntoCurrentConfig(t *
 	}
 	pair("legacy-client", "610105", "legacy-pet")
 	if err := gateway.UpdateMachineDeviceVolume("legacy-client", "legacy-pet", 37); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineDeviceScreenSleepTimeout("legacy-client", "legacy-pet", 1800); err != nil {
 		t.Fatal(err)
 	}
 	// An empty current machine may already have durable settings from the GUI.
@@ -809,7 +1625,7 @@ func TestDeviceGatewayMigrationMergesOnlyMovedDeviceVolumesIntoCurrentConfig(t *
 			volumes[device.ClientID] = *device.Volume
 		}
 	}
-	if len(devices) != 1 || volumes["legacy-pet"] != 37 || !gateway.hardware["machine-current"].AllowCustomPets {
+	if len(devices) != 1 || volumes["legacy-pet"] != 37 || devices[0].ScreenSleepSeconds == nil || *devices[0].ScreenSleepSeconds != 1800 || !gateway.hardware["machine-current"].AllowCustomPets {
 		t.Fatalf("merged devices=%#v volumes=%#v", devices, volumes)
 	}
 	if _, ok := gateway.hardware["legacy-client"]; ok {
@@ -823,7 +1639,7 @@ func TestDeviceGatewayMigrationMergesOnlyMovedDeviceVolumesIntoCurrentConfig(t *
 			volumes[device.ClientID] = *device.Volume
 		}
 	}
-	if len(devices) != 1 || volumes["legacy-pet"] != 37 || !restarted.hardware["machine-current"].AllowCustomPets {
+	if len(devices) != 1 || volumes["legacy-pet"] != 37 || devices[0].ScreenSleepSeconds == nil || *devices[0].ScreenSleepSeconds != 1800 || !restarted.hardware["machine-current"].AllowCustomPets {
 		t.Fatalf("persisted merged devices=%#v volumes=%#v", devices, volumes)
 	}
 }
@@ -1674,6 +2490,89 @@ func TestDeviceGatewayRelaysAmbientWeatherToPairedHardware(t *testing.T) {
 	}
 }
 
+func TestDeviceGatewayHandshakeSharesAmbientWithNewlyPairedClient(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "112233"); err != nil {
+		t.Fatal(err)
+	}
+	firstPair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-old", "code": "112233"})
+	var first map[string]any
+	_ = json.NewDecoder(firstPair.Body).Decode(&first)
+	if firstPair.Code != http.StatusCreated {
+		t.Fatalf("initial pair status=%d body=%#v", firstPair.Code, first)
+	}
+
+	gateway.UpdateMachineAmbient("gui-a", map[string]any{
+		"weather":   map[string]any{"summary": "晴", "temperatureC": 26, "location": "北京"},
+		"expiresAt": time.Now().Add(time.Hour).UnixMilli(),
+	})
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445566"); err != nil {
+		t.Fatal(err)
+	}
+	secondPair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-new", "code": "445566"})
+	var second map[string]any
+	_ = json.NewDecoder(secondPair.Body).Decode(&second)
+	token, _ := second["gatewayToken"].(string)
+	if secondPair.Code != http.StatusCreated || token == "" {
+		t.Fatalf("replacement pair status=%d body=%#v", secondPair.Code, second)
+	}
+	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-new"})
+	var body map[string]any
+	_ = json.NewDecoder(handshake.Body).Decode(&body)
+	if handshake.Code != http.StatusOK || body["ambient"] == nil {
+		t.Fatalf("new client did not receive shared ambient: status=%d body=%#v", handshake.Code, body)
+	}
+}
+
+func TestDeviceGatewayAmbientSurvivesHubRestartForReplacementDevice(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	first := NewPersistentDeviceGateway(nil, store)
+	if err := first.RegisterPairing("gui-a", "tenant-a", "user-a", "445566"); err != nil {
+		t.Fatal(err)
+	}
+	firstPair := deviceGatewayRequest(t, first, http.MethodPost,
+		"/api/device-gateway/v1/pair", "", map[string]any{
+			"clientId": "pet-old", "code": "445566",
+		})
+	if firstPair.Code != http.StatusCreated {
+		t.Fatalf("initial pair status=%d body=%s", firstPair.Code, firstPair.Body.String())
+	}
+	first.UpdateMachineAmbient("gui-a", map[string]any{
+		"weather":   map[string]any{"summary": "晴", "temperatureC": 26, "location": "北京"},
+		"expiresAt": time.Now().Add(time.Hour).UnixMilli(),
+	})
+
+	// Recreate the Hub from durable state, then pair a replacement physical
+	// device before the GUI has produced another ambient refresh.
+	restarted := NewPersistentDeviceGateway(nil, store)
+	if err := restarted.RegisterPairing("gui-a", "tenant-a", "user-a", "445567"); err != nil {
+		t.Fatal(err)
+	}
+	replacementPair := deviceGatewayRequest(t, restarted, http.MethodPost,
+		"/api/device-gateway/v1/pair", "", map[string]any{
+			"clientId": "pet-new", "code": "445567",
+		})
+	var paired map[string]any
+	_ = json.NewDecoder(replacementPair.Body).Decode(&paired)
+	token, _ := paired["gatewayToken"].(string)
+	if replacementPair.Code != http.StatusCreated || token == "" {
+		t.Fatalf("replacement pair status=%d body=%#v", replacementPair.Code, paired)
+	}
+	handshake := deviceGatewayRequest(t, restarted, http.MethodPost,
+		"/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-new"})
+	var body map[string]any
+	_ = json.NewDecoder(handshake.Body).Decode(&body)
+	ambient, ok := body["ambient"].(map[string]any)
+	if handshake.Code != http.StatusOK || !ok {
+		t.Fatalf("replacement handshake missing durable ambient: status=%d body=%#v",
+			handshake.Code, body)
+	}
+	weather, _ := ambient["weather"].(map[string]any)
+	if weather["location"] != "北京" || weather["temperatureC"] != float64(26) {
+		t.Fatalf("replacement ambient=%#v", ambient)
+	}
+}
+
 func TestDeviceGatewayPetProfileUpdateWakesPairedHardware(t *testing.T) {
 	gateway := NewDeviceGateway(nil)
 	if err := gateway.RegisterPairingWithPetProfile("gui-a", "tenant-a", "user-a", "123456", "clawmate", true); err != nil {
@@ -2479,6 +3378,233 @@ func TestDeviceGatewayBroadcastVolumeKeepsLatestValue(t *testing.T) {
 	extra, _ := outgoing.Messages[0]["extra"].(map[string]any)
 	if extra["volume"] != float64(41) {
 		t.Fatalf("broadcast latest volume=%#v, want 41", extra)
+	}
+}
+
+func TestDeviceGatewayDeviceBrightnessIsIndependentAndPersists(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445580"); err != nil {
+		t.Fatal(err)
+	}
+	pair := func(clientID string) string {
+		response := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": clientID, "code": "445580"})
+		if response.Code == http.StatusUnauthorized {
+			// Pairing codes are single-use, so reserve a fresh one for the second device.
+			if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445581"); err != nil {
+				t.Fatal(err)
+			}
+			response = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": clientID, "code": "445581"})
+		}
+		if response.Code != http.StatusCreated {
+			t.Fatalf("pair %s status=%d body=%s", clientID, response.Code, response.Body.String())
+		}
+		var body map[string]any
+		_ = json.NewDecoder(response.Body).Decode(&body)
+		token, _ := body["gatewayToken"].(string)
+		return token
+	}
+	tokenA := pair("brightness-a")
+	tokenB := pair("brightness-b")
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", tokenA, map[string]any{"clientId": "brightness-a"})
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", tokenB, map[string]any{"clientId": "brightness-b"})
+	if err := gateway.UpdateMachineDeviceBrightness("gui-a", "brightness-a", 15); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineDeviceBrightness("gui-a", "brightness-b", 90); err != nil {
+		t.Fatal(err)
+	}
+	devices := gateway.ListMachineDevices("gui-a")
+	byClient := make(map[string]*int, len(devices))
+	for _, device := range devices {
+		byClient[device.ClientID] = device.Brightness
+	}
+	if len(devices) != 2 || byClient["brightness-a"] == nil || *byClient["brightness-a"] != 15 || byClient["brightness-b"] == nil || *byClient["brightness-b"] != 90 {
+		t.Fatalf("listed brightness=%#v", devices)
+	}
+	restarted := NewPersistentDeviceGateway(nil, store)
+	devices = restarted.ListMachineDevices("gui-a")
+	byClient = make(map[string]*int, len(devices))
+	for _, device := range devices {
+		byClient[device.ClientID] = device.Brightness
+	}
+	if len(devices) != 2 || byClient["brightness-a"] == nil || *byClient["brightness-a"] != 15 || byClient["brightness-b"] == nil || *byClient["brightness-b"] != 90 {
+		t.Fatalf("persisted listed brightness=%#v", devices)
+	}
+	// A cross-machine update must fail, mirroring the volume ownership rule.
+	if err := restarted.UpdateMachineDeviceBrightness("gui-b", "brightness-a", 50); err == nil {
+		t.Fatal("cross-machine device brightness update succeeded")
+	}
+}
+
+func TestDeviceGatewayDeviceScreenSleepTimeoutIsIndependentAndCapabilityGated(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445584"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "sleep-a", "code": "445584"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{
+		"clientId": "sleep-a", "capabilities": map[string]any{"features": map[string]any{"screenSleepControl": true}},
+	})
+	if err := gateway.UpdateMachineDeviceScreenSleepTimeout("gui-a", "sleep-a", 1800); err != nil {
+		t.Fatal(err)
+	}
+	devices := gateway.ListMachineDevices("gui-a")
+	if len(devices) != 1 || devices[0].ScreenSleepSeconds == nil || *devices[0].ScreenSleepSeconds != 1800 {
+		t.Fatalf("listed screen sleep timeout=%#v", devices)
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=sleep-a&cursor=0", token, nil)
+	var outgoing struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if len(outgoing.Messages) != 1 {
+		t.Fatalf("screen sleep message=%#v", outgoing.Messages)
+	}
+	extra, _ := outgoing.Messages[0]["extra"].(map[string]any)
+	if extra["screenSleepSeconds"] != float64(1800) {
+		t.Fatalf("screen sleep extra=%#v", extra)
+	}
+	restarted := NewPersistentDeviceGateway(nil, store)
+	devices = restarted.ListMachineDevices("gui-a")
+	if len(devices) != 1 || devices[0].ScreenSleepSeconds == nil || *devices[0].ScreenSleepSeconds != 1800 {
+		t.Fatalf("persisted screen sleep timeout=%#v", devices)
+	}
+	if err := restarted.UpdateMachineDeviceScreenSleepTimeout("gui-a", "sleep-a", 120); err == nil {
+		t.Fatal("unsupported screen sleep timeout was accepted")
+	}
+}
+
+func TestDeviceGatewayScreenSleepRequiresDeclaredCapability(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445585"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "sleep-caps", "code": "445585"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	// Store the selection before the device firmware advertises support. It is
+	// durable but must not be sent to a client that cannot safely consume it.
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "sleep-caps", "capabilities": map[string]any{"features": map[string]any{"brightnessControl": true}}})
+	if err := gateway.UpdateMachineDeviceScreenSleepTimeout("gui-a", "sleep-caps", 0); err != nil {
+		t.Fatal(err)
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=sleep-caps&cursor=0", token, nil)
+	var outgoing struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if len(outgoing.Messages) != 0 {
+		t.Fatalf("screen sleep reached device without screenSleepControl: %#v", outgoing.Messages)
+	}
+	devices := gateway.ListMachineDevices("gui-a")
+	if len(devices) != 1 || devices[0].ScreenSleepSeconds == nil || *devices[0].ScreenSleepSeconds != 0 {
+		t.Fatalf("durable screen sleep=%#v", devices)
+	}
+
+	// A later capability handshake receives the stored setting, including zero
+	// which explicitly means never turn the display off automatically.
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "sleep-caps", "capabilities": map[string]any{"features": map[string]any{"screenSleepControl": true}}})
+	poll = deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=sleep-caps&cursor=0", token, nil)
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if len(outgoing.Messages) != 1 || outgoing.Messages[0]["type"] != "hardware_config" {
+		t.Fatalf("declared screen sleep messages=%#v", outgoing.Messages)
+	}
+	extra, _ := outgoing.Messages[0]["extra"].(map[string]any)
+	if extra["screenSleepSeconds"] != float64(0) {
+		t.Fatalf("declared screen sleep=%#v, want 0", extra)
+	}
+}
+
+func TestDeviceGatewayBrightnessRequiresDeclaredCapability(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445582"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "brightness-caps", "code": "445582"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	// The device declares no brightnessControl: the durable value is stored but
+	// never leaves Hub, and no error is raised.
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "brightness-caps", "capabilities": map[string]any{"features": map[string]any{"volumeControl": true}}})
+	if err := gateway.UpdateMachineDeviceBrightness("gui-a", "brightness-caps", 70); err != nil {
+		t.Fatal(err)
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=brightness-caps&cursor=0", token, nil)
+	var outgoing struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if len(outgoing.Messages) != 0 {
+		t.Fatalf("brightness reached a device without brightnessControl: %#v", outgoing.Messages)
+	}
+	devices := gateway.ListMachineDevices("gui-a")
+	if len(devices) != 1 || devices[0].Brightness == nil || *devices[0].Brightness != 70 {
+		t.Fatalf("durable brightness=%#v", devices)
+	}
+	// Once the device declares brightnessControl, the handshake picks the level up.
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "brightness-caps", "capabilities": map[string]any{"features": map[string]any{"volumeControl": true, "brightnessControl": true}}})
+	poll = deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=brightness-caps&cursor=0", token, nil)
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if len(outgoing.Messages) != 1 || outgoing.Messages[0]["type"] != "hardware_config" {
+		t.Fatalf("declared brightness messages=%#v", outgoing.Messages)
+	}
+	extra, _ := outgoing.Messages[0]["extra"].(map[string]any)
+	if extra["brightness"] != float64(70) {
+		t.Fatalf("declared brightness=%#v, want 70", extra)
+	}
+}
+
+func TestDeviceGatewayPendingHardwareConfigMergesPerDeviceLevels(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445583"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "level-merge", "code": "445583"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	capabilities := map[string]any{"features": map[string]any{"volumeControl": true, "brightnessControl": true, "screenSleepControl": true}}
+	// Persist both levels before the first handshake so they land in one
+	// pending hardware_config message.
+	if err := gateway.UpdateMachineDeviceVolume("gui-a", "level-merge", 33); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineDeviceBrightness("gui-a", "level-merge", 66); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineDeviceScreenSleepTimeout("gui-a", "level-merge", 600); err != nil {
+		t.Fatal(err)
+	}
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "level-merge", "capabilities": capabilities})
+	// Updating one level while the message is still pending must not clobber
+	// the other.
+	if err := gateway.UpdateMachineDeviceBrightness("gui-a", "level-merge", 80); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineDeviceVolume("gui-a", "level-merge", 44); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineDeviceScreenSleepTimeout("gui-a", "level-merge", 1800); err != nil {
+		t.Fatal(err)
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=level-merge&cursor=0", token, nil)
+	var outgoing struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if len(outgoing.Messages) != 1 {
+		t.Fatalf("merged hardware_config messages=%#v", outgoing.Messages)
+	}
+	extra, _ := outgoing.Messages[0]["extra"].(map[string]any)
+	if extra["volume"] != float64(44) || extra["brightness"] != float64(80) || extra["screenSleepSeconds"] != float64(1800) {
+		t.Fatalf("merged levels=%#v, want volume=44 brightness=80 screenSleepSeconds=1800", extra)
 	}
 }
 

@@ -176,8 +176,8 @@ func (a *App) getHubCenterDownloadLocatorBytes(ctx context.Context, client *http
 
 	// First pass exhausted the candidate pool. Invalidate discovery cache and try a
 	// freshly resolved order (failure memory may have re-ranked live nodes).
-	if a.hubCenterCache != nil && ctx.Err() == nil {
-		a.hubCenterCache.Invalidate()
+	if cache := a.hubCenterSelectionCache(); cache != nil && ctx.Err() == nil {
+		cache.Invalidate()
 	}
 	freshBases, resolveErr := a.resolveHubCenterCandidates(ctx, client)
 	if resolveErr == nil && len(freshBases) > 0 {
@@ -224,11 +224,12 @@ func (a *App) getHubCenterDownloadAcrossCandidates(ctx context.Context, client *
 		}
 		return data, trace.withResolvedURL(), nil
 	}
-	if a.hubCenterCache == nil || ctx.Err() != nil {
+	cache := a.hubCenterSelectionCache()
+	if cache == nil || ctx.Err() != nil {
 		return nil, trace, err
 	}
 	// Total failure — re-discover in case the cache still preferred a dead node.
-	a.hubCenterCache.Invalidate()
+	cache.Invalidate()
 	freshBases, resolveErr := a.resolveHubCenterCandidates(ctx, client)
 	if resolveErr != nil || len(freshBases) == 0 {
 		return nil, trace, err

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/lansengerwatch"
 )
@@ -41,6 +43,23 @@ type lansengerWatchRosterCacheEntry struct {
 	expiresAt time.Time
 }
 
+// lansengerWatchRosterStoreKey prevents two bots in the same group from
+// merging their learned/manual target directory. The default profile retains
+// the historic raw group ID so pre-existing roster files remain usable.
+func lansengerWatchRosterStoreKey(botProfileID, groupID string) string {
+	botProfileID = strings.TrimSpace(botProfileID)
+	groupID = strings.TrimSpace(groupID)
+	if botProfileID == "" || botProfileID == corelib.DefaultLansengerBotProfileID {
+		return groupID
+	}
+	// Store sanitizes roster names for filesystem use, which can collapse
+	// distinct external group IDs (for example "a/b" and "a?b"). Keep the
+	// profile readable and append a fixed hash of the full logical identity.
+	// The legacy/default path above is deliberately unchanged for migration.
+	sum := sha256.Sum256([]byte(botProfileID + "\x00" + groupID))
+	return fmt.Sprintf("bot-%s-%x", botProfileID, sum[:12])
+}
+
 const (
 	// Max time the gateway goroutine may spend in watch Process (CLI+I/O).
 	lansengerWatchProcessTimeout = 25 * time.Second
@@ -61,13 +80,42 @@ const (
 
 // WatchForwardResult is one owner-channel push attempt (success or failure).
 type WatchForwardResult struct {
-	At      time.Time `json:"at"`
-	JobID   string    `json:"job_id,omitempty"`
-	Reason  string    `json:"reason,omitempty"`
-	Channel string    `json:"channel"`
-	OK      bool      `json:"ok"`
-	Error   string    `json:"error,omitempty"`
-	Preview string    `json:"preview,omitempty"`
+	At           time.Time `json:"at"`
+	BotProfileID string    `json:"bot_profile_id,omitempty"`
+	JobID        string    `json:"job_id,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+	Channel      string    `json:"channel"`
+	OK           bool      `json:"ok"`
+	Error        string    `json:"error,omitempty"`
+	Preview      string    `json:"preview,omitempty"`
+}
+
+func normalizeLansengerWatchBotProfileID(botProfileID string) string {
+	if botProfileID = strings.TrimSpace(botProfileID); botProfileID != "" {
+		return botProfileID
+	}
+	return corelib.DefaultLansengerBotProfileID
+}
+
+// requireLansengerWatchBotProfile verifies the selected bot before a scoped
+// watch API can mutate local state. Without this guard, stale UI state or an
+// invalid Wails call could leave orphaned jobs/rosters that no running bot owns.
+func (a *App) requireLansengerWatchBotProfile(botProfileID string) (string, error) {
+	botProfileID = normalizeLansengerWatchBotProfileID(botProfileID)
+	if !validLansengerBotProfileID(botProfileID) {
+		return "", fmt.Errorf("invalid Lansenger bot id")
+	}
+	if a == nil {
+		return "", fmt.Errorf("Lansenger service unavailable")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return "", err
+	}
+	if _, ok := lansengerBotProfileFromConfig(cfg, botProfileID); !ok {
+		return "", fmt.Errorf("Lansenger bot %q was not found", botProfileID)
+	}
+	return botProfileID, nil
 }
 
 func (a *App) watchService() *lansengerWatchService {
@@ -279,6 +327,14 @@ func copyWatchJobs(jobs []lansengerwatch.Job) []lansengerwatch.Job {
 	}
 	out := make([]lansengerwatch.Job, len(jobs))
 	copy(out, jobs)
+	// Jobs created before multi-bot support had no profile identity. Treat them
+	// as the migrated default bot at the boundary without rewriting disk merely
+	// because configuration was read.
+	for i := range out {
+		if strings.TrimSpace(out[i].BotProfileID) == "" {
+			out[i].BotProfileID = corelib.DefaultLansengerBotProfileID
+		}
+	}
 	return out
 }
 
@@ -334,6 +390,10 @@ func (s *lansengerWatchService) listJobsCached() []lansengerwatch.Job {
 // processMessage is the IM hot path: roster + record + keyword reply/CLI + private forward.
 // It never claims the message for the agent; caller decides routing.
 func (s *lansengerWatchService) processMessage(msg lansenger.IncomingMessage) {
+	s.processMessageForBot(corelib.DefaultLansengerBotProfileID, nil, msg)
+}
+
+func (s *lansengerWatchService) processMessageForBot(botProfileID string, manager *lansengerGatewayManager, msg lansenger.IncomingMessage) {
 	if s == nil || s.store == nil || s.engine == nil {
 		return
 	}
@@ -347,23 +407,25 @@ func (s *lansengerWatchService) processMessage(msg lansenger.IncomingMessage) {
 	}
 	groupID := strings.TrimSpace(msg.GroupID)
 	speakerID := strings.TrimSpace(msg.FromUserID)
+	botProfileID = normalizeLansengerWatchBotProfileID(botProfileID)
 	if groupID == "" || speakerID == "" {
 		return
 	}
 	jobs := s.listJobsCached()
 	// Fast exit when 盯人 is unused or this group has no enabled job.
-	if !lansengerwatch.AnyActiveWatchForGroup(jobs, groupID) {
+	if !lansengerwatch.AnyActiveWatchForBotGroup(jobs, botProfileID, groupID) {
 		return
 	}
+	rosterKey := lansengerWatchRosterStoreKey(botProfileID, groupID)
 	// Learn roster only for groups with active watch jobs.
 	// NoteMember skips redundant disk writes for frequent chatters.
-	if err := s.store.NoteMember(groupID, msg.GroupName, speakerID, msg.SenderName, "message"); err != nil {
+	if err := s.store.NoteMember(rosterKey, msg.GroupName, speakerID, msg.SenderName, "message"); err != nil {
 		log.Printf("[lansenger-watch] roster note: %v", err)
 	} else {
-		s.noteCachedRosterMember(groupID, msg.GroupName, speakerID, msg.SenderName)
+		s.noteCachedRosterMember(rosterKey, msg.GroupName, speakerID, msg.SenderName)
 	}
 	// Include keyword-scope=anyone jobs even when speaker is not a watch target.
-	if !lansengerwatch.GroupNeedsWatchMessage(jobs, groupID, speakerID) {
+	if !lansengerwatch.BotGroupNeedsWatchMessage(jobs, botProfileID, groupID, speakerID) {
 		return
 	}
 
@@ -379,7 +441,7 @@ func (s *lansengerWatchService) processMessage(msg lansenger.IncomingMessage) {
 	// Bound work on the gateway path so a slow CLI cannot stall all IM traffic.
 	ctx, cancel := context.WithTimeout(context.Background(), lansengerWatchProcessTimeout)
 	defer cancel()
-	res := s.engine.Process(ctx, jobs, lansengerwatch.Incoming{
+	res := s.engine.ProcessForBot(ctx, jobs, botProfileID, lansengerwatch.Incoming{
 		IsGroup:     true,
 		GroupID:     groupID,
 		GroupName:   msg.GroupName,
@@ -403,26 +465,30 @@ func (s *lansengerWatchService) processMessage(msg lansenger.IncomingMessage) {
 	// Group replies (static text / CLI stdout) go back to the source group.
 	for _, reply := range res.Replies {
 		reply = strings.TrimSpace(reply)
-		if reply == "" || s.recentGroupReply(groupID, reply) {
+		if reply == "" || s.recentGroupReplyForBot(botProfileID, groupID, reply) {
 			continue
 		}
-		if err := s.sendWatchGroupText(msg, reply); err != nil {
+		if err := s.sendWatchGroupText(manager, msg, reply); err != nil {
 			log.Printf("[lansenger-watch] group reply: %v", err)
 			continue
 		}
 		// Only mark after a successful send so a failed delivery can retry.
-		s.rememberGroupReply(groupID, reply)
+		s.rememberGroupReplyForBot(botProfileID, groupID, reply)
 	}
 	// Forwards to owner IM channels — parallel; do not block gateway forever.
-	s.deliverForwardsParallel(res.Forwards)
+	s.deliverForwardsParallel(botProfileID, manager, res.Forwards)
 }
 
 // recentGroupReply reports whether the same reply was sent recently (check only).
 func (s *lansengerWatchService) recentGroupReply(groupID, reply string) bool {
+	return s.recentGroupReplyForBot(corelib.DefaultLansengerBotProfileID, groupID, reply)
+}
+
+func (s *lansengerWatchService) recentGroupReplyForBot(botProfileID, groupID, reply string) bool {
 	if s == nil {
 		return false
 	}
-	key := strings.TrimSpace(groupID) + "\x00" + reply
+	key := strings.TrimSpace(botProfileID) + "\x00" + strings.TrimSpace(groupID) + "\x00" + reply
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -434,10 +500,14 @@ func (s *lansengerWatchService) recentGroupReply(groupID, reply string) bool {
 }
 
 func (s *lansengerWatchService) rememberGroupReply(groupID, reply string) {
+	s.rememberGroupReplyForBot(corelib.DefaultLansengerBotProfileID, groupID, reply)
+}
+
+func (s *lansengerWatchService) rememberGroupReplyForBot(botProfileID, groupID, reply string) {
 	if s == nil {
 		return
 	}
-	key := strings.TrimSpace(groupID) + "\x00" + reply
+	key := strings.TrimSpace(botProfileID) + "\x00" + strings.TrimSpace(groupID) + "\x00" + reply
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -456,7 +526,7 @@ func (s *lansengerWatchService) rememberGroupReply(groupID, reply string) {
 
 const lansengerWatchForwardBudget = 8 * time.Second
 
-func (s *lansengerWatchService) deliverForwardsParallel(forwards []lansengerwatch.ForwardRequest) {
+func (s *lansengerWatchService) deliverForwardsParallel(botProfileID string, manager *lansengerGatewayManager, forwards []lansengerwatch.ForwardRequest) {
 	if len(forwards) == 0 {
 		return
 	}
@@ -489,15 +559,15 @@ func (s *lansengerWatchService) deliverForwardsParallel(forwards []lansengerwatc
 			}()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if err := s.deliverToOwnerChannel(chSend, bodySend); err != nil {
+			if err := s.deliverToOwnerChannelForBot(botProfileID, manager, chSend, bodySend); err != nil {
 				log.Printf("[lansenger-watch] forward job=%s reason=%s channel=%s: %v", jobID, reason, chSend, err)
-				s.recordForwardResult(WatchForwardResult{
+				s.recordForwardResultForBot(botProfileID, WatchForwardResult{
 					At: time.Now(), JobID: jobID, Reason: reason, Channel: chSend,
 					OK: false, Error: err.Error(), Preview: truncateWatchPreview(bodySend, 80),
 				})
 			} else {
 				log.Printf("[lansenger-watch] forward job=%s reason=%s channel=%s ok", jobID, reason, chSend)
-				s.recordForwardResult(WatchForwardResult{
+				s.recordForwardResultForBot(botProfileID, WatchForwardResult{
 					At: time.Now(), JobID: jobID, Reason: reason, Channel: chSend,
 					OK: true, Preview: truncateWatchPreview(bodySend, 80),
 				})
@@ -516,26 +586,30 @@ func (s *lansengerWatchService) deliverForwardsParallel(forwards []lansengerwatc
 	}
 }
 
-func (s *lansengerWatchService) sendWatchGroupText(msg lansenger.IncomingMessage, text string) error {
-	if s == nil || s.app == nil || s.app.lansengerGateway == nil {
+func (s *lansengerWatchService) sendWatchGroupText(manager *lansengerGatewayManager, msg lansenger.IncomingMessage, text string) error {
+	if s == nil || manager == nil {
 		return fmt.Errorf("lansenger gateway unavailable")
 	}
-	m := s.app.lansengerGateway
-	m.mu.Lock()
-	gw := m.gateway
-	m.mu.Unlock()
+	manager.mu.Lock()
+	gw := manager.gateway
+	manager.mu.Unlock()
 	if gw == nil {
 		return fmt.Errorf("lansenger gateway not running")
 	}
 	// Keyword / CLI auto-replies should honor the same group-chat decorations
 	// (auto-@ / native quote) as agent answers.
-	return gw.SendText(context.Background(), buildLansengerOutgoingText(msg, text, m.currentGroupOpts()))
+	return gw.SendText(context.Background(), buildLansengerOutgoingText(msg, text, manager.currentGroupOpts()))
 }
 
 func (s *lansengerWatchService) recordForwardResult(r WatchForwardResult) {
+	s.recordForwardResultForBot(corelib.DefaultLansengerBotProfileID, r)
+}
+
+func (s *lansengerWatchService) recordForwardResultForBot(botProfileID string, r WatchForwardResult) {
 	if s == nil {
 		return
 	}
+	r.BotProfileID = normalizeLansengerWatchBotProfileID(botProfileID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.forwardResults = append(s.forwardResults, r)
@@ -545,18 +619,27 @@ func (s *lansengerWatchService) recordForwardResult(r WatchForwardResult) {
 }
 
 func (s *lansengerWatchService) listForwardResults() []WatchForwardResult {
+	return s.listForwardResultsForBot(corelib.DefaultLansengerBotProfileID)
+}
+
+func (s *lansengerWatchService) listForwardResultsForBot(botProfileID string) []WatchForwardResult {
 	if s == nil {
 		return nil
 	}
+	botProfileID = normalizeLansengerWatchBotProfileID(botProfileID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.forwardResults) == 0 {
 		return nil
 	}
 	// Newest first for the panel.
-	out := make([]WatchForwardResult, len(s.forwardResults))
-	for i := range s.forwardResults {
-		out[len(out)-1-i] = s.forwardResults[i]
+	out := make([]WatchForwardResult, 0, len(s.forwardResults))
+	for i := len(s.forwardResults) - 1; i >= 0; i-- {
+		r := s.forwardResults[i]
+		// Results written before profile scoping are historical default-bot data.
+		if normalizeLansengerWatchBotProfileID(r.BotProfileID) == botProfileID {
+			out = append(out, r)
+		}
 	}
 	return out
 }
@@ -575,6 +658,10 @@ func truncateWatchPreview(s string, maxRunes int) string {
 
 // deliverToOwnerChannel pushes text onto one of the owner's IM pathways.
 func (s *lansengerWatchService) deliverToOwnerChannel(channel, text string) error {
+	return s.deliverToOwnerChannelForBot(corelib.DefaultLansengerBotProfileID, nil, channel, text)
+}
+
+func (s *lansengerWatchService) deliverToOwnerChannelForBot(botProfileID string, manager *lansengerGatewayManager, channel, text string) error {
 	if s == nil || s.app == nil {
 		return fmt.Errorf("app unavailable")
 	}
@@ -596,14 +683,24 @@ func (s *lansengerWatchService) deliverToOwnerChannel(channel, text string) erro
 		}
 		return nil
 	case lansengerwatch.ChannelLansenger:
-		s.app.ensureLansengerGateway()
-		if s.app.lansengerGateway == nil {
-			return fmt.Errorf("蓝信未启用或网关不可用")
+		if manager == nil {
+			s.app.ensureLansengerGateway()
+			if s.app.lansengerGateways != nil {
+				manager = s.app.lansengerGateways.manager(botProfileID)
+			}
+			// A custom profile must never silently use the default bot's private
+			// peer. Its own unavailable connection should fail visibly instead.
+			if manager == nil && normalizeLansengerWatchBotProfileID(botProfileID) == corelib.DefaultLansengerBotProfileID {
+				manager = s.app.lansengerGateway
+			}
+			if manager == nil {
+				return fmt.Errorf("蓝信未启用或网关不可用")
+			}
 		}
-		if !s.app.lansengerGateway.HasProactiveSession() {
+		if !manager.HasProactiveSession() {
 			return fmt.Errorf("蓝信无可用私聊会话：请先用蓝信私聊机器人一次后再试")
 		}
-		if err := s.app.lansengerGateway.SendProactiveText(text); err != nil {
+		if err := manager.SendProactiveText(text); err != nil {
 			return fmt.Errorf("蓝信推送失败: %w", err)
 		}
 		return nil
@@ -706,6 +803,11 @@ func (s *lansengerWatchService) deliverTelegramOwnerChannel(text string) error {
 
 // ListLansengerWatchJobs returns watch jobs JSON.
 func (a *App) ListLansengerWatchJobs() (string, error) {
+	return a.ListLansengerWatchJobsForBot(corelib.DefaultLansengerBotProfileID)
+}
+
+// ListLansengerWatchJobsForBot returns jobs belonging to one bot profile.
+func (a *App) ListLansengerWatchJobsForBot(botProfileID string) (string, error) {
 	svc := a.watchService()
 	if svc == nil || svc.store == nil {
 		return "[]", nil
@@ -714,7 +816,16 @@ func (a *App) ListLansengerWatchJobs() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal(jobs)
+	if botProfileID, err = a.requireLansengerWatchBotProfile(botProfileID); err != nil {
+		return "", err
+	}
+	filtered := make([]lansengerwatch.Job, 0, len(jobs))
+	for _, job := range copyWatchJobs(jobs) {
+		if job.BotProfileID == botProfileID {
+			filtered = append(filtered, job)
+		}
+	}
+	data, err := json.Marshal(filtered)
 	if err != nil {
 		return "", err
 	}
@@ -723,6 +834,11 @@ func (a *App) ListLansengerWatchJobs() (string, error) {
 
 // UpsertLansengerWatchJob creates or updates a job from JSON.
 func (a *App) UpsertLansengerWatchJob(jobJSON string) (string, error) {
+	return a.UpsertLansengerWatchJobForBot(corelib.DefaultLansengerBotProfileID, jobJSON)
+}
+
+// UpsertLansengerWatchJobForBot creates or updates a job scoped to one bot.
+func (a *App) UpsertLansengerWatchJobForBot(botProfileID, jobJSON string) (string, error) {
 	svc := a.watchService()
 	if svc == nil || svc.store == nil {
 		return "", fmt.Errorf("watch service unavailable")
@@ -731,6 +847,11 @@ func (a *App) UpsertLansengerWatchJob(jobJSON string) (string, error) {
 	if err := json.Unmarshal([]byte(jobJSON), &job); err != nil {
 		return "", fmt.Errorf("invalid job json: %w", err)
 	}
+	var err error
+	if botProfileID, err = a.requireLansengerWatchBotProfile(botProfileID); err != nil {
+		return "", err
+	}
+	job.BotProfileID = botProfileID
 	saved, err := svc.store.UpsertJob(job)
 	if err != nil {
 		return "", err
@@ -746,9 +867,24 @@ func (a *App) UpsertLansengerWatchJob(jobJSON string) (string, error) {
 
 // DeleteLansengerWatchJob removes a job by id.
 func (a *App) DeleteLansengerWatchJob(jobID string) error {
+	return a.DeleteLansengerWatchJobForBot(corelib.DefaultLansengerBotProfileID, jobID)
+}
+
+// DeleteLansengerWatchJobForBot refuses to delete a job owned by another bot.
+func (a *App) DeleteLansengerWatchJobForBot(botProfileID, jobID string) error {
 	svc := a.watchService()
 	if svc == nil || svc.store == nil {
 		return fmt.Errorf("watch service unavailable")
+	}
+	job, found, err := svc.store.GetJob(jobID)
+	if err != nil {
+		return err
+	}
+	if botProfileID, err = a.requireLansengerWatchBotProfile(botProfileID); err != nil {
+		return err
+	}
+	if !found || copyWatchJobs([]lansengerwatch.Job{job})[0].BotProfileID != botProfileID {
+		return fmt.Errorf("watch job %q was not found for this bot", strings.TrimSpace(jobID))
 	}
 	if err := svc.store.DeleteJob(jobID); err != nil {
 		return err
@@ -762,13 +898,24 @@ func (a *App) DeleteLansengerWatchJob(jobID string) error {
 // learned from inbound messages, which keeps recently seen display names usable
 // when the directory is temporarily unavailable.
 func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
+	return a.ListLansengerWatchRosterForBot(corelib.DefaultLansengerBotProfileID, groupID, query)
+}
+
+// ListLansengerWatchRosterForBot reads the directory through the selected bot
+// and keeps same-ID groups owned by different bots isolated in the local roster.
+func (a *App) ListLansengerWatchRosterForBot(botProfileID, groupID, query string) (string, error) {
 	svc := a.watchService()
 	if svc == nil || svc.store == nil {
 		// Keep the Wails payload shape stable: the UI always expects a roster
 		// object, including when the local watch store is not available yet.
 		return `{"members":[],"directory_available":false,"note":"关注成员服务暂不可用。"}`, nil
 	}
-	roster, err := svc.store.LoadRoster(groupID)
+	var err error
+	if botProfileID, err = a.requireLansengerWatchBotProfile(botProfileID); err != nil {
+		return "", err
+	}
+	rosterKey := lansengerWatchRosterStoreKey(botProfileID, groupID)
+	roster, err := svc.store.LoadRoster(rosterKey)
 	if err != nil {
 		return "", err
 	}
@@ -799,7 +946,7 @@ func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
 	// failed mid-way. The partial directory is kept (marked truncated) instead
 	// of falling back to only locally learned members.
 	directoryPartial := false
-	if cached, ok := svc.cachedRoster(groupID); ok {
+	if cached, ok := svc.cachedRoster(rosterKey); ok {
 		mergeCachedRosterMembers(membersByID, cached.members)
 		if roster.GroupName == "" {
 			roster.GroupName = cached.groupName
@@ -808,7 +955,7 @@ func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		gw, err := a.lansengerGatewayForWatch()
+		gw, err := a.lansengerGatewayForWatch(botProfileID)
 		gwErr = err
 		if gwErr != nil {
 			log.Printf("[lansenger-watch] roster %s: gateway unavailable: %v", groupID, gwErr)
@@ -915,7 +1062,7 @@ func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
 				for _, member := range membersByID {
 					members = append(members, member)
 				}
-				svc.cacheRoster(groupID, roster.GroupName, members, directoryTruncated)
+				svc.cacheRoster(rosterKey, roster.GroupName, members, directoryTruncated)
 			}
 		}
 	}
@@ -956,7 +1103,7 @@ func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
 		note = fmt.Sprintf("群成员较多，仅加载前 %d 位；其他成员请手动添加 staffId。", lansengerWatchMaxRosterMembers)
 	}
 	data, err := json.Marshal(map[string]any{
-		"group_id":            roster.GroupID,
+		"group_id":            strings.TrimSpace(groupID),
 		"group_name":          roster.GroupName,
 		"members":             members,
 		"updated_at":          roster.UpdatedAt,
@@ -970,11 +1117,27 @@ func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
 	return string(data), nil
 }
 
-func (a *App) lansengerGatewayForWatch() (*lansenger.Gateway, error) {
+func (a *App) lansengerGatewayForWatch(botProfileID string) (*lansenger.Gateway, error) {
 	if a == nil {
 		return nil, fmt.Errorf("蓝信服务不可用")
 	}
-	if a.lansengerGateway != nil {
+	var err error
+	if botProfileID, err = a.requireLansengerWatchBotProfile(botProfileID); err != nil {
+		return nil, err
+	}
+	if a.lansengerGateways != nil {
+		if manager := a.lansengerGateways.manager(botProfileID); manager != nil {
+			manager.mu.Lock()
+			gw := manager.gateway
+			manager.mu.Unlock()
+			if gw != nil {
+				return gw, nil
+			}
+		}
+	}
+	// The compatibility gateway is only safe for the migrated default profile.
+	// Custom profiles must never query another bot's group directory.
+	if botProfileID == corelib.DefaultLansengerBotProfileID && a.lansengerGateway != nil {
 		a.lansengerGateway.mu.Lock()
 		gw := a.lansengerGateway.gateway
 		a.lansengerGateway.mu.Unlock()
@@ -986,17 +1149,33 @@ func (a *App) lansengerGatewayForWatch() (*lansenger.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(cfg.LansengerAppID) == "" || strings.TrimSpace(cfg.LansengerAppSecret) == "" || strings.TrimSpace(cfg.LansengerApiGatewayURL()) == "" {
+	profile, ok := lansengerBotProfileFromConfig(cfg, botProfileID)
+	if !ok || strings.TrimSpace(profile.AppID) == "" || strings.TrimSpace(profile.AppSecret) == "" {
 		return nil, fmt.Errorf("请先填写蓝信 App ID、App Secret 和网关地址")
 	}
+	apiGatewayURL := strings.TrimSpace(profile.GatewayURL)
+	if apiGatewayURL == "" {
+		apiGatewayURL = cfg.LansengerApiGatewayURL()
+	}
+	if apiGatewayURL == "" {
+		return nil, fmt.Errorf("请先填写蓝信 App ID、App Secret 和网关地址")
+	}
+	wssURL := strings.TrimSpace(profile.WSSURL)
+	if wssURL == "" {
+		wssURL = cfg.LansengerWebSocketGatewayURL()
+	}
 	return lansenger.NewGateway(lansenger.Config{
-		AppID: cfg.LansengerAppID, AppSecret: cfg.LansengerAppSecret,
-		ApiGatewayURL: cfg.LansengerApiGatewayURL(), WebSocketBaseURL: cfg.LansengerWebSocketGatewayURL(),
+		AppID: profile.AppID, AppSecret: profile.AppSecret,
+		ApiGatewayURL: apiGatewayURL, WebSocketBaseURL: wssURL,
 	}, nil), nil
 }
 
 // AddLansengerWatchMember manually adds a staff id to the group roster.
 func (a *App) AddLansengerWatchMember(groupID, staffID, name string) error {
+	return a.AddLansengerWatchMemberForBot(corelib.DefaultLansengerBotProfileID, groupID, staffID, name)
+}
+
+func (a *App) AddLansengerWatchMemberForBot(botProfileID, groupID, staffID, name string) error {
 	svc := a.watchService()
 	if svc == nil || svc.store == nil {
 		return fmt.Errorf("watch service unavailable")
@@ -1005,10 +1184,15 @@ func (a *App) AddLansengerWatchMember(groupID, staffID, name string) error {
 	if strings.TrimSpace(groupID) == "" || staffID == "" {
 		return fmt.Errorf("group_id and staff_id required")
 	}
-	if err := svc.store.NoteMember(groupID, "", staffID, name, "manual"); err != nil {
+	var err error
+	if botProfileID, err = a.requireLansengerWatchBotProfile(botProfileID); err != nil {
 		return err
 	}
-	svc.invalidateRosterCache(groupID)
+	rosterKey := lansengerWatchRosterStoreKey(botProfileID, groupID)
+	if err := svc.store.NoteMember(rosterKey, "", staffID, name, "manual"); err != nil {
+		return err
+	}
+	svc.invalidateRosterCache(rosterKey)
 	return nil
 }
 
@@ -1073,12 +1257,17 @@ func (a *App) ListLansengerWatchChannels() (string, error) {
 		wxOnline = strings.EqualFold(wxStatus, "connected")
 		wxSession = a.weixinGateway.HasProactiveSession()
 	}
-	lsStatus := "disconnected"
-	lsOnline := false
+	lsStatus := a.GetLansengerStatus()
+	lsOnline := strings.EqualFold(lsStatus, "connected")
 	lsSession := false
-	if a.lansengerGateway != nil {
-		lsStatus = a.lansengerGateway.Status()
-		lsOnline = strings.EqualFold(lsStatus, "connected")
+	if a.lansengerGateways != nil {
+		for _, manager := range a.lansengerGateways.managers() {
+			if manager.HasProactiveSession() {
+				lsSession = true
+				break
+			}
+		}
+	} else if a.lansengerGateway != nil {
 		lsSession = a.lansengerGateway.HasProactiveSession()
 	}
 	tgStatus := "disconnected"
@@ -1105,7 +1294,7 @@ func (a *App) ListLansengerWatchChannels() (string, error) {
 	}
 
 	wxEnabled := cfg.WeixinEnabled
-	lsEnabled := cfg.LansengerEnabled
+	lsEnabled := cfg.LansengerEnabled || (a.lansengerGateways != nil && !a.lansengerGateways.isEmpty())
 	tgEnabled := cfg.TelegramBotEnabled
 	qqEnabled := cfg.QQBotEnabled
 
@@ -1154,13 +1343,69 @@ func (a *App) ListLansengerWatchChannels() (string, error) {
 	return string(data), nil
 }
 
+// ListLansengerWatchChannelsForBot returns the owner-forward channels for one
+// selected bot. Only the Lansenger row is bot-specific; other local IM and Hub
+// routes are shared by the desktop app.
+func (a *App) ListLansengerWatchChannelsForBot(botProfileID string) (string, error) {
+	raw, err := a.ListLansengerWatchChannels()
+	if err != nil {
+		return "", err
+	}
+	botProfileID = normalizeLansengerWatchBotProfileID(botProfileID)
+	channels := []WatchIMChannel{}
+	if err := json.Unmarshal([]byte(raw), &channels); err != nil {
+		return "", err
+	}
+
+	configured := false
+	enabled := false
+	if cfg, err := a.LoadConfig(); err == nil {
+		if profile, ok := lansengerBotProfileFromConfig(cfg, botProfileID); ok {
+			configured = true
+			enabled = profile.Enabled
+		}
+	}
+	status := a.GetLansengerBotStatus(botProfileID)
+	online := strings.EqualFold(status, gatewayConnectionStatusConnected.String())
+	sessionReady := false
+	if a.lansengerGateways != nil {
+		if manager := a.lansengerGateways.manager(botProfileID); manager != nil {
+			sessionReady = manager.HasProactiveSession()
+		}
+	}
+	if !sessionReady && botProfileID == corelib.DefaultLansengerBotProfileID && a.lansengerGateway != nil {
+		sessionReady = a.lansengerGateway.HasProactiveSession()
+	}
+
+	for i := range channels {
+		if channels[i].ID != lansengerwatch.ChannelLansenger {
+			continue
+		}
+		channels[i].Enabled = configured && enabled
+		channels[i].Online = configured && enabled && online
+		channels[i].SessionReady = configured && enabled && online && sessionReady
+		channels[i].Detail = statusDetailWithSession(channels[i].Enabled, status, sessionReady, "请先用蓝信私聊机器人一次")
+		break
+	}
+	data, err := json.Marshal(channels)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // ListLansengerWatchForwardResults returns recent self-forward attempts (newest first).
 func (a *App) ListLansengerWatchForwardResults() (string, error) {
+	return a.ListLansengerWatchForwardResultsForBot(corelib.DefaultLansengerBotProfileID)
+}
+
+// ListLansengerWatchForwardResultsForBot returns diagnostics for only one bot.
+func (a *App) ListLansengerWatchForwardResultsForBot(botProfileID string) (string, error) {
 	svc := a.watchService()
 	if svc == nil {
 		return "[]", nil
 	}
-	results := svc.listForwardResults()
+	results := svc.listForwardResultsForBot(botProfileID)
 	if results == nil {
 		results = []WatchForwardResult{}
 	}
@@ -1174,6 +1419,12 @@ func (a *App) ListLansengerWatchForwardResults() (string, error) {
 // TestLansengerWatchForward sends a short probe message to one owner channel so
 // the operator can verify private-session readiness without waiting for speech.
 func (a *App) TestLansengerWatchForward(channel string) error {
+	return a.TestLansengerWatchForwardForBot(corelib.DefaultLansengerBotProfileID, channel)
+}
+
+// TestLansengerWatchForwardForBot sends a probe using the selected bot for the
+// Lansenger private channel, so it can never succeed through another bot.
+func (a *App) TestLansengerWatchForwardForBot(botProfileID, channel string) error {
 	svc := a.watchService()
 	if svc == nil {
 		return fmt.Errorf("watch service unavailable")
@@ -1182,19 +1433,27 @@ func (a *App) TestLansengerWatchForward(channel string) error {
 	if ch == "" {
 		return fmt.Errorf("unknown channel %q", channel)
 	}
+	botProfileID = normalizeLansengerWatchBotProfileID(botProfileID)
 	body := "【盯人转发·测试】\n时间: " + time.Now().Local().Format("2006-01-02 15:04:05") + "\n若你收到此消息，说明该通道可推送。"
-	err := svc.deliverToOwnerChannel(ch, body)
+	var manager *lansengerGatewayManager
+	if a.lansengerGateways != nil {
+		manager = a.lansengerGateways.manager(botProfileID)
+	}
+	if manager == nil && botProfileID == corelib.DefaultLansengerBotProfileID {
+		manager = a.lansengerGateway
+	}
+	err := svc.deliverToOwnerChannelForBot(botProfileID, manager, ch, body)
 	res := WatchForwardResult{
 		At: time.Now(), Reason: "test", Channel: ch, Preview: truncateWatchPreview(body, 80),
 	}
 	if err != nil {
 		res.OK = false
 		res.Error = err.Error()
-		svc.recordForwardResult(res)
+		svc.recordForwardResultForBot(botProfileID, res)
 		return err
 	}
 	res.OK = true
-	svc.recordForwardResult(res)
+	svc.recordForwardResultForBot(botProfileID, res)
 	return nil
 }
 

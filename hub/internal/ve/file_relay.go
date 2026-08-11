@@ -1,6 +1,7 @@
 package ve
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,8 +30,11 @@ const (
 
 // Allowed MIME type prefixes/values.
 var allowedMIMETypes = map[string]bool{
-	"application/json": true,
-	"application/pdf":  true,
+	"application/json":              true,
+	"application/pdf":               true,
+	"application/msword":            true,
+	"application/vnd.ms-excel":      true,
+	"application/vnd.ms-powerpoint": true,
 }
 
 var allowedMIMEPrefixes = []string{
@@ -293,19 +297,40 @@ func (fr *FileRelay) Upload(filename, mimeType, sessionID, uploaderID string, si
 	if err != nil {
 		return nil, fmt.Errorf("create file: %w", err)
 	}
-	defer dst.Close()
 
 	// Use a LimitReader to enforce size limit during copy.
 	limited := io.LimitReader(reader, maxSize+1)
 	written, err := io.Copy(dst, limited)
 	if err != nil {
+		_ = dst.Close()
 		_ = os.Remove(filepath.Join(fr.dataDir, diskName))
 		return nil, fmt.Errorf("write file: %w", err)
 	}
 	if written > maxSize {
+		_ = dst.Close()
 		_ = os.Remove(filepath.Join(fr.dataDir, diskName))
 		return nil, fmt.Errorf("file size exceeds limit %d for %s files", maxSize, category)
 	}
+	if err := dst.Close(); err != nil {
+		_ = os.Remove(filepath.Join(fr.dataDir, diskName))
+		return nil, fmt.Errorf("close file: %w", err)
+	}
+
+	// The multipart Content-Type and filename are supplied by the remote peer.
+	// Once bytes have reached the relay, make Office/PDF identity authoritative so
+	// a document cannot later be promoted to an image preview or vision payload
+	// just because it was uploaded as e.g. "cover.png" / "image/png".
+	canonicalFilename, canonicalMIME := canonicalRelayDocumentMetadata(filename, mimeType, filepath.Join(fr.dataDir, diskName))
+	if canonicalFilename != filename {
+		canonicalDiskName := id + filepath.Ext(canonicalFilename)
+		if err := os.Rename(filepath.Join(fr.dataDir, diskName), filepath.Join(fr.dataDir, canonicalDiskName)); err != nil {
+			_ = os.Remove(filepath.Join(fr.dataDir, diskName))
+			return nil, fmt.Errorf("normalize document filename: %w", err)
+		}
+		diskName = canonicalDiskName
+		filename = canonicalFilename
+	}
+	mimeType = canonicalMIME
 
 	now := time.Now()
 	meta := &FileMetadata{
@@ -657,11 +682,113 @@ func detectMIMEType(header *multipart.FileHeader) string {
 		return "image/bmp"
 	case ".pdf":
 		return "application/pdf"
+	case ".doc":
+		return "application/msword"
 	case ".docx":
 		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".xls":
+		return "application/vnd.ms-excel"
+	case ".xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".ppt":
+		return "application/vnd.ms-powerpoint"
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 	default:
 		return "application/octet-stream"
 	}
+}
+
+// canonicalRelayDocumentMetadata identifies PDF and Office payloads from the
+// stored bytes. It deliberately only overrides to a more restrictive document
+// classification; arbitrary ZIP files keep their caller-provided type and
+// remain subject to the normal allowed-MIME policy.
+func canonicalRelayDocumentMetadata(filename, mimeType, path string) (string, string) {
+	format := relayDocumentFormat(path, filename)
+	if format == "" {
+		return filename, mimeType
+	}
+	return relayFilenameWithExtension(filename, "."+format), relayDocumentMIME(format)
+}
+
+func relayDocumentFormat(path, filename string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	header := make([]byte, 8)
+	n, _ := io.ReadFull(f, header)
+	_ = f.Close()
+	header = header[:n]
+	if len(header) >= 4 && string(header[:4]) == "%PDF" {
+		return "pdf"
+	}
+	if len(header) >= 8 && string(header[:8]) == "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" {
+		// OLE documents have no trustworthy application subtype in their magic
+		// bytes. Preserve an existing legacy Office suffix when available.
+		switch strings.ToLower(filepath.Ext(filename)) {
+		case ".doc":
+			return "doc"
+		case ".xls":
+			return "xls"
+		case ".ppt":
+			return "ppt"
+		}
+		return "doc"
+	}
+	if len(header) < 4 || string(header[:2]) != "PK" {
+		return ""
+	}
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return ""
+	}
+	defer zr.Close()
+	for _, file := range zr.File {
+		name := strings.ToLower(strings.TrimSpace(file.Name))
+		switch {
+		case strings.HasPrefix(name, "word/"):
+			return "docx"
+		case strings.HasPrefix(name, "xl/"):
+			return "xlsx"
+		case strings.HasPrefix(name, "ppt/"):
+			return "pptx"
+		}
+	}
+	return ""
+}
+
+func relayDocumentMIME(format string) string {
+	switch format {
+	case "pdf":
+		return "application/pdf"
+	case "doc":
+		return "application/msword"
+	case "docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case "xls":
+		return "application/vnd.ms-excel"
+	case "xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case "ppt":
+		return "application/vnd.ms-powerpoint"
+	case "pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func relayFilenameWithExtension(filename, extension string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return "attachment" + extension
+	}
+	base := strings.TrimSuffix(filename, filepath.Ext(filename))
+	if strings.TrimSpace(base) == "" {
+		base = "attachment"
+	}
+	return base + extension
 }
 
 // extractFileID extracts the file ID from a URL path like /api/ve/files/{id}.

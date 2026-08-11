@@ -10,6 +10,7 @@ import { VEGroupChatView, type GroupMessage, type GroupParticipant } from "./VEG
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, isLocalParticipantId, localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys, participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
+import { classifyDisplayAttachmentType } from "./attachmentClassification";
 
 type HistoryDiscussionDetail = {
     discussion?: {
@@ -32,7 +33,7 @@ type HistoryDiscussionDetail = {
         kind?: string;
         content?: string;
         created_at?: string;
-        attachments?: Array<NonNullable<GroupMessage["attachments"]>[number] & { file_url?: string; local_path?: string }>;
+        attachments?: Array<NonNullable<GroupMessage["attachments"]>[number] & { mimeType?: string; file_url?: string; local_path?: string; mime_type?: string }>;
         text_attachments?: Array<{ filename?: string; mime_type?: string; local_path?: string }>;
         image_attachments?: Array<{ filename?: string; file_url?: string; local_path?: string; mime_type?: string }>;
         file_attachments?: Array<{ filename?: string; file_url?: string; local_path?: string; mime_type?: string; size_bytes?: number }>;
@@ -480,18 +481,23 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         const attachments: NonNullable<GroupMessage["attachments"]> = [];
         for (const att of m.attachments || []) {
             const fileUrl = att.fileUrl || att.file_url || "";
-            attachments.push({ type: att.type, filename: att.filename || textForLang(lang, "Attachment", "\u9644\u4ef6", "\u9644\u4ef6"), fileUrl, localPath: downloadedPaths[fileUrl] || att.localPath || att.local_path || "", sizeBytes: att.sizeBytes });
+            const filename = att.filename || textForLang(lang, "Attachment", "\u9644\u4ef6", "\u9644\u4ef6");
+            const mimeType = att.mimeType || att.mime_type || "";
+            attachments.push({ type: classifyDisplayAttachmentType(filename, mimeType, att.type), filename, fileUrl, localPath: downloadedPaths[fileUrl] || att.localPath || att.local_path || "", sizeBytes: att.sizeBytes });
         }
         for (const att of m.text_attachments || []) {
-            attachments.push({ type: "text", filename: att.filename || textForLang(lang, "Text", "\u6587\u672c", "\u6587\u672c"), localPath: att.local_path || "" });
+            const filename = att.filename || textForLang(lang, "Text", "\u6587\u672c", "\u6587\u672c");
+            attachments.push({ type: classifyDisplayAttachmentType(filename, att.mime_type, "text"), filename, localPath: att.local_path || "" });
         }
         for (const att of m.image_attachments || []) {
             const fileUrl = att.file_url || "";
-            attachments.push({ type: "image", filename: att.filename || textForLang(lang, "Image", "\u56fe\u7247", "\u5716\u7247"), fileUrl, localPath: downloadedPaths[fileUrl] || att.local_path || "" });
+            const filename = att.filename || textForLang(lang, "Image", "\u56fe\u7247", "\u5716\u7247");
+            attachments.push({ type: classifyDisplayAttachmentType(filename, att.mime_type, "image"), filename, fileUrl, localPath: downloadedPaths[fileUrl] || att.local_path || "" });
         }
         for (const att of m.file_attachments || []) {
             const fileUrl = att.file_url || "";
-            attachments.push({ type: "file", filename: att.filename || textForLang(lang, "File", "\u6587\u4ef6", "\u6a94\u6848"), fileUrl, localPath: downloadedPaths[fileUrl] || att.local_path || "", sizeBytes: att.size_bytes });
+            const filename = att.filename || textForLang(lang, "File", "\u6587\u4ef6", "\u6a94\u6848");
+            attachments.push({ type: classifyDisplayAttachmentType(filename, att.mime_type, "file"), filename, fileUrl, localPath: downloadedPaths[fileUrl] || att.local_path || "", sizeBytes: att.size_bytes });
         }
         return attachments;
     }, [downloadedPaths, lang]);

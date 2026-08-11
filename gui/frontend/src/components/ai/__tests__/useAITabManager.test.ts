@@ -10,8 +10,9 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import fc from "fast-check";
 import { useAITabManager } from "../useAITabManager";
+import type { AITab } from "../AITabTypes";
 import { normalizeProjectSessionPath } from "../aiAssistantPanelSessionUtils";
-import { CloseProjectTabSession, CreateProjectTabSession, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
+import { ClearAIAssistantHistoryForSession, CloseAssistantTabSession, CreateProjectTabSession, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
 
 vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOn: vi.fn(() => vi.fn()),
@@ -20,10 +21,11 @@ vi.mock("../../../../wailsjs/runtime", () => ({
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     LoadProjectTabIndex: vi.fn().mockResolvedValue([]),
-    CloseProjectTabSession: vi.fn().mockResolvedValue(undefined),
+    CloseAssistantTabSession: vi.fn().mockResolvedValue(undefined),
     CreateProjectTabSession: vi.fn().mockResolvedValue(undefined),
     SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
     LoadProjectTabConversation: vi.fn().mockResolvedValue([]),
+    ClearAIAssistantHistoryForSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Arbitrary for generating valid project paths (non-empty strings)
@@ -38,7 +40,7 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         vi.useRealTimers();
         vi.clearAllMocks();
         vi.mocked(LoadProjectTabIndex).mockResolvedValue([]);
-        vi.mocked(CloseProjectTabSession).mockResolvedValue(undefined as any);
+        vi.mocked(CloseAssistantTabSession).mockResolvedValue(undefined as any);
         vi.mocked(CreateProjectTabSession).mockResolvedValue("");
         vi.mocked(LoadProjectTabConversation).mockResolvedValue([]);
         vi.mocked(SaveProjectTabConversation).mockResolvedValue(undefined as any);
@@ -565,7 +567,7 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
 
     it("serializes project tab reopen after pending close for the same deterministic tab", async () => {
         let resolveClose!: () => void;
-        vi.mocked(CloseProjectTabSession).mockImplementation(() => new Promise<void>(resolve => {
+        vi.mocked(CloseAssistantTabSession).mockImplementation(() => new Promise<void>(resolve => {
             resolveClose = resolve;
         }) as any);
 
@@ -582,7 +584,7 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         act(() => {
             result.current.closeTab(tabId!);
         });
-        await waitFor(() => expect(CloseProjectTabSession).toHaveBeenCalledWith(tabId));
+        await waitFor(() => expect(CloseAssistantTabSession).toHaveBeenCalledWith(tabId));
 
         act(() => {
             result.current.createProjectTab("D:/tasks/reopen-race", "Reopen race");
@@ -597,7 +599,7 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         });
 
         await waitFor(() => expect(CreateProjectTabSession).toHaveBeenCalledTimes(2));
-        expect(vi.mocked(CloseProjectTabSession).mock.invocationCallOrder[0]).toBeLessThan(
+        expect(vi.mocked(CloseAssistantTabSession).mock.invocationCallOrder[0]).toBeLessThan(
             vi.mocked(CreateProjectTabSession).mock.invocationCallOrder[1],
         );
     });
@@ -617,6 +619,52 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         expect(tabId).toBeTruthy();
         expect(result.current.tabState.tabs.some(tab => tab.id === tabId)).toBe(false);
         expect(result.current.getTabState(tabId)).toBeUndefined();
-        expect(CloseProjectTabSession).not.toHaveBeenCalled();
+        expect(CloseAssistantTabSession).not.toHaveBeenCalled();
+    });
+
+    it("discards a deleted expert's open tab and cached history so reopen starts fresh", () => {
+        const { result } = renderHook(() => useAITabManager());
+        const expert = {
+            id: "code-reviewer",
+            name: "Code Reviewer",
+            description: "reviews PRs",
+            icon: "🧐",
+            system_prompt: "review",
+            tools: [] as string[],
+            skills: [] as string[],
+            builtin: true,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+        };
+        let tabId = "";
+        act(() => {
+            const tab = result.current.createExpertTab(expert);
+            tabId = tab?.id || "";
+            result.current.saveTabState(tabId, {
+                history: [{ id: "m1", role: "user", content: "old expert chat" }],
+            });
+        });
+        expect(result.current.getTabState(tabId)?.history).toHaveLength(1);
+
+        act(() => {
+            result.current.closeTab(tabId);
+        });
+        // Closing keeps an orphan cache (resume-friendly). Deletion must wipe it.
+        const cachedHistory = result.current.getTabState(tabId)?.history as Array<{ content?: string }> | undefined;
+        expect(cachedHistory?.[0]?.content).toBe("old expert chat");
+
+        act(() => {
+            result.current.discardDeletedExpertTabs(expert.id);
+        });
+        expect(result.current.getTabState(tabId)).toBeUndefined();
+        expect(SaveProjectTabConversation).toHaveBeenCalledWith(tabId, []);
+        expect(ClearAIAssistantHistoryForSession).toHaveBeenCalledWith("desktop-user:expert:code-reviewer");
+
+        let reopened: AITab | null = null;
+        act(() => {
+            reopened = result.current.createExpertTab(expert);
+        });
+        expect((reopened as AITab | null)?.id).toBe(tabId);
+        expect(result.current.getTabState(tabId)?.history || []).toEqual([]);
     });
 });

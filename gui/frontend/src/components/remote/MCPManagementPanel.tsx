@@ -305,21 +305,41 @@ function LocalMCPPanel({ translate }: Props) {
             const detail = e?.message ? `: ${e.message}` : "";
             setJsonError(translate("mcpJsonFormatError") + detail); return;
         }
-        const mcpServers = parsed.mcpServers || parsed;
+        // Accept both standard "mcpServers" wrapper and Kiro/kitesurf-style "mcp" wrapper.
+        const mcpServers = parsed.mcpServers || parsed.mcp || parsed;
         if (typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+            setJsonError(translate("mcpJsonStructureError"));
+            return;
+        }
+        const entries = Object.entries(mcpServers) as [string, any][];
+        if (entries.length === 0) {
             setJsonError(translate("mcpJsonStructureError"));
             return;
         }
         setBusy(true);
         try {
-            for (const [name, cfg] of Object.entries(mcpServers) as [string, any][]) {
+            for (const [name, cfg] of entries) {
+                // Support Kiro/kitesurf-style array command: { type: "local", command: [cmd, ...args] }
+                let command = "";
+                let args: string[] = [];
+                if (Array.isArray(cfg.command)) {
+                    const parts = cfg.command.map((p: any) => String(p));
+                    command = parts[0] || "";
+                    args = parts.slice(1);
+                } else if (typeof cfg.command === "string") {
+                    command = cfg.command;
+                    args = Array.isArray(cfg.args) ? cfg.args.map((a: any) => String(a)) : [];
+                }
+                if (!command) {
+                    throw new Error(translate("mcpJsonStructureError"));
+                }
                 const entry: LocalMCPServer = {
                     ...emptyLocalServer,
                     name,
-                    command: cfg.command || "npx",
-                    args: Array.isArray(cfg.args) ? cfg.args : [],
+                    command,
+                    args,
                     env: typeof cfg.env === "object" && cfg.env ? cfg.env : {},
-                    disabled: cfg.disabled === true,
+                    disabled: cfg.disabled === true || cfg.enabled === false,
                     auto_start: cfg.auto_start === true,
                 };
                 await RegisterLocalMCPServer(entry as unknown as corelib.LocalMCPServerEntry);

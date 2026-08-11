@@ -25,7 +25,9 @@ func JobWatchesStaff(job Job, staffID string) bool {
 	return false
 }
 
-// JobsForGroup returns enabled jobs bound to groupID.
+// JobsForGroup returns enabled legacy/default-profile jobs bound to groupID.
+// Empty BotProfileID remains supported for callers that use lansengerwatch
+// directly without the desktop migration layer.
 func JobsForGroup(jobs []Job, groupID string) []Job {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
@@ -33,7 +35,27 @@ func JobsForGroup(jobs []Job, groupID string) []Job {
 	}
 	var out []Job
 	for _, j := range jobs {
+		if j.Enabled && strings.TrimSpace(j.BotProfileID) == "" && strings.TrimSpace(j.GroupID) == groupID {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// JobsForBotGroup returns enabled jobs for one bot and group. Callers loading
+// persisted jobs normalize an empty legacy BotProfileID to the default bot.
+func JobsForBotGroup(jobs []Job, botProfileID, groupID string) []Job {
+	botProfileID = strings.TrimSpace(botProfileID)
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return nil
+	}
+	var out []Job
+	for _, j := range jobs {
 		if !j.Enabled {
+			continue
+		}
+		if strings.TrimSpace(j.BotProfileID) != botProfileID {
 			continue
 		}
 		if strings.TrimSpace(j.GroupID) == groupID {
@@ -46,6 +68,11 @@ func JobsForGroup(jobs []Job, groupID string) []Job {
 // AnyActiveWatchForGroup is a fast prefilter for the gateway.
 func AnyActiveWatchForGroup(jobs []Job, groupID string) bool {
 	return len(JobsForGroup(jobs, groupID)) > 0
+}
+
+// AnyActiveWatchForBotGroup is the profile-aware gateway prefilter.
+func AnyActiveWatchForBotGroup(jobs []Job, botProfileID, groupID string) bool {
+	return len(JobsForBotGroup(jobs, botProfileID, groupID)) > 0
 }
 
 // NormalizeKeywordScope returns targets|anyone (default targets).
@@ -106,7 +133,12 @@ func HasEnabledJobs(jobs []Job) bool {
 
 // GroupNeedsWatchMessage is a prefilter: any job on the group may care about this speaker.
 func GroupNeedsWatchMessage(jobs []Job, groupID, staffID string) bool {
-	for _, j := range JobsForGroup(jobs, groupID) {
+	return BotGroupNeedsWatchMessage(jobs, "", groupID, staffID)
+}
+
+// BotGroupNeedsWatchMessage is GroupNeedsWatchMessage scoped to one bot.
+func BotGroupNeedsWatchMessage(jobs []Job, botProfileID, groupID, staffID string) bool {
+	for _, j := range JobsForBotGroup(jobs, botProfileID, groupID) {
 		if JobNeedsMessage(j, staffID) {
 			return true
 		}

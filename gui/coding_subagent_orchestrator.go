@@ -160,49 +160,52 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		return fmt.Sprintf("T%d: %s - completed\n%s", displayIndex, taskTitle, resultSummary), true
 
 	case TaskExecFailed:
-		if isSubAgentTransientProviderError(resultError) {
-			log.Printf("[subagent-runner] T%d paused by transient provider error: %s", displayIndex, resultError)
-			event := turnCtx.TaskEvent("failed", task, taskTitle)
-			event.Detail = "provider_transient"
-			turnCtx.Emit(onProgress, event)
-			return fmt.Sprintf("T%d: %s - paused by transient provider error\nError: %s",
-				displayIndex, taskTitle, resultError), false
+		// "always" experience capture learns from bounded failed Runtime
+		// attempts too. It remains candidate-only and still requires the
+		// durable evidence/provenance gate in the asynchronous writer.
+		if !isSubAgentTransientProviderError(resultError) {
+			r.extractAndSaveExperience(task, result, task.RetryCount > 0)
 		}
-		if isSubAgentNonRetryableFailure(resultError) {
-			if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecFailed, resultError) {
+		if isSubAgentTransientProviderError(resultError) {
+			if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecInterrupted, resultError) {
 				return staleSubAgentRunSummary(task, taskTitle), false
 			}
-			log.Printf("[subagent-runner] T%d failed permanently without retry: %s", displayIndex, resultError)
-			event := turnCtx.TaskEvent("failed", task, taskTitle)
-			event.Detail = "non_retryable"
-			turnCtx.Emit(onProgress, event)
-			return fmt.Sprintf("T%d: %s - failed permanently (non-retryable)\nError: %s",
-				displayIndex, taskTitle, resultError), false
+			turnCtx.Emit(onProgress, turnCtx.TaskEvent("interrupted", task, taskTitle))
+			return fmt.Sprintf("T%d: %s - interrupted; recovery probe required\nError: %s", displayIndex, taskTitle, resultError), false
 		}
-		retryCount, canRetry := r.orchestrator.IncrementTaskRetryForRun(task, runID)
-		if retryCount == 0 && !canRetry {
-			return staleSubAgentRunSummary(task, taskTitle), false
-		}
-		if canRetry {
-			// Retry available; will be re-executed on next call.
-			log.Printf("[subagent-runner] T%d failed (retry %d/%d): %s", displayIndex, retryCount, r.orchestrator.MaxRetries, resultError)
-			r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecInProgress, resultError)
-			event := turnCtx.TaskEvent("retrying", task, taskTitle)
-			event.Detail = fmt.Sprintf("%d/%d", retryCount, r.orchestrator.MaxRetries)
-			turnCtx.Emit(onProgress, event)
-			return fmt.Sprintf("T%d: %s - failed, will retry (%d/%d)\nError: %s",
-				displayIndex, taskTitle, retryCount, r.orchestrator.MaxRetries, resultError), false
-		}
-		// Max retries exhausted.
+		// A coding failure can occur after a write, shell command, or remote
+		// side effect. Do not replay it automatically; recovery creates a new
+		// attempt after a read-only workspace probe and user confirmation.
 		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecFailed, resultError) {
 			return staleSubAgentRunSummary(task, taskTitle), false
 		}
-		log.Printf("[subagent-runner] T%d failed permanently: %s", displayIndex, resultError)
+		log.Printf("[subagent-runner] T%d failed without automatic replay: %s", displayIndex, resultError)
 		turnCtx.Emit(onProgress, turnCtx.TaskEvent("failed", task, taskTitle))
-		return fmt.Sprintf("T%d: %s - failed permanently after %d retries\nError: %s",
-			displayIndex, taskTitle, r.orchestrator.MaxRetries, resultError), false
+		return fmt.Sprintf("T%d: %s - failed; no automatic replay\nError: %s",
+			displayIndex, taskTitle, resultError), false
+
+	case TaskExecWaitingApproval:
+		// This is not a skipped task: neither the model nor any tool has
+		// started. Keep the workflow task open and let the host surface the
+		// approval decision before it creates a later attempt.
+		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecWaitingApproval, resultError) {
+			return staleSubAgentRunSummary(task, taskTitle), false
+		}
+		turnCtx.Emit(onProgress, turnCtx.TaskEvent("waiting_approval", task, taskTitle))
+		return fmt.Sprintf("T%d: %s - waiting for scope approval\n%s", displayIndex, taskTitle, resultError), false
+
+	case TaskExecWaitingChild:
+		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecWaitingChild, resultSummary) {
+			return staleSubAgentRunSummary(task, taskTitle), false
+		}
+		turnCtx.Emit(onProgress, turnCtx.TaskEvent("waiting_child", task, taskTitle))
+		return fmt.Sprintf("T%d: %s - waiting for read-only child review\n%s", displayIndex, taskTitle, resultSummary), false
 
 	default:
+		// A Runtime-blocked attempt can carry useful verification/diff evidence.
+		// The persistence path independently rejects entries without a matching
+		// material Ledger event, so this never turns a bare skip into knowledge.
+		r.extractAndSaveExperience(task, result, task.RetryCount > 0)
 		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecSkipped, resultError) {
 			return staleSubAgentRunSummary(task, taskTitle), false
 		}
@@ -240,6 +243,13 @@ func normalizeSubAgentResultStatus(result *CodingSubAgentResult) (TaskExecStatus
 			errSummary = "coding SubAgent skipped the task without a reason"
 		}
 		return TaskExecSkipped, errSummary
+	case TaskExecWaitingApproval:
+		if errSummary == "" {
+			errSummary = "scope approval is required before coding execution can start"
+		}
+		return TaskExecWaitingApproval, errSummary
+	case TaskExecWaitingChild:
+		return TaskExecWaitingChild, errSummary
 	default:
 		return TaskExecFailed, compactSubAgentErrorSummary(fmt.Sprintf("coding SubAgent returned unknown status %q", result.Status))
 	}
@@ -343,15 +353,13 @@ func (r *SubAgentTaskRunner) runTaskWithRecover(
 		runner = RunTaskWithSubAgent
 	}
 
-	// Per-task project path resolution: when the orchestrator's declared
-	// ProjectPath doesn't cover the task's file references, derive the
-	// effective path from those references. This prevents scope enforcement
-	// (requireProjectWriteScope) from rejecting operations on files the user
-	// explicitly asked to modify.
-	effectiveProjectPath := resolveEffectiveProjectPathForTask(task, r.orchestrator.ProjectPath)
-	if effectiveProjectPath != r.orchestrator.ProjectPath {
-		log.Printf("[subagent-runner] T%d project path adjusted: declared=%s effective=%s",
-			taskDisplayNumber(task), r.orchestrator.ProjectPath, effectiveProjectPath)
+	// ProjectPath is frozen at workflow activation. The SubAgent performs its
+	// approval preflight before the model starts if task text names an external
+	// absolute path.
+	projectPath := r.orchestrator.ProjectPath
+	if taskReferencesOutsideProjectPath(task, projectPath) {
+		log.Printf("[subagent-runner] T%d references path outside frozen project root: project=%s",
+			taskDisplayNumber(task), projectPath)
 	}
 
 	if r.loopCtx != nil {
@@ -362,7 +370,7 @@ func (r *SubAgentTaskRunner) runTaskWithRecover(
 		r.cfg,
 		r.httpClient,
 		task,
-		effectiveProjectPath,
+		projectPath,
 		r.orchestrator.RequirementsContext,
 		r.orchestrator.DesignContext,
 		prevOutputs,
@@ -543,10 +551,10 @@ func serializedTokenCallback(onToken llm.TokenCallback) llm.TokenCallback {
 }
 
 func (r *SubAgentTaskRunner) configuredConcurrency() int {
-	if r == nil || r.handler == nil || r.handler.app == nil {
-		return 1
-	}
-	return r.handler.app.GetSubAgentConcurrency()
+	// Coding tasks may write source, run tests, and mutate generated artifacts.
+	// Until task-level write sets and isolated workspaces are available, run
+	// them serially even when the UI has a larger global subagent limit.
+	return 1
 }
 
 func containsSubAgentTransientProviderReport(reports []string) bool {

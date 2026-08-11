@@ -1,6 +1,9 @@
 package knowledge
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCapabilitiesExposeLocalQueryAndAutoLabelDefaults(t *testing.T) {
 	caps := Capabilities()
@@ -13,11 +16,23 @@ func TestCapabilitiesExposeLocalQueryAndAutoLabelDefaults(t *testing.T) {
 	if !caps.DefaultAutoLabels {
 		t.Fatalf("auto labels should default on for product entry points: %#v", caps)
 	}
+	if !caps.ImageRetrieval.TextToImage || caps.ImageRetrieval.ImageToImage {
+		t.Fatalf("unexpected image retrieval capabilities: %#v", caps.ImageRetrieval)
+	}
+	if caps.ImageRetrieval.SearchEndpoint != "/api/v1/knowledge/images/search" || caps.ImageRetrieval.AgentTool != "knowledge_image_search" {
+		t.Fatalf("image search surface missing: %#v", caps.ImageRetrieval)
+	}
+	if !stringSliceContains(caps.ImageRetrieval.IndexEvidence, "ocr") || !stringSliceContains(caps.ImageRetrieval.IndexEvidence, "vision_caption") || caps.ImageRetrieval.ImageToImageReason == "" {
+		t.Fatalf("image retrieval evidence/limit missing: %#v", caps.ImageRetrieval)
+	}
 	if !stringSliceContains(caps.AutoLabelRules, "kind:*") || !stringSliceContains(caps.AutoLabelRules, "scope:*") {
 		t.Fatalf("expected core auto-label rules: %#v", caps.AutoLabelRules)
 	}
 	if !stringSliceContains(caps.DefaultIncludeExts, ".pdf") || !stringSliceContains(caps.DefaultIncludeExts, ".docx") {
 		t.Fatalf("expected document formats in capabilities: %#v", caps.DefaultIncludeExts)
+	}
+	if !stringSliceContains(caps.DefaultIncludeExts, ".ppt") {
+		t.Fatalf("expected legacy PowerPoint in capabilities: %#v", caps.DefaultIncludeExts)
 	}
 	if !stringSliceContains(caps.CoverageFilters, "missing_cards") || !stringSliceContains(caps.CoverageFilters, "pdf_ocr_needed") {
 		t.Fatalf("expected source coverage filters in capabilities: %#v", caps.CoverageFilters)
@@ -84,6 +99,33 @@ func TestCapabilitiesExposeLocalQueryAndAutoLabelDefaults(t *testing.T) {
 	next := Capabilities()
 	if next.CoverageFilters[0] == "mutated" || next.CoverageAliases["rebuild_cards"] == "mutated" {
 		t.Fatalf("capabilities should return defensive coverage copies: %#v", next)
+	}
+}
+
+func TestCapabilitiesDescribeKnowledgeOfficeReadAndNativeFallbackBoundaries(t *testing.T) {
+	caps := Capabilities()
+	byKind := make(map[string]FormatCapability, len(caps.Formats))
+	for _, format := range caps.Formats {
+		byKind[format.Kind] = format
+	}
+
+	for _, kind := range []string{SourceKindDOC, SourceKindDOCX, SourceKindPPT, SourceKindPPTX, SourceKindXLS, SourceKindXLSX} {
+		format, ok := byKind[kind]
+		if !ok {
+			t.Fatalf("missing Office capability for %q: %#v", kind, caps.Formats)
+		}
+		if !strings.Contains(format.Parser, "officeread_structured_markdown_opt_in") {
+			t.Fatalf("%s parser must disclose the OfficeRead rich-content opt-in: %#v", kind, format)
+		}
+	}
+
+	if got := byKind[SourceKindPPT]; got.Status != "staged_opt_in" || !strings.Contains(got.Notes, "no native PPT parser") || !strings.Contains(got.Notes, "Chat/read_document") {
+		t.Fatalf("PPT capability must distinguish knowledge opt-in from chat text extraction: %#v", got)
+	}
+	for _, kind := range []string{SourceKindDOC, SourceKindXLS} {
+		if got := byKind[kind]; got.Status != "supported_native" || !strings.Contains(got.Notes, "fallback") {
+			t.Fatalf("%s capability must retain its native knowledge fallback: %#v", kind, got)
+		}
 	}
 }
 

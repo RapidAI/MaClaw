@@ -15,5 +15,9 @@ typedef struct {
 } meeting_recovery_snapshot_t;
 
 esp_err_t meeting_recovery_service_init(void);
+/* Closes recovery metadata admission and drains the synchronous Persistence
+ * calls already in flight. It neither owns the meeting worker nor SPIFFS WAV. */
+esp_err_t meeting_recovery_service_deinit(uint32_t timeout_ms);
+bool meeting_recovery_service_is_initialized(void);
 esp_err_t meeting_recovery_service_load(meeting_recovery_snapshot_t *out_snapshot);
 esp_err_t meeting_recovery_service_save(const meeting_recovery_snapshot_t *snapshot);

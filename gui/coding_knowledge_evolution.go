@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -57,16 +58,55 @@ func (a *App) CodingKnowledgeGraduateToSteering(id string) (string, error) {
 		return "", fmt.Errorf("create steering dir: %w", err)
 	}
 
-	filePath := filepath.Join(steeringDir, filename)
-	if err := os.WriteFile(filePath, []byte(steeringContent), 0o644); err != nil {
+	filePath, err := writeNewSteeringFile(steeringDir, filename, []byte(steeringContent))
+	if err != nil {
 		return "", fmt.Errorf("write steering file: %w", err)
 	}
 
-	// Mark the experience as graduated (deprecated with reason)
-	_ = store.UpdateStatus(ctx, id, knowledge.CodingStatusDeprecated, []string{"graduated_to_steering"})
+	// The file is created exclusively, so it is safe to compensate by removing
+	// exactly this new artifact if the durable retirement cannot be recorded.
+	// Never leave both a live auto-recalled experience and an active steering
+	// rule for the same guidance.
+	if err := store.RetireToSteering(ctx, id, filepath.Base(filePath)); err != nil {
+		if removeErr := os.Remove(filePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return "", fmt.Errorf("retire experience after writing %s: %w (cleanup failed: %v)", filePath, err, removeErr)
+		}
+		return "", fmt.Errorf("retire experience after writing steering rule: %w", err)
+	}
 
 	log.Printf("[coding-knowledge] graduated experience %q to steering: %s", exp.Title, filePath)
 	return filePath, nil
+}
+
+// writeNewSteeringFile writes a steering artifact without ever replacing an
+// existing user file. A repeated title receives a numeric suffix, while the
+// caller still gets the exact basename for lifecycle auditing.
+func writeNewSteeringFile(dir, filename string, content []byte) (string, error) {
+	base := strings.TrimSuffix(filename, filepath.Ext(filename))
+	ext := filepath.Ext(filename)
+	for suffix := 0; ; suffix++ {
+		candidate := filepath.Join(dir, filename)
+		if suffix > 0 {
+			candidate = filepath.Join(dir, fmt.Sprintf("%s-%d%s", base, suffix+1, ext))
+		}
+		file, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if _, writeErr := file.Write(content); writeErr != nil {
+			_ = file.Close()
+			_ = os.Remove(candidate)
+			return "", writeErr
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			_ = os.Remove(candidate)
+			return "", closeErr
+		}
+		return candidate, nil
+	}
 }
 
 func buildSteeringFileFromExperience(exp knowledge.CodingExperience) string {
@@ -221,7 +261,7 @@ func (a *App) CodingKnowledgeExport() (CodingKnowledgeExportPack, error) {
 					exp.Content = nodes[0].Text
 				}
 			}
-			exported = append(exported, exp)
+			exported = append(exported, knowledge.SanitizeExperienceForExport(exp))
 		}
 	}
 
@@ -251,7 +291,10 @@ func (a *App) CodingKnowledgeExportToFile(filePath string) error {
 }
 
 // CodingKnowledgeImportFromFile imports experiences from a JSON pack file.
-// Experiences are imported as active status. Duplicates are skipped.
+// Imported content is untrusted outside of this local store, so every imported
+// record is staged as a candidate and cannot enter automatic prompt context
+// until an explicit local review. Runtime provenance is intentionally stripped:
+// it names a ledger in the exporting installation and is not verifiable here.
 func (a *App) CodingKnowledgeImportFromFile(filePath string) (int, error) {
 	store := a.ensureCodingKnowledgeStore()
 	if store == nil {
@@ -273,9 +316,12 @@ func (a *App) CodingKnowledgeImportFromFile(filePath string) (int, error) {
 
 	imported := 0
 	for _, exp := range pack.Experiences {
-		// Reset metadata for import
+		// Reset metadata for import. Do not carry a foreign Runtime audit pointer
+		// into this installation: importing it as Runtime-derived would make it
+		// impossible to validate against the local durable ledger. The Store
+		// repeats this sanitation so future import callers cannot bypass it.
 		exp.ID = "" // Let store assign new ID
-		exp.Status = knowledge.CodingStatusActive
+		exp.Status = knowledge.CodingStatusCandidate
 		exp.RecallCount = 0
 		exp.SuccessCount = 0
 		exp.FailureCount = 0
@@ -283,14 +329,21 @@ func (a *App) CodingKnowledgeImportFromFile(filePath string) (int, error) {
 		exp.CreatedAt = time.Time{}
 		exp.UpdatedAt = time.Time{}
 		exp.LastRecalledAt = time.Time{}
-		exp.Labels = append(exp.Labels, "imported")
+		exp.SourceRuntimeTaskID = ""
+		exp.SourceRuntimeAttemptID = ""
+		exp.EvidenceDigest = ""
+		exp.ParentExperienceID = ""
+		exp.LifecycleEvents = nil
+		exp.CreatedBy = "import"
+		exp.LastReviewedAt = time.Time{}
+		exp.Labels = append(exp.Labels, "imported", "import_requires_review")
 
 		// Dedup check
 		if isDuplicateExperience(ctx, store, exp) {
 			continue
 		}
 
-		if _, err := store.SaveExperience(ctx, exp); err != nil {
+		if _, err := store.SaveImportedExperience(ctx, exp); err != nil {
 			log.Printf("[coding-knowledge] import skip %q: %v", exp.Title, err)
 			continue
 		}
@@ -306,8 +359,10 @@ func (a *App) CodingKnowledgeImportFromFile(filePath string) (int, error) {
 // ---------------------------------------------------------------------------
 
 const (
-	defaultMaxPerProject = 200
-	defaultMaxTotal      = 1000
+	defaultMaxPerProject               = 200
+	defaultMaxTotal                    = 1000
+	defaultMaxReviewedPerProject       = 100
+	defaultMaxReviewedTokensPerProject = 30_000
 )
 
 // CodingKnowledgeProjectCapacity describes a project that exceeds the per-project limit.
@@ -338,6 +393,20 @@ func resolveCodingKnowledgeLimits(cfg corelib.AppConfig) (maxTotal, maxPerProjec
 		maxPerProject = cfg.CodingKnowledgeMaxPerProject
 	}
 	return maxTotal, maxPerProject
+}
+
+func codingKnowledgeReviewedProjectBudget(cfg corelib.AppConfig) knowledge.CodingExperienceBudget {
+	budget := knowledge.CodingExperienceBudget{
+		MaxVerifiedCount:  defaultMaxReviewedPerProject,
+		MaxVerifiedTokens: defaultMaxReviewedTokensPerProject,
+	}
+	if cfg.CodingKnowledgeMaxReviewedPerProject > 0 {
+		budget.MaxVerifiedCount = cfg.CodingKnowledgeMaxReviewedPerProject
+	}
+	if cfg.CodingKnowledgeMaxReviewedTokensPerProject > 0 {
+		budget.MaxVerifiedTokens = cfg.CodingKnowledgeMaxReviewedTokensPerProject
+	}
+	return budget
 }
 
 // CodingKnowledgeCapacity returns total/per-project usage against configured limits.
@@ -516,7 +585,7 @@ func evictExperienceList(ctx context.Context, store *knowledge.CodingKnowledgeSt
 		if evicted >= count {
 			break
 		}
-		if err := store.DeleteExperience(ctx, exp.ID); err != nil {
+		if err := store.EvictExperience(ctx, exp.ID); err != nil {
 			continue
 		}
 		evicted++

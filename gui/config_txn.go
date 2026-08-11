@@ -61,25 +61,38 @@ func (a *App) PeekConfig() *corelib.AppConfig {
 	if p := a.configSnap.Load(); p != nil {
 		return p
 	}
-	// Legacy / unit-test seed: promote configCache once.
-	if a.configCacheValid {
-		cp := a.configCache
-		// Promote skills if present on legacy cache.
-		if len(cp.NLSkills) > 0 && a.nlSkillsSnap.Load() == nil {
-			a.publishNLSkillsLocked(cp.NLSkills)
-		}
-		slim := cp
-		slim.NLSkills = nil
-		snap := new(corelib.AppConfig)
-		*snap = slim
-		if a.configSnap.CompareAndSwap(nil, snap) {
-			return snap
-		}
-		if p := a.configSnap.Load(); p != nil {
-			return p
-		}
+
+	// Legacy / unit-test seed: configCache is a write-side mirror protected by
+	// configMu. A cold peek must take that lock before reading or promoting it;
+	// otherwise it races with publishConfigLocked. The usual hot path remains
+	// lock-free because it returns above once configSnap has been published.
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+	return a.promoteLegacyConfigCacheLocked()
+}
+
+// promoteLegacyConfigCacheLocked promotes a pre-snapshot configCache seed.
+// Caller MUST hold configMu. Keeping it separate lets the cold LoadConfig path
+// inspect configSnap directly while it already owns configMu, avoiding a
+// non-reentrant lock through PeekConfig.
+func (a *App) promoteLegacyConfigCacheLocked() *corelib.AppConfig {
+	if p := a.configSnap.Load(); p != nil {
+		return p
 	}
-	return nil
+	if !a.configCacheValid {
+		return nil
+	}
+	cp := a.configCache
+	// Promote skills if present on legacy cache.
+	if len(cp.NLSkills) > 0 && a.nlSkillsSnap.Load() == nil {
+		a.publishNLSkillsLocked(cp.NLSkills)
+	}
+	slim := cp
+	slim.NLSkills = nil
+	snap := new(corelib.AppConfig)
+	*snap = slim
+	a.configSnap.Store(snap)
+	return snap
 }
 
 // publishConfigLocked installs cfg as the authoritative in-memory snapshot.
@@ -194,10 +207,6 @@ func (a *App) mutateConfigMaybe(patchFn func(cfg *corelib.AppConfig) bool, opts 
 	} else if !opts.allowHubManagedSecurity && a.hubSecurityExplicitlyCentralizedFalse() {
 		cfg.HubSecurityCentralized = false
 	}
-	if err := validateHardwareGatewayInvariant(cfg); err != nil {
-		a.unlockConfigAbort(current)
-		return false, err
-	}
 	sanitizeCodingToolSelection(&cfg)
 	normalizeConfigTimeouts(&cfg)
 	path, err := a.getConfigPath()
@@ -221,25 +230,18 @@ func (a *App) mutateConfigMaybe(patchFn func(cfg *corelib.AppConfig) bool, opts 
 // Hot path is lock-free (atomic snap). Always runs post-unlock drains so
 // deferred writer work is never stranded.
 //
-// NOTE: the hot path returns the slim snap without NLSkills, while the cold
-// paths below reattach them via publishedConfig/attachPublishedSkills. This
-// inconsistency is the root cause of a family of bugs (any caller doing
-// LoadConfig -> mutate -> SaveConfig drops the skill table; see the failing
-// TestNLSkillsSplitFromConfigSnap expectation). Attaching skills here fixes
-// those, but flips provenance/upgrade decisions in the maclaw app install
-// flow (TestInstallMaclawAppDependencies{UpgradesKnownLegacyLocalDependencyForMarketApp,
-// DerivesSkillMarketProvenanceFromInstalledWrapper,DerivesProvenanceFromLegacyStableWrapperPanelID,
-// DoesNotAcceptResolvedMetadataForInstalledWrapper,DoesNotAcceptBundleForInstalledWrapper}
-// and TestRecordExperienceDraftReviewReturnsSkillDraftExecutionPreview),
-// whose logic was tuned to the slim hot path. Resolving the semantic conflict
-// (attach-everywhere vs slim-by-design) needs the install-flow owner's call.
+// configSnap intentionally omits NLSkills so single-field readers stay cheap.
+// LoadConfig is the full-config API, however, and must return the same shape
+// on both hot and cold paths. Reattach the separately published skill table
+// before returning so a read-modify-save caller cannot silently discard it.
 func (a *App) loadConfigSnapshot() (corelib.AppConfig, error) {
 	if p := a.PeekConfig(); p != nil {
 		// Apply log gates from the snap without copying the whole AppConfig first.
 		corelib.SetLogDetailEnabled(p.LogDetailEnabled)
 		memory.SetMemoryRecallLogEnabled(p.MemoryRecallLogEnabled)
-		a.runConfigPostUnlock(*p)
-		return *p, nil
+		cfg := a.attachPublishedSkills(*p)
+		a.runConfigPostUnlock(cfg)
+		return cfg, nil
 	}
 
 	// Cold path: exclusive load from disk.
@@ -249,8 +251,11 @@ func (a *App) loadConfigSnapshot() (corelib.AppConfig, error) {
 	if lockWait > 50*time.Millisecond {
 		log.Printf("[config] LoadConfig:lock_wait=%s", lockWait)
 	}
-	// Another writer may have published while we waited.
-	if cfg, ok := a.publishedConfig(); ok {
+	// Another writer may have published while we waited. Do not call
+	// publishedConfig/PeekConfig here: configMu is already held and PeekConfig
+	// takes the same mutex only for an unseeded legacy cache promotion.
+	if p := a.configSnap.Load(); p != nil {
+		cfg := a.attachPublishedSkills(*p)
 		a.configMu.Unlock()
 		corelib.SetLogDetailEnabled(cfg.LogDetailEnabled)
 		memory.SetMemoryRecallLogEnabled(cfg.MemoryRecallLogEnabled)

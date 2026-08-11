@@ -116,6 +116,21 @@ describe('settingsTabConfig', () => {
         expect(config.survey_enabled).toBe(false);
     });
 
+    it('generated AppConfig preserves the OfficeRead rollout policy', async () => {
+        const { corelib } = await import('../../../wailsjs/go/models');
+        const config = new corelib.AppConfig({
+            office_read_engine: 'dual',
+            office_read_formats: ['doc', 'xls'],
+            office_read_fallback: false,
+            office_read_emit_markdown: true,
+        });
+
+        expect(config.office_read_engine).toBe('dual');
+        expect(config.office_read_formats).toEqual(['doc', 'xls']);
+        expect(config.office_read_fallback).toBe(false);
+        expect(config.office_read_emit_markdown).toBe(true);
+    });
+
     it('configChangeEventHasPayload treats empty detail as signal-only', () => {
         expect(configChangeEventHasPayload(null)).toBe(false);
         expect(configChangeEventHasPayload(undefined)).toBe(false);

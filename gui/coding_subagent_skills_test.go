@@ -156,6 +156,19 @@ func TestCodingSubAgentSkillFitsTaskAllowsCodingAndExplicitDocumentIntent(t *tes
 	}
 }
 
+func TestCodingSubAgentDocumentMarkersRecognizeAllOfficeFormats(t *testing.T) {
+	for _, format := range []string{"doc", "docx", "xls", "xlsx", "ppt", "pptx"} {
+		t.Run(format, func(t *testing.T) {
+			if !containsAny("convert "+format+" document", codingSubAgentDocumentIntentMarkers()...) {
+				t.Fatalf("document intent markers omit %q", format)
+			}
+			if !containsAny("parse "+format+" file", codingSubAgentDocumentSkillMarkers()...) {
+				t.Fatalf("document skill markers omit %q", format)
+			}
+		})
+	}
+}
+
 func TestBuildCodingSubAgentSkillSection_Empty(t *testing.T) {
 	section := buildCodingSubAgentSkillSection(nil)
 	if section != "" {

@@ -13,6 +13,12 @@ esp_err_t ml307_transport_start(int tx_gpio, int rx_gpio, int baud_rate,
                                 int timeout_ms, const char *apn);
 bool ml307_transport_is_ready(void);
 bool ml307_transport_cancel_foreground(void);
+bool ml307_transport_cancel_requests_for_owner(const void *owner);
+/* Closes new start/HTTP admission and joins only transport-owned background
+ * coordination. It never destroys the modem/UART while a request borrower
+ * might still hold it; a timeout leaves the transport intact and returns an
+ * error rather than pretending the cellular service is fully stopped. */
+esp_err_t ml307_transport_quiesce(uint32_t timeout_ms);
 
 typedef esp_err_t (*ml307_transport_body_reader_t)(
     void *context, void *buffer, size_t requested, size_t *read_bytes);
@@ -23,7 +29,7 @@ esp_err_t ml307_transport_http_request(
     const char *extra_header_value, const void *body, size_t body_len,
     char *response, size_t response_capacity, size_t *response_len,
     int *status_code, bool *truncated, int timeout_ms,
-    bool foreground);
+    const void *cancellation_owner, bool foreground);
 
 esp_err_t ml307_transport_http_request_stream(
     const char *method, const char *url, const char *content_type,
@@ -33,7 +39,7 @@ esp_err_t ml307_transport_http_request_stream(
     void *stream_buffer, size_t stream_buffer_size,
     char *response, size_t response_capacity, size_t *response_len,
     int *status_code, bool *truncated, int timeout_ms,
-    bool foreground);
+    const void *cancellation_owner, bool foreground);
 
 #ifdef __cplusplus
 }

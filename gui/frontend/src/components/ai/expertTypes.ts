@@ -49,6 +49,10 @@ export interface ExpertOptimizeDraft {
     update_existing?: boolean;
     /** Name of the source expert (for the different-name validation). */
     source_name?: string;
+    /** Original configuration, used only to show an optimization diff before save. */
+    source_system_prompt?: string;
+    source_tools?: string[];
+    source_skills?: string[];
 }
 
 /** Shape returned by GenerateExpertProfile (fields are suggestions, editable before save). */

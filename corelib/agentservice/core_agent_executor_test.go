@@ -1,9 +1,17 @@
 package agentservice
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,14 +19,17 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -32,6 +43,72 @@ func (e *captureExecutor) Execute(ctx context.Context, req ExecuteRequest) (*Exe
 	_ = ctx
 	e.req = req
 	return &ExecuteResult{Content: "ok", OutputType: "text/plain"}, nil
+}
+
+// blockingRuntimeCancelExecutor is a narrow Service-boundary test double. It
+// models an active runtime parent plus a leased read-only child, then waits for
+// the Service-owned request context to be cancelled. CoreAgentExecutor's
+// concrete cancellation implementation is tested separately; this double
+// proves that CancelRun actually invokes the optional durable-runtime
+// capability before interrupting the live request.
+type blockingRuntimeCancelExecutor struct {
+	ledger  codingruntime.Store
+	started chan ExecuteRequest
+
+	mu              sync.Mutex
+	parentAttemptID string
+	childTaskID     string
+}
+
+func (e *blockingRuntimeCancelExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
+	if e == nil || e.ledger == nil {
+		return nil, errors.New("runtime test ledger is unavailable")
+	}
+	taskID := serviceCodingRuntimeTaskID(req)
+	parent, err := e.ledger.CreateTask(codingruntime.Task{TaskID: taskID, ProjectRef: req.Instance.Workspace, Mode: "local"})
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	policy := codingruntime.PolicySnapshot{ProjectRoot: req.Instance.Workspace, Mode: "local"}
+	attempt, err := e.ledger.StartAttempt(parent.TaskID, serviceCodingRuntimeOwner(req), time.Minute, policy, now)
+	if err != nil {
+		return nil, err
+	}
+	handles, err := (codingruntime.ChildTaskService{Store: e.ledger}).AdmitReadOnlyChildren(attempt.AttemptID, attempt.LeaseOwner, []codingruntime.ChildTaskSpec{{Name: "explorer", RequestedWork: "inspect", ProjectRef: req.Instance.Workspace, Mode: "local"}}, codingruntime.PolicySnapshot{ProjectRoot: req.Instance.Workspace, Mode: "local", ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	if _, err = e.ledger.StartAttempt(handles[0].TaskID, "service-test-child", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: req.Instance.Workspace, Mode: "local", ReadOnly: true}, now); err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	e.parentAttemptID = attempt.AttemptID
+	e.childTaskID = handles[0].TaskID
+	e.mu.Unlock()
+	e.started <- req
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (e *blockingRuntimeCancelExecutor) CancelCodingRuntimeTask(req ExecuteRequest) (bool, error) {
+	if e == nil || e.ledger == nil {
+		return false, nil
+	}
+	if strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeMode]) != "local_workflow" {
+		return false, nil
+	}
+	_, err := e.ledger.CancelTask(serviceCodingRuntimeTaskID(req), time.Now().UTC())
+	if errors.Is(err, codingruntime.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (e *blockingRuntimeCancelExecutor) runtimeIDs() (string, string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.parentAttemptID, e.childTaskID
 }
 
 func setupCaptureAgentService(t *testing.T, executor Executor) (*Service, Principal, Instance) {
@@ -92,6 +169,71 @@ func TestBuildConversationIncludesVisionAttachment(t *testing.T) {
 	}
 }
 
+func TestBuildConversationUsesRequestScopedOfficeReadPolicyForAttachments(t *testing.T) {
+	for _, key := range []string{
+		"MACLAW_OFFICE_READ_ENGINE",
+		"MACLAW_OFFICE_READ_FORMATS",
+		"MACLAW_OFFICE_READ_FALLBACK",
+		"MACLAW_OFFICE_READ_EMIT_MARKDOWN",
+	} {
+		t.Setenv(key, "")
+	}
+
+	// A service process can host more than one tenant. Its global provider must
+	// not decide this request's attachment parsing policy.
+	restoreProvider := agent.SetOfficeReadConfigProvider(func() agent.OfficeReadConfig {
+		return agent.OfficeReadConfig{Engine: "legacy"}
+	})
+	defer restoreProvider()
+
+	var observations []agent.OfficeReadObservation
+	restoreObserver := agent.SetOfficeReadObservationHandler(func(observation agent.OfficeReadObservation) {
+		observations = append(observations, observation)
+	})
+	defer restoreObserver()
+
+	workspace := t.TempDir()
+	fixture := filepath.Join(workspace, "request-policy.docx")
+	writeAgentServiceMinimalDOCX(t, fixture, "request-scoped attachment body")
+	raw, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	messages := buildConversation(ExecuteRequest{
+		Instance: Instance{Workspace: workspace},
+		Config: corelib.AppConfig{
+			OfficeReadEngine:  "officeread",
+			OfficeReadFormats: []string{"docx"},
+		},
+		Message: Message{Content: "inspect", Attachments: []agent.MessageAttachment{{
+			FileName: "request-policy.docx",
+			MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			Data:     base64.StdEncoding.EncodeToString(raw),
+		}}},
+	}, corelib.MaclawLLMConfig{Protocol: "openai"})
+
+	last, ok := messages[len(messages)-1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("last message type = %T", messages[len(messages)-1])
+	}
+	content, ok := last["content"].(string)
+	if !ok || !strings.Contains(content, "request-scoped attachment body") {
+		t.Fatalf("attachment content = %#v", last["content"])
+	}
+	if len(observations) != 1 || observations[0].Format != "docx" || observations[0].Engine != agent.OfficeExtractEngineOfficeRead || !observations[0].OfficeReadOK {
+		t.Fatalf("request-scoped OfficeRead observations = %#v", observations)
+	}
+}
+func TestAttachmentStagingDirRequiresWorkspace(t *testing.T) {
+	if got := attachmentStagingDir(""); got != "" {
+		t.Fatalf("empty workspace staging directory = %q, want empty", got)
+	}
+	workspace := t.TempDir()
+	if got, want := attachmentStagingDir(workspace), filepath.Join(workspace, ".attachments"); got != want {
+		t.Fatalf("workspace staging directory = %q, want %q", got, want)
+	}
+}
 func TestSendMessagePassesAttachmentsToExecutor(t *testing.T) {
 	capture := &captureExecutor{}
 	svc, principal, inst := setupCaptureAgentService(t, capture)
@@ -244,6 +386,648 @@ func TestCoreAgentExecutorSupportsAskUserFlow(t *testing.T) {
 	}
 }
 
+func TestCoreAgentExecutorExplicitCodingRuntimeUsesLedgerAndLeavesRegularRequestsDirect(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "implemented"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
+	svc, principal, inst := setupCaptureAgentService(t, executor)
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: server.URL, MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if _, err := os.Stat(inst.Workspace); err != nil {
+		t.Fatalf("instance workspace is missing: %v", err)
+	}
+	ledger := codingruntime.NewMemoryStore()
+	if !svc.SetCodingRuntimeStore(ledger) {
+		t.Fatal("core agent executor did not accept coding runtime store")
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "coding"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, phaseID := "workflow-1", "implementation"
+	_, msg, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{Content: "implement", Metadata: map[string]string{
+		metaCodingRuntimeMode:       "local_workflow",
+		metaCodingRuntimeWorkflowID: workflowID,
+		metaCodingRuntimePhaseID:    phaseID,
+		"mutation_scope":            string(workflow.MutationScopeProject),
+	}})
+	if err != nil {
+		t.Fatalf("explicit coding runtime PostMessage: %v", err)
+	}
+	// The mock model reports completion but does not call a mutating tool. An
+	// implementation workflow must therefore be blocked by the final
+	// read-only workspace gate rather than recorded as a false success.
+	if msg == nil || msg.Metadata[metaCodingRuntimeTaskStatus] != string(codingruntime.TaskBlocked) || msg.Metadata[metaCodingRuntimeTaskID] == "" || msg.Metadata[metaCodingRuntimeAttemptID] == "" {
+		t.Fatalf("missing runtime projection: %#v", msg)
+	}
+	task, err := ledger.GetTask(msg.Metadata[metaCodingRuntimeTaskID])
+	if err != nil || task.Status != codingruntime.TaskBlocked || task.WorkflowID != workflowID || task.PhaseID != phaseID {
+		t.Fatalf("runtime task=%#v err=%v", task, err)
+	}
+	if attempts, err := ledger.ListAttempts(task.TaskID); err != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskBlocked || attempts[0].ErrorCode != "final_workspace_probe_failed" {
+		t.Fatalf("runtime attempts=%#v err=%v", attempts, err)
+	}
+
+	// The same executor handles unmarked requests through its existing direct
+	// path and must not create a second coding Ledger task.
+	if _, _, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{Content: "ordinary chat"}); err != nil {
+		t.Fatalf("ordinary PostMessage: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("unexpected LLM request count=%d", requests)
+	}
+	if candidates, err := ledger.ListRecoveryCandidates(); err != nil || len(candidates) != 0 {
+		t.Fatalf("ordinary request contaminated runtime ledger: %#v err=%v", candidates, err)
+	}
+}
+
+func TestCoreAgentExecutorExplicitCodingRuntimeDoesNotReplayInterruptedTask(t *testing.T) {
+	executor := &CoreAgentExecutor{}
+	ledger := codingruntime.NewMemoryStore()
+	executor.SetCodingRuntimeStore(ledger)
+	req := ExecuteRequest{
+		Principal: Principal{TenantID: "tenant", UserID: "user"},
+		Instance:  Instance{ID: "instance", Workspace: t.TempDir()},
+		Session:   Session{ID: "session"},
+		Message: Message{Content: "continue", Metadata: map[string]string{
+			metaCodingRuntimeMode:       "local_workflow",
+			metaCodingRuntimeWorkflowID: "workflow",
+			metaCodingRuntimePhaseID:    "implementation",
+		}},
+		MutationScope: workflow.MutationScopeProject,
+	}
+	policy := codingruntime.PolicySnapshot{ProjectRoot: req.Instance.Workspace, Mode: "local", FinalWorkspaceGateRequired: true}
+	digest, err := codingruntime.PolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Digest = digest
+	taskID := serviceCodingRuntimeTaskID(req)
+	if _, err := ledger.CreateTask(codingruntime.Task{TaskID: taskID, WorkflowID: "workflow", PhaseID: "implementation", ProjectRef: req.Instance.Workspace, Mode: "local", PolicyDigest: digest}); err != nil {
+		t.Fatal(err)
+	}
+	started, err := ledger.StartAttempt(taskID, "old", time.Minute, policy, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.FinishAttempt(started.AttemptID, "old", codingruntime.FinishInput{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Execute(context.Background(), req); !errors.Is(err, codingruntime.ErrRecoveryRequired) {
+		t.Fatalf("err=%v, want recovery required", err)
+	}
+	if attempts, err := ledger.ListAttempts(taskID); err != nil || len(attempts) != 1 {
+		t.Fatalf("interrupted task was replayed: %#v err=%v", attempts, err)
+	}
+}
+
+func TestCoreAgentExecutorCancelCodingRuntimeTaskClosesChildSubtree(t *testing.T) {
+	executor := &CoreAgentExecutor{}
+	ledger := codingruntime.NewMemoryStore()
+	executor.SetCodingRuntimeStore(ledger)
+	req := ExecuteRequest{
+		Principal: Principal{TenantID: "tenant", UserID: "user"},
+		Instance:  Instance{ID: "instance", Workspace: "repo"},
+		Session:   Session{ID: "session"},
+		Message: Message{Metadata: map[string]string{
+			metaCodingRuntimeMode:       "local_workflow",
+			metaCodingRuntimeWorkflowID: "workflow",
+			metaCodingRuntimePhaseID:    "implementation",
+		}},
+	}
+	taskID := serviceCodingRuntimeTaskID(req)
+	task, err := ledger.CreateTask(codingruntime.Task{TaskID: taskID, ProjectRef: "repo", Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	parentAttempt, err := ledger.StartAttempt(task.TaskID, serviceCodingRuntimeOwner(req), time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "repo", Mode: "local"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handles, err := (codingruntime.ChildTaskService{Store: ledger}).AdmitReadOnlyChildren(parentAttempt.AttemptID, serviceCodingRuntimeOwner(req), []codingruntime.ChildTaskSpec{{Name: "explorer", RequestedWork: "inspect", ProjectRef: "repo", Mode: "local"}}, codingruntime.PolicySnapshot{ProjectRoot: "repo", Mode: "local", ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ledger.StartAttempt(handles[0].TaskID, "child", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "repo", Mode: "local", ReadOnly: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := executor.CancelCodingRuntimeTask(req)
+	if err != nil || !cancelled {
+		t.Fatalf("cancelled=%t err=%v", cancelled, err)
+	}
+	for _, id := range []string{task.TaskID, handles[0].TaskID} {
+		current, getErr := ledger.GetTask(id)
+		if getErr != nil || current.Status != codingruntime.TaskCancelled {
+			t.Fatalf("task %s=%+v err=%v", id, current, getErr)
+		}
+	}
+}
+
+func TestServiceCancelRunClosesCodingRuntimeSubtreeBeforeRequestCancellation(t *testing.T) {
+	ledger := codingruntime.NewMemoryStore()
+	executor := &blockingRuntimeCancelExecutor{ledger: ledger, started: make(chan ExecuteRequest, 1)}
+	svc, principal, inst := setupCaptureAgentService(t, executor)
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "coding cancel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type postResult struct {
+		run *Run
+		err error
+	}
+	posted := make(chan postResult, 1)
+	go func() {
+		run, _, postErr := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{Content: "implement", Metadata: map[string]string{
+			metaCodingRuntimeMode:       "local_workflow",
+			metaCodingRuntimeWorkflowID: "workflow-cancel",
+			metaCodingRuntimePhaseID:    "implementation",
+		}})
+		posted <- postResult{run: run, err: postErr}
+	}()
+
+	var req ExecuteRequest
+	select {
+	case req = <-executor.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for active coding runtime request")
+	}
+	running, err := svc.store.ListRuns(principal.TenantID, principal.UserID, inst.ID)
+	if err != nil || len(running) != 1 || running[0].Status != RunStatusRunning {
+		t.Fatalf("running API run=%#v err=%v", running, err)
+	}
+	cancelled, err := svc.CancelRun(context.Background(), principal, inst.ID, running[0].ID)
+	if err != nil || cancelled == nil || cancelled.Status != RunStatusCancelled {
+		t.Fatalf("CancelRun=%#v err=%v", cancelled, err)
+	}
+	result := <-posted
+	if !errors.Is(result.err, context.Canceled) || result.run == nil || result.run.Status != RunStatusCancelled {
+		t.Fatalf("PostMessage result=%#v err=%v", result.run, result.err)
+	}
+
+	parent, getErr := ledger.GetTask(serviceCodingRuntimeTaskID(req))
+	if getErr != nil || parent.Status != codingruntime.TaskCancelled {
+		t.Fatalf("parent task=%#v err=%v", parent, getErr)
+	}
+	_, childTaskID := executor.runtimeIDs()
+	child, getErr := ledger.GetTask(childTaskID)
+	if getErr != nil || child.Status != codingruntime.TaskCancelled {
+		t.Fatalf("child task=%#v err=%v", child, getErr)
+	}
+	if attempts, listErr := ledger.ListAttempts(parent.TaskID); listErr != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskCancelled {
+		t.Fatalf("parent attempts=%#v err=%v", attempts, listErr)
+	}
+	if attempts, listErr := ledger.ListAttempts(child.TaskID); listErr != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskCancelled {
+		t.Fatalf("child attempts=%#v err=%v", attempts, listErr)
+	}
+}
+
+func TestRemoteCodingRuntimeRejectsUnpinnedOrUnboundTargetBeforeModelCall(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
+	executor.SetCodingRuntimeStore(codingruntime.NewMemoryStore())
+	base := ExecuteRequest{
+		Principal: Principal{TenantID: "tenant", UserID: "user"}, Instance: Instance{ID: "instance", Workspace: t.TempDir()}, Session: Session{ID: "session"},
+		Config: corelib.AppConfig{MaclawLLMUrl: server.URL, MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}, MutationScope: workflow.MutationScopeProject,
+		Message: Message{Content: "remote implement", Metadata: map[string]string{metaCodingRuntimeMode: "remote_workflow", metaCodingRuntimeWorkflowID: "workflow", metaCodingRuntimePhaseID: "implementation", metaCodingRuntimeRemoteHost: "build.example.test", metaCodingRuntimeRemoteUser: "deploy", metaCodingRuntimeRemoteWorkDir: "/srv/app"}},
+	}
+	if _, err := executor.Execute(context.Background(), base); err == nil || !strings.Contains(err.Error(), "pinned SSH host key") {
+		t.Fatalf("unpinned remote runtime error = %v", err)
+	}
+	base.Message.Metadata[metaCodingRuntimeRemoteHostKeyPin] = "SHA256:pin"
+	base.Config.SSHHosts = []corelib.SSHHostEntry{{Label: "build", Host: "build.example.test", User: "deploy", HostKeyFingerprint: "SHA256:pin"}}
+	if _, err := executor.Execute(context.Background(), base); err == nil || !strings.Contains(err.Error(), "already verified live SSH session") {
+		t.Fatalf("unbound remote runtime error = %v", err)
+	}
+	if called {
+		t.Fatal("remote runtime reached the model without a pinned live SSH binding")
+	}
+}
+
+func TestServiceRemoteCodingSessionMatchesOnlyExactPinnedIdentity(t *testing.T) {
+	target, err := codingruntime.NormalizeRemoteTarget(codingruntime.RemoteTarget{
+		Host:               "build.example.test",
+		User:               "deploy",
+		Port:               2222,
+		WorkDir:            "/srv/app",
+		HostKeyFingerprint: "SHA256:expected-pin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matching := func(host, user string, port int, pin string) *remote.SSHManagedSession {
+		return &remote.SSHManagedSession{Spec: remote.SSHSessionSpec{HostConfig: remote.SSHHostConfig{
+			Host: host, User: user, Port: port, HostKeyFingerprint: pin,
+		}}}
+	}
+	for name, tc := range map[string]struct {
+		session *remote.SSHManagedSession
+		want    bool
+	}{
+		"exact":          {session: matching("BUILD.EXAMPLE.TEST", "deploy", 2222, "SHA256:expected-pin"), want: true},
+		"default port":   {session: matching("build.example.test", "deploy", 0, "SHA256:expected-pin"), want: false},
+		"different host": {session: matching("other.example.test", "deploy", 2222, "SHA256:expected-pin"), want: false},
+		"different user": {session: matching("build.example.test", "root", 2222, "SHA256:expected-pin"), want: false},
+		"different port": {session: matching("build.example.test", "deploy", 22, "SHA256:expected-pin"), want: false},
+		"different pin":  {session: matching("build.example.test", "deploy", 2222, "SHA256:replacement-pin"), want: false},
+		"missing pin":    {session: matching("build.example.test", "deploy", 2222, ""), want: false},
+		"nil session":    {session: nil, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := serviceRemoteCodingSessionMatches(tc.session, target); got != tc.want {
+				t.Fatalf("serviceRemoteCodingSessionMatches() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRemoteCodingRuntimeRestrictsToolsToBoundSession(t *testing.T) {
+	binding := &remoteCodingRuntimeBinding{SessionID: "ssh-bound"}
+	cb := &coreAgentCallbacks{runtimeRemoteBinding: binding, appCfg: corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "build", Host: "build.example.test", User: "deploy", HostKeyFingerprint: "SHA256:pin"}}}}
+	tools := cb.BuildTools("implement remotely")
+	if len(tools) != 1 || tooldef.Name(tools[0]) != "ssh" {
+		t.Fatalf("remote runtime tool surface = %#v", tools)
+	}
+	for _, denied := range []string{"bash", "read_file", "write_file", "edit_file", "spawn_coding_agent"} {
+		if cb.IsToolAllowed(denied) || func() bool { ok, _ := cb.IsToolCallAllowed(denied, `{}`); return ok }() {
+			t.Fatalf("remote runtime allowed %q", denied)
+		}
+	}
+	if ok, _ := cb.IsToolCallAllowed("ssh", `{"action":"connect","label":"prod"}`); ok {
+		t.Fatal("remote runtime allowed SSH connect")
+	}
+	if ok, _ := cb.IsToolCallAllowed("ssh", `{"action":"exec","session_id":"other","command":"pwd"}`); ok {
+		t.Fatal("remote runtime allowed a different SSH session")
+	}
+	if ok, reason := cb.IsToolCallAllowed("ssh", `{"action":"exec","session_id":"ssh-bound","command":"pwd"}`); !ok {
+		t.Fatalf("remote runtime rejected bound SSH exec: %s", reason)
+	}
+	if ok, _ := cb.IsToolCallAllowed("ssh", `{"action":"exec","session_id":"ssh-bound","command":"rm -rf /"}`); ok {
+		t.Fatal("remote runtime allowed dangerous SSH command")
+	}
+}
+
+func TestRemoteCodingRecoveryRequiresSamePinnedConfiguredLiveTarget(t *testing.T) {
+	executor := &CoreAgentExecutor{}
+	target := codingruntime.RemoteTarget{Host: "build.example.test", User: "deploy", WorkDir: "/srv/app", HostKeyFingerprint: "SHA256:pin"}
+	identity, err := target.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := codingruntime.Task{Mode: "remote", ProjectRef: target.WorkDir}
+	policy := codingruntime.PolicySnapshot{Mode: "remote", ProjectRoot: target.WorkDir, RemoteTarget: identity}
+	p := Principal{TenantID: "tenant", UserID: "user"}
+	if _, err := executor.CodingRuntimeRemoteRecoveryProber(p, corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "build", Host: target.Host, User: target.User}}}, task, policy); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("recovery accepted unpinned configured host: %v", err)
+	}
+	if _, err := executor.CodingRuntimeRemoteRecoveryProber(p, corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "other", Host: "other.example.test", User: target.User, HostKeyFingerprint: target.HostKeyFingerprint}}}, task, policy); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("recovery accepted retargeted configured host: %v", err)
+	}
+	if _, err := executor.CodingRuntimeRemoteRecoveryProber(p, corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "build", Host: target.Host, User: target.User, HostKeyFingerprint: target.HostKeyFingerprint}}}, task, policy); err == nil || !strings.Contains(err.Error(), "already verified live SSH session") {
+		t.Fatalf("recovery attempted to proceed/reconnect without live session: %v", err)
+	}
+}
+
+func TestServiceRemoteWorkspaceProbeParserIgnoresPTYCommandEcho(t *testing.T) {
+	target := codingruntime.RemoteTarget{Host: "build.example.test", User: "deploy", WorkDir: "/srv/app", HostKeyFingerprint: "SHA256:pin"}
+	identity, err := target.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := remoteCodingRuntimeBinding{Target: target, Identity: identity, SessionID: "ssh-bound"}
+	const begin = "__CODING_RUNTIME_GIT_a1_BEGIN__"
+	const end = "__CODING_RUNTIME_GIT_a1_END__"
+	// A terminal echoes the submitted command first. The old fixed-marker
+	// parser could accept that echo as a marker and hash an arbitrary tail.
+	// The nonce-framed parser must instead use the final generated frame.
+	output := "deploy@build:/srv/app$ git -C '/srv/app' rev-parse HEAD; printf '\\n" + begin + "\\n'; git -C '/srv/app' status --porcelain=v1 --untracked-files=all; printf '\\n" + end + "\\n'\n" +
+		"deadbeef\n" + begin + "\n M main.go\n" + end + "\n"
+	probe, err := serviceRemoteWorkspaceProbeFromOutput(codingruntime.Task{ProjectRef: target.WorkDir}, binding, output, begin, end, time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.Head != "deadbeef" || probe.WorkDir != target.WorkDir || probe.HostKey != identity {
+		t.Fatalf("probe = %#v", probe)
+	}
+	want := sha256.Sum256([]byte(" M main.go"))
+	if probe.StatusHash != "sha256:"+fmt.Sprintf("%x", want[:]) {
+		t.Fatalf("status hash = %q", probe.StatusHash)
+	}
+}
+
+func TestServiceRemoteWorkspaceProbeParserRejectsIncompleteOrAmbiguousFrames(t *testing.T) {
+	target := codingruntime.RemoteTarget{Host: "build.example.test", User: "deploy", WorkDir: "/srv/app", HostKeyFingerprint: "SHA256:pin"}
+	identity, err := target.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := remoteCodingRuntimeBinding{Target: target, Identity: identity, SessionID: "ssh-bound"}
+	const begin = "__CODING_RUNTIME_GIT_b2_BEGIN__"
+	const end = "__CODING_RUNTIME_GIT_b2_END__"
+	for name, output := range map[string]string{
+		"missing end":    "deadbeef\n" + begin + "\n M main.go\n",
+		"ambiguous head": "prompt$ git -C /srv/app rev-parse HEAD\ndeadbeef extra\n" + begin + "\n" + end + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := serviceRemoteWorkspaceProbeFromOutput(codingruntime.Task{ProjectRef: target.WorkDir}, binding, output, begin, end, time.Now()); err == nil {
+				t.Fatal("accepted invalid remote workspace probe output")
+			}
+		})
+	}
+}
+
+func TestServiceCodingRuntimeReadOnlyChildAdmissionUsesFreshRestrictedLoop(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		toolSeen = map[string]bool{}
+		requests int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode LLM request: %v", err)
+		}
+		mu.Lock()
+		requests++
+		if defs, ok := body["tools"].([]interface{}); ok {
+			for _, raw := range defs {
+				def, _ := raw.(map[string]interface{})
+				fn, _ := def["function"].(map[string]interface{})
+				name, _ := fn["name"].(string)
+				toolSeen[name] = true
+			}
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "repository inspection completed"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	workspace := t.TempDir()
+	parent := &CoreAgentExecutor{HTTPClient: server.Client()}
+	ledger := codingruntime.NewMemoryStore()
+	req := ExecuteRequest{
+		Principal: Principal{TenantID: "tenant", UserID: "user"},
+		Instance:  Instance{ID: "instance", Workspace: workspace},
+		Session:   Session{ID: "session"},
+		Config:    corelib.AppConfig{MaclawLLMUrl: server.URL, MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"},
+		DataDir:   t.TempDir(),
+	}
+	parentPolicy := codingruntime.PolicySnapshot{ProjectRoot: workspace, Mode: "local", FinalWorkspaceGateRequired: true}
+	digest, err := codingruntime.PolicyDigest(parentPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentPolicy.Digest = digest
+	owner := serviceCodingRuntimeOwner(req)
+	if _, err := ledger.CreateTask(codingruntime.Task{TaskID: "parent", OwnerID: owner, ProjectRef: workspace, Mode: "local", PolicyDigest: digest}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := ledger.StartAttempt("parent", owner, time.Minute, parentPolicy, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &coreAgentCallbacks{
+		workspace:             workspace,
+		runtimeStore:          ledger,
+		runtimeAttempt:        attempt,
+		runtimeParentExecutor: parent,
+		runtimeRequest:        req,
+	}
+	result := cb.executeServiceReadOnlyChildSpawn(`{"agents":[{"role":"explorer","task":"map the repository"},{"role":"reviewer","task":"review the tests"}]}`)
+	if result.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(result.Result, "admitted") {
+		t.Fatalf("admission result = %+v", result)
+	}
+	if current, err := ledger.GetAttempt(attempt.AttemptID); err != nil || current.Status != codingruntime.TaskWaitingChild {
+		t.Fatalf("parent attempt after admission = %#v err=%v", current, err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		children, err := ledger.ListChildTasks("parent")
+		if err != nil {
+			t.Fatal(err)
+		}
+		complete := len(children) == 2
+		for _, child := range children {
+			complete = complete && child.Status == codingruntime.TaskCompleted
+		}
+		if complete {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("children did not complete: %#v", children)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if current, err := ledger.GetTask("parent"); err != nil || current.Status != codingruntime.TaskQueued {
+		t.Fatalf("parent task after child delivery = %#v err=%v", current, err)
+	}
+	if continuation, err := (codingruntime.ChildTaskService{Store: ledger}).PrepareParentContinuation("parent"); err != nil || len(continuation.ChildResults) != 2 {
+		t.Fatalf("parent continuation = %#v err=%v", continuation, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 2 {
+		t.Fatalf("child LLM requests = %d, want 2", requests)
+	}
+	for _, denied := range []string{"bash", "ssh", "write_file", "edit_file", "manage_skill", "memory", "task", "im_message", "spawn_coding_agent"} {
+		if toolSeen[denied] {
+			t.Fatalf("read-only child exposed %q: %#v", denied, toolSeen)
+		}
+	}
+	for _, allowed := range []string{"read_file", "list_directory", "web_search", "web_fetch"} {
+		if !toolSeen[allowed] {
+			t.Fatalf("read-only child omitted %q: %#v", allowed, toolSeen)
+		}
+	}
+}
+
+func TestServiceReadOnlyChildToolBoundaryFailsClosed(t *testing.T) {
+	cb := &coreAgentCallbacks{runtimeReadOnlyChild: true, workspace: t.TempDir()}
+	tools := cb.BuildTools("inspect")
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		seen[tooldef.Name(tool)] = true
+	}
+	for _, denied := range []string{"bash", "ssh", "write_file", "edit_file", "manage_skill", "memory", "task"} {
+		if seen[denied] || cb.IsToolAllowed(denied) {
+			t.Fatalf("read-only child must deny %q: %#v", denied, seen)
+		}
+		if ok, _ := cb.IsToolCallAllowed(denied, `{}`); ok {
+			t.Fatalf("read-only child call must deny %q", denied)
+		}
+		if result := cb.ExecuteToolStructured(denied, `{}`); result.Outcome != agent.ToolExecutionOutcomeError {
+			t.Fatalf("read-only child execution for %q = %+v", denied, result)
+		}
+	}
+	for _, allowed := range []string{"read_file", "list_directory", "web_search", "web_fetch"} {
+		if !seen[allowed] || !cb.IsToolAllowed(allowed) {
+			t.Fatalf("read-only child must expose %q: %#v", allowed, seen)
+		}
+	}
+	for _, key := range []string{"save_path", "output", "dest", "path", "filename"} {
+		args := fmt.Sprintf(`{"url":"https://example.com/a.txt","%s":"a.txt"}`, key)
+		if ok, _ := cb.IsToolCallAllowed("web_fetch", args); ok {
+			t.Fatalf("read-only child must deny web_fetch %s when it would write to disk", key)
+		}
+		if result := cb.ExecuteToolStructured("web_fetch", args); result.Outcome != agent.ToolExecutionOutcomeError {
+			t.Fatalf("read-only child web_fetch %s execution = %+v", key, result)
+		}
+	}
+}
+
+func TestCoreAgentExecutorRuntimeSpawnStopsParentBeforeChildExecution(t *testing.T) {
+	var (
+		mu               sync.Mutex
+		parentCalls      int
+		childCalls       int
+		childToolSurface map[string]bool
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode LLM request: %v", err)
+		}
+		names := map[string]bool{}
+		if defs, ok := body["tools"].([]interface{}); ok {
+			for _, raw := range defs {
+				def, _ := raw.(map[string]interface{})
+				fn, _ := def["function"].(map[string]interface{})
+				name, _ := fn["name"].(string)
+				names[name] = true
+			}
+		}
+		messages, _ := body["messages"].([]interface{})
+		last := messages[len(messages)-1].(map[string]interface{})
+		content, _ := last["content"].(string)
+
+		mu.Lock()
+		if strings.Contains(content, "implement parent") {
+			parentCalls++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message": map[string]interface{}{
+						"role": "assistant",
+						"tool_calls": []map[string]interface{}{{
+							"id": "spawn-1", "type": "function",
+							"function": map[string]interface{}{
+								"name":      serviceReadOnlyChildSpawnToolName,
+								"arguments": `{"role":"explorer","task":"inspect child"}`,
+							},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+			})
+			return
+		}
+		childCalls++
+		childToolSurface = names
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "child completed its inspection"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
+	ledger := codingruntime.NewMemoryStore()
+	executor.SetCodingRuntimeStore(ledger)
+	workspace := t.TempDir()
+	req := ExecuteRequest{
+		Principal: Principal{TenantID: "tenant", UserID: "user"},
+		Instance:  Instance{ID: "instance", Workspace: workspace},
+		Session:   Session{ID: "session"},
+		Message: Message{Content: "implement parent", Metadata: map[string]string{
+			metaCodingRuntimeMode:       "local_workflow",
+			metaCodingRuntimeWorkflowID: "workflow",
+			metaCodingRuntimePhaseID:    "implementation",
+		}},
+		Config:        corelib.AppConfig{MaclawLLMUrl: server.URL, MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"},
+		DataDir:       t.TempDir(),
+		MutationScope: workflow.MutationScopeProject,
+	}
+	result, err := executor.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("runtime parent execution: %v", err)
+	}
+	if result == nil || result.Metadata[metaCodingRuntimeTaskStatus] != string(codingruntime.TaskWaitingChild) {
+		t.Fatalf("runtime projection after child admission = %#v", result)
+	}
+	taskID := result.Metadata[metaCodingRuntimeTaskID]
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		children, listErr := ledger.ListChildTasks(taskID)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(children) == 1 && children[0].Status == codingruntime.TaskCompleted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child did not complete: %#v", children)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if task, getErr := ledger.GetTask(taskID); getErr != nil || task.Status != codingruntime.TaskQueued {
+		t.Fatalf("parent task after child delivery = %#v err=%v", task, getErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if parentCalls != 1 || childCalls != 1 {
+		t.Fatalf("parent/child LLM calls = %d/%d, want 1/1", parentCalls, childCalls)
+	}
+	for _, denied := range []string{"bash", "ssh", "write_file", "edit_file", "spawn_coding_agent"} {
+		if childToolSurface[denied] {
+			t.Fatalf("child exposed %q: %#v", denied, childToolSurface)
+		}
+	}
+}
+
+func TestServiceWiresCodingRuntimeOnlyToSupportingExecutor(t *testing.T) {
+	executor := &CoreAgentExecutor{}
+	svc, _, _ := setupCaptureAgentService(t, executor)
+	ledger := codingruntime.NewMemoryStore()
+	if !svc.SetCodingRuntimeStore(ledger) || executor.getCodingRuntimeStore() != ledger {
+		t.Fatal("service did not wire ledger into CoreAgentExecutor")
+	}
+	other, _, _ := setupCaptureAgentService(t, &captureExecutor{})
+	if other.SetCodingRuntimeStore(ledger) {
+		t.Fatal("service reported coding runtime support for unrelated executor")
+	}
+}
+
 func TestCoreAgentExecutorReturnsPromptBundleMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -376,6 +1160,9 @@ type noOpKnowledgeStore struct{}
 func (noOpKnowledgeStore) Search(context.Context, knowledge.SearchOptions) ([]knowledge.SearchResult, error) {
 	return nil, nil
 }
+func (noOpKnowledgeStore) SearchImages(context.Context, knowledge.ImageSearchOptions) ([]knowledge.SearchResult, error) {
+	return nil, nil
+}
 func (noOpKnowledgeStore) ContextPack(context.Context, knowledge.ContextPackOptions) (knowledge.ContextPackResult, error) {
 	return knowledge.ContextPackResult{}, nil
 }
@@ -446,12 +1233,27 @@ func (noOpKnowledgeStore) DeleteImportBatch(context.Context, knowledge.ImportBat
 
 type stubKnowledgeStore struct {
 	noOpKnowledgeStore
-	results []knowledge.SearchResult
+	results      []knowledge.SearchResult
+	assetBaseDir string
+}
+
+func tinyPNG() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	var out bytes.Buffer
+	_ = png.Encode(&out, img)
+	return out.Bytes()
 }
 
 func (s stubKnowledgeStore) Search(context.Context, knowledge.SearchOptions) ([]knowledge.SearchResult, error) {
 	return s.results, nil
 }
+
+func (s stubKnowledgeStore) SearchImages(context.Context, knowledge.ImageSearchOptions) ([]knowledge.SearchResult, error) {
+	return s.results, nil
+}
+
+func (s stubKnowledgeStore) ImageAssetBaseDir() string { return s.assetBaseDir }
 
 func TestCoreAgentBuildSystemPromptIncludesKnowledgeRulesWhenStoreConfigured(t *testing.T) {
 	// Force full profile so knowledge policy blocks are present (adaptive light
@@ -487,6 +1289,30 @@ func TestKnowledgeAutoRecallFormatsEvidenceWithCitation(t *testing.T) {
 	}
 }
 
+func TestKnowledgeAutoRecallLabelsDoNotExposeImageImportPath(t *testing.T) {
+	privatePath := `C:\private\knowledge_assets\diagram.png`
+	r := knowledge.SearchResult{
+		NodeType:  knowledge.NodeTypeImage,
+		NodeTitle: "Gateway diagram",
+		Citation:  privatePath,
+		Source: knowledge.Source{
+			ID:           "image-source",
+			Kind:         knowledge.SourceKindImage,
+			URI:          privatePath,
+			CanonicalURI: "file://" + privatePath,
+			RelativePath: privatePath,
+		},
+	}
+	for name, label := range map[string]string{
+		"source":   knowledgeSourceLabel(r),
+		"citation": knowledgeCitationLabel(r),
+	} {
+		if strings.Contains(label, privatePath) || strings.Contains(label, "file://") {
+			t.Fatalf("auto-recall %s leaked image path: %q", name, label)
+		}
+	}
+}
+
 func TestKnowledgeSearchResultsRequireEvidenceCitation(t *testing.T) {
 	out := formatSearchResults([]knowledge.SearchResult{{
 		Source:   knowledge.Source{Title: "材料原文"},
@@ -515,6 +1341,156 @@ func TestCoreAgentBuildSystemPromptAutoRecallsKnowledgeAfterFirstTurn(t *testing
 
 	if !strings.Contains(prompt, "知识库参考") || !strings.Contains(prompt, "马勇博士共有 3 项发明专利") {
 		t.Fatalf("expected knowledge auto recall on follow-up turns, got %q", prompt)
+	}
+}
+
+func TestCoreAgentEnterpriseAutoRecallFromDataDirNoopEmpty(t *testing.T) {
+	t.Setenv(agent.PromptProfileEnvKey, "full")
+	// Empty dataDir with no enterprise libs must not panic or inject header.
+	cb := &coreAgentCallbacks{dataDir: t.TempDir()}
+	var b strings.Builder
+	cb.appendKnowledgeAutoRecall(&b, "公司报销政策是什么")
+	if strings.Contains(b.String(), "企业知识库参考") {
+		t.Fatalf("unexpected enterprise header: %q", b.String())
+	}
+}
+
+func TestMergeKnowledgeSearchResultsDedupAndLimit(t *testing.T) {
+	personal := []knowledge.SearchResult{
+		{Source: knowledge.Source{ID: "p1", Title: "P"}, Snippet: "a", Score: 2},
+		{Source: knowledge.Source{ID: "shared", Title: "S"}, Snippet: "b", Score: 1},
+	}
+	enterprise := []knowledge.SearchResult{
+		{Source: knowledge.Source{ID: "shared", Title: "[企业] S"}, Snippet: "b", Score: 3},
+		{Source: knowledge.Source{ID: "e1", Title: "[企业] E"}, Snippet: "c", Score: 2},
+	}
+	got := mergeKnowledgeSearchResults(personal, enterprise, 3)
+	if len(got) != 3 {
+		t.Fatalf("want 3, got %d: %+v", len(got), got)
+	}
+	if got[0].Source.ID != "p1" || got[1].Source.ID != "shared" || got[2].Source.ID != "e1" {
+		t.Fatalf("unexpected order/ids: %+v", got)
+	}
+}
+
+func TestExecuteKnowledgeSearchEnterpriseOnly(t *testing.T) {
+	// No personal store: empty enterprise dir should report empty results (not "not configured").
+	cb := &coreAgentCallbacks{dataDir: t.TempDir()}
+	out := cb.executeKnowledgeSearch(map[string]interface{}{"query": "policy"})
+	if out != knowledge.EmptySearchResultMessage {
+		// When neither store is configured at all, dataDir set counts as configured.
+		if strings.Contains(out, "not configured") {
+			t.Fatalf("unexpected not-configured with dataDir: %s", out)
+		}
+	}
+}
+
+func TestCoreAgentGeneralKnowledgeSearchDoesNotIncludeImageDisplayMarker(t *testing.T) {
+	dataDir := t.TempDir()
+	assets, err := knowledge.NewImageAssetManager(dataDir)
+	if err != nil {
+		t.Fatalf("NewImageAssetManager: %v", err)
+	}
+	if _, err := assets.SaveImageFromBytes("source", tinyPNG(), ".png"); err != nil {
+		t.Fatalf("SaveImageFromBytes: %v", err)
+	}
+	store := stubKnowledgeStore{results: []knowledge.SearchResult{{
+		ResultType: "node",
+		NodeID:     "node",
+		NodeType:   knowledge.NodeTypeImage,
+		NodeTitle:  "Architecture",
+		Source:     knowledge.Source{ID: "source", Kind: knowledge.SourceKindImage, Title: "Architecture"},
+	}}}
+	cb := &coreAgentCallbacks{ctx: context.Background(), dataDir: dataDir, knowledgeStore: store}
+	out := cb.executeKnowledgeSearch(map[string]interface{}{"query": "architecture"})
+	if strings.Contains(out, "[KB_IMAGE:") || strings.Contains(out, "data:image/jpeg;base64,") {
+		t.Fatalf("general text search unexpectedly embedded image data: %s", out)
+	}
+	if strings.Contains(out, "knowledge_assets") || strings.Contains(out, "original.png") {
+		t.Fatalf("tool output exposed image filesystem path: %s", out)
+	}
+}
+
+func TestCoreAgentDedicatedKnowledgeImageSearchIncludesSafeDisplayMarker(t *testing.T) {
+	dataDir := t.TempDir()
+	assets, err := knowledge.NewImageAssetManager(dataDir)
+	if err != nil {
+		t.Fatalf("NewImageAssetManager: %v", err)
+	}
+	if _, err := assets.SaveImageFromBytes("source", tinyPNG(), ".png"); err != nil {
+		t.Fatalf("SaveImageFromBytes: %v", err)
+	}
+	store := stubKnowledgeStore{results: []knowledge.SearchResult{{
+		ResultType: "node",
+		NodeID:     "node",
+		NodeType:   knowledge.NodeTypeImage,
+		NodeTitle:  "Architecture",
+		Source:     knowledge.Source{ID: "source", Kind: knowledge.SourceKindImage, Title: "Architecture"},
+	}}}
+	cb := &coreAgentCallbacks{ctx: context.Background(), dataDir: dataDir, knowledgeStore: store}
+	out := cb.executeKnowledgeImageSearch(map[string]interface{}{"query": "architecture diagram"})
+	if !strings.Contains(out, "[KB_IMAGE:source|data:image/jpeg;base64,") {
+		t.Fatalf("image display marker missing: %s", out)
+	}
+	if strings.Contains(out, "knowledge_assets") || strings.Contains(out, "original.png") {
+		t.Fatalf("tool output exposed image filesystem path: %s", out)
+	}
+}
+
+func TestCoreAgentKnowledgeImageSearchUsesRecordedEmbeddedAssetID(t *testing.T) {
+	dataDir := t.TempDir()
+	assets, err := knowledge.NewImageAssetManager(dataDir)
+	if err != nil {
+		t.Fatalf("NewImageAssetManager: %v", err)
+	}
+	const assetID = "document-source_media-image-7"
+	if _, err := assets.SaveImageFromBytes(assetID, tinyPNG(), ".png"); err != nil {
+		t.Fatalf("SaveImageFromBytes: %v", err)
+	}
+	store := stubKnowledgeStore{results: []knowledge.SearchResult{{
+		ResultType: "node",
+		NodeID:     "generated-node-id",
+		NodeType:   knowledge.NodeTypeImage,
+		NodeTitle:  "Embedded architecture",
+		Source:     knowledge.Source{ID: "document-source", Kind: knowledge.SourceKindDOCX, Title: "Architecture document"},
+		Media:      &knowledge.SearchResultMedia{AssetID: assetID},
+	}}}
+	cb := &coreAgentCallbacks{ctx: context.Background(), dataDir: dataDir, knowledgeStore: store}
+	out := cb.executeKnowledgeImageSearch(map[string]interface{}{"query": "embedded architecture"})
+	if !strings.Contains(out, "[KB_IMAGE:"+assetID+"|data:image/jpeg;base64,") {
+		t.Fatalf("marker did not preserve embedded image asset ID: %s", out)
+	}
+	if strings.Contains(out, "document-source_generated-node-id") {
+		t.Fatalf("marker fell back to reconstructed asset ID: %s", out)
+	}
+}
+
+func TestCoreAgentKnowledgeImageSearchUsesKnowledgeStoreAssetRoot(t *testing.T) {
+	assetDataDir := t.TempDir()
+	assets, err := knowledge.NewImageAssetManager(assetDataDir)
+	if err != nil {
+		t.Fatalf("NewImageAssetManager: %v", err)
+	}
+	if _, err := assets.SaveImageFromBytes("source", tinyPNG(), ".png"); err != nil {
+		t.Fatalf("SaveImageFromBytes: %v", err)
+	}
+	store := stubKnowledgeStore{
+		assetBaseDir: assets.BaseDir(),
+		results: []knowledge.SearchResult{{
+			ResultType: "node",
+			NodeID:     "node",
+			NodeType:   knowledge.NodeTypeImage,
+			Source:     knowledge.Source{ID: "source", Kind: knowledge.SourceKindImage, Title: "Shared server image"},
+		}},
+	}
+	// The agent's per-instance data directory deliberately has no image assets.
+	cb := &coreAgentCallbacks{ctx: context.Background(), dataDir: t.TempDir(), knowledgeStore: store}
+	out := cb.executeKnowledgeImageSearch(map[string]interface{}{"query": "shared server image"})
+	if !strings.Contains(out, "[KB_IMAGE:source|data:image/jpeg;base64,") {
+		t.Fatalf("expected marker from knowledge-store asset root, got: %s", out)
+	}
+	if strings.Contains(out, assetDataDir) {
+		t.Fatalf("asset root leaked into model output: %s", out)
 	}
 }
 
@@ -1197,17 +2173,32 @@ allowed_commands:
 	}
 }
 
-func TestEnsureBashWorkingDirUsesInstanceWorkspace(t *testing.T) {
-	args := ensureBashWorkingDir(map[string]interface{}{"command": "pwd"}, "/tmp/workspace")
+func TestCoreAgentResolveBashWorkingDirUsesInstanceWorkspace(t *testing.T) {
+	args, err := (&coreAgentCallbacks{workspace: "/tmp/workspace"}).resolveBashWorkingDir(map[string]interface{}{"command": "pwd"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := args["working_dir"]; got != "/tmp/workspace" {
 		t.Fatalf("expected working_dir to default to workspace, got %#v", got)
 	}
 }
 
-func TestEnsureBashWorkingDirPreservesExplicitDir(t *testing.T) {
-	args := ensureBashWorkingDir(map[string]interface{}{"command": "pwd", "working_dir": "/tmp/custom"}, "/tmp/workspace")
-	if got := args["working_dir"]; got != "/tmp/custom" {
-		t.Fatalf("expected explicit working_dir to be preserved, got %#v", got)
+func TestCoreAgentResolveBashWorkingDirRejectsWorkspaceEscape(t *testing.T) {
+	base := t.TempDir()
+	if _, err := (&coreAgentCallbacks{workspace: base}).resolveBashWorkingDir(map[string]interface{}{"command": "pwd", "working_dir": filepath.Join(base, "..", "outside")}); err == nil || !strings.Contains(err.Error(), "must stay within") {
+		t.Fatalf("workspace escape error = %v", err)
+	}
+}
+
+func TestCoreAgentResolveBashWorkingDirAcceptsWorkspaceDescendant(t *testing.T) {
+	base := t.TempDir()
+	descendant := filepath.Join(base, "nested")
+	args, err := (&coreAgentCallbacks{workspace: base}).resolveBashWorkingDir(map[string]interface{}{"command": "pwd", "working_dir": descendant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := args["working_dir"]; got != filepath.Clean(descendant) {
+		t.Fatalf("working_dir = %#v", got)
 	}
 }
 
@@ -1282,8 +2273,10 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 
 	importDirProps := map[string]interface{}{}
 	importFilesProps := map[string]interface{}{}
+	importDescriptions := map[string]string{}
 	saveURLProps := map[string]interface{}{}
 	searchProps := map[string]interface{}{}
+	imageSearchProps := map[string]interface{}{}
 	contextPackProps := map[string]interface{}{}
 	for _, tool := range tools {
 		switch tooldef.Name(tool) {
@@ -1291,16 +2284,22 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 			fn, _ := tool["function"].(map[string]interface{})
 			params, _ := fn["parameters"].(map[string]interface{})
 			searchProps, _ = params["properties"].(map[string]interface{})
+		case "knowledge_image_search":
+			fn, _ := tool["function"].(map[string]interface{})
+			params, _ := fn["parameters"].(map[string]interface{})
+			imageSearchProps, _ = params["properties"].(map[string]interface{})
 		case "knowledge_context_pack":
 			fn, _ := tool["function"].(map[string]interface{})
 			params, _ := fn["parameters"].(map[string]interface{})
 			contextPackProps, _ = params["properties"].(map[string]interface{})
 		case "knowledge_import_directory":
 			fn, _ := tool["function"].(map[string]interface{})
+			importDescriptions["directory"], _ = fn["description"].(string)
 			params, _ := fn["parameters"].(map[string]interface{})
 			importDirProps, _ = params["properties"].(map[string]interface{})
 		case "knowledge_import_files":
 			fn, _ := tool["function"].(map[string]interface{})
+			importDescriptions["files"], _ = fn["description"].(string)
 			params, _ := fn["parameters"].(map[string]interface{})
 			importFilesProps, _ = params["properties"].(map[string]interface{})
 		case "knowledge_save_url":
@@ -1309,6 +2308,13 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 			saveURLProps, _ = params["properties"].(map[string]interface{})
 		default:
 			continue
+		}
+	}
+	for name, description := range importDescriptions {
+		for _, format := range []string{"DOC/DOCX", "PPT/PPTX", "XLS/XLSX"} {
+			if !strings.Contains(description, format) {
+				t.Fatalf("knowledge_import_%s description missing %s: %q", name, format, description)
+			}
 		}
 	}
 	for _, prop := range []string{"root_path", "path", "dir", "directory", "folder", "root"} {
@@ -1329,6 +2335,11 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 	for _, prop := range []string{"query", "search_scope", "project_path", "topic_hint", "context_terms", "result_types", "source_kinds", "source_ids", "source_id", "id", "labels", "domain", "include_disabled", "limit"} {
 		if _, ok := searchProps[prop]; !ok {
 			t.Fatalf("knowledge_search schema missing %s in %#v", prop, searchProps)
+		}
+	}
+	for _, prop := range []string{"query", "search_scope", "project_path", "topic_hint", "context_terms", "source_kinds", "source_ids", "source_id", "id", "labels", "domain", "include_disabled", "limit"} {
+		if _, ok := imageSearchProps[prop]; !ok {
+			t.Fatalf("knowledge_image_search schema missing %s in %#v", prop, imageSearchProps)
 		}
 	}
 	for _, prop := range []string{"query", "search_scope", "project_path", "topic_hint", "context_terms", "result_types", "source_kinds", "source_ids", "source_id", "id", "labels", "domain", "include_disabled", "max_items", "max_chars"} {
@@ -2350,5 +3361,163 @@ func TestCoreAgentSystemPromptRequiresExactIMFileTargetResolution(t *testing.T) 
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("system prompt missing %q: %s", want, prompt)
 		}
+	}
+}
+
+func TestCoreAgentAttachmentOfficeReadRouteUsesPrivateWorkspaceStaging(t *testing.T) {
+	workspace := t.TempDir()
+	sourcePath := filepath.Join(t.TempDir(), "source.docx")
+	const body = "agentservice OfficeRead attachment body"
+	writeAgentServiceMinimalDOCX(t, sourcePath, body)
+	raw, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stagingDir := filepath.Join(workspace, ".attachments")
+	content := agent.BuildUserContentWithAttachmentStagingDir("inspect", []agent.MessageAttachment{{
+		Type:     "image",
+		FileName: "cover.png",
+		MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		Data:     base64.StdEncoding.EncodeToString(raw),
+	}}, "openai", true, nil, nil, stagingDir)
+	text, ok := content.(string)
+	if !ok || !strings.Contains(text, body) {
+		t.Fatalf("Office attachment auto-extract = %#v, want %q", content, body)
+	}
+	files, err := filepath.Glob(filepath.Join(stagingDir, "*.docx"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("private staged documents = %v, err=%v", files, err)
+	}
+
+	callbacks := &coreAgentCallbacks{workspace: workspace}
+	for _, input := range []map[string]string{
+		{"file_path": filepath.Join(".attachments", filepath.Base(files[0]))},
+		{"path": filepath.Join(".attachments", filepath.Base(files[0]))},
+	} {
+		args, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := callbacks.ExecuteToolStructured("read_document", string(args))
+		if out.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(out.Result, body) {
+			t.Fatalf("read_document private attachment route for %#v = %+v", input, out)
+		}
+	}
+
+	escaped, _ := json.Marshal(map[string]string{"file_path": filepath.Join(filepath.Dir(workspace), "outside.docx")})
+	if out := callbacks.ExecuteToolStructured("read_document", string(escaped)); out.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(out.Result, "escapes") {
+		t.Fatalf("read_document escape route = %+v", out)
+	}
+}
+
+func TestCoreAgentReadDocumentUsesRequestOfficeReadPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "request-policy.docx")
+	writeAgentServiceMinimalDOCX(t, path, "request policy body")
+	fallback := false
+	callbacks := &coreAgentCallbacks{
+		workspace: filepath.Dir(path),
+		appCfg: corelib.AppConfig{
+			OfficeReadEngine:   "legacy",
+			OfficeReadFormats:  []string{"ppt"},
+			OfficeReadFallback: &fallback,
+		},
+	}
+	args, err := json.Marshal(map[string]string{"file_path": filepath.Base(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callbacks.ExecuteToolStructured("read_document", string(args))
+	if out.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(out.Result, "request policy body") {
+		t.Fatalf("read_document did not use request policy: %+v", out)
+	}
+}
+
+func TestCoreAgentReadDocumentUsesRequestScopedOfficeReadConfig(t *testing.T) {
+	for _, key := range []string{
+		"MACLAW_OFFICE_READ_ENGINE",
+		"MACLAW_OFFICE_READ_FORMATS",
+		"MACLAW_OFFICE_READ_FALLBACK",
+		"MACLAW_OFFICE_READ_EMIT_MARKDOWN",
+	} {
+		t.Setenv(key, "")
+	}
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "policy.docx")
+	writeAgentServiceMinimalDOCX(t, path, "request scoped legacy body")
+
+	legacyCallbacks := &coreAgentCallbacks{
+		workspace: workspace,
+		appCfg:    corelib.AppConfig{OfficeReadEngine: "legacy"},
+	}
+	legacy := legacyCallbacks.ExecuteToolStructured("read_document", `{"file_path":"policy.docx"}`)
+	if legacy.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(legacy.Result, "request scoped legacy body") {
+		t.Fatalf("legacy request read = %+v", legacy)
+	}
+
+	primaryCallbacks := &coreAgentCallbacks{
+		workspace: workspace,
+		appCfg: corelib.AppConfig{
+			OfficeReadEngine:  "officeread",
+			OfficeReadFormats: []string{"docx"},
+		},
+	}
+	primary := primaryCallbacks.ExecuteToolStructured("read_document", `{"file_path":"policy.docx"}`)
+	if primary.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(primary.Result, "request scoped legacy body") {
+		t.Fatalf("OfficeRead request read = %+v", primary)
+	}
+	if legacy.Result == "" || primary.Result == "" {
+		t.Fatalf("request-scoped reads must produce non-empty bodies: legacy=%q primary=%q", legacy.Result, primary.Result)
+	}
+}
+func TestCoreAgentReadDocumentReportsSharedReaderFailures(t *testing.T) {
+	workspace := t.TempDir()
+	callbacks := &coreAgentCallbacks{workspace: workspace}
+	args, err := json.Marshal(map[string]string{"file_path": "missing.docx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callbacks.ExecuteToolStructured("read_document", string(args))
+	if out.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(out.Result, "error_class=unavailable") {
+		t.Fatalf("read_document missing source = %+v", out)
+	}
+
+	directoryArgs, err := json.Marshal(map[string]string{"file_path": workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = callbacks.ExecuteToolStructured("read_document", string(directoryArgs))
+	if out.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(out.Result, "error_class=invalid_path") {
+		t.Fatalf("read_document directory = %+v", out)
+	}
+}
+
+func TestReadDocumentToolResultPreservesTimeoutOutcome(t *testing.T) {
+	out := readDocumentToolResult("读取失败（error_class=timeout）\n# path: fixture.docx\n")
+	if out.Outcome != agent.ToolExecutionOutcomeTimeout {
+		t.Fatalf("timeout outcome = %q, want %q", out.Outcome, agent.ToolExecutionOutcomeTimeout)
+	}
+}
+
+func writeAgentServiceMinimalDOCX(t *testing.T, path, text string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create docx: %v", err)
+	}
+	zw := zip.NewWriter(file)
+	w, err := zw.Create("word/document.xml")
+	if err != nil {
+		t.Fatalf("create document XML: %v", err)
+	}
+	escaped := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(text)
+	if _, err := w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>` + escaped + `</w:t></w:r></w:p></w:body></w:document>`)); err != nil {
+		t.Fatalf("write document XML: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close docx: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close docx: %v", err)
 	}
 }

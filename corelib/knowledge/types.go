@@ -1,6 +1,10 @@
 package knowledge
 
-import "time"
+import (
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+)
 
 const (
 	SourceKindURL              = "url"
@@ -9,6 +13,7 @@ const (
 	SourceKindDOC              = "doc"
 	SourceKindPDF              = "pdf"
 	SourceKindPPTX             = "pptx"
+	SourceKindPPT              = "ppt"
 	SourceKindXLSX             = "xlsx"
 	SourceKindXLS              = "xls"
 	SourceKindCSV              = "csv"
@@ -53,7 +58,7 @@ const (
 
 const DefaultMaxFileBytes int64 = 100 * 1024 * 1024
 
-var DefaultIncludeExts = []string{".docx", ".pdf", ".pptx", ".xlsx", ".csv", ".md", ".txt", ".doc", ".xls"}
+var DefaultIncludeExts = []string{".docx", ".pdf", ".ppt", ".pptx", ".xlsx", ".csv", ".md", ".txt", ".doc", ".xls"}
 
 // ImageIncludeExts are image file extensions supported for knowledge import.
 // These are NOT in DefaultIncludeExts — they are only included when the user
@@ -67,15 +72,19 @@ const (
 
 // DocumentNode metadata keys for image nodes.
 const (
-	MetaImageAssetPath = "image_asset_path" // path to stored image asset (relative to knowledge_assets/)
-	MetaImageWidth     = "image_width"      // pixel width
-	MetaImageHeight    = "image_height"     // pixel height
-	MetaImageFormat    = "image_format"     // "png", "jpeg", "gif", "bmp", "webp"
-	MetaImageOCRText   = "ocr_text"         // OCR-extracted text from image
-	MetaImageRefSource = "ref_source_id"    // source ID of the document referencing this image
-	MetaImageRefNode   = "ref_node_id"      // node ID of the paragraph referencing this image
-	MetaImageIsVector  = "image_is_vector"  // "true" for EMF/WMF/SVG (skip OCR)
-	MetaImageAltText   = "image_alt_text"   // alt text from markdown/html/ooxml
+	// MetaImageAssetPath is a deprecated, pre-managed-assets key. New imports
+	// deliberately do not persist it because it could be an absolute host path.
+	// Use MetaImageAssetID for all lookup and display flows.
+	MetaImageAssetPath = "image_asset_path"
+	MetaImageAssetID   = "image_asset_id"  // stable asset identifier, safe to expose to clients
+	MetaImageWidth     = "image_width"     // pixel width
+	MetaImageHeight    = "image_height"    // pixel height
+	MetaImageFormat    = "image_format"    // "png", "jpeg", "gif", "bmp", "webp"
+	MetaImageOCRText   = "ocr_text"        // OCR-extracted text from image
+	MetaImageRefSource = "ref_source_id"   // source ID of the document referencing this image
+	MetaImageRefNode   = "ref_node_id"     // node ID of the paragraph referencing this image
+	MetaImageIsVector  = "image_is_vector" // "true" for EMF/WMF/SVG (skip OCR)
+	MetaImageAltText   = "image_alt_text"  // alt text from markdown/html/ooxml
 )
 
 // SaveStatusCreated indicates the source was newly created.
@@ -218,6 +227,22 @@ type DocumentNode struct {
 	Offset     int               `json:"offset,omitempty"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
 	TokenCount int               `json:"token_count,omitempty"`
+}
+
+// DocumentNodePreview is the bounded, display-only projection of a document
+// node. It deliberately excludes arbitrary node metadata and limits text at
+// the storage query boundary so a GUI preview cannot turn a few large indexed
+// nodes into an unbounded IPC payload.
+type DocumentNodePreview struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Title     string `json:"title,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Page      int    `json:"page,omitempty"`
+	SheetName string `json:"sheet_name,omitempty"`
+	Offset    int    `json:"offset,omitempty"`
+	Extractor string `json:"extractor,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // KnowledgeTable represents one structured sheet/table imported from a source.
@@ -630,6 +655,10 @@ type DirectoryImportRequest struct {
 	ExcludeGlobs []string `json:"exclude_globs,omitempty"`
 	MaxFileBytes int64    `json:"max_file_bytes,omitempty"`
 	DryRun       bool     `json:"dry_run,omitempty"`
+	// OfficeReadConfig is a trusted, request-scoped host policy. It is kept out
+	// of JSON so callers cannot select parser rollout behavior through public
+	// import payloads. A nil value preserves the desktop provider behavior.
+	OfficeReadConfig *agent.OfficeReadConfig `json:"-"`
 }
 
 // ImportFailedItem is a compact failed-file summary for progress/finish events.
@@ -674,6 +703,9 @@ type ImportRetryRequest struct {
 	MaxFileBytes   int64    `json:"max_file_bytes,omitempty"`
 	TopicHint      string   `json:"topic_hint,omitempty"`
 	DistillMode    string   `json:"distill_mode,omitempty"`
+	// OfficeReadConfig is injected only by a trusted host when retrying a
+	// request-scoped import. It is deliberately excluded from public JSON.
+	OfficeReadConfig *agent.OfficeReadConfig `json:"-"`
 }
 
 type ImportBatchDeleteRequest struct {
@@ -710,6 +742,8 @@ type ListSourcesOptions struct {
 	MinQualityScore int      `json:"min_quality_score,omitempty"`
 	MaxQualityScore int      `json:"max_quality_score,omitempty"`
 	Limit           int      `json:"limit,omitempty"`
+	// Offset skips the first N matching rows (ORDER BY updated_at DESC). Used for admin pagination.
+	Offset int `json:"offset,omitempty"`
 }
 
 type URLSaveRequest struct {
@@ -911,6 +945,20 @@ type SearchOptions struct {
 	PreferEmbedding bool `json:"prefer_embedding,omitempty"`
 }
 
+// ImageSearchOptions limits a knowledge query to image evidence. Results are
+// retrieved from the text indexed for each image (OCR, vision caption, filename
+// and surrounding document context), then returned as image nodes that can be
+// resolved through SearchResult.Media by the delivery layer.
+//
+// It deliberately embeds SearchOptions so image search shares the same tenant,
+// source, label, and semantic-ranking filters as normal knowledge retrieval.
+// A query image is not accepted here: image-to-image retrieval requires a
+// shared multimodal embedding model and is intentionally not simulated by text
+// metadata matching.
+type ImageSearchOptions struct {
+	SearchOptions
+}
+
 type NumberRange struct {
 	Min *float64 `json:"min,omitempty"`
 	Max *float64 `json:"max,omitempty"`
@@ -974,31 +1022,44 @@ type SearchResult struct {
 	// ParentNodeID, Language and Script are hydrated from the originating
 	// document node. They keep chunked multilingual evidence inspectable by
 	// clients without changing the original citation target.
-	ParentNodeID string  `json:"parent_node_id,omitempty"`
-	Language     string  `json:"language,omitempty"`
-	Script       string  `json:"script,omitempty"`
-	NodeTitle    string  `json:"node_title,omitempty"`
-	NodeType     string  `json:"node_type,omitempty"`
-	Page         int     `json:"page,omitempty"`
-	SheetName    string  `json:"sheet_name,omitempty"`
-	RowRange     string  `json:"row_range,omitempty"`
-	ColRange     string  `json:"col_range,omitempty"`
-	Citation     string  `json:"citation,omitempty"`
-	CardID       string  `json:"card_id,omitempty"`
-	CardTitle    string  `json:"card_title,omitempty"`
-	FactID       string  `json:"fact_id,omitempty"`
-	TableID      string  `json:"table_id,omitempty"`
-	RowID        string  `json:"row_id,omitempty"`
-	CellID       string  `json:"cell_id,omitempty"`
-	RowIndex     int     `json:"row_index,omitempty"`
-	ColumnName   string  `json:"column_name,omitempty"`
-	Subject      string  `json:"subject,omitempty"`
-	Predicate    string  `json:"predicate,omitempty"`
-	Object       string  `json:"object,omitempty"`
-	Claim        string  `json:"claim,omitempty"`
-	Summary      string  `json:"summary,omitempty"`
-	Snippet      string  `json:"snippet,omitempty"`
-	Score        float64 `json:"score,omitempty"`
+	ParentNodeID string             `json:"parent_node_id,omitempty"`
+	Language     string             `json:"language,omitempty"`
+	Script       string             `json:"script,omitempty"`
+	NodeTitle    string             `json:"node_title,omitempty"`
+	NodeType     string             `json:"node_type,omitempty"`
+	Page         int                `json:"page,omitempty"`
+	SheetName    string             `json:"sheet_name,omitempty"`
+	RowRange     string             `json:"row_range,omitempty"`
+	ColRange     string             `json:"col_range,omitempty"`
+	Citation     string             `json:"citation,omitempty"`
+	CardID       string             `json:"card_id,omitempty"`
+	CardTitle    string             `json:"card_title,omitempty"`
+	FactID       string             `json:"fact_id,omitempty"`
+	TableID      string             `json:"table_id,omitempty"`
+	RowID        string             `json:"row_id,omitempty"`
+	CellID       string             `json:"cell_id,omitempty"`
+	RowIndex     int                `json:"row_index,omitempty"`
+	ColumnName   string             `json:"column_name,omitempty"`
+	Subject      string             `json:"subject,omitempty"`
+	Predicate    string             `json:"predicate,omitempty"`
+	Object       string             `json:"object,omitempty"`
+	Claim        string             `json:"claim,omitempty"`
+	Summary      string             `json:"summary,omitempty"`
+	Snippet      string             `json:"snippet,omitempty"`
+	Score        float64            `json:"score,omitempty"`
+	Media        *SearchResultMedia `json:"media,omitempty"`
+}
+
+// SearchResultMedia is a display-safe reference to an image matched by a
+// knowledge search. URLs are populated by the delivery layer; filesystem paths
+// and image bytes must never be stored here.
+type SearchResultMedia struct {
+	AssetID      string `json:"asset_id"`
+	ThumbnailURL string `json:"thumbnail_url,omitempty"`
+	PreviewURL   string `json:"preview_url,omitempty"`
+	OriginalURL  string `json:"original_url,omitempty"`
+	Alt          string `json:"alt,omitempty"`
+	Caption      string `json:"caption,omitempty"`
 }
 
 type TopicRelevanceSource struct {
@@ -1209,12 +1270,16 @@ type ContextPackItem struct {
 }
 
 type ContextPackResult struct {
-	Query          string            `json:"query"`
-	Count          int               `json:"count"`
-	CharacterCount int               `json:"character_count"`
-	Items          []ContextPackItem `json:"items"`
-	Citations      []Citation        `json:"citations"`
-	Notes          []string          `json:"notes,omitempty"`
+	Query          string `json:"query"`
+	Count          int    `json:"count"`
+	CharacterCount int    `json:"character_count"`
+	// TokenCount is the deterministic local estimate for injected text. Context
+	// packs use it as a hard budget boundary; CharacterCount remains for legacy
+	// callers and UI display.
+	TokenCount int               `json:"token_count"`
+	Items      []ContextPackItem `json:"items"`
+	Citations  []Citation        `json:"citations"`
+	Notes      []string          `json:"notes,omitempty"`
 }
 
 type Stats struct {
@@ -1275,19 +1340,34 @@ type FormatCapability struct {
 }
 
 type KnowledgeCapabilities struct {
-	DefaultIncludeExts []string           `json:"default_include_exts,omitempty"`
-	DefaultAutoLabels  bool               `json:"default_auto_labels"`
-	AutoLabelRules     []string           `json:"auto_label_rules,omitempty"`
-	Formats            []FormatCapability `json:"formats,omitempty"`
-	QueryRequiresLLM   bool               `json:"query_requires_llm"`
-	WriteLLMOptional   bool               `json:"write_llm_optional"`
-	DistillModes       []string           `json:"distill_modes,omitempty"`
-	CoverageFilters    []string           `json:"coverage_filters,omitempty"`
-	CoverageAliases    map[string]string  `json:"coverage_aliases,omitempty"`
-	LocalIndexes       []string           `json:"local_indexes,omitempty"`
-	StorageBackend     string             `json:"storage_backend,omitempty"`
-	SearchBackend      string             `json:"search_backend,omitempty"`
-	GeneratedAt        time.Time          `json:"generated_at"`
+	DefaultIncludeExts []string                   `json:"default_include_exts,omitempty"`
+	DefaultAutoLabels  bool                       `json:"default_auto_labels"`
+	AutoLabelRules     []string                   `json:"auto_label_rules,omitempty"`
+	Formats            []FormatCapability         `json:"formats,omitempty"`
+	QueryRequiresLLM   bool                       `json:"query_requires_llm"`
+	WriteLLMOptional   bool                       `json:"write_llm_optional"`
+	DistillModes       []string                   `json:"distill_modes,omitempty"`
+	CoverageFilters    []string                   `json:"coverage_filters,omitempty"`
+	CoverageAliases    map[string]string          `json:"coverage_aliases,omitempty"`
+	LocalIndexes       []string                   `json:"local_indexes,omitempty"`
+	StorageBackend     string                     `json:"storage_backend,omitempty"`
+	SearchBackend      string                     `json:"search_backend,omitempty"`
+	ImageRetrieval     ImageRetrievalCapabilities `json:"image_retrieval,omitempty"`
+	GeneratedAt        time.Time                  `json:"generated_at"`
+}
+
+// ImageRetrievalCapabilities makes the image-search contract discoverable to
+// clients and agents. It distinguishes the implemented text-to-image route
+// from image-to-image retrieval, which requires an actual shared multimodal
+// encoder rather than a text embedding model.
+type ImageRetrievalCapabilities struct {
+	TextToImage        bool     `json:"text_to_image"`
+	ImageToImage       bool     `json:"image_to_image"`
+	SearchEndpoint     string   `json:"search_endpoint,omitempty"`
+	AgentTool          string   `json:"agent_tool,omitempty"`
+	IndexEvidence      []string `json:"index_evidence,omitempty"`
+	Ranking            string   `json:"ranking,omitempty"`
+	ImageToImageReason string   `json:"image_to_image_reason,omitempty"`
 }
 
 type MaintenanceResult struct {

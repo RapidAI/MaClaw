@@ -4,6 +4,7 @@ package audioconv
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 )
 
 // Target format for ASR: 16kHz mono 16-bit signed little-endian PCM.
@@ -43,8 +44,11 @@ func pcmToWAV(pcm []byte, sampleRate, channels int) ([]byte, error) {
 	return buf, nil
 }
 
-// resampleS16 resamples mono S16LE PCM from srcRate to dstRate using linear
-// interpolation. Good enough for speech; avoids any external dependency.
+// resampleS16 resamples mono S16LE PCM from srcRate to dstRate through a
+// Blackman-windowed sinc low-pass filter. Plain linear interpolation has no
+// anti-aliasing, so downsampling 24/44.1/48 kHz TTS audio folds content above
+// the destination Nyquist back into the audible band — on the ESP32 speaker
+// that shows up as broadband hiss behind otherwise intelligible speech.
 func resampleS16(pcm []byte, srcRate, dstRate int) []byte {
 	if srcRate <= 0 || dstRate <= 0 {
 		return nil
@@ -59,19 +63,46 @@ func resampleS16(pcm []byte, srcRate, dstRate int) []byte {
 	dstSamples := int(int64(srcSamples) * int64(dstRate) / int64(srcRate))
 	out := make([]byte, dstSamples*2)
 
+	// Cutoff at 92% of the destination Nyquist (in input-sample units). When
+	// upsampling, the input Nyquist is the limit instead.
+	cutoff := 0.46 * math.Min(1.0, float64(dstRate)/float64(srcRate))
+	// Kernel half-width in input samples; 129 taps with a Blackman window
+	// narrows the transition band so content just above the destination
+	// Nyquist still lands deep in the stopband, and stays cheap for short
+	// clips.
+	const halfWidth = 64
 	ratio := float64(srcRate) / float64(dstRate)
 	for i := 0; i < dstSamples; i++ {
-		srcPos := float64(i) * ratio
-		idx := int(srcPos)
-		frac := srcPos - float64(idx)
-
-		s0 := readS16LE(pcm, idx)
-		s1 := s0
-		if idx+1 < srcSamples {
-			s1 = readS16LE(pcm, idx+1)
+		center := float64(i) * ratio
+		lo := int(math.Ceil(center - halfWidth))
+		hi := int(math.Floor(center + halfWidth))
+		sum := 0.0
+		norm := 0.0
+		for k := lo; k <= hi; k++ {
+			if k < 0 || k >= srcSamples {
+				continue
+			}
+			x := center - float64(k)
+			w := 0.42 + 0.5*math.Cos(math.Pi*x/halfWidth) + 0.08*math.Cos(2*math.Pi*x/halfWidth)
+			var h float64
+			if math.Abs(x) < 1e-9 {
+				h = 2 * cutoff
+			} else {
+				h = math.Sin(2*math.Pi*cutoff*x) / (math.Pi * x)
+			}
+			weight := h * w
+			sum += float64(readS16LE(pcm, k)) * weight
+			norm += weight
 		}
-		val := float64(s0)*(1-frac) + float64(s1)*frac
-		writeS16LE(out, i, int16(val))
+		if norm != 0 {
+			sum /= norm
+		}
+		if sum > math.MaxInt16 {
+			sum = math.MaxInt16
+		} else if sum < math.MinInt16 {
+			sum = math.MinInt16
+		}
+		writeS16LE(out, i, int16(math.RoundToEven(sum)))
 	}
 	return out
 }

@@ -381,10 +381,14 @@ func isSystemBackgroundWorkflowPolicyBypass(ownerID, toolName string, args map[s
 }
 
 func (a *App) remoteSessionPolicyOwnerID(sessionID string) string {
-	if a == nil || a.remoteSessions == nil {
+	if a == nil {
 		return a.defaultManualPolicyOwnerID()
 	}
-	if session, ok := a.remoteSessions.Get(strings.TrimSpace(sessionID)); ok && session != nil {
+	sessions := a.remoteSessionManagerIfReady()
+	if sessions == nil {
+		return a.defaultManualPolicyOwnerID()
+	}
+	if session, ok := sessions.Get(strings.TrimSpace(sessionID)); ok && session != nil {
 		return remoteLaunchPolicyOwnerIDForProject(session.LaunchSource, session.ProjectPath)
 	}
 	return a.defaultManualPolicyOwnerID()

@@ -366,6 +366,36 @@ func TestProgressSummary(t *testing.T) {
 	}
 }
 
+func TestProgressSummaryShowsWaitingChildAsPendingHandoff(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Tasks = []*TaskItem{{Index: 0, Title: "Inspect", Status: TaskExecWaitingChild}}
+	if summary := o.ProgressSummary(); !strings.Contains(summary, "[waiting child results]") || !strings.Contains(summary, "1 remaining") {
+		t.Fatalf("waiting child must remain visible as an unfinished handoff: %q", summary)
+	}
+	if context := o.buildTaskContextLocked(o.Tasks[0]); !strings.Contains(context, "[waiting child results]") {
+		t.Fatalf("task context must not hide waiting child status: %q", context)
+	}
+}
+
+func TestDependencyDeadlockDoesNotDiscardTasksBehindRuntimeHandoff(t *testing.T) {
+	for _, parentStatus := range []TaskExecStatus{TaskExecWaitingApproval, TaskExecWaitingChild, TaskExecInterrupted} {
+		t.Run(string(parentStatus), func(t *testing.T) {
+			o := NewTaskExecutionOrchestrator()
+			o.Active = true
+			o.Tasks = []*TaskItem{
+				{Index: 0, Title: "parent", Status: parentStatus},
+				{Index: 1, Title: "dependent", Status: TaskExecPending, DependsOn: []int{0}},
+			}
+			if skipped := o.MarkDependencyDeadlockTasks(); skipped != 0 {
+				t.Fatalf("skipped=%d; downstream task must remain pending during %s", skipped, parentStatus)
+			}
+			if got := o.Tasks[1].Status; got != TaskExecPending {
+				t.Fatalf("dependent status=%s, want pending", got)
+			}
+		})
+	}
+}
+
 func TestIsTaskHeader_FalsePositives(t *testing.T) {
 	// "任务完成后..." should NOT be a task header (no digit after 任务)
 	if isTaskHeader("任务完成后需要运行测试") {

@@ -21,7 +21,7 @@ import (
 )
 
 func TestOfficialProfileAssetNames(t *testing.T) {
-	want := map[string]string{"echoear-2st": "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw", "bread-compact": "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw", "fangtang-4g": "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw"}
+	want := map[string]string{"echoear-2st": "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw", "bread-compact": "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw", "fangtang-4g": "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw", "waveshare-amoled-1.75c": "MaClaw-ESP32S3-Waveshare-AMOLED-1.75C-firmware.clawfw"}
 	for _, p := range Profiles() {
 		if want[p.ID] != p.AssetName {
 			t.Fatalf("%s asset = %q", p.ID, p.AssetName)
@@ -30,6 +30,34 @@ func TestOfficialProfileAssetNames(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("profiles missing: %#v", want)
+	}
+}
+
+func TestWaveshareProfileUsesItsExact32MiBFirmwareIdentity(t *testing.T) {
+	profile, err := Profile("waveshare-amoled-1.75c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.FirmwareBoardID != "waveshare-s3-touch-amoled-1.75c-v1" || profile.FlashBytes != 32*1024*1024 {
+		t.Fatalf("unexpected Waveshare profile: %#v", profile)
+	}
+	if err := ValidateManifestBinding(profile, profile.FirmwareBoardID, "catalog:"+profile.ID, "esp32s3", profile.FlashBytes); err != nil {
+		t.Fatalf("valid Waveshare binding rejected: %v", err)
+	}
+	if err := ValidateManifestBinding(profile, profile.FirmwareBoardID, "catalog:"+profile.ID, "esp32s3", 16*1024*1024); err == nil {
+		t.Fatal("Waveshare accepted a 16 MiB package")
+	}
+	matched, err := ProfileForFirmwareBoardID("WAVESHARE-S3-TOUCH-AMOLED-1.75C-V1")
+	if err != nil || matched.ID != profile.ID {
+		t.Fatalf("Waveshare firmware identity lookup = %#v, %v", matched, err)
+	}
+	recognition := RecognizeApplicationIdentity(profile.FirmwareBoardID)
+	if recognition.Status != "probable" || len(recognition.CandidateBoards) != 1 || recognition.CandidateBoards[0] != profile.ID {
+		t.Fatalf("Waveshare identity recognition = %#v", recognition)
+	}
+	recognition = RecognizeApplicationIdentityEvidence(device.AppIdentity{Protocol: device.ProtocolVersion, FirmwareTargetBoardID: profile.FirmwareBoardID, Chip: "ESP32-S3", FlashBytes: profile.FlashBytes})
+	if recognition.Status != "probable" || len(recognition.CandidateBoards) != 1 || recognition.CandidateBoards[0] != profile.ID {
+		t.Fatalf("Waveshare runtime evidence recognition = %#v", recognition)
 	}
 }
 
@@ -58,6 +86,19 @@ func TestValidateManifestBindingRejectsCrossBoardOrBroadPackage(t *testing.T) {
 				t.Fatal("invalid manifest binding accepted")
 			}
 		})
+	}
+}
+
+func TestValidateProfileROMBindingRequiresExactCatalogCapacity(t *testing.T) {
+	waveshare, err := Profile("waveshare-amoled-1.75c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateProfileROMBinding(waveshare, flash.ChipInfo{Chip: "ESP32-S3"}, flash.FlashInfo{SizeBytes: 32 * 1024 * 1024}); err != nil {
+		t.Fatalf("matching Waveshare ROM evidence rejected: %v", err)
+	}
+	if err := ValidateProfileROMBinding(waveshare, flash.ChipInfo{Chip: "ESP32-S3"}, flash.FlashInfo{SizeBytes: 16 * 1024 * 1024}); err == nil {
+		t.Fatal("16 MiB ROM evidence was accepted for Waveshare")
 	}
 }
 
@@ -123,9 +164,16 @@ func TestCachedAssetRequiresExpectedDigest(t *testing.T) {
 	}
 }
 func TestProbeRecognitionDoesNotGuessBoard(t *testing.T) {
-	r := RecognizeProbe(flash.ChipInfo{Chip: "Chip is ESP32-S3"}, flash.FlashInfo{})
+	r := RecognizeProbe(flash.ChipInfo{Chip: "Chip is ESP32-S3"}, flash.FlashInfo{SizeBytes: 16 * 1024 * 1024})
 	if r.Status != "requires_confirmation" || len(r.CandidateBoards) != 3 {
 		t.Fatalf("unsafe recognition: %#v", r)
+	}
+}
+
+func TestProbeRecognitionUsesExact32MiBCapacityForWaveshareOnly(t *testing.T) {
+	r := RecognizeProbe(flash.ChipInfo{Chip: "Chip is ESP32-S3"}, flash.FlashInfo{SizeBytes: 32 * 1024 * 1024})
+	if r.Status != "probable" || len(r.CandidateBoards) != 1 || r.CandidateBoards[0] != "waveshare-amoled-1.75c" {
+		t.Fatalf("32 MiB recognition = %#v", r)
 	}
 }
 func TestApplicationIdentityIsOnlyProbable(t *testing.T) {
@@ -134,10 +182,53 @@ func TestApplicationIdentityIsOnlyProbable(t *testing.T) {
 		t.Fatalf("unexpected recognition: %#v", r)
 	}
 }
-func TestLegacyApplicationIdentitySupportsMigrationOnly(t *testing.T) {
-	r := RecognizeApplicationIdentityEvidence(device.AppIdentity{Protocol: 1, FirmwareTargetBoardID: "fangtang-4g-v1"})
-	if r.Status != "probable" || len(r.CandidateBoards) != 1 || r.CandidateBoards[0] != "fangtang-4g" || !strings.Contains(r.Reason, "legacy") {
+func TestLegacyApplicationIdentityCannotAutoMatchFirmware(t *testing.T) {
+	r := RecognizeApplicationIdentityEvidence(device.AppIdentity{Protocol: 1, FirmwareTargetBoardID: "fangtang-4g-v1", Chip: "esp32s3", FlashBytes: 16 * 1024 * 1024})
+	if r.Status == "probable" || len(r.CandidateBoards) != 0 || !strings.Contains(r.Reason, "protocol:1") || !strings.Contains(r.Reason, "protocol:2") {
 		t.Fatalf("unexpected legacy recognition: %#v", r)
+	}
+}
+
+func TestMissingApplicationIdentityCannotAutoMatchFirmware(t *testing.T) {
+	r := RecognizeApplicationIdentityEvidence(device.AppIdentity{})
+	if r.Status == "probable" || len(r.CandidateBoards) != 0 || !strings.Contains(r.Reason, "protocol:2") || strings.Contains(r.Reason, "legacy") {
+		t.Fatalf("unexpected missing identity recognition: %#v", r)
+	}
+}
+
+func TestApplicationIdentityEvidenceRejectsMismatchedProfileCapacityOrChip(t *testing.T) {
+	for _, identity := range []device.AppIdentity{
+		{Protocol: device.ProtocolVersion, FirmwareTargetBoardID: "waveshare-s3-touch-amoled-1.75c-v1", Chip: "esp32s3", FlashBytes: 16 * 1024 * 1024},
+		{Protocol: device.ProtocolVersion, FirmwareTargetBoardID: "bread-compact-wifi-lcd-v1", Chip: "esp32", FlashBytes: 16 * 1024 * 1024},
+	} {
+		if r := RecognizeApplicationIdentityEvidence(identity); r.Status == "probable" {
+			t.Fatalf("inconsistent runtime identity was auto-matched: %#v", r)
+		}
+	}
+}
+
+func TestApplicationIdentityEvidenceNormalizesESP32S3ChipSpelling(t *testing.T) {
+	for _, chip := range []string{"esp32s3", "ESP32-S3", "esp32_s3", " ESP32 S3 "} {
+		r := RecognizeApplicationIdentityEvidence(device.AppIdentity{Protocol: device.ProtocolVersion, FirmwareTargetBoardID: "waveshare-s3-touch-amoled-1.75c-v1", Chip: chip, FlashBytes: 32 * 1024 * 1024})
+		if r.Status != "probable" || len(r.CandidateBoards) != 1 || r.CandidateBoards[0] != "waveshare-amoled-1.75c" {
+			t.Fatalf("chip spelling %q recognition = %#v", chip, r)
+		}
+	}
+}
+
+func TestApplicationIdentityCannotOverrideContradictoryROMCapacity(t *testing.T) {
+	identity := device.AppIdentity{Protocol: device.ProtocolVersion, FirmwareTargetBoardID: "waveshare-s3-touch-amoled-1.75c-v1", Chip: "esp32s3", FlashBytes: 32 * 1024 * 1024}
+	r := RecognizeApplicationIdentityWithROM(identity, flash.ChipInfo{Chip: "ESP32-S3"}, flash.FlashInfo{SizeBytes: 16 * 1024 * 1024})
+	if r.Status == "probable" || !strings.Contains(r.Reason, "ROM flash capacity") {
+		t.Fatalf("runtime identity overrode ROM capacity: %#v", r)
+	}
+}
+
+func TestApplicationIdentityWithROMAcceptsExactWaveshareEvidence(t *testing.T) {
+	identity := device.AppIdentity{Protocol: device.ProtocolVersion, FirmwareTargetBoardID: "waveshare-s3-touch-amoled-1.75c-v1", Chip: "ESP32-S3", FlashBytes: 32 * 1024 * 1024}
+	r := RecognizeApplicationIdentityWithROM(identity, flash.ChipInfo{Chip: "Chip is ESP32-S3"}, flash.FlashInfo{SizeBytes: 32 * 1024 * 1024})
+	if r.Status != "probable" || len(r.CandidateBoards) != 1 || r.CandidateBoards[0] != "waveshare-amoled-1.75c" {
+		t.Fatalf("exact Waveshare evidence = %#v", r)
 	}
 }
 func TestGitHubReleaseURLAllowList(t *testing.T) {

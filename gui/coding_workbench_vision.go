@@ -77,7 +77,7 @@ func (h *IMMessageHandler) applyCodingRoutePreference(userID string, cfg corelib
 		return h.routeLLMConfigForCodingVision(cfg)
 	case codingRoutePrefReasoning:
 		if h.app != nil && h.app.ohModules.modelRouter != nil && h.app.ohModules.modelRouter.HasRoute(llm.TaskReasoning) {
-			return h.routeLLMConfig(llm.TaskReasoning)
+			return h.routeCodingLLMConfig(llm.TaskReasoning, cfg)
 		}
 		return cfg
 	default: // auto
@@ -85,7 +85,7 @@ func (h *IMMessageHandler) applyCodingRoutePreference(userID string, cfg corelib
 			return h.routeLLMConfigForCodingVision(cfg)
 		}
 		if h.app != nil && h.app.ohModules.modelRouter != nil && h.app.ohModules.modelRouter.HasRoute(llm.TaskReasoning) {
-			return h.routeLLMConfig(llm.TaskReasoning)
+			return h.routeCodingLLMConfig(llm.TaskReasoning, cfg)
 		}
 		return cfg
 	}
@@ -101,7 +101,7 @@ func (h *IMMessageHandler) routeLLMConfigForCodingVision(cfg corelib.MaclawLLMCo
 	tasks := []llm.TaskType{llm.TaskVision, llm.TaskType("multimodal"), llm.TaskType("image")}
 	for _, task := range tasks {
 		if h.app != nil && h.app.ohModules.modelRouter != nil && h.app.ohModules.modelRouter.HasRoute(task) {
-			routed := h.routeLLMConfig(task)
+			routed := h.routeCodingLLMConfig(task, cfg)
 			if strings.TrimSpace(routed.URL) != "" && strings.TrimSpace(routed.Model) != "" {
 				// Ensure SupportsVision is true when we intentionally pick vision.
 				routed.SupportsVision = true
@@ -117,7 +117,7 @@ func (h *IMMessageHandler) primaryMaclawModelName() string {
 	if h == nil {
 		return ""
 	}
-	return strings.TrimSpace(h.getMaclawLLMConfig().Model)
+	return strings.TrimSpace(h.getCodingLLMConfig().Model)
 }
 
 func (h *IMMessageHandler) modelRouterHasReasoning() bool {

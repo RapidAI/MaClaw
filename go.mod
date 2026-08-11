@@ -3,6 +3,7 @@ module github.com/RapidAI/CodeClaw
 go 1.25.5
 
 require (
+	github.com/RapidAI/OfficeRead v0.0.0-20260809051355-9682f0878d08
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e
 	github.com/VantageDataChat/GoPDF2 v0.0.0-20260711230316-e8684adfd6f2
@@ -51,6 +52,8 @@ require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/richardlehane/mscfb v1.0.7
+	github.com/richardlehane/msoleps v1.0.3 // indirect
 )
 
 require (

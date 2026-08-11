@@ -23,10 +23,11 @@ const PromptCorePrinciples = `
 - 永远不要说"我没有某某工具"或"我无法执行"——先检查你的工具列表，大部分操作都有对应工具。
 - 读文档阶梯（用户给了本地路径/附件时严格执行）：
   1. **优先用已注入正文**：若消息中出现「系统已自动解析文档正文」或 auto_extract begin 标记，直接基于注入内容回答；**不要**再 bash/read_file 重读，也**不要**仅为“再读一遍”调用 office。
-  2. 仅当 truncated=true、注入失败/为空、或需要后续分页时，再调用 **office(action="read_document", file_path=..., offset=next_offset)**（原生支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx；不要对二进制用 read_file）。
-  3. office 失败或不支持的格式（.ppt/.rtf/.odt/.wps/.et/.dps/.pages/.epub/.msg 等）→ **必须 craft_tool** 生成一次性解析脚本并抽取纯文本，不要直接放弃。
-  4. 再 manage_skill 搜索/运行文档解析 Skill；bash 仅作最后备选。
-  5. 仅当上述都明确失败，才请用户另存为 .docx/.pdf/.txt，并列出已尝试结果。
+  2. 仅当 truncated=true、注入失败/为空、或需要后续分页时，再调用 **office(action="read_document", file_path=..., offset=next_offset)**（支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx；不要对二进制用 read_file）。
+  3. 先检查 office 返回的 error_class：若为 encrypted、malformed、source_changed、input_too_large 或 output_too_large，必须遵循其安全、版本或资源提示；**禁止**对同一文件调用 craft_tool、Skill、bash、COM、LibreOffice 或其他解析器绕过。加密文件当前不接收密码也不支持密码解密。
+  4. 仅当失败不属于上述 error_class 且格式不支持（.rtf/.odt/.wps/.et/.dps/.pages/.epub/.msg 等）或为普通解析失败时，才 **必须 craft_tool** 生成一次性解析脚本并抽取纯文本，不要直接放弃。
+  5. 再 manage_skill 搜索/运行文档解析 Skill；bash 仅作最后备选。
+  6. 仅当上述允许的恢复路径都明确失败，才请用户另存为 .docx/.pdf/.txt，并列出已尝试结果。
 - 执行 Skill 的正确方式：使用 manage_skill(action="run", name="skill名称")。旧的 run_skill 工具已合并到 manage_skill 中。
 - 上传/发布 Skill 的正确方式：当用户说“上传 skill”“发布 skill”“上架 skill”“上传到 skillmarket / SkillMarket / hubcenter / HubCenter / hub / 能力市场”时，必须调用 manage_skill(action="upload", name="Skill名称")；如果不知道具体名称，先调用 manage_skill(action="list")。不要改用 knowledge_save、send_file、craft_tool，也不要猜 action="save"/"pub"/"publish"/"submit"。
 - 语音输出：当对话意图明确要求声音形式输出时，必须调用 tts(text=...) 生成并播放语音；不要只用文字回复，也不要要求用户额外使用工具名。
@@ -105,8 +106,15 @@ const KnowledgeAutoRecallHeader = "\n## 知识库参考（自动检索）\n" +
 	"回答用户问题时，按以下顺序逐级查找，前一级有确切答案则直接回答，不要并行调用后续级别：\n" +
 	"1. **记忆（memory recall）** — 已保存的对话记录和用户事实\n" +
 	"2. **知识库（knowledge_search / knowledge_context_pack）** — 已导入的文档、PDF、网页等本地资料\n" +
-	"3. **网络搜索（web_search）** — 仅当记忆和知识库均无法回答时才使用\n" +
+	"3. **企业知识库（enterprise digital assets）** — Hub 下发的企业共享资料（只读）\n" +
+	"4. **网络搜索（web_search）** — 仅当记忆和知识库均无法回答时才使用\n" +
 	"禁止在第一轮就并行调用 web_search 和 knowledge_search。先查本地来源（记忆+知识库），确认不足后再搜网络。\n\n"
+
+// EnterpriseKnowledgeAutoRecallHeader is injected when enterprise digital-asset
+// snippets are attached after personal knowledge auto-recall.
+const EnterpriseKnowledgeAutoRecallHeader = "\n## 企业知识库参考（自动检索）\n" +
+	"以下内容来自企业数字资产库（Hub 单向同步，只读）。请优先在合规范围内引用，并标注「企业知识」。\n" +
+	"若条目不足，可继续使用 knowledge_search（个人库）或说明需要管理员更新企业库。\n\n"
 
 // KnowledgeAutoRecallMaxQueryRunes limits the user message length used for auto-recall FTS query.
 const KnowledgeAutoRecallMaxQueryRunes = 200

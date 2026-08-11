@@ -19,6 +19,11 @@ type ImageHints struct {
 	ParentTitle   string // section/slide title the image belongs to
 	PageNumber    int    // page number (PDF/PPTX)
 	SourceTitle   string // parent document title
+	// OwnerID and TenantID identify the source scope for host-owned image
+	// describers. They are deliberately not included in descriptions or vision
+	// prompts: hosts use them only to select the correct per-user configuration.
+	OwnerID  string `json:"-"`
+	TenantID string `json:"-"`
 }
 
 // ImageDescription is the result of describing an image.

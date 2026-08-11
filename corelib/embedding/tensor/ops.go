@@ -146,6 +146,9 @@ func matMulF32ParallelN(out, a, b, bias []float32, M, N, K int, add bool) {
 		return
 	}
 	t := f32RangeTaskPool.Get().(*f32RangeTask)
+	// A single task is shared by every worker. Assign and wait before it is
+	// returned to the pool: assignment must happen before jobs are published
+	// and fields must remain intact until all queued ranges finish.
 	t.out, t.a, t.b, t.bias = out, a, b, bias
 	t.M, t.N, t.K, t.add = M, N, K, add
 	t.wg.Add(nw)

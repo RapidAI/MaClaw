@@ -73,18 +73,18 @@ import { renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
+import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
 import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
-import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
+import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { agentModeFromTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
 import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
-import { EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED } from "../../constants/events";
+import { EVENT_EXPERT_TASK_DELETED, EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
@@ -413,7 +413,7 @@ async function loadRestoredProjectConversationHistory(projectPath: string): Prom
 }
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onLanguageChange, statusSlot } = props;
+    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -816,7 +816,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }).catch(() => { /* ignore */ });
         }
     }, [lang]);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, clearTabConversation, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, clearTabConversation, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
+    // Quick model controls use this stable task classification; never infer it
+    // from prompt text, visible panels, or routing choices.
+    useEffect(() => {
+        onActiveExecutionProfileChange?.(activeTab?.executionProfile || "none");
+    }, [activeTab?.executionProfile, onActiveExecutionProfileChange]);
     // Publish open project-tab paths so the sidebar can block deleting active tasks.
     useEffect(() => {
         const onChange = props.onOpenProjectTabsChange as ((paths: string[]) => void) | undefined;
@@ -2286,8 +2291,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return;
         }
         if (activeTab.type === "expert") {
-            // Expert tab: clear the tab-local history and cancel any running
-            // backend session for this expert (fire-and-forget).
+            // Expert tab: clear UI history and wipe agent memory for this expert
+            // (cancel-only would leave conversation context for the next turn).
             clearTabConversation(activeTab.id);
             setProjectTabMessages([]);
             // Mark as explicitly cleared: blocks residual session events from
@@ -2299,7 +2304,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const sessionKey = expertSessionKey(activeTab.expertId);
             if (sessionKey) {
                 forgetAIAssistantSessionRounds(sessionKey);
-                CancelAIAssistantSessionForSession(sessionKey).catch(() => {});
+                ClearAIAssistantHistoryForSession(sessionKey).catch(() => {});
             }
             return;
         }
@@ -3346,17 +3351,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         };
     }, [closeProjectTabByPath]);
     useEffect(() => {
-        const off = EventsOn(EVENT_PROJECT_TASK_DELETED, (projectPath: string) => {
+        const offDeleted = EventsOn(EVENT_PROJECT_TASK_DELETED, (projectPath: string) => {
             if (typeof projectPath === "string" && projectPath.trim()) {
                 purgeDeletedProjectTabLocalCache(projectPath);
                 discardDeletedProjectTabs(projectPath);
             }
         });
+        const offExpertDeleted = EventsOn(EVENT_EXPERT_TASK_DELETED, (expertId: string) => {
+            if (typeof expertId === "string" && expertId.trim()) {
+                purgeDeletedExpertTabLocalCache(expertId);
+                discardDeletedExpertTabs(expertId);
+            }
+        });
         return () => {
-            if (typeof off === "function") off();
+            if (typeof offDeleted === "function") offDeleted();
             else EventsOff(EVENT_PROJECT_TASK_DELETED);
+            if (typeof offExpertDeleted === "function") offExpertDeleted();
+            else EventsOff(EVENT_EXPERT_TASK_DELETED);
         };
-    }, [discardDeletedProjectTabs]);
+    }, [discardDeletedExpertTabs, discardDeletedProjectTabs]);
     const addParticipantToTab = useAddGroupParticipantToTab({ getTabState, upgradeVETabToGroup });
     const addLocalMaclawToTab = useAddLocalMaclawToTab({ getTabState, upgradeVETabToGroup });
     const [participantInviteTargetTabId, setParticipantInviteTargetTabId] = useState<string | null>(null);
@@ -5229,10 +5242,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") && (
                 <ProjectDirBar
-                    key={activeTab?.type === "project" ? activeTab.id : "local"}
-                    // Expert sessions do not own a task path, so they share the
-                    // current desktop working directory with the local assistant.
-                    tabId={activeTab?.type === "project" ? activeTab.id : ""}
+					key={activeTab?.type === "local" ? "local" : activeTab.id}
+					// Every assistant tab has an optional private directory. Until it
+					// is set, project and expert tabs dynamically follow the main tab.
+					tabId={activeTab?.type === "local" ? "" : activeTab.id}
                     theme={t}
                     lang={lang}
                 />
@@ -6177,7 +6190,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             </div>
             {/* Full-bleed footer under content-row (chat|preview). Always mounted so
                 welcome/guide and VE/group tabs keep the same chrome as normal chat. */}
-            <AssistantQuickSettingsBar active={panelActive} lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} workflowEnabled={workflowEnabled} onToggleWorkflow={handleToggleWorkflow} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onLanguageChange={onLanguageChange} statusSlot={statusSlot} />
+            <AssistantQuickSettingsBar active={panelActive} lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} workflowEnabled={workflowEnabled} onToggleWorkflow={handleToggleWorkflow} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} onLanguageChange={onLanguageChange} statusSlot={statusSlot} />
             </div>
         </div>
     );

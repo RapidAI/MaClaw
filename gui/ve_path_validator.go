@@ -89,21 +89,22 @@ func IsWithinAllowedDirs(requestedPath string, allowedDirs []string) (string, er
 		return "", fmt.Errorf("[error] path 参数不能为空")
 	}
 
-	// Try full canonical resolution first (works if path exists)
+	// Try full canonical resolution first (works if path exists).
 	canonicalPath, err := resolveCanonicalPath(requestedPath)
 	if err != nil {
-		// Path doesn't exist — fall back to Abs + Clean (no symlink resolution).
-		// This is acceptable for list_directory where the path might not exist yet.
-		absPath, absErr := filepath.Abs(requestedPath)
-		if absErr != nil {
+		// A target may not exist yet (notably write_excel's output file), but
+		// an existing ancestor can still be a symbolic link. Resolve the deepest
+		// existing ancestor before comparing containment; falling back directly to
+		// Abs+Clean would allow "allowed/link/new.xlsx" to escape through a link
+		// whose target lies outside the profile boundary.
+		canonicalPath, err = resolvePathThroughExistingAncestor(requestedPath)
+		if err != nil {
 			return "", fmt.Errorf("[error] 无法解析文件路径: %v", err)
 		}
-		canonicalPath = filepath.Clean(absPath)
 
-		// IMPORTANT: When using the fallback path (no symlink resolution),
-		// we must also compare against the non-symlink-resolved allowed dirs.
-		// Otherwise, if an allowed dir is itself a symlink, the canonical dir
-		// won't match the fallback path's prefix.
+		// The target itself may remain absent, so compare against both the
+		// canonical and apparent forms of allowed roots. The target path however
+		// already incorporates every existing symlink ancestor.
 		if !isPathWithinDirsFallback(canonicalPath, allowedDirs) {
 			return "", fmt.Errorf("[error] 文件不在允许访问的目录中")
 		}
@@ -117,6 +118,40 @@ func IsWithinAllowedDirs(requestedPath string, allowedDirs []string) (string, er
 	}
 
 	return canonicalPath, nil
+}
+
+// resolvePathThroughExistingAncestor canonicalizes a path whose leaf (or a
+// suffix of it) does not exist. It resolves every symlink in the deepest
+// existing ancestor and then appends the non-existent suffix. This preserves
+// valid create semantics while preventing a symlinked parent directory from
+// bypassing a lexical allowed-directory prefix check.
+func resolvePathThroughExistingAncestor(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	absPath = filepath.Clean(absPath)
+	for ancestor := absPath; ; ancestor = filepath.Dir(ancestor) {
+		_, statErr := os.Lstat(ancestor)
+		if statErr == nil {
+			resolvedAncestor, resolveErr := filepath.EvalSymlinks(ancestor)
+			if resolveErr != nil {
+				return "", resolveErr
+			}
+			suffix, relErr := filepath.Rel(ancestor, absPath)
+			if relErr != nil {
+				return "", relErr
+			}
+			return filepath.Clean(filepath.Join(resolvedAncestor, suffix)), nil
+		}
+		if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return absPath, nil
+		}
+	}
 }
 
 // isPathWithinDirsFallback checks containment when the requested path could not

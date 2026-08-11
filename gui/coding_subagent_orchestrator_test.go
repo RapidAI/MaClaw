@@ -407,7 +407,7 @@ func TestRunAllTasksStopsAfterNoProgressAttempts(t *testing.T) {
 	}
 }
 
-func TestRunAllTasksUsesConfiguredSubAgentConcurrency(t *testing.T) {
+func TestRunAllTasksSerializesConfiguredSubAgentConcurrencyForCodingSafety(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -427,8 +427,6 @@ func TestRunAllTasksUsesConfiguredSubAgentConcurrency(t *testing.T) {
 	var mu sync.Mutex
 	active := 0
 	maxActive := 0
-	releaseConcurrentTasks := make(chan struct{})
-	var releaseOnce sync.Once
 	original := runTaskWithSubAgent
 	defer func() { runTaskWithSubAgent = original }()
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
@@ -437,17 +435,7 @@ func TestRunAllTasksUsesConfiguredSubAgentConcurrency(t *testing.T) {
 		if active > maxActive {
 			maxActive = active
 		}
-		if active >= 2 {
-			releaseOnce.Do(func() { close(releaseConcurrentTasks) })
-		}
 		mu.Unlock()
-
-		if task.Index < 2 {
-			select {
-			case <-releaseConcurrentTasks:
-			case <-time.After(2 * time.Second):
-			}
-		}
 
 		mu.Lock()
 		active--
@@ -456,8 +444,8 @@ func TestRunAllTasksUsesConfiguredSubAgentConcurrency(t *testing.T) {
 	}
 
 	report := runner.RunAllTasks(nil, nil)
-	if maxActive != 2 {
-		t.Fatalf("max active SubAgents = %d, want 2; report=%q", maxActive, report)
+	if maxActive != 1 {
+		t.Fatalf("max active SubAgents = %d, want serial execution; report=%q", maxActive, report)
 	}
 	for _, task := range orch.Tasks {
 		if task.Status != TaskExecPassed {
@@ -562,12 +550,12 @@ func TestRunCurrentTaskRecordsFailedResultSummaryForRetryContext(t *testing.T) {
 	}
 
 	summary, passed := runner.RunCurrentTask(nil, nil)
-	if passed || !strings.Contains(summary, "will retry") {
-		t.Fatalf("expected retryable failure, passed=%v summary=%q", passed, summary)
+	if passed || !strings.Contains(summary, "no automatic replay") {
+		t.Fatalf("expected terminal failure without replay, passed=%v summary=%q", passed, summary)
 	}
 	got := orch.Tasks[0]
-	if got.RetryCount != 1 || got.Status != TaskExecInProgress {
-		t.Fatalf("expected failed task to be queued for retry, got %#v", got)
+	if got.RetryCount != 0 || got.Status != TaskExecFailed {
+		t.Fatalf("expected failed task to remain terminal until recovery, got %#v", got)
 	}
 	if !strings.Contains(got.ResultSummary, "## 质量审计") || !strings.Contains(got.ResultSummary, "verification not run") {
 		t.Fatalf("failed result summary should be recorded for retry, got %q", got.ResultSummary)
@@ -698,12 +686,12 @@ func TestRunCurrentTaskRetainsPartialArtifactsDuringRetry(t *testing.T) {
 	if !strings.Contains(summary, "tests failed") {
 		t.Fatalf("expected failure summary, got %q", summary)
 	}
-	if joined := strings.Join(progress, "\n"); !strings.Contains(joined, `"phase":"retrying"`) || !strings.Contains(joined, `"detail":"1/2"`) {
-		t.Fatalf("expected retrying coding agent progress, got %#v", progress)
+	if joined := strings.Join(progress, "\n"); strings.Contains(joined, `"phase":"retrying"`) {
+		t.Fatalf("unexpected automatic retry event, got %#v", progress)
 	}
 	got := orch.Tasks[0]
-	if got.Status != TaskExecInProgress || got.RetryCount != 1 {
-		t.Fatalf("retryable failure should remain in progress with retry count 1, got %#v", got)
+	if got.Status != TaskExecFailed || got.RetryCount != 0 {
+		t.Fatalf("failed task must await recovery, got %#v", got)
 	}
 	if !strings.Contains(got.ErrorSummary, "tests failed") {
 		t.Fatalf("retryable failure should preserve error summary for retry context, got %#v", got)
@@ -735,12 +723,12 @@ func TestRunCurrentTaskFailsPassedResultWhenQualityAuditFailed(t *testing.T) {
 	if passed {
 		t.Fatal("passed subagent result with failed quality audit must not pass")
 	}
-	if !strings.Contains(summary, "will retry") || !strings.Contains(summary, "quality audit failed") || !strings.Contains(summary, "verification not run") {
-		t.Fatalf("quality audit failure should drive retry summary, got %q", summary)
+	if !strings.Contains(summary, "no automatic replay") || !strings.Contains(summary, "quality audit failed") || !strings.Contains(summary, "verification not run") {
+		t.Fatalf("quality audit failure should not replay, got %q", summary)
 	}
 	got := orch.Tasks[0]
-	if got.Status != TaskExecInProgress || got.RetryCount != 1 || !strings.Contains(got.ErrorSummary, "quality audit failed") {
-		t.Fatalf("quality audit failure should be tracked as retryable task failure, got %#v", got)
+	if got.Status != TaskExecFailed || got.RetryCount != 0 || !strings.Contains(got.ErrorSummary, "quality audit failed") {
+		t.Fatalf("quality audit failure should require recovery, got %#v", got)
 	}
 }
 
@@ -886,20 +874,20 @@ func TestRunCurrentTaskDoesNotRetryNonRetryableGitDiffFailure(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("non-retryable failure should call subagent once, got %d", calls)
 	}
-	if strings.Contains(summary, "will retry") || !strings.Contains(summary, "non-retryable") {
-		t.Fatalf("expected non-retryable failure summary without retry, got %q", summary)
+	if strings.Contains(summary, "will retry") || !strings.Contains(summary, "no automatic replay") {
+		t.Fatalf("expected terminal failure summary without retry, got %q", summary)
 	}
 	got := orch.Tasks[0]
 	if got.Status != TaskExecFailed || got.RetryCount != 0 || !strings.Contains(got.ErrorSummary, "not a git repository") {
 		t.Fatalf("non-retryable failure should fail without incrementing retry count, got %#v", got)
 	}
 	joined := strings.Join(progress, "\n")
-	if !strings.Contains(joined, `"phase":"failed"`) || !strings.Contains(joined, `"detail":"non_retryable"`) {
-		t.Fatalf("expected non-retryable failed progress event, got %#v", progress)
+	if !strings.Contains(joined, `"phase":"failed"`) {
+		t.Fatalf("expected failed progress event, got %#v", progress)
 	}
 }
 
-func TestRunCurrentTaskRetryContextIncludesPartialArtifacts(t *testing.T) {
+func TestRunCurrentTaskFailureDoesNotAutoReplayPartialArtifacts(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.MaxRetries = 2
 	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
@@ -909,34 +897,16 @@ func TestRunCurrentTaskRetryContextIncludesPartialArtifacts(t *testing.T) {
 	defer func() { runTaskWithSubAgent = original }()
 
 	calls := 0
-	var retryPrevOutputs []string
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
 		calls++
-		if calls == 1 {
-			return &CodingSubAgentResult{
-				Status:        TaskExecFailed,
-				Error:         "tests failed",
-				FilesModified: []string{"src/a.go"},
-				FilesCreated:  []string{"src/new.go"},
-			}
-		}
-		retryPrevOutputs = append([]string(nil), prevOutputs...)
-		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "fixed after retry"}
+		return &CodingSubAgentResult{Status: TaskExecFailed, Error: "tests failed", FilesModified: []string{"src/a.go"}, FilesCreated: []string{"src/new.go"}}
 	}
 
-	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "will retry") {
-		t.Fatalf("first run should be retryable failure, passed=%v summary=%q", passed, summary)
+	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "no automatic replay") {
+		t.Fatalf("failure must not replay, passed=%v summary=%q", passed, summary)
 	}
-	if summary, passed := runner.RunCurrentTask(nil, nil); !passed || !strings.Contains(summary, "fixed after retry") {
-		t.Fatalf("second run should pass, passed=%v summary=%q", passed, summary)
-	}
-	joined := strings.Join(retryPrevOutputs, "\n")
-	if !strings.Contains(joined, "Retry artifact from previous attempt") ||
-		!strings.Contains(joined, "src/a.go") ||
-		!strings.Contains(joined, "modified by T1") ||
-		!strings.Contains(joined, "src/new.go") ||
-		!strings.Contains(joined, "created by T1") {
-		t.Fatalf("retry prevOutputs missing partial artifact context: %#v", retryPrevOutputs)
+	if calls != 1 || orch.Tasks[0].Status != TaskExecFailed {
+		t.Fatalf("calls=%d task=%#v", calls, orch.Tasks[0])
 	}
 }
 func TestEnrichSubAgentFailureErrorAddsQualityEvidenceOnce(t *testing.T) {
@@ -1010,7 +980,7 @@ func TestSubAgentRetryRecoveryHintForFinalSummaryQualityFailures(t *testing.T) {
 		})
 	}
 }
-func TestRunCurrentTaskRetryContextIncludesFailedToolEvidence(t *testing.T) {
+func TestRunCurrentTaskFailureDoesNotAutoReplayFailedToolEvidence(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.MaxRetries = 2
 	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
@@ -1020,49 +990,32 @@ func TestRunCurrentTaskRetryContextIncludesFailedToolEvidence(t *testing.T) {
 	defer func() { runTaskWithSubAgent = original }()
 
 	calls := 0
-	var retryPrevOutputs []string
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
 		calls++
-		if calls == 1 {
-			return &CodingSubAgentResult{
-				Status: TaskExecFailed,
-				Error:  "quality gate failed",
-				CommandsRun: []CodingSubAgentCommandResult{
-					{Command: "go test ./gui", Succeeded: false, Summary: "compile failed"},
-				},
-				DynamicToolsRun: []CodingSubAgentDynamicToolResult{
-					{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "MCP call failed: browser closed"},
-				},
-				QualityStatus:     codingSubAgentQualityFailed,
-				QualitySummary:    "verification failed; diff not checked",
-				QualityIssueCount: 2,
-			}
+		return &CodingSubAgentResult{
+			Status: TaskExecFailed,
+			Error:  "quality gate failed",
+			CommandsRun: []CodingSubAgentCommandResult{
+				{Command: "go test ./gui", Succeeded: false, Summary: "compile failed"},
+			},
+			DynamicToolsRun: []CodingSubAgentDynamicToolResult{
+				{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "MCP call failed: browser closed"},
+			},
+			QualityStatus:     codingSubAgentQualityFailed,
+			QualitySummary:    "verification failed; diff not checked",
+			QualityIssueCount: 2,
 		}
-		retryPrevOutputs = append([]string(nil), prevOutputs...)
-		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "fixed after retry"}
 	}
 
-	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "will retry") {
-		t.Fatalf("first run should be retryable failure, passed=%v summary=%q", passed, summary)
+	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "no automatic replay") {
+		t.Fatalf("failure must not replay, passed=%v summary=%q", passed, summary)
 	}
-	if summary, passed := runner.RunCurrentTask(nil, nil); !passed || !strings.Contains(summary, "fixed after retry") {
-		t.Fatalf("second run should pass, passed=%v summary=%q", passed, summary)
-	}
-	joined := strings.Join(retryPrevOutputs, "\n")
-	if !strings.Contains(joined, "failed command evidence") ||
-		!strings.Contains(joined, "go test ./gui") ||
-		!strings.Contains(joined, "compile failed") ||
-		!strings.Contains(joined, "dynamic tool evidence") ||
-		!strings.Contains(joined, "call_mcp_tool browser/screenshot") ||
-		!strings.Contains(joined, "MCP call failed") ||
-		!strings.Contains(joined, "quality audit evidence") ||
-		!strings.Contains(joined, "verification failed; diff not checked") ||
-		!strings.Contains(joined, "2 issue") {
-		t.Fatalf("retry prevOutputs missing failed tool evidence: %#v", retryPrevOutputs)
+	if calls != 1 || orch.Tasks[0].Status != TaskExecFailed {
+		t.Fatalf("calls=%d task=%#v", calls, orch.Tasks[0])
 	}
 }
 
-func TestRunCurrentTaskRetryContextOmitsResolvedFailedToolEvidence(t *testing.T) {
+func TestRunCurrentTaskFailureRecordsResolvedFailedToolEvidenceWithoutReplay(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.MaxRetries = 2
 	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
@@ -1072,46 +1025,34 @@ func TestRunCurrentTaskRetryContextOmitsResolvedFailedToolEvidence(t *testing.T)
 	defer func() { runTaskWithSubAgent = original }()
 
 	calls := 0
-	var retryPrevOutputs []string
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
 		calls++
-		if calls == 1 {
-			return &CodingSubAgentResult{
-				Status: TaskExecFailed,
-				Error:  "quality gate failed",
-				CommandsRun: []CodingSubAgentCommandResult{
-					{Command: "go test ./gui", Succeeded: false, Summary: "compile failed", seq: 1},
-					{Command: "go   test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
-				},
-				DynamicToolsRun: []CodingSubAgentDynamicToolResult{
-					{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "MCP call failed: browser closed", seq: 1},
-					{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: true, Summary: "ok", seq: 2},
-				},
-				QualityStatus:     codingSubAgentQualityFailed,
-				QualitySummary:    "remaining risk not called out",
-				QualityIssueCount: 1,
-			}
+		return &CodingSubAgentResult{
+			Status: TaskExecFailed,
+			Error:  "quality gate failed",
+			CommandsRun: []CodingSubAgentCommandResult{
+				{Command: "go test ./gui", Succeeded: false, Summary: "compile failed", seq: 1},
+				{Command: "go   test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
+			},
+			DynamicToolsRun: []CodingSubAgentDynamicToolResult{
+				{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "MCP call failed: browser closed", seq: 1},
+				{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: true, Summary: "ok", seq: 2},
+			},
+			QualityStatus:     codingSubAgentQualityFailed,
+			QualitySummary:    "remaining risk not called out",
+			QualityIssueCount: 1,
 		}
-		retryPrevOutputs = append([]string(nil), prevOutputs...)
-		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "fixed after retry"}
 	}
 
-	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "will retry") {
-		t.Fatalf("first run should be retryable failure, passed=%v summary=%q", passed, summary)
+	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "no automatic replay") {
+		t.Fatalf("failure must not replay, passed=%v summary=%q", passed, summary)
 	}
-	if summary, passed := runner.RunCurrentTask(nil, nil); !passed || !strings.Contains(summary, "fixed after retry") {
-		t.Fatalf("second run should pass, passed=%v summary=%q", passed, summary)
-	}
-	joined := strings.Join(retryPrevOutputs, "\n")
-	if strings.Contains(joined, "failed command evidence") || strings.Contains(joined, "dynamic tool evidence") {
-		t.Fatalf("retry prevOutputs should omit resolved failed evidence, got %#v", retryPrevOutputs)
-	}
-	if !strings.Contains(joined, "quality audit evidence") || !strings.Contains(joined, "remaining risk not called out") {
-		t.Fatalf("retry prevOutputs should retain unresolved quality evidence, got %#v", retryPrevOutputs)
+	if calls != 1 || orch.Tasks[0].Status != TaskExecFailed {
+		t.Fatalf("calls=%d task=%#v", calls, orch.Tasks[0])
 	}
 }
 
-func TestRunCurrentTaskInjectsRetryFailureContext(t *testing.T) {
+func TestRunCurrentTaskFailureDoesNotInjectRetryFailureContext(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.MaxRetries = 2
 	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
@@ -1121,29 +1062,16 @@ func TestRunCurrentTaskInjectsRetryFailureContext(t *testing.T) {
 	defer func() { runTaskWithSubAgent = original }()
 
 	calls := 0
-	var retryPrevOutputs []string
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
 		calls++
-		if calls == 1 {
-			return &CodingSubAgentResult{Status: TaskExecFailed, Error: "go test failed: expected 200 got 500"}
-		}
-		retryPrevOutputs = append([]string(nil), prevOutputs...)
-		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "fixed after retry"}
+		return &CodingSubAgentResult{Status: TaskExecFailed, Error: "go test failed: expected 200 got 500"}
 	}
 
-	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "will retry") {
-		t.Fatalf("first run should be retryable failure, passed=%v summary=%q", passed, summary)
+	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "no automatic replay") {
+		t.Fatalf("failure must not replay, passed=%v summary=%q", passed, summary)
 	}
-	if got := orch.Tasks[0]; got.RetryCount != 1 || got.Status != TaskExecInProgress || !strings.Contains(got.ErrorSummary, "expected 200") {
-		t.Fatalf("first failure should preserve retry metadata, got %#v", got)
-	}
-
-	if summary, passed := runner.RunCurrentTask(nil, nil); !passed || !strings.Contains(summary, "fixed after retry") {
-		t.Fatalf("second run should pass, passed=%v summary=%q", passed, summary)
-	}
-	joined := strings.Join(retryPrevOutputs, "\n")
-	if !strings.Contains(joined, "Retry context for T1") || !strings.Contains(joined, "expected 200") || !strings.Contains(joined, "Do not repeat") {
-		t.Fatalf("retry prevOutputs missing failure context: %#v", retryPrevOutputs)
+	if got := orch.Tasks[0]; calls != 1 || got.RetryCount != 0 || got.Status != TaskExecFailed || !strings.Contains(got.ErrorSummary, "expected 200") {
+		t.Fatalf("failure should be terminal until explicit recovery, calls=%d task=%#v", calls, got)
 	}
 }
 
@@ -1296,8 +1224,8 @@ func TestRunAllTasksPausesOnRateLimitWithoutRetryStorm(t *testing.T) {
 	if !strings.Contains(report, "paused to avoid retry storms") {
 		t.Fatalf("expected paused report, got %q", report)
 	}
-	if got := orch.Tasks[0]; got.RetryCount != 0 || got.Status != TaskExecInProgress {
-		t.Fatalf("current task should remain retryable/in progress, got %#v", got)
+	if got := orch.Tasks[0]; got.RetryCount != 0 || got.Status != TaskExecInterrupted {
+		t.Fatalf("current task should be interrupted pending recovery, got %#v", got)
 	}
 	if got := orch.Tasks[1]; got.Status != TaskExecPending || got.RetryCount != 0 {
 		t.Fatalf("next task should not start after rate limit, got %#v", got)
@@ -1328,8 +1256,8 @@ func TestRunAllTasksPausesOnTransientProviderErrorWithoutRetryStorm(t *testing.T
 	if !strings.Contains(report, "paused to avoid retry storms") {
 		t.Fatalf("expected paused report, got %q", report)
 	}
-	if got := orch.Tasks[0]; got.RetryCount != 0 || got.Status != TaskExecInProgress {
-		t.Fatalf("current task should remain retryable/in progress, got %#v", got)
+	if got := orch.Tasks[0]; got.RetryCount != 0 || got.Status != TaskExecInterrupted {
+		t.Fatalf("current task should be interrupted pending recovery, got %#v", got)
 	}
 	if got := orch.Tasks[1]; got.Status != TaskExecPending || got.RetryCount != 0 {
 		t.Fatalf("next task should not start after transient provider error, got %#v", got)
@@ -1431,8 +1359,8 @@ func TestRunAllTasksPausesFutureBatchesAfterConcurrentRateLimit(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !started[0] || !started[1] {
-		t.Fatalf("first batch should start tasks 0 and 1, got %#v", started)
+	if !started[0] || started[1] {
+		t.Fatalf("serial coding execution should start only task 0 before pausing, got %#v", started)
 	}
 	if started[2] {
 		t.Fatalf("future batch should not start after rate limit, got %#v", started)
@@ -1463,8 +1391,8 @@ func TestRunAllTasksPausesOnRateLimitWhenRetriesDisabled(t *testing.T) {
 	if !strings.Contains(report, "paused to avoid retry storms") {
 		t.Fatalf("expected paused report, got %q", report)
 	}
-	if got := orch.Tasks[0]; got.RetryCount != 0 || got.Status != TaskExecInProgress {
-		t.Fatalf("current task should stay resumable after rate limit, got %#v", got)
+	if got := orch.Tasks[0]; got.RetryCount != 0 || got.Status != TaskExecInterrupted {
+		t.Fatalf("current task should be interrupted pending recovery, got %#v", got)
 	}
 }
 
@@ -1727,7 +1655,7 @@ func TestStaleSubAgentRunSummaryHandlesNilTask(t *testing.T) {
 	}
 }
 
-func TestRunAllTasksFallsBackToSequentialAfterTerminalFailure(t *testing.T) {
+func TestRunAllTasksRemainsSerialAfterTerminalFailure(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -1748,12 +1676,16 @@ func TestRunAllTasksFallsBackToSequentialAfterTerminalFailure(t *testing.T) {
 
 	var mu sync.Mutex
 	batchActive := 0
+	maxBatchActive := 0
 
 	original := runTaskWithSubAgent
 	defer func() { runTaskWithSubAgent = original }()
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
 		mu.Lock()
 		batchActive++
+		if batchActive > maxBatchActive {
+			maxBatchActive = batchActive
+		}
 		mu.Unlock()
 
 		time.Sleep(15 * time.Millisecond)
@@ -1769,29 +1701,21 @@ func TestRunAllTasksFallsBackToSequentialAfterTerminalFailure(t *testing.T) {
 		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: task.Title + " done"}
 	}
 
-	var progressMsgs []string
-	report := runner.RunAllTasks(nil, func(text string) {
-		mu.Lock()
-		progressMsgs = append(progressMsgs, text)
-		mu.Unlock()
-	})
+	report := runner.RunAllTasks(nil, func(string) {})
 
 	// Task B should be failed.
 	if orch.Tasks[1].Status != TaskExecFailed {
 		t.Fatalf("Task B should be failed, got %s", orch.Tasks[1].Status)
 	}
 
-	// After fallback, remaining tasks should execute sequentially (batch size 1).
-	// The report should mention the fallback.
+	// A terminal failure is reported without changing the serial execution policy.
 	if !strings.Contains(report, "Task B") {
 		t.Fatalf("report should mention failed task, got: %s", report)
 	}
-
-	// Check that user-visible progress includes the fallback notice.
-	joined := strings.Join(progressMsgs, "\n")
-	if !strings.Contains(joined, "顺序执行") {
-		t.Fatalf("expected fallback progress notification, got: %s", joined)
+	if maxBatchActive != 1 {
+		t.Fatalf("coding tasks must remain serial, observed max concurrency %d", maxBatchActive)
 	}
+
 }
 
 func TestBatchHasFailedTaskIgnoresRetryableFailures(t *testing.T) {

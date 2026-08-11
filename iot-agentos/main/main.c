@@ -1,5 +1,7 @@
 #include <stdio.h>
+#include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -18,6 +20,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/platform_util.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_partition.h"
@@ -27,7 +30,6 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
@@ -37,13 +39,13 @@
 #include "psa/crypto.h"
 #include "qrcode.h"
 
-#include "board_port.h"
 #include "app_intent_service.h"
 #include "device_api.h"
 #include "device_tool_registry.h"
 #include "app_ui.h"
 #include "alarm_manager.h"
 #include "fall_detection_service.h"
+#include "display_service.h"
 #include "mp3_player.h"
 #include "firmware_identity.h"
 #include "lifecycle_service.h"
@@ -54,14 +56,23 @@
 #include "resource_pressure_service.h"
 #include "battery_policy_service.h"
 #include "persistence_service.h"
+#include "provisioning_failure_injection.h"
+#include "task_registry.h"
 #include "weather_cache_service.h"
 #include "meeting_recovery_service.h"
 #include "configuration_service.h"
+#include "platform_lifecycle.h"
 
-#define WIFI_CONNECTED_BIT BIT0
 #define WIFI_CONNECT_TIMEOUT_MS 20000
+// 多热点逐个尝试时每个候选的连接超时，避免 5 个候选把启动拖得过长。
+#define WIFI_CANDIDATE_CONNECT_TIMEOUT_MS 10000
 #define CELLULAR_CONNECT_TIMEOUT_MS 60000
 #define STARTUP_TRANSPORT_SELECTOR_WINDOW_MS 1800
+/* A failed cold start must reach its degraded diagnostics state predictably.
+ * Every rollback child consumes this one deadline; it is not a fresh wait per
+ * worker/service.  The HTTP server's own stop API remains a documented
+ * unbounded ESP-IDF boundary, but all caller-controlled joins below share it. */
+#define STARTUP_ROLLBACK_TIMEOUT_MS 6000u
 #define RESPONSE_CAPACITY 16384
 #define HANDSHAKE_RESPONSE_CAPACITY 24576
 /* The unified tool registry makes the handshake descriptor larger than the
@@ -101,7 +112,10 @@
 #define MEETING_RESUME_RETRY_INITIAL_MS 5000
 #define MEETING_RESUME_RETRY_MAX_MS 300000
 #define SETUP_AP_IP_ADDR "192.168.4.1"
-#define SETUP_CAPTIVE_PORTAL_URI "http://192.168.4.1/"
+/* DHCP option 114 identifies a Captive Portal API (RFC 8910/RFC 8908), not
+ * the human-facing login form itself.  Clients which understand the option
+ * fetch this endpoint and receive the form URL below. */
+#define SETUP_CAPTIVE_PORTAL_URI "http://192.168.4.1/captive-portal/api"
 #define DNS_PORT 53
 #define DNS_PACKET_CAPACITY 512
 #define DHCPS_OFFER_DNS 0x02
@@ -136,12 +150,14 @@ static const char *TAG = "maclaw_client";
 // ESP-IDF DHCP server retains this pointer for the duration of the AP. Keep
 // it static: a stack buffer would become invalid after portal startup returns.
 static const char s_setup_captive_portal_uri[] = SETUP_CAPTIVE_PORTAL_URI;
-static EventGroupHandle_t s_wifi_events;
 static int64_t s_cursor;
 static char s_boot_session_id[33];
 static char s_gateway_token[96];
 static char s_wifi_ssid[WIFI_VALUE_CAPACITY];
 static char s_wifi_password[WIFI_VALUE_CAPACITY];
+// 已存个人热点列表（NVS v3），启动时按信号强度自动选网；企业热点不进列表。
+static configuration_wifi_network_t s_wifi_networks[CONFIGURATION_WIFI_NETWORK_CAPACITY];
+static uint8_t s_wifi_network_count;
 static char s_wifi_security[WIFI_EAP_MODE_CAPACITY] = "personal";
 static char s_wifi_eap_method[WIFI_EAP_MODE_CAPACITY] = "peap";
 static char s_wifi_identity[WIFI_ENTERPRISE_VALUE_CAPACITY];
@@ -153,13 +169,44 @@ static char s_gateway_url[URL_CAPACITY];
 static char s_pair_code[PAIR_CODE_CAPACITY];
 static char s_device_id[DEVICE_ID_CAPACITY];
 static httpd_handle_t s_setup_server;
+/* Portal HTTP is a separate resource from the AP, DHCP and captive DNS.  Its
+ * admission flag is closed before httpd_stop(), so a teardown can never
+ * accept a new credential-changing request while its sockets are draining. */
+static bool s_setup_http_admission_open;
+/* Keep physical network-root ownership finer than the public-ready bit.
+ * `s_network_initialized` means the complete ESP-NETIF + default-event-loop
+ * transaction succeeded.  A failure between those two calls must still leave
+ * an exact resource owner for a later fail-closed rollback/retry; otherwise a
+ * residual netif singleton is invisible to stop_network_core_transaction(). */
+static bool s_netif_initialized;
+static bool s_default_event_loop_created;
 static bool s_network_initialized;
 static bool s_startup_ui_initialized;
 static bool s_wifi_driver_initialized;
 static bool s_ap_netif_created;
 static bool s_sta_netif_created;
 static bool s_wifi_started;
+static esp_netif_t *s_sta_netif;
+/* Keep exactly the event-registration handles created by this composition
+ * root.  The default Wi-Fi netif helpers manage their own system handlers;
+ * rollback must unregister only the application callback instances it owns. */
+static esp_event_handler_instance_t s_wifi_event_instance;
+static esp_event_handler_instance_t s_wifi_got_ip_event_instance;
+static esp_event_handler_instance_t s_wifi_assigned_ip_event_instance;
+/* ESP-IDF event-handler unregister serializes with the default event-loop
+ * mutex, but exposes no caller deadline.  Keep our callback admission and
+ * in-flight drain separate so the composition root can prove no application
+ * callback is still touching Connectivity/UI state before it stops the radio
+ * or waits in SDK unregistration. */
+static SemaphoreHandle_t s_wifi_event_callbacks_drained;
+static bool s_wifi_event_callback_admission_open;
+static uint32_t s_wifi_event_callbacks_inflight;
 static TaskHandle_t s_cellular_recovery_task;
+static SemaphoreHandle_t s_cellular_recovery_start_gate;
+static SemaphoreHandle_t s_cellular_recovery_stopped;
+static bool s_cellular_recovery_stop_requested;
+static bool s_cellular_recovery_starting;
+static bool s_cellular_recovery_admission_open;
 // The provisioning portal needs APSTA mode to scan nearby networks, but a
 // first-run portal must not repeatedly attempt an unconfigured STA join.
 static bool s_station_auto_connect;
@@ -169,12 +216,26 @@ static bool s_station_expected_disconnect;
 // leave the Wi-Fi driver's scan timer with a stale task notification target,
 // which then asserts just after esp_wifi_start().
 static bool s_wifi_enterprise_enabled;
-static bool s_setup_portal_active;
 /* The setup AP/QR page is a foreground flow.  Keep its ownership explicit so
  * an ambient idle deadline cannot blank the only configuration surface. */
 static device_power_lease_t s_setup_power_lease;
 static esp_netif_t *s_setup_ap_netif;
 static TaskHandle_t s_dns_task;
+static SemaphoreHandle_t s_dns_start_gate;
+static SemaphoreHandle_t s_dns_stopped;
+/* A created DNS task is not proof that UDP/53 was actually bound.  Portal
+ * startup waits for this one-shot result before admitting the HTTP form. */
+static SemaphoreHandle_t s_dns_ready;
+static bool s_dns_ready_success;
+static bool s_dns_stop_requested;
+static bool s_dns_starting;
+static bool s_dns_admission_open;
+/* The provisioning portal is one composite resource: HTTP, captive DNS,
+ * session scratch, a foreground power lease and a reversible radio snapshot.
+ * Its callers originate in button/input, gateway recovery, boot and the
+ * post-save reset coordinator, so a single transaction gate is required to
+ * prevent one generation's stop from racing another generation's start. */
+static SemaphoreHandle_t s_setup_portal_mutex;
 static SemaphoreHandle_t s_setup_options_mutex;
 // Provisioning-only scratch storage is allocated when the portal starts. It
 // must not permanently shift ESP-IDF's prebuilt Wi-Fi globals in internal
@@ -184,6 +245,12 @@ static char *s_setup_ssid_choices;
 static wifi_ap_record_t *s_setup_scan_records;
 static TaskHandle_t s_gateway_task;
 static volatile bool s_gateway_startup_running;
+static SemaphoreHandle_t s_gateway_startup_start_gate;
+static SemaphoreHandle_t s_gateway_startup_stopped;
+static SemaphoreHandle_t s_gateway_startup_client_mutex;
+static esp_http_client_handle_t s_gateway_startup_active_client;
+static bool s_gateway_startup_stop_requested;
+static bool s_gateway_startup_starting;
 // Bread's first TLS certificate verification is cache/PSRAM intensive. Its
 // alarm scheduler is deliberately initialized after that transaction, not in
 // parallel with it; see ensure_alarm_manager_started().
@@ -194,12 +261,40 @@ static bool s_alarm_manager_started;
 static volatile bool s_gateway_startup_allowed;
 static TaskHandle_t s_interaction_task;
 static device_power_lease_t s_interaction_power_lease;
+static SemaphoreHandle_t s_interaction_start_gate;
+static SemaphoreHandle_t s_interaction_stopped;
+static bool s_interaction_stop_requested;
+static bool s_interaction_starting;
 static TaskHandle_t s_meeting_task;
 static device_power_lease_t s_meeting_power_lease;
+/* The recording/upload worker owns live audio, a retained WAV and sometimes
+ * a Wi-Fi HTTP client.  It therefore needs its own lifecycle contract rather
+ * than being mistaken for either the short resume supervisor or a permanent
+ * audio-driver task. */
+static SemaphoreHandle_t s_meeting_task_start_gate;
+static SemaphoreHandle_t s_meeting_task_stopped;
+static SemaphoreHandle_t s_meeting_task_client_mutex;
+static esp_http_client_handle_t s_meeting_task_active_client;
+static bool s_meeting_task_stop_requested;
 static TaskHandle_t s_meeting_resume_supervisor_task;
+static SemaphoreHandle_t s_meeting_resume_supervisor_start_gate;
+static SemaphoreHandle_t s_meeting_resume_supervisor_stopped;
+static bool s_meeting_resume_supervisor_stop_requested;
+static bool s_meeting_resume_supervisor_starting;
 static volatile bool s_wake_restart_scheduled;
 static volatile bool s_wake_restart_after_startup;
+static TaskHandle_t s_wake_restart_task;
+static SemaphoreHandle_t s_wake_restart_start_gate;
+static SemaphoreHandle_t s_wake_restart_stopped;
+static bool s_wake_restart_stop_requested;
+static bool s_wake_restart_admission_open;
 static TaskHandle_t s_meeting_capability_refresh_task;
+static SemaphoreHandle_t s_meeting_capability_refresh_start_gate;
+static SemaphoreHandle_t s_meeting_capability_refresh_stopped;
+static SemaphoreHandle_t s_meeting_capability_refresh_client_mutex;
+static esp_http_client_handle_t s_meeting_capability_refresh_active_client;
+static bool s_meeting_capability_refresh_stop_requested;
+static bool s_meeting_capability_refresh_starting;
 static bool s_meeting_task_running;
 /* The worker receives this explicit context instead of inferring ownership
  * from a naked resume flag or global task handle. */
@@ -207,10 +302,17 @@ typedef struct {
     uint32_t generation;
     bool resume_only;
 } meeting_task_context_t;
-static bool s_pairing_recovery_portal;
 static TaskHandle_t s_ambient_task;
 static SemaphoreHandle_t s_ambient_task_stopped;
 static TaskHandle_t s_clock_sync_task;
+static SemaphoreHandle_t s_clock_sync_start_gate;
+static SemaphoreHandle_t s_clock_sync_stopped;
+static bool s_clock_sync_stop_requested;
+/* The retry monitor and esp-netif's SNTP client have separate lifetimes.
+ * Keep their ownership explicit: the monitor must leave before a rollback may
+ * deinitialize the client, otherwise a late sync_wait/restart would access a
+ * released esp-netif SNTP singleton. */
+static bool s_sntp_initialized;
 static TaskHandle_t s_gateway_poll_task;
 static SemaphoreHandle_t s_gateway_poll_stopped;
 static SemaphoreHandle_t s_gateway_poll_client_mutex;
@@ -220,7 +322,22 @@ static TaskHandle_t s_startup_pet_asset_task;
 static SemaphoreHandle_t s_startup_pet_asset_stopped;
 static bool s_startup_pet_asset_stop_requested;
 static SemaphoreHandle_t s_pet_cache_flash_mutex;
+static TaskHandle_t s_pet_cache_task;
+static bool s_pet_cache_stop_requested;
 static TaskHandle_t s_setup_restart_task;
+static SemaphoreHandle_t s_setup_restart_start_gate;
+static SemaphoreHandle_t s_setup_restart_stopped;
+static bool s_setup_restart_stop_requested;
+static bool s_setup_restart_starting;
+static bool s_setup_restart_admission_open;
+/* Fallback only when the durable force-setup request cannot be committed.
+ * It still changes radio/portal state, so it is a normal Connectivity-owned
+ * worker rather than an untracked fire-and-forget task. */
+static TaskHandle_t s_deferred_setup_task;
+static SemaphoreHandle_t s_deferred_setup_start_gate;
+static SemaphoreHandle_t s_deferred_setup_stopped;
+static bool s_deferred_setup_stop_requested;
+static bool s_deferred_setup_starting;
 static SemaphoreHandle_t s_startup_welcome_done;
 static volatile bool s_startup_welcome_gate_active;
 static volatile bool s_startup_welcome_timed_out;
@@ -240,9 +357,14 @@ static bool s_command_cancel_ui_shown;
 // capture immediately instead of waiting for the 500 ms single/double gesture
 // decision. Consume the completed gesture from that same physical contact so
 // its delayed SHORT can never dismiss the new thinking/result surface or start
-// another command. A fresh down edge disarms this one-contact barrier.
+// another command. A fresh down edge disarms this one-contact barrier.  The
+// scanner is allowed to lose a completion during controller recovery, so the
+// barrier has a bounded lifetime; it must never consume a later, independent
+// press in the next command.
+#define INPUT_GESTURE_DRAIN_WINDOW_US 1500000ULL
 static bool s_command_capture_stop_gesture_pending;
 static device_input_source_t s_command_capture_stop_source = DEVICE_INPUT_SOURCE_UNKNOWN;
+static uint64_t s_command_capture_stop_gesture_deadline_us;
 #define CANCELLED_REPLY_SLOTS 4
 #define COMMAND_REPLY_ID_CAPACITY 96
 #define RESULT_SPEECH_IDLE_TIMEOUT_US (5LL * 60LL * 1000000LL)
@@ -280,6 +402,23 @@ static esp_http_client_handle_t s_gateway_asset_http_client;
 static char s_gateway_asset_http_origin[URL_CAPACITY];
 static SemaphoreHandle_t s_gateway_asset_client_mutex;
 static esp_http_client_handle_t s_gateway_asset_active_client;
+static esp_timer_handle_t s_startup_pet_retry_timer;
+/* Retry timer callbacks run on ESP-IDF's timer-service task.  Stop alone does
+ * not prove a callback that already began has returned, so lifecycle teardown
+ * tracks the small callback lease explicitly before it destroys the timer or
+ * releases the optional pet domain it can otherwise re-admit. */
+static SemaphoreHandle_t s_startup_pet_retry_callback_drained;
+/* Serializes the public retry-arm path with lifecycle stop.  esp_timer_stop()
+ * leaves a handle reusable, so callback admission alone cannot prevent a
+ * late caller from rearming a retained one-shot timer after rollback. */
+static SemaphoreHandle_t s_startup_pet_retry_timer_mutex;
+static bool s_startup_pet_retry_callback_admission_open;
+static uint32_t s_startup_pet_retry_callbacks_inflight;
+static unsigned s_startup_pet_retry_count;
+/* esp_timer callbacks run on ESP-IDF's small timer-service stack.  They may
+ * only mark deferred work; allocating pet frames, sampling the resource
+ * policy, and creating the optional worker belongs to a normal task. */
+static volatile bool s_startup_pet_retry_due;
 // Startup pet artwork is intentionally optional.  Its independent worker may
 // otherwise open a second TLS session while the poll worker receives a spoken
 // reply, exhausting the small internal TLS heap on EchoEar.  Keep the priority
@@ -303,14 +442,29 @@ static bool s_server_audio_wake_memory_lease_active;
 static void set_audio_media_download_active(bool active);
 static bool audio_media_download_active(void);
 static void cancel_optional_startup_pet_asset_for_audio(void);
+static void apply_deferred_startup_pet_asset(void);
+static void rearm_preempted_startup_pet_asset(void);
 static esp_err_t stop_startup_pet_asset_task(uint32_t timeout_ms);
+static esp_err_t stop_startup_pet_retry_timer(uint32_t timeout_ms);
+static void startup_pet_retry_timer_cb(void *arg);
+static bool schedule_startup_pet_retry_timer(void);
+static bool startup_pet_asset_stop_requested(void);
+static esp_err_t stop_pet_cache_task(uint32_t timeout_ms);
+static bool pet_cache_stop_requested(void);
 static void discard_gateway_asset_http_client(void);
 static bool begin_server_audio_wake_memory_lease(const char *source);
 static void begin_optional_media_wake_memory_lease(const char *source);
 static bool finish_server_audio_wake_memory_lease(void);
 static bool finish_optional_media_wake_memory_lease(void);
+static void finish_optional_pet_asset_memory_lease(void);
 static bool server_audio_wake_memory_lease_active(void);
 static void startup_stop_local_workers(void);
+static uint32_t startup_rollback_remaining_timeout_ms(int64_t deadline_us);
+static esp_err_t stop_command_cancel_worker(uint32_t timeout_ms);
+static esp_err_t stop_output_volume_persist_worker(uint32_t timeout_ms);
+static esp_err_t stop_command_cancel_registry_entry(void *context, uint32_t timeout_ms);
+static esp_err_t stop_output_volume_persist_registry_entry(void *context,
+                                                            uint32_t timeout_ms);
 // Exactly one pet pack may own the renderer at a time.  A cold-start pack is
 // deliberately cancellable, but once it starts touching the display its final
 // install/cache sequence must not race an online pet_profile update.
@@ -332,9 +486,17 @@ static SemaphoreHandle_t s_nvs_mutex;
 // calling task's stack to remain accessible while that happens.  Never invoke
 // NVS directly from that worker; route volume persistence through this small
 // internal-stack worker instead.
+/* Display brightness is a standalone scalar key rather than a new field in
+ * the versioned configuration blob: it shares no schema with the Wi-Fi/
+ * gateway credentials and never needs their migration machinery. */
+#define DISPLAY_BRIGHTNESS_NVS_NAMESPACE "maclaw"
+#define DISPLAY_BRIGHTNESS_NVS_KEY "brightness"
+#define DISPLAY_SLEEP_NVS_KEY "screen_sleep_s"
+
 typedef struct {
     unsigned percent;
     uint32_t generation;
+    bool brightness;
     bool stop;
 } output_volume_persist_request_t;
 
@@ -349,6 +511,7 @@ static SemaphoreHandle_t s_output_volume_persist_request_mutex;
 static TaskHandle_t s_output_volume_persist_task_handle;
 static SemaphoreHandle_t s_output_volume_persist_stopped;
 static uint32_t s_output_volume_persist_generation;
+static bool s_output_volume_persist_stop_requested;
 static unsigned s_configured_output_volume = 70;
 static bool s_configured_output_volume_saved;
 static portMUX_TYPE s_task_state_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -359,6 +522,10 @@ static int64_t s_weather_expires_at_ms;
 static bool s_weather_valid;
 static void on_wake_word(void *arg);
 static void on_fall_detection_event(fall_detection_event_t event, void *arg);
+static esp_err_t stop_setup_portal_transaction(uint32_t timeout_ms,
+                                               bool restore_wake_word);
+static esp_err_t stop_setup_portal_transaction_locked(uint32_t timeout_ms,
+                                                      bool restore_wake_word);
 
 // NVS may contain Wi-Fi credentials, the pairing token, alarms and the
 // meeting-recovery cursor.  ESP-IDF suggests erasing the whole partition for
@@ -379,10 +546,195 @@ static esp_err_t initialize_nvs_preserving_user_data(void) {
 
 static void setup_restart_task(void *arg) {
     (void)arg;
-    // Let esp_http_server complete the response before tearing down Wi-Fi.
-    vTaskDelay(pdMS_TO_TICKS(1200));
+    /* The HTTP handler creates this task before it is visible to the lifecycle
+     * registry.  Do no work until that publication has completed: an early
+     * startup rollback must be able to close admission and join it rather than
+     * allowing an untracked delayed reset to fire later. */
+    if (!s_setup_restart_start_gate ||
+        xSemaphoreTake(s_setup_restart_start_gate, portMAX_DELAY) != pdTRUE) {
+        TaskHandle_t self = xTaskGetCurrentTaskHandle();
+        taskENTER_CRITICAL(&s_task_state_lock);
+        if (s_setup_restart_task == self) s_setup_restart_task = NULL;
+        s_setup_restart_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (s_setup_restart_stopped) xSemaphoreGive(s_setup_restart_stopped);
+        (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                                     (void *)self, 10);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* Let esp_http_server flush its response, but make the delay cancellable.
+     * A task notification is deliberately used instead of vTaskDelay(): it
+     * provides the stop safe point without taking ownership of the portal,
+     * DNS responder, HTTP server or Wi-Fi mode. */
+    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1200));
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool stop_requested = s_setup_restart_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (stop_requested) {
+        goto finish;
+    }
+    /* Saving credentials is a terminal provisioning transition.  Reboot is
+     * still the supported way to apply the new station configuration, but it
+     * must not be the only cleanup mechanism: close portal admission, join
+     * HTTP/DNS and release the logical session before the reset.  AP/DHCP and
+     * Wi-Fi are intentionally left to that reset; this is not an APSTA->STA
+     * runtime-restart claim. */
+    esp_err_t portal_stop_err = stop_setup_portal_transaction(500, false);
+    if (portal_stop_err != ESP_OK) {
+        /* The saved configuration has already committed.  A physical restart
+         * is safer than retaining an admission-closed but partially drained
+         * portal whose new configuration cannot take effect in this boot. */
+        ESP_LOGW(TAG, "setup portal cleanup before restart incomplete: %s",
+                 esp_err_to_name(portal_stop_err));
+    }
+    /* `stop_setup_restart_task()` may arrive while HTTP/DNS are draining.
+     * Observe its token a second time before committing the reset; otherwise
+     * the caller could receive our completion and continue rollback while this
+     * coordinator restarts the chip. */
+    taskENTER_CRITICAL(&s_task_state_lock);
+    stop_requested = s_setup_restart_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+finish:
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_setup_restart_task == self) s_setup_restart_task = NULL;
+    s_setup_restart_starting = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_setup_restart_stopped) xSemaphoreGive(s_setup_restart_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                                 (void *)self, 10);
+    if (stop_requested) {
+        ESP_LOGI(TAG, "setup restart coordinator stopped before reset");
+        vTaskDelete(NULL);
+        return;
+    }
     ESP_LOGI(TAG, "setup saved; restarting into normal mode");
     esp_restart();
+}
+
+/* This coordinator owns the post-save delay and the terminal user-space
+ * portal cleanup before an intentional reset.  It still does not own AP/STA,
+ * DHCP or Wi-Fi-event lifetimes; those stay with the reset/physical network
+ * composition root and are not claimed as runtime-restartable here. */
+static esp_err_t stop_setup_restart_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_setup_restart_admission_open = false;
+    s_setup_restart_stop_requested = true;
+    task = s_setup_restart_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    xTaskNotifyGive(task);
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_setup_restart_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_setup_restart_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "setup restart coordinator stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_setup_restart_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_setup_restart_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_setup_restart_task(timeout_ms);
+}
+
+static bool schedule_setup_restart(void) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool admission_open = s_setup_restart_admission_open;
+    bool already_starting = s_setup_restart_starting || s_setup_restart_task != NULL;
+    if (admission_open && !already_starting) s_setup_restart_starting = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!admission_open) {
+        ESP_LOGW(TAG, "setup restart rejected: lifecycle admission is closed");
+        return false;
+    }
+    if (already_starting) return true;
+    if (!s_setup_restart_start_gate || !s_setup_restart_stopped ||
+        provisioning_failure_injection_lifecycle_primitives_unavailable()) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_setup_restart_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "setup restart lifecycle primitives unavailable%s",
+                 provisioning_failure_injection_lifecycle_primitives_unavailable()
+                     ? " (test injection)" : "");
+        return false;
+    }
+    while (xSemaphoreTake(s_setup_restart_stopped, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_setup_restart_stop_requested = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    BaseType_t create_result = provisioning_failure_injection_task_create_fails()
+                                   ? pdFAIL
+                                   : xTaskCreate(setup_restart_task,
+                                                 "maclaw_setup_restart", 2048,
+                                                 NULL, 2, &task);
+    if (create_result != pdPASS) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_setup_restart_starting = false;
+        s_setup_restart_task = NULL;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "cannot schedule restart after setup save%s",
+                 provisioning_failure_injection_task_create_fails()
+                     ? " (test injection)" : "");
+        return false;
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_setup_restart_task = task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    esp_err_t registry_err = provisioning_failure_injection_task_registry_register_fails()
+                                 ? ESP_ERR_NO_MEM
+                                 : task_registry_register(&(task_registry_entry_t){
+                                       .struct_size = sizeof(task_registry_entry_t),
+                                       .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                       .name = "setup_restart",
+                                       .context = (void *)task,
+                                       .stop = stop_setup_restart_registry_entry,
+                                   });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register setup restart coordinator: %s%s",
+                 esp_err_to_name(registry_err),
+                 provisioning_failure_injection_task_registry_register_fails()
+                     ? " (test injection)" : "");
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_setup_restart_stop_requested = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        xSemaphoreGive(s_setup_restart_start_gate);
+        (void)stop_setup_restart_task(500);
+        return false;
+    }
+    xSemaphoreGive(s_setup_restart_start_gate);
+    return true;
+}
+
+/* A post-save coordinator is deliberately terminal: once credentials have
+ * committed, this generation must either reset or remain fail-closed.  Do not
+ * reopen its admission from a later manual/recovery portal request before the
+ * reset takes place; a second coordinator could otherwise reuse its stopped
+ * token while the first task is still unwinding. */
+static bool setup_restart_is_pending(void) {
+    bool pending;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    pending = s_setup_restart_starting || s_setup_restart_task != NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return pending;
 }
 // Once SNTP supplies an epoch, the display advances from ESP32's monotonic
 // microsecond counter. This keeps the visible seconds moving independently of
@@ -435,6 +787,51 @@ static volatile interaction_phase_t s_interaction_phase = INTERACTION_IDLE;
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data);
 
+/* Event callbacks execute on ESP-IDF's default loop.  Do not borrow a service
+ * or UI state once lifecycle admission has closed.  The counter covers a
+ * callback that was selected immediately before unregister: ESP-IDF marks its
+ * handler unregistered, but its API does not offer a caller-bounded drain
+ * guarantee. */
+static bool wifi_event_callback_enter(void) {
+    bool entered = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_wifi_event_callback_admission_open) {
+        ++s_wifi_event_callbacks_inflight;
+        entered = true;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return entered;
+}
+
+static void wifi_event_callback_leave(void) {
+    bool drained = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_wifi_event_callbacks_inflight > 0) {
+        --s_wifi_event_callbacks_inflight;
+        drained = !s_wifi_event_callback_admission_open &&
+                  s_wifi_event_callbacks_inflight == 0;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (drained && s_wifi_event_callbacks_drained) {
+        xSemaphoreGive(s_wifi_event_callbacks_drained);
+    }
+}
+
+static esp_err_t stop_wifi_event_callback_admission(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    bool already_drained = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_wifi_event_callback_admission_open = false;
+    already_drained = s_wifi_event_callbacks_inflight == 0;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (already_drained) return ESP_OK;
+    if (!s_wifi_event_callbacks_drained ||
+        xSemaphoreTake(s_wifi_event_callbacks_drained, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
 typedef struct {
     char *data;
     size_t capacity;
@@ -450,6 +847,31 @@ static void save_ambient_weather(void);
 static void load_ambient_weather(void);
 static esp_err_t poll_reply(void);
 static esp_err_t stop_gateway_poll_task(uint32_t timeout_ms);
+static esp_err_t stop_ambient_clock_task(uint32_t timeout_ms);
+static esp_err_t stop_clock_sync_task(uint32_t timeout_ms);
+static esp_err_t stop_sntp_service(uint32_t timeout_ms);
+static esp_err_t stop_gateway_poll_registry_entry(void *context, uint32_t timeout_ms);
+static esp_err_t stop_ambient_clock_registry_entry(void *context, uint32_t timeout_ms);
+static esp_err_t stop_clock_sync_registry_entry(void *context, uint32_t timeout_ms);
+static esp_err_t stop_meeting_resume_supervisor(uint32_t timeout_ms);
+static esp_err_t stop_meeting_resume_supervisor_registry_entry(void *context,
+                                                                 uint32_t timeout_ms);
+static esp_err_t stop_meeting_capability_refresh_task(uint32_t timeout_ms);
+static esp_err_t stop_meeting_capability_refresh_registry_entry(void *context,
+                                                                  uint32_t timeout_ms);
+static esp_err_t stop_meeting_task(uint32_t timeout_ms);
+static esp_err_t stop_meeting_task_registry_entry(void *context, uint32_t timeout_ms);
+static esp_err_t stop_interaction_task(uint32_t timeout_ms);
+static esp_err_t stop_interaction_task_registry_entry(void *context, uint32_t timeout_ms);
+static esp_err_t stop_gateway_startup_task(uint32_t timeout_ms);
+static esp_err_t stop_gateway_startup_registry_entry(void *context,
+                                                       uint32_t timeout_ms);
+static esp_err_t stop_captive_dns_task(uint32_t timeout_ms);
+static esp_err_t stop_captive_dns_registry_entry(void *context, uint32_t timeout_ms);
+static esp_err_t stop_setup_portal_http_server(void);
+static void release_setup_portal_scratch(void);
+static esp_err_t stop_network_core_transaction(uint32_t timeout_ms);
+static esp_err_t stop_connectivity_root_transaction(uint32_t timeout_ms);
 static esp_err_t send_text_event(const char *text, const char *reply_to);
 static bool hardware_audio_url_allowed(const char *url);
 static void digest_hex(const uint8_t digest[32], char out[65]);
@@ -462,15 +884,45 @@ static bool json_number(cJSON *root, const char *key, int *value);
 static int apply_glyphs_json(cJSON *glyphs);
 static bool start_meeting_task(bool resume_only);
 static bool meeting_operation_is_current(uint32_t generation);
+static bool meeting_task_stop_requested(void);
+static void meeting_task_set_active_http_client(esp_http_client_handle_t client);
+static bool interaction_stop_requested(void);
 static esp_err_t gateway_handshake(bool cold_start);
 static void start_setup_portal(bool keep_station);
+static void start_setup_portal_locked(bool keep_station);
+static void build_setup_saved_networks_html(void);
+/* 已存热点列表的页面片段在 httpd 任务上构建，沿用 PSRAM 缓冲。 */
+#define SETUP_SAVED_HTML_CAPACITY 2048
+static char *s_setup_saved_html;
 static void schedule_wake_restart(void);
+static esp_err_t stop_wake_restart_task(uint32_t timeout_ms);
+static esp_err_t stop_wake_restart_registry_entry(void *context, uint32_t timeout_ms);
+static bool schedule_setup_restart(void);
+static esp_err_t stop_setup_restart_task(uint32_t timeout_ms);
+static esp_err_t stop_setup_restart_registry_entry(void *context, uint32_t timeout_ms);
+static esp_err_t stop_deferred_setup_task(uint32_t timeout_ms);
+static esp_err_t stop_deferred_setup_registry_entry(void *context, uint32_t timeout_ms);
 static esp_err_t audio_wake_word_stop(void);
+static esp_err_t audio_wake_word_stop_with_timeout(uint32_t timeout_ms);
 static esp_err_t clear_meeting_recovery(bool delete_audio);
 static void pet(const char *state);
 static void apply_deferred_startup_pet_asset(void);
 static bool start_gateway_startup_task(void);
 static bool ensure_alarm_manager_started(void);
+
+static bool setup_portal_http_admission_open(void) {
+    bool open;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    open = s_setup_http_admission_open;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return open;
+}
+
+static void set_setup_portal_http_admission(bool open) {
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_setup_http_admission_open = open;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+}
 
 static esp_err_t handle_client_tool_call(cJSON *item) {
     cJSON *call = cJSON_GetObjectItemCaseSensitive(item, "toolCall");
@@ -596,6 +1048,7 @@ static void meeting_set_state(meeting_state_t state) {
 }
 static void finish_interaction_task_with_surface(uint32_t generation,
                                                  bool restore_standby) {
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
     app_ui_set_command_cancel_enabled(false);
     bool operation_current = operation_context_is_current(generation);
     taskENTER_CRITICAL(&s_task_state_lock);
@@ -634,6 +1087,9 @@ static void finish_interaction_task_with_surface(uint32_t generation,
     if (!owns_interaction) {
         ESP_LOGW(TAG, "stale interaction finish ignored: generation=%lu current=%lu",
                  (unsigned long)generation, (unsigned long)s_interaction_generation);
+        if (s_interaction_stopped) xSemaphoreGive(s_interaction_stopped);
+        (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_INTERACTION,
+                                                     (void *)self, 10);
         vTaskDelete(NULL);
         return;
     }
@@ -648,7 +1104,15 @@ static void finish_interaction_task_with_surface(uint32_t generation,
     // The interaction worker now uses ordinary xTaskCreate() with an internal
     // RAM stack, so it must be destroyed by the matching FreeRTOS API.
     // vTaskDeleteWithCaps() asserts when given a normally allocated task.
-    if (owns_interaction) schedule_wake_restart();
+    if (owns_interaction) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_interaction_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (s_interaction_stopped) xSemaphoreGive(s_interaction_stopped);
+        (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_INTERACTION,
+                                                     (void *)self, 10);
+        schedule_wake_restart();
+    }
     vTaskDelete(NULL);
 }
 
@@ -685,6 +1149,14 @@ static bool meeting_operation_is_current(uint32_t generation) {
     return generation != 0 && operation_context_matches(generation);
 }
 
+static bool interaction_stop_requested(void) {
+    bool requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    requested = s_interaction_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return requested;
+}
+
 // A local validation, capture, upload, or submission failure has no result to
 // keep on screen.  Treat it like Bread Compact's short status acknowledgement:
 // leave the message readable, then return every layer (application model,
@@ -692,7 +1164,7 @@ static bool meeting_operation_is_current(uint32_t generation) {
 // Final remote replies deliberately continue to use finish_interaction_task(),
 // so a user can read and dismiss them explicitly.
 static void finish_interaction_message(uint32_t generation, uint32_t dwell_ms) {
-    if (dwell_ms) vTaskDelay(pdMS_TO_TICKS(dwell_ms));
+    if (dwell_ms) (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(dwell_ms));
     finish_interaction_task_with_surface(generation, true);
 }
 
@@ -1139,12 +1611,61 @@ static void command_cancel_worker(void *arg) {
         taskEXIT_CRITICAL(&s_task_state_lock);
         if (s_command_cancel_ui_ready) xSemaphoreGive(s_command_cancel_ui_ready);
         if (waiter) xTaskNotifyGive(waiter);
+        // High-water mark after a full cancel cycle (CJK frame + transport
+        // cancel + /cancel POST) so real-device runs can confirm the stack
+        // margin on both the Wi-Fi/TLS and the ML307 paths.
+        ESP_LOGI(TAG, "command cancel handled: generation=%lu stack_hwm=%u",
+                 (unsigned long)cancel_generation,
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
     }
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
     taskENTER_CRITICAL(&s_task_state_lock);
-    s_command_cancel_task = NULL;
+    if (s_command_cancel_task == self) s_command_cancel_task = NULL;
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (s_command_cancel_stopped) xSemaphoreGive(s_command_cancel_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_INTERACTION,
+                                                 (void *)self, 10);
     vTaskDelete(NULL);
+}
+
+/* The cancellation coordinator owns display/network cancellation side effects,
+ * but no driver lifetime.  Stop only at its notification wait boundary and
+ * keep its completion semaphore alive on timeout: a still-running worker may
+ * still reference the UI and foreground HTTP guards. */
+static esp_err_t stop_command_cancel_worker(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_command_cancel_stop_requested = true;
+    task = s_command_cancel_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    xTaskNotifyGive(task);
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_command_cancel_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_command_cancel_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_INTERACTION, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "command cancel worker stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_command_cancel_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_command_cancel_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_command_cancel_worker(timeout_ms);
 }
 
 static bool request_command_cancel(void) {
@@ -1258,10 +1779,17 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
                 : snprintf(url, sizeof(url), "%s%s", s_gateway_url, path);
     if (n < 0 || n >= sizeof(url)) return ESP_ERR_INVALID_SIZE;
     bool foreground_request = false;
+    bool meeting_request = false;
+    bool meeting_capability_refresh_request = false;
+    bool gateway_startup_request = false;
     uint32_t foreground_generation = 0;
     TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
     taskENTER_CRITICAL(&s_task_state_lock);
     foreground_request = current_task == s_interaction_task;
+    meeting_request = current_task == s_meeting_task;
+    meeting_capability_refresh_request =
+        current_task == s_meeting_capability_refresh_task;
+    gateway_startup_request = current_task == s_gateway_task;
     if (foreground_request) foreground_generation = s_interaction_generation;
     taskEXIT_CRITICAL(&s_task_state_lock);
 
@@ -1320,6 +1848,8 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
             .truncated = &out->truncated,
             .timeout_ms = cancellation_request ? 5000
                          : (foreground_request && body_len > 32768 ? 90000 : 30000),
+            .cancellation_owner = foreground_request ? (const void *)current_task
+                                : meeting_request ? (const void *)current_task : NULL,
             .foreground = foreground_request,
         };
         esp_err_t cellular_err = device_status_to_platform_error(
@@ -1391,6 +1921,30 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         xSemaphoreGive(request_mutex);
         return ESP_ERR_NO_MEM;
     }
+    if (gateway_startup_request) {
+        if (!s_gateway_startup_client_mutex) {
+            if (owns_client) esp_http_client_cleanup(client);
+            xSemaphoreGive(request_mutex);
+            free(out->data);
+            out->data = NULL;
+            return ESP_ERR_INVALID_STATE;
+        }
+        xSemaphoreTake(s_gateway_startup_client_mutex, portMAX_DELAY);
+        s_gateway_startup_active_client = client;
+        xSemaphoreGive(s_gateway_startup_client_mutex);
+    }
+    if (meeting_capability_refresh_request) {
+        if (!s_meeting_capability_refresh_client_mutex) {
+            if (owns_client) esp_http_client_cleanup(client);
+            xSemaphoreGive(request_mutex);
+            free(out->data);
+            out->data = NULL;
+            return ESP_ERR_INVALID_STATE;
+        }
+        xSemaphoreTake(s_meeting_capability_refresh_client_mutex, portMAX_DELAY);
+        s_meeting_capability_refresh_active_client = client;
+        xSemaphoreGive(s_meeting_capability_refresh_client_mutex);
+    }
     if (foreground_request) {
         xSemaphoreTake(s_foreground_http_client_mutex, portMAX_DELAY);
         s_foreground_http_client = client;
@@ -1400,6 +1954,11 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         xSemaphoreTake(s_gateway_poll_client_mutex, portMAX_DELAY);
         s_gateway_poll_active_client = client;
         xSemaphoreGive(s_gateway_poll_client_mutex);
+    }
+    if (asset_request && s_gateway_asset_client_mutex) {
+        xSemaphoreTake(s_gateway_asset_client_mutex, portMAX_DELAY);
+        s_gateway_asset_active_client = client;
+        xSemaphoreGive(s_gateway_asset_client_mutex);
     }
     esp_http_client_method_t http_method = HTTP_METHOD_GET;
     if (!strcmp(method, "POST")) http_method = HTTP_METHOD_POST;
@@ -1426,12 +1985,30 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
     int64_t perform_started_us = esp_timer_get_time();
     esp_err_t err;
     if (foreground_request && command_cancel_requested_for(foreground_generation)) {
+        // Cancellation skips the perform entirely. Do not report the pooled
+        // handle's previous status (usually a stale 200) for a request that
+        // never ran.
         err = ESP_ERR_INVALID_STATE;
+        out->status = 0;
     } else {
         err = esp_http_client_perform(client);
+        out->status = esp_http_client_get_status_code(client);
     }
-    out->status = esp_http_client_get_status_code(client);
     uint32_t perform_ms = (uint32_t)((esp_timer_get_time() - perform_started_us) / 1000);
+    if (gateway_startup_request) {
+        xSemaphoreTake(s_gateway_startup_client_mutex, portMAX_DELAY);
+        if (s_gateway_startup_active_client == client) {
+            s_gateway_startup_active_client = NULL;
+        }
+        xSemaphoreGive(s_gateway_startup_client_mutex);
+    }
+    if (meeting_capability_refresh_request) {
+        xSemaphoreTake(s_meeting_capability_refresh_client_mutex, portMAX_DELAY);
+        if (s_meeting_capability_refresh_active_client == client) {
+            s_meeting_capability_refresh_active_client = NULL;
+        }
+        xSemaphoreGive(s_meeting_capability_refresh_client_mutex);
+    }
     if (foreground_request) {
         xSemaphoreTake(s_foreground_http_client_mutex, portMAX_DELAY);
         if (s_foreground_http_client == client) s_foreground_http_client = NULL;
@@ -1441,6 +2018,11 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         xSemaphoreTake(s_gateway_poll_client_mutex, portMAX_DELAY);
         if (s_gateway_poll_active_client == client) s_gateway_poll_active_client = NULL;
         xSemaphoreGive(s_gateway_poll_client_mutex);
+    }
+    if (asset_request && s_gateway_asset_client_mutex) {
+        xSemaphoreTake(s_gateway_asset_client_mutex, portMAX_DELAY);
+        if (s_gateway_asset_active_client == client) s_gateway_asset_active_client = NULL;
+        xSemaphoreGive(s_gateway_asset_client_mutex);
     }
     // The body and callback point at caller-owned memory. Clear both before a
     // pooled handle can outlive this stack frame.
@@ -1556,9 +2138,21 @@ typedef struct {
 static volatile bool s_startup_pet_asset_pending;
 static bool s_startup_pet_asset_present;
 static pet_asset_ref_t *s_startup_pet_asset_ref;
+/* Set when a server-audio transaction preempts the deferred cold-start pet
+ * install.  The audio memory-lease finish re-arms the install afterwards, so
+ * a slow backhaul (Fangtang's 4G, where the welcome audio routinely arrives
+ * inside the deferred pet window) no longer loses the standby pet for the
+ * entire boot. */
+static bool s_startup_pet_asset_preempted_by_audio;
 static char s_startup_pet_asset_skin[32];
 static char s_loaded_pet_asset_revision[40];
 static int s_loaded_pet_asset_frame_count;
+/* 在线宠物更新失败的有序重试会停住整个出站页游标（keep_cursor_for_retry），
+ * 容量类失败（ESP_ERR_NO_MEM）永不成功时后面的远程播放等消息全部被堵死。
+ * 记录同一消息 id 的连续失败次数，达到上限后按永久失败 ACK 放行队列。 */
+static char s_pet_asset_retry_id[80];
+static int s_pet_asset_retry_count;
+#define PET_ASSET_RETRY_LIMIT 3
 
 static bool pet_asset_url_allowed(const char *url) {
     return hardware_audio_url_allowed(url);
@@ -1609,38 +2203,102 @@ static void free_pet_asset_frames(uint8_t *frames[PET_ASSET_MAX_FRAMES], size_t 
 }
 
 /* A full remote pack keeps every verified source frame until the renderer has
- * atomically accepted the pack.  Reserve that bounded peak up front; the
- * cache only writes the first frame, but must also retain SPIFFS headroom for
- * foreground recordings and recovery.  This policy is shared across boards;
- * the round EchoEar renderer remains an adapter concern. */
+ * atomically accepted the pack. Reserve the aggregate peak up front, but
+ * compare only the real one-shot allocation against heap largest: fragmented
+ * PSRAM can safely hold a pack when no call asks it for one giant block. */
 static bool pet_asset_capacity_available(const pet_asset_ref_t *ref) {
     if (!ref || ref->frame_count < 1) return false;
     const size_t frame_bytes = (size_t)ref->width * (size_t)ref->height *
                                PET_ASSET_BYTES_PER_PIXEL;
     const size_t source_external = frame_bytes * (size_t)ref->frame_count;
-    uint32_t install_external = 0;
-    const size_t cache_storage = frame_bytes + 4096u;
+    device_display_pet_asset_install_budget_t install = {0};
+    /* A display profile may decline decorative flash mutations when its panel
+     * DMA and PSRAM share cache fabric. Do not reserve space for a cache that
+     * HAL will never create; the verified in-memory pack remains usable. */
+    const size_t cache_storage = device_storage_allows_optional_flash_work()
+                                     ? frame_bytes + 4096u : 0u;
     if (frame_bytes == 0 || source_external > UINT32_MAX || cache_storage > UINT32_MAX ||
         !device_display_get_pet_asset_install_budget(
             (uint32_t)ref->width, (uint32_t)ref->height, (uint32_t)ref->frame_count,
-            &install_external) ||
-        install_external > UINT32_MAX - source_external) {
+            &install) ||
+        install.struct_size != sizeof(install) ||
+        install.abi_version != DEVICE_DISPLAY_PET_ASSET_INSTALL_BUDGET_ABI_VERSION ||
+        install.total_external_bytes > UINT32_MAX - source_external) {
         return false;
     }
-    const uint32_t peak_external = (uint32_t)source_external + install_external;
+    /* The renderer reserves every replacement target before it can atomically
+     * swap the pack.  `max_external_allocation_bytes` describes fragmentation
+     * risk for one malloc(), while `total_external_bytes` is the simultaneous
+     * retained target set.  Treating the latter as one frame under-admitted a
+     * complete pack: the later allocation loop could fail after downloads had
+     * already consumed their network/PSRAM budget.  Keep these dimensions
+     * separate: aggregate free space protects the transaction peak, largest
+     * block protects each individual allocation. */
+    if (install.total_external_bytes > UINT32_MAX - source_external) return false;
+    const uint32_t total_peak_external =
+        (uint32_t)source_external + install.total_external_bytes;
+    uint32_t max_allocation_external = (uint32_t)frame_bytes;
+    if (install.max_external_allocation_bytes > max_allocation_external) {
+        max_allocation_external = install.max_external_allocation_bytes;
+    }
     if (!device_battery_policy_allows_optional_work()) {
         ESP_LOGW(TAG, "pet asset deferred: battery protection policy is active");
         return false;
     }
-    if (!device_resource_pressure_allows_optional_allocation(
-            0, peak_external, (uint32_t)cache_storage)) {
+    /* The blanket NORMAL-level gate denies this pack whenever the wake
+     * engine's internal-RAM working set has tripped the internal waterline
+     * (EchoEar idles at ~9.7 KiB largest internal block), even though the
+     * transaction itself needs no internal bytes: the download worker stops
+     * the wake engine first via the optional-media lease, which releases
+     * exactly that internal pressure.  Gate on the actual external/storage
+     * requirements instead, using the pressure service's own waterlines. */
+    device_resource_pressure_snapshot_t snapshot = {0};
+    if (!device_resource_pressure_get_snapshot(&snapshot) ||
+        snapshot.external_free_bytes < total_peak_external ||
+        snapshot.external_free_bytes - total_peak_external < 512u * 1024u ||
+        snapshot.external_largest_free_bytes < max_allocation_external ||
+        (cache_storage &&
+         (!snapshot.storage_available ||
+          snapshot.storage_free_bytes < (uint32_t)cache_storage ||
+          snapshot.storage_free_bytes - (uint32_t)cache_storage < 1024u * 1024u))) {
         ESP_LOGW(TAG, "pet asset deferred: insufficient shared optional capacity "
-                      "(source_psram=%u install_psram=%u storage=%u)",
-                 (unsigned)source_external, (unsigned)install_external,
-                 (unsigned)cache_storage);
+                      "(source_psram=%u install_psram=%u max_alloc=%u storage=%u) "
+                      "snapshot: level=%d ext_free=%lu ext_largest=%lu storage_free=%lu",
+                 (unsigned)source_external, (unsigned)install.total_external_bytes,
+                 (unsigned)max_allocation_external,
+                 (unsigned)cache_storage, (int)snapshot.level,
+                 (unsigned long)snapshot.external_free_bytes,
+                 (unsigned long)snapshot.external_largest_free_bytes,
+                 (unsigned long)snapshot.storage_free_bytes);
         return false;
     }
     return true;
+}
+
+/* The Hub describes the complete authored animation.  A display profile may
+ * retain fewer keyframes when its framebuffer geometry leaves less PSRAM for
+ * optional artwork.  Keep that decision behind the display contract: shared
+ * business code selects the same pet revision on every device and never names
+ * a board, resolution, or memory size. */
+static bool pet_asset_prepare_for_display(const pet_asset_ref_t *source,
+                                          pet_asset_ref_t *out) {
+    if (!source || !out || source->frame_count < 1) return false;
+    device_display_pet_asset_install_budget_t install = {0};
+    if (!device_display_get_pet_asset_install_budget(
+            (uint32_t)source->width, (uint32_t)source->height,
+            (uint32_t)source->frame_count, &install) ||
+        install.struct_size != sizeof(install) ||
+        install.abi_version != DEVICE_DISPLAY_PET_ASSET_INSTALL_BUDGET_ABI_VERSION ||
+        install.max_frame_count == 0) {
+        return false;
+    }
+    *out = *source;
+    if ((uint32_t)out->frame_count > install.max_frame_count) {
+        ESP_LOGI(TAG, "pet asset keyframes adapted by display HAL: %d -> %lu",
+                 out->frame_count, (unsigned long)install.max_frame_count);
+        out->frame_count = (int)install.max_frame_count;
+    }
+    return out->frame_count > 0;
 }
 
 static void set_audio_media_download_active(bool active) {
@@ -1707,6 +2365,7 @@ static void begin_optional_media_wake_memory_lease(const char *source) {
 
 static bool finish_server_audio_wake_memory_lease(void) {
     bool final_owner = false;
+    bool rearm_pet = false;
     taskENTER_CRITICAL(&s_task_state_lock);
     if (s_server_audio_wake_memory_lease_active) {
         s_server_audio_wake_memory_lease_active = false;
@@ -1714,8 +2373,15 @@ static bool finish_server_audio_wake_memory_lease(void) {
             --s_media_wake_memory_lease_count;
             final_owner = s_media_wake_memory_lease_count == 0;
         }
+        if (s_startup_pet_asset_preempted_by_audio) {
+            s_startup_pet_asset_preempted_by_audio = false;
+            rearm_pet = true;
+        }
     }
     taskEXIT_CRITICAL(&s_task_state_lock);
+    // Outside the critical section: the re-arm may spawn the deferred pet
+    // worker or arm its retry timer.
+    if (rearm_pet) rearm_preempted_startup_pet_asset();
     return final_owner;
 }
 
@@ -1730,6 +2396,14 @@ static bool finish_optional_media_wake_memory_lease(void) {
     return final_owner;
 }
 
+/* Optional pet work must not permanently leave the wake recognizer stopped.
+ * Its caller owns only the temporary memory lease; when this was the last
+ * lease, re-use the normal deferred restart path so all hardware profiles
+ * return to the same ready/idle behavior. */
+static void finish_optional_pet_asset_memory_lease(void) {
+    if (finish_optional_media_wake_memory_lease()) schedule_wake_restart();
+}
+
 static bool server_audio_wake_memory_lease_active(void) {
     bool active;
     taskENTER_CRITICAL(&s_task_state_lock);
@@ -1739,9 +2413,133 @@ static bool server_audio_wake_memory_lease_active(void) {
 }
 
 static void cancel_optional_startup_pet_asset_for_audio(void) {
-    if (!s_startup_pet_asset_pending) return;
+    bool preempted = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_startup_pet_asset_pending && !s_startup_pet_asset_stop_requested) {
+        s_startup_pet_asset_pending = false;
+        // Deferral, not abandonment: the audio lease finish re-arms the install.
+        s_startup_pet_asset_preempted_by_audio = true;
+        preempted = true;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (preempted) ESP_LOGI(TAG, "startup pet asset preempted by server audio");
+}
+
+static bool startup_pet_asset_stop_requested(void) {
+    bool stop_requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    stop_requested = s_startup_pet_asset_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return stop_requested;
+}
+
+static esp_err_t stop_startup_pet_retry_timer(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    const uint32_t lock_timeout_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (lock_timeout_ms == 0 || !s_startup_pet_retry_timer_mutex ||
+        xSemaphoreTake(s_startup_pet_retry_timer_mutex,
+                       pdMS_TO_TICKS(lock_timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_timer_handle_t timer = NULL;
+    bool already_drained = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_startup_pet_retry_callback_admission_open = false;
+    s_startup_pet_retry_due = false;
+    timer = s_startup_pet_retry_timer;
+    already_drained = s_startup_pet_retry_callbacks_inflight == 0;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+
+    if (timer) {
+        esp_err_t stop_err = esp_timer_stop(timer);
+        if (stop_err != ESP_OK && stop_err != ESP_ERR_INVALID_STATE) {
+            xSemaphoreGive(s_startup_pet_retry_timer_mutex);
+            return stop_err;
+        }
+    }
+    if (!already_drained) {
+        const uint32_t drain_timeout_ms =
+            startup_rollback_remaining_timeout_ms(deadline_us);
+        if (drain_timeout_ms == 0 || !s_startup_pet_retry_callback_drained ||
+            xSemaphoreTake(s_startup_pet_retry_callback_drained,
+                           pdMS_TO_TICKS(drain_timeout_ms)) != pdTRUE) {
+            xSemaphoreGive(s_startup_pet_retry_timer_mutex);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    /* Retain the stopped esp_timer object for this boot generation. Deleting it
+     * would race an ordinary retry-arm caller between reading the static handle
+     * and calling esp_timer_start_once(); this optional one-shot timer has no
+     * independently restartable owner after rollback. Admission remains closed
+     * and its callback is drained, so retaining the small SDK object is safer
+     * than presenting a freed handle to a late optional caller. */
+    xSemaphoreGive(s_startup_pet_retry_timer_mutex);
+    return ESP_OK;
+}
+
+static esp_err_t stop_startup_pet_asset_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_startup_pet_asset_task;
+    s_startup_pet_asset_stop_requested = true;
+    // Suppress both a pending retry callback and a re-arm after a foreground
+    // media transaction. The artwork is optional during lifecycle rollback.
     s_startup_pet_asset_pending = false;
-    ESP_LOGI(TAG, "startup pet asset preempted by server audio");
+    s_startup_pet_asset_preempted_by_audio = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+
+    const uint32_t retry_timer_timeout_ms =
+        startup_rollback_remaining_timeout_ms(deadline_us);
+    if (retry_timer_timeout_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t retry_timer_err = stop_startup_pet_retry_timer(retry_timer_timeout_ms);
+    if (retry_timer_err != ESP_OK) {
+        ESP_LOGW(TAG, "startup pet retry timer did not stop: %s",
+                 esp_err_to_name(retry_timer_err));
+        return retry_timer_err;
+    }
+    if (!task) {
+        // A task may have naturally completed just before rollback took the
+        // state lock. Its optional pooled TLS client still belongs to this
+        // domain and must not survive into a degraded startup state.
+        discard_gateway_asset_http_client();
+        return ESP_OK;
+    }
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+
+    /* Wi-Fi asset downloads own a separate persistent client. Cancel only the
+     * active request while it is published; the worker clears publication
+     * before cleanup, so lifecycle code never races a freed handle. Cellular
+     * work remains bounded by the adapter request timeout. */
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    const uint32_t cancel_guard_ms = remaining_ms > 100 ? 100 : remaining_ms;
+    if (s_gateway_asset_client_mutex && cancel_guard_ms != 0 &&
+        xSemaphoreTake(s_gateway_asset_client_mutex, pdMS_TO_TICKS(cancel_guard_ms)) == pdTRUE) {
+        esp_http_client_handle_t client = s_gateway_asset_active_client;
+        if (client) {
+            esp_err_t cancel_err = esp_http_client_cancel_request(client);
+            if (cancel_err != ESP_OK) {
+                ESP_LOGW(TAG, "startup pet HTTP cancel returned: %s",
+                         esp_err_to_name(cancel_err));
+            }
+        }
+        xSemaphoreGive(s_gateway_asset_client_mutex);
+    }
+    xTaskNotifyGive(task);
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_startup_pet_asset_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_startup_pet_asset_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(s_startup_pet_asset_stopped);
+    s_startup_pet_asset_stopped = NULL;
+    discard_gateway_asset_http_client();
+    ESP_LOGI(TAG, "startup pet asset task stopped");
+    return ESP_OK;
 }
 
 static void discard_gateway_asset_http_client(void) {
@@ -1766,11 +2564,19 @@ static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
                                            uint8_t *frames[PET_ASSET_MAX_FRAMES],
                                            bool startup_transaction) {
     if (!ref || !frames) return ESP_ERR_INVALID_ARG;
+    if (startup_transaction && startup_pet_asset_stop_requested()) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!pet_asset_capacity_available(ref)) return ESP_ERR_NO_MEM;
     size_t expected = (size_t)ref->width * (size_t)ref->height * PET_ASSET_BYTES_PER_PIXEL;
     if (expected == 0 || expected > PET_ASSET_MAX_BYTES) return ESP_ERR_INVALID_SIZE;
     memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
     for (int i = 0; i < ref->frame_count; ++i) {
+        if (startup_transaction && startup_pet_asset_stop_requested()) {
+            free_pet_asset_frames(frames, (size_t)i);
+            memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
+            return ESP_ERR_INVALID_STATE;
+        }
         // Optional artwork must stay below an interactive voice turn in both
         // connection priority and Wi-Fi airtime. Pause between frames while a
         // command is recording, uploading, or waiting for its result. A frame
@@ -1779,10 +2585,11 @@ static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
         while (startup_transaction &&
                (s_foreground_http_requested || audio_media_download_active() ||
                 server_audio_wake_memory_lease_active()) &&
-               s_startup_pet_asset_pending) {
-            vTaskDelay(pdMS_TO_TICKS(100));
+               s_startup_pet_asset_pending && !startup_pet_asset_stop_requested()) {
+            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100)) != 0) break;
         }
-        if (startup_transaction && !s_startup_pet_asset_pending) {
+        if (startup_transaction &&
+            (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) {
             free_pet_asset_frames(frames, (size_t)i);
             memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
             return ESP_ERR_INVALID_STATE;
@@ -1814,7 +2621,8 @@ static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
                 // otherwise this optional TLS transfer gets enough internal
                 // memory without resident MultiNet fragmenting AES buffers.
                 if (!s_startup_pet_asset_pending ||
-                    server_audio_wake_memory_lease_active()) {
+                    server_audio_wake_memory_lease_active() ||
+                    startup_pet_asset_stop_requested()) {
                     xSemaphoreGive(s_media_transfer_mutex);
                     free_pet_asset_frames(frames, (size_t)i);
                     memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
@@ -1825,15 +2633,14 @@ static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
             }
             err = request_with_capacity("GET", ref->urls[i], NULL, NULL, 0,
                                         expected + 1, &response);
-            if (optional_lease_held && finish_optional_media_wake_memory_lease()) {
-                schedule_wake_restart();
-            }
+            if (optional_lease_held) finish_optional_pet_asset_memory_lease();
             xSemaphoreGive(s_media_transfer_mutex);
             // The user-visible server reply may have pre-empted this optional
             // request while its TLS read was in flight.  Do not retain/apply a
             // completed decorative frame after that cancellation, and release
             // its response body immediately so wake can reclaim its memory.
-            if (startup_transaction && !s_startup_pet_asset_pending) {
+            if (startup_transaction &&
+                (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) {
                 response_release(&response);
                 free_pet_asset_frames(frames, (size_t)i);
                 memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
@@ -1853,8 +2660,9 @@ static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
             ESP_LOGW(TAG, "pet asset frame retry: frame=%d attempt=%u/%u err=%s status=%d bytes=%u",
                      i, attempt, max_attempts, esp_err_to_name(err), failed_status,
                      (unsigned)failed_len);
-            vTaskDelay(pdMS_TO_TICKS(250u * attempt));
-            if (startup_transaction && !s_startup_pet_asset_pending) break;
+            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250u * attempt)) != 0) break;
+            if (startup_transaction &&
+                (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) break;
         }
         if (err != ESP_OK || response.status != 200 || response.len != expected) {
             esp_err_t result = err != ESP_OK ? err :
@@ -1897,7 +2705,8 @@ static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
                          esp_err_to_name(preview_err));
             }
         }
-        if (startup_transaction && !s_startup_pet_asset_pending) {
+        if (startup_transaction &&
+            (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) {
             free_pet_asset_frames(frames, (size_t)i + 1);
             memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
             return ESP_ERR_INVALID_STATE;
@@ -1919,6 +2728,11 @@ static bool write_all(FILE *file, const void *data, size_t size,
     const uint8_t *cursor = (const uint8_t *)data;
     size_t written = 0;
     while (written < size) {
+        if (pet_cache_stop_requested()) {
+            ESP_LOGI(TAG, "pet cache frame %d write cancelled: path=%s bytes=%u/%u",
+                     frame_index, path, (unsigned)written, (unsigned)size);
+            return false;
+        }
         size_t chunk = size - written;
         if (chunk > 4096) chunk = 4096;
         size_t count = fwrite(cursor + written, 1, chunk, file);
@@ -1929,7 +2743,10 @@ static bool write_all(FILE *file, const void *data, size_t size,
             return false;
         }
         written += count;
-        if ((written & 0x7fffu) == 0) vTaskDelay(1);
+        // Let the pinned core's idle task run after every flash page-sized
+        // write. The cache is decorative; it must never compete with the
+        // task watchdog or the foreground audio lane.
+        vTaskDelay(1);
     }
     if (fflush(file) != 0) {
         ESP_LOGE(TAG, "pet cache frame %d flush failed: path=%s errno=%d (%s)",
@@ -1973,19 +2790,16 @@ static esp_err_t cache_pet_asset(const pet_asset_ref_t *ref,
     unlink(PET_ASSET_CACHE_META_PATH);
     unlink(PET_ASSET_CACHE_META_TMP_PATH);
     for (int i = 0; i < ref->frame_count; ++i) {
+        if (pet_cache_stop_requested()) return ESP_ERR_INVALID_STATE;
         snprintf(final_path, sizeof(final_path), PET_ASSET_CACHE_FRAME_PATH_FORMAT, (unsigned)i);
         snprintf(temp_path, sizeof(temp_path), PET_ASSET_CACHE_FRAME_TMP_PATH_FORMAT, (unsigned)i);
         unlink(temp_path);
-        // Truncating the previous frame leaves deleted pages behind. Reclaim
-        // enough physical blocks for one complete replacement before fwrite;
-        // CONFIG_SPIFFS_GC_MAX_RUNS is sized for this bounded request. This
-        // runs only on the background pet installer after its preview is live.
+        // The preview cache is optional. Do not request eager multi-block
+        // SPIFFS GC here: it can monopolize CPU1 long enough to trip the idle
+        // watchdog. A fragmented cache may fail this best-effort write while
+        // the already verified in-memory pet remains fully usable.
         unlink(final_path);
-        esp_err_t gc_err = esp_spiffs_gc("storage", frame_bytes + 4096);
-        if (gc_err != ESP_OK) {
-            ESP_LOGW(TAG, "pet cache pre-write GC incomplete: frame=%d need=%u err=%s",
-                     i, (unsigned)(frame_bytes + 4096), esp_err_to_name(gc_err));
-        }
+        vTaskDelay(1);
         errno = 0;
         FILE *file = fopen(final_path, "wb");
         bool ok = write_all(file, frames[i], frame_bytes, final_path, i);
@@ -2000,6 +2814,7 @@ static esp_err_t cache_pet_asset(const pet_asset_ref_t *ref,
         }
     }
     for (int i = ref->frame_count; i < PET_ASSET_MAX_FRAMES; ++i) {
+        if (pet_cache_stop_requested()) return ESP_ERR_INVALID_STATE;
         snprintf(final_path, sizeof(final_path), PET_ASSET_CACHE_FRAME_PATH_FORMAT, (unsigned)i);
         unlink(final_path);
     }
@@ -2016,6 +2831,10 @@ static esp_err_t cache_pet_asset(const pet_asset_ref_t *ref,
     }
     bool meta_ok = true;
     for (int i = 0; i < ref->frame_count; ++i) {
+        if (pet_cache_stop_requested()) {
+            meta_ok = false;
+            break;
+        }
         if (fprintf(meta_file, "%s\n", ref->sha256[i]) < 0) {
             ESP_LOGE(TAG, "pet cache metadata hash %d failed: errno=%d (%s)",
                      i, errno, strerror(errno));
@@ -2047,28 +2866,69 @@ static esp_err_t cache_pet_asset_first_frame(const pet_asset_ref_t *ref,
 
 static void clear_pet_asset_cache_direct(void);
 
+/* 过期缓存自愈：容量门禁会把注定被替换的旧 revision 缓存误算成永久占用。
+ * 仅当磁盘缓存 revision 与服务器正在提供的不同（或元数据缺失/损坏，即上
+ * 次更新被中断留下的孤儿帧）才删除；同 revision 的缓存本身就是目标内容，
+ * 删了只会白白重新下载一遍。当前渲染用的是安装时交给 UI 的 PSRAM 缩放副
+ * 本，磁盘缓存在运行时没有任何读者，unlink 不影响正在显示的宠物。
+ * 只碰 pet_asset_* 文件；meeting.wav 是用户录音，绝不在此触碰。
+ * 必须在内置栈的 pet_cache worker 里执行（flash 编程期 PSRAM 栈不可用）。 */
+static bool drop_pet_asset_cache_if_stale_direct(const char *new_revision) {
+    char magic[24] = {0}, revision[40] = {0};
+    FILE *meta = fopen(PET_ASSET_CACHE_META_PATH, "rb");
+    bool current = false;
+    if (meta) {
+        if (fgets(magic, sizeof(magic), meta) && !strcmp(magic, "MACLAW_PET_V2\n") &&
+            fgets(revision, sizeof(revision), meta)) {
+            char *newline = strpbrk(revision, "\r\n");
+            if (newline) *newline = '\0';
+            current = new_revision && new_revision[0] &&
+                      !strcmp(revision, new_revision);
+        }
+        fclose(meta);
+    }
+    if (current) return false;
+    if (pet_cache_stop_requested()) return false;
+    clear_pet_asset_cache_direct();
+    ESP_LOGI(TAG, "stale pet cache dropped: cached=%s new=%s",
+             meta ? revision : "none", new_revision ? new_revision : "?");
+    return true;
+}
+
 typedef enum {
     PET_CACHE_FIRST_FRAME,
     PET_CACHE_CLEAR,
+    PET_CACHE_DROP_STALE,
 } pet_cache_operation_t;
 
 typedef struct {
     pet_cache_operation_t operation;
     pet_asset_ref_t preview;
     uint8_t *frames[PET_ASSET_MAX_FRAMES];
-    SemaphoreHandle_t complete;
     esp_err_t result;
+    bool dropped;
 } pet_cache_job_t;
 
 static void pet_cache_task(void *arg) {
     pet_cache_job_t *job = (pet_cache_job_t *)arg;
-    if (job->operation == PET_CACHE_CLEAR) {
+    /* The creator publishes this task before opening its start gate. That
+     * removes the create/exit race where a very short CLEAR job could clear
+     * its handle and then be resurrected by the creator's late assignment. */
+    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (pet_cache_stop_requested()) {
+        job->result = ESP_ERR_INVALID_STATE;
+    } else if (job->operation == PET_CACHE_CLEAR) {
         clear_pet_asset_cache_direct();
+        job->result = ESP_OK;
+    } else if (job->operation == PET_CACHE_DROP_STALE) {
+        job->dropped = drop_pet_asset_cache_if_stale_direct(job->preview.revision);
         job->result = ESP_OK;
     } else {
         job->result = cache_pet_asset_first_frame(&job->preview, job->frames);
     }
-    xSemaphoreGive(job->complete);
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_pet_cache_task = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     // This worker is explicitly created with an internal-RAM stack because
     // SPIFFS temporarily disables the shared flash/PSRAM cache. Pair the
     // allocator with its matching deleter; the ordinary FreeRTOS deleter can
@@ -2077,20 +2937,79 @@ static void pet_cache_task(void *arg) {
     vTaskDeleteWithCaps(NULL);
 }
 
+static bool pet_cache_stop_requested(void) {
+    bool stop_requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    stop_requested = s_pet_cache_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return stop_requested;
+}
+
+/* Cache jobs borrow both their descriptor and their first RGB565 frame from
+ * the requesting task. Never force-delete this worker: join its normal exit
+ * before either owner can free that borrowed memory. The task only blocks at
+ * page-sized writes/yields, so polling the published handle is bounded by the
+ * same lifecycle deadline and does not need a completion semaphore whose
+ * lifetime could race the borrowed job. */
+static esp_err_t stop_pet_cache_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_pet_cache_stop_requested = true;
+    task = s_pet_cache_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+
+    xTaskNotifyGive(task);
+    TickType_t started = xTaskGetTickCount();
+    while (true) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        bool stopped = s_pet_cache_task != task;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (stopped) {
+            ESP_LOGI(TAG, "pet cache task stopped");
+            return ESP_OK;
+        }
+        if (xTaskGetTickCount() - started >= pdMS_TO_TICKS(timeout_ms)) {
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 static esp_err_t run_pet_cache_operation(
     pet_cache_operation_t operation,
     const pet_asset_ref_t *ref,
-    uint8_t *const frames[PET_ASSET_MAX_FRAMES]) {
+    uint8_t *const frames[PET_ASSET_MAX_FRAMES],
+    bool *dropped) {
     if (operation == PET_CACHE_FIRST_FRAME &&
         (!ref || !frames || !frames[0])) return ESP_ERR_INVALID_ARG;
-    if (!s_pet_cache_flash_mutex) return ESP_ERR_INVALID_STATE;
+    if (operation == PET_CACHE_DROP_STALE && !ref) return ESP_ERR_INVALID_ARG;
+    if (!device_storage_allows_optional_flash_work()) {
+        ESP_LOGI(TAG, "pet cache skipped: board declines optional flash work");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (!s_pet_cache_flash_mutex || pet_cache_stop_requested()) return ESP_ERR_INVALID_STATE;
     /* SPIFFS/esp_flash disables the shared flash/PSRAM cache while programming.
      * Both startup media and gateway polling deliberately use PSRAM stacks, so
      * neither may execute unlink/fopen itself. Serialize all pet-cache flash
      * mutations and run them on a short-lived internal-stack worker while any
      * large RGB565A8 frame remains borrowed from the waiting owner. */
-    if (xSemaphoreTake(s_pet_cache_flash_mutex, portMAX_DELAY) != pdTRUE) {
-        return ESP_FAIL;
+    const TickType_t admission_started = xTaskGetTickCount();
+    while (xSemaphoreTake(s_pet_cache_flash_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        if (pet_cache_stop_requested()) return ESP_ERR_INVALID_STATE;
+        if (xTaskGetCurrentTaskHandle() == s_startup_pet_asset_task &&
+            startup_pet_asset_stop_requested()) return ESP_ERR_INVALID_STATE;
+        if (xTaskGetTickCount() - admission_started >= pdMS_TO_TICKS(500)) {
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    if (pet_cache_stop_requested() ||
+        (xTaskGetCurrentTaskHandle() == s_startup_pet_asset_task &&
+         startup_pet_asset_stop_requested())) {
+        xSemaphoreGive(s_pet_cache_flash_mutex);
+        return ESP_ERR_INVALID_STATE;
     }
     pet_cache_job_t *job = heap_caps_calloc(
         1, sizeof(*job), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -2103,12 +3022,8 @@ static esp_err_t run_pet_cache_operation(
         job->preview = *ref;
         job->preview.frame_count = 1;
         job->frames[0] = frames[0];
-    }
-    job->complete = xSemaphoreCreateBinary();
-    if (!job->complete) {
-        heap_caps_free(job);
-        xSemaphoreGive(s_pet_cache_flash_mutex);
-        return ESP_ERR_NO_MEM;
+    } else if (operation == PET_CACHE_DROP_STALE) {
+        job->preview = *ref;
     }
     job->result = ESP_FAIL;
     TaskHandle_t task = NULL;
@@ -2118,16 +3033,33 @@ static esp_err_t run_pet_cache_operation(
     // during an online pet switch.
     BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
         pet_cache_task, "maclaw_pet_cache", 8192,
-        job, 3, &task, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        job, 1, &task, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_pet_cache_task = created == pdPASS ? task : NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     if (created != pdPASS) {
-        vSemaphoreDelete(job->complete);
         heap_caps_free(job);
         xSemaphoreGive(s_pet_cache_flash_mutex);
         return ESP_ERR_NO_MEM;
     }
-    xSemaphoreTake(job->complete, portMAX_DELAY);
+    xTaskNotifyGive(task);
+    while (true) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        bool running = s_pet_cache_task == task;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (!running) break;
+        if (pet_cache_stop_requested() ||
+            (xTaskGetCurrentTaskHandle() == s_startup_pet_asset_task &&
+             startup_pet_asset_stop_requested())) {
+            /* A running cache job is always joined before its caller frees the
+             * borrowed RGB565 frame and job storage. The worker sees the same
+             * stop token between page writes, so this never strands a task. */
+            (void)stop_pet_cache_task(500);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     esp_err_t result = job->result;
-    vSemaphoreDelete(job->complete);
+    if (dropped) *dropped = job->dropped;
     heap_caps_free(job);
     xSemaphoreGive(s_pet_cache_flash_mutex);
     return result;
@@ -2136,11 +3068,22 @@ static esp_err_t run_pet_cache_operation(
 static esp_err_t cache_pet_first_frame_safe(
     const pet_asset_ref_t *ref,
     uint8_t *const frames[PET_ASSET_MAX_FRAMES]) {
-    return run_pet_cache_operation(PET_CACHE_FIRST_FRAME, ref, frames);
+    return run_pet_cache_operation(PET_CACHE_FIRST_FRAME, ref, frames, NULL);
 }
 
 static esp_err_t clear_pet_asset_cache_safe(void) {
-    return run_pet_cache_operation(PET_CACHE_CLEAR, NULL, NULL);
+    return run_pet_cache_operation(PET_CACHE_CLEAR, NULL, NULL, NULL);
+}
+
+/* 安装新宠物前的自愈入口：先回收注定被替换的旧 revision 缓存，再让容量
+ * 门禁重新取样。返回 true 表示确实删掉了旧缓存文件。 */
+static bool drop_stale_pet_asset_cache(const pet_asset_ref_t *ref) {
+    if (!s_storage_mounted || !ref) return false;
+    bool dropped = false;
+    if (run_pet_cache_operation(PET_CACHE_DROP_STALE, ref, NULL, &dropped) != ESP_OK) {
+        return false;
+    }
+    return dropped;
 }
 
 static void clear_pet_asset_cache_direct(void) {
@@ -2171,7 +3114,8 @@ static esp_err_t clear_applied_pet_asset(void) {
         xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t err = app_ui_set_pet_asset(NULL, 0, 0, 0, 0);
+    esp_err_t err = device_status_to_platform_error(
+        app_ui_set_pet_asset(NULL, 0, 0, 0, 0));
     if (err == ESP_OK) {
         s_loaded_pet_asset_revision[0] = '\0';
         s_loaded_pet_asset_frame_count = 0;
@@ -2183,7 +3127,7 @@ static esp_err_t clear_applied_pet_asset(void) {
 }
 
 static esp_err_t install_pet_asset_with_fallback(const pet_asset_ref_t *ref,
-                                                 uint8_t *const frames[PET_ASSET_MAX_FRAMES],
+                                                 uint8_t *frames[PET_ASSET_MAX_FRAMES],
                                                  int *installed_frame_count,
                                                  int *installed_frame_ms);
 
@@ -2247,7 +3191,7 @@ static bool load_cached_pet_asset(void) {
         if (loaded) {
             strlcpy(s_loaded_pet_asset_revision, revision,
                     sizeof(s_loaded_pet_asset_revision));
-            s_loaded_pet_asset_frame_count = ref.frame_count;
+            s_loaded_pet_asset_frame_count = installed_frames;
             ESP_LOGI(TAG, "cached pet asset applied: revision=%s frames=%d/%d frame_ms=%d",
                      revision, installed_frames, ref.frame_count, installed_frame_ms);
         }
@@ -2259,31 +3203,39 @@ static bool load_cached_pet_asset(void) {
 }
 
 static esp_err_t install_pet_asset_with_fallback(const pet_asset_ref_t *ref,
-                                                 uint8_t *const frames[PET_ASSET_MAX_FRAMES],
+                                                 uint8_t *frames[PET_ASSET_MAX_FRAMES],
                                                  int *installed_frame_count,
                                                  int *installed_frame_ms) {
     if (!ref || !frames) return ESP_ERR_INVALID_ARG;
-    const uint8_t *views[PET_ASSET_MAX_FRAMES] = {0};
-    for (int i = 0; i < ref->frame_count; ++i) views[i] = frames[i];
-    esp_err_t err = app_ui_set_pet_asset(views, (size_t)ref->frame_count,
-                                              (size_t)ref->width, (size_t)ref->height,
-                                              (uint32_t)ref->frame_ms);
+    // The full-pack install consumes each source frame as soon as its scaled
+    // copy exists, bounding the PSRAM peak at copies-plus-one-source.  Consumed
+    // entries come back NULLed, so a memory-pressure retry first compacts the
+    // surviving sources to the front and then installs a shorter keyframe loop.
+    esp_err_t err = device_status_to_platform_error(
+        app_ui_set_pet_asset_consuming(frames, (size_t)ref->frame_count,
+                                        (size_t)ref->width, (size_t)ref->height,
+                                        (uint32_t)ref->frame_ms));
     int used_count = ref->frame_count;
     int used_frame_ms = ref->frame_ms;
     // Keep the selected GUI pet visible on boards with less free PSRAM. A
     // lower keyframe count preserves the animation period and is preferable to
     // falling all the way back to the native robot head.
     while (err == ESP_ERR_NO_MEM && used_count > 1) {
-        int next_count = used_count > 4 ? 4 : used_count > 2 ? 2 : 1;
-        for (int i = 0; i < next_count; ++i) {
-            views[i] = frames[(i * ref->frame_count) / next_count];
+        int remaining_count = 0;
+        for (int i = 0; i < ref->frame_count; ++i) {
+            if (frames[i]) frames[remaining_count++] = frames[i];
         }
+        for (int i = remaining_count; i < ref->frame_count; ++i) frames[i] = NULL;
+        int next_count = used_count > 4 ? 4 : used_count > 2 ? 2 : 1;
+        if (next_count > remaining_count) next_count = remaining_count;
+        if (!next_count) break;
         used_frame_ms = ref->frame_ms * ref->frame_count / next_count;
         ESP_LOGW(TAG, "pet asset memory pressure; retrying with %d/%d frames",
                  next_count, ref->frame_count);
-        err = app_ui_set_pet_asset(views, (size_t)next_count,
-                                       (size_t)ref->width, (size_t)ref->height,
-                                       (uint32_t)used_frame_ms);
+        err = device_status_to_platform_error(
+            app_ui_set_pet_asset_consuming(frames, (size_t)next_count,
+                                            (size_t)ref->width, (size_t)ref->height,
+                                            (uint32_t)used_frame_ms));
         used_count = next_count;
     }
     if (installed_frame_count) *installed_frame_count = err == ESP_OK ? used_count : 0;
@@ -2294,16 +3246,16 @@ static esp_err_t install_pet_asset_first_frame(const pet_asset_ref_t *ref,
                                                uint8_t *const frames[PET_ASSET_MAX_FRAMES]) {
     if (!ref || !frames || !frames[0]) return ESP_ERR_INVALID_ARG;
     const uint8_t *first[1] = {frames[0]};
-    return app_ui_set_pet_asset(first, 1, (size_t)ref->width,
-                                    (size_t)ref->height,
-                                    (uint32_t)ref->frame_ms);
+    return device_status_to_platform_error(
+        app_ui_set_pet_asset(first, 1, (size_t)ref->width,
+                             (size_t)ref->height,
+                             (uint32_t)ref->frame_ms));
 }
 static esp_err_t apply_pet_asset_ref(cJSON *object) {
+    pet_asset_ref_t descriptor;
     pet_asset_ref_t ref;
-    if (!parse_pet_asset_ref(object, &ref)) return ESP_ERR_INVALID_ARG;
-    if (!pet_asset_capacity_available(&ref)) {
-        return ESP_ERR_NO_MEM;
-    }
+    if (!parse_pet_asset_ref(object, &descriptor) ||
+        !pet_asset_prepare_for_display(&descriptor, &ref)) return ESP_ERR_INVALID_ARG;
     // A pet_profile is durable latest-wins state. Hub can re-deliver its
     // still-unacknowledged control message after a poll retry, so do not fetch
     // and scale the exact revision again. More importantly, the startup
@@ -2318,8 +3270,21 @@ static esp_err_t apply_pet_asset_ref(cJSON *object) {
                  ref.revision, s_loaded_pet_asset_frame_count, ref.frame_count);
         return ESP_OK;
     }
+    // A GUI-initiated pet switch must also succeed while the wake recognizer
+    // is resident.  Borrow the same optional-media lease the startup installer
+    // uses so the capacity sample and the downloads see the internal/PSRAM
+    // blocks MultiNet was holding.
+    begin_optional_media_wake_memory_lease("runtime pet asset");
+    esp_err_t err = ESP_OK;
+    if (!pet_asset_capacity_available(&ref)) {
+        // 自愈：回收注定被替换的旧 revision 缓存后让门禁重新取样。
+        (void)drop_stale_pet_asset_cache(&ref);
+    }
+    if (!pet_asset_capacity_available(&ref)) {
+        err = ESP_ERR_NO_MEM;
+    }
     uint8_t *frames[PET_ASSET_MAX_FRAMES] = {0};
-    esp_err_t err = download_pet_asset_frames(&ref, frames, false);
+    if (err == ESP_OK) err = download_pet_asset_frames(&ref, frames, false);
     if (err == ESP_OK) {
         if (!s_pet_asset_apply_mutex ||
             xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
@@ -2327,15 +3292,17 @@ static esp_err_t apply_pet_asset_ref(cJSON *object) {
         }
     }
     if (err == ESP_OK) {
+        // The consuming install releases the source frames; commit the preview
+        // cache first.  Frames are SHA-verified after download.
+        esp_err_t cache_err = cache_pet_first_frame_safe(&ref, frames);
+        if (cache_err != ESP_OK) ESP_LOGW(TAG, "pet asset cache failed: %s", esp_err_to_name(cache_err));
         int installed_frames = 0, installed_frame_ms = 0;
         err = install_pet_asset_with_fallback(&ref, frames, &installed_frames,
                                               &installed_frame_ms);
         if (err == ESP_OK) {
             strlcpy(s_loaded_pet_asset_revision, ref.revision,
                     sizeof(s_loaded_pet_asset_revision));
-            s_loaded_pet_asset_frame_count = ref.frame_count;
-            esp_err_t cache_err = cache_pet_first_frame_safe(&ref, frames);
-            if (cache_err != ESP_OK) ESP_LOGW(TAG, "pet asset cache failed: %s", esp_err_to_name(cache_err));
+            s_loaded_pet_asset_frame_count = installed_frames;
             ESP_LOGI(TAG, "GUI pet asset applied: revision=%s frames=%d/%d frame_ms=%d size=%dx%d",
                      ref.revision, installed_frames, ref.frame_count, installed_frame_ms,
                      ref.width, ref.height);
@@ -2343,11 +3310,14 @@ static esp_err_t apply_pet_asset_ref(cJSON *object) {
         xSemaphoreGive(s_pet_asset_apply_mutex);
     }
     free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
+    finish_optional_pet_asset_memory_lease();
     return err;
 }
 
 static esp_err_t apply_deferred_pet_asset(void) {
-    if (!s_startup_pet_asset_pending) return ESP_OK;
+    if (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested()) {
+        return startup_pet_asset_stop_requested() ? ESP_ERR_INVALID_STATE : ESP_OK;
+    }
     if (!s_startup_pet_asset_present) {
         s_loaded_pet_asset_revision[0] = '\0';
         esp_err_t err = clear_applied_pet_asset();
@@ -2358,11 +3328,16 @@ static esp_err_t apply_deferred_pet_asset(void) {
         s_startup_pet_asset_pending = false;
         return ESP_ERR_INVALID_STATE;
     }
+    pet_asset_ref_t ref;
+    if (!pet_asset_prepare_for_display(s_startup_pet_asset_ref, &ref)) {
+        s_startup_pet_asset_pending = false;
+        return ESP_ERR_INVALID_ARG;
+    }
     if (s_loaded_pet_asset_revision[0] &&
-        !strcmp(s_loaded_pet_asset_revision, s_startup_pet_asset_ref->revision) &&
-        s_loaded_pet_asset_frame_count >= s_startup_pet_asset_ref->frame_count) {
+        !strcmp(s_loaded_pet_asset_revision, ref.revision) &&
+        s_loaded_pet_asset_frame_count >= ref.frame_count) {
         ESP_LOGI(TAG, "startup pet asset already cached: revision=%s",
-                 s_startup_pet_asset_ref->revision);
+                 ref.revision);
         s_startup_pet_asset_pending = false;
         return ESP_OK;
     }
@@ -2376,8 +3351,15 @@ static esp_err_t apply_deferred_pet_asset(void) {
     // handle, so the next pass starts cleanly without growing PSRAM usage.
     for (unsigned attempt = 1; attempt <= PET_ASSET_STARTUP_TRANSACTION_ATTEMPTS;
          ++attempt) {
-        err = download_pet_asset_frames(s_startup_pet_asset_ref, frames, true);
-        if (err == ESP_OK && !s_startup_pet_asset_pending) err = ESP_ERR_INVALID_STATE;
+        if (startup_pet_asset_stop_requested()) {
+            err = ESP_ERR_INVALID_STATE;
+            break;
+        }
+        err = download_pet_asset_frames(&ref, frames, true);
+        if (err == ESP_OK &&
+            (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) {
+            err = ESP_ERR_INVALID_STATE;
+        }
         if (err == ESP_OK || err == ESP_ERR_INVALID_ARG || err == ESP_ERR_INVALID_CRC ||
             err == ESP_ERR_INVALID_SIZE || err == ESP_ERR_INVALID_STATE) {
             break;
@@ -2385,8 +3367,9 @@ static esp_err_t apply_deferred_pet_asset(void) {
         if (attempt == PET_ASSET_STARTUP_TRANSACTION_ATTEMPTS) break;
         ESP_LOGW(TAG, "startup pet pack retry: attempt=%u/%u err=%s; preview remains visible",
                  attempt, PET_ASSET_STARTUP_TRANSACTION_ATTEMPTS, esp_err_to_name(err));
-        vTaskDelay(pdMS_TO_TICKS(PET_ASSET_STARTUP_RETRY_DELAY_MS * attempt));
-        if (!s_startup_pet_asset_pending) {
+        if (ulTaskNotifyTake(pdTRUE,
+                              pdMS_TO_TICKS(PET_ASSET_STARTUP_RETRY_DELAY_MS * attempt)) != 0 ||
+            !s_startup_pet_asset_pending || startup_pet_asset_stop_requested()) {
             err = ESP_ERR_INVALID_STATE;
             break;
         }
@@ -2398,7 +3381,7 @@ static esp_err_t apply_deferred_pet_asset(void) {
         if (!s_pet_asset_apply_mutex ||
             xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
             err = ESP_ERR_INVALID_STATE;
-        } else if (!s_startup_pet_asset_pending) {
+        } else if (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested()) {
             xSemaphoreGive(s_pet_asset_apply_mutex);
             err = ESP_ERR_INVALID_STATE;
         }
@@ -2408,36 +3391,46 @@ static esp_err_t apply_deferred_pet_asset(void) {
         // Put a real pet on the standby surface immediately. Scaling one frame
         // is quick; the remaining seven animated frames can be installed after
         // the durable cache commit completes.
-        esp_err_t preview_err = install_pet_asset_first_frame(s_startup_pet_asset_ref, frames);
+        esp_err_t preview_err = install_pet_asset_first_frame(&ref, frames);
         if (preview_err != ESP_OK) {
             ESP_LOGW(TAG, "startup pet preview failed: %s", esp_err_to_name(preview_err));
         } else {
             ESP_LOGI(TAG, "startup pet first frame applied");
         }
-        int installed_frames = 0, installed_frame_ms = 0;
-        err = install_pet_asset_with_fallback(s_startup_pet_asset_ref, frames,
-                                              &installed_frames, &installed_frame_ms);
-        if (err == ESP_OK) {
-            strlcpy(s_loaded_pet_asset_revision, s_startup_pet_asset_ref->revision,
-                    sizeof(s_loaded_pet_asset_revision));
-            s_loaded_pet_asset_frame_count = s_startup_pet_asset_ref->frame_count;
-            ESP_LOGI(TAG, "deferred pet asset applied: revision=%s frames=%d/%d frame_ms=%d size=%dx%d",
-                     s_startup_pet_asset_ref->revision, installed_frames,
-                     s_startup_pet_asset_ref->frame_count, installed_frame_ms,
-                     s_startup_pet_asset_ref->width, s_startup_pet_asset_ref->height);
-            // Persist only after the live animation is installed successfully.
-            // Caching a preview from a failed install can make the next boot
-            // restore a revision that was never actually usable. EchoEar runs
-            // this transfer worker on a PSRAM stack; SPIFFS programming turns
-            // off the shared cache and cannot execute safely on that stack.
-            // Flash/VFS work must run from an internal-stack task. The startup
-            // installer itself is PSRAM-backed on EchoEar and Fangtang.
-            esp_err_t cache_err = cache_pet_first_frame_safe(
-                s_startup_pet_asset_ref, frames);
+        // The consuming install releases each source frame as it is scaled, so
+        // the preview cache must be committed first.  Every downloaded frame is
+        // SHA-verified, and this same first frame is already what standby shows.
+        // EchoEar runs this transfer worker on a PSRAM stack; SPIFFS programming
+        // turns off the shared cache and cannot execute safely on that stack.
+        // Flash/VFS work must run from an internal-stack task. The startup
+        // installer itself is PSRAM-backed on EchoEar and Fangtang.
+        if (device_storage_allows_optional_flash_work()) {
+            esp_err_t cache_err = cache_pet_first_frame_safe(&ref, frames);
             if (cache_err != ESP_OK) {
                 ESP_LOGW(TAG, "deferred pet preview cache failed: %s",
                          esp_err_to_name(cache_err));
             }
+        } else {
+            /* Decorative persistence is deliberately unsupported by this
+             * profile.  Avoid manufacturing a warning after the HAL made
+             * that policy decision; the verified in-memory pet is retained. */
+            ESP_LOGI(TAG, "deferred pet preview cache skipped by board policy");
+        }
+        int installed_frames = 0, installed_frame_ms = 0;
+        if (startup_pet_asset_stop_requested()) {
+            err = ESP_ERR_INVALID_STATE;
+        } else {
+            err = install_pet_asset_with_fallback(&ref, frames,
+                                                   &installed_frames, &installed_frame_ms);
+        }
+        if (err == ESP_OK) {
+            strlcpy(s_loaded_pet_asset_revision, ref.revision,
+                    sizeof(s_loaded_pet_asset_revision));
+            s_loaded_pet_asset_frame_count = installed_frames;
+            ESP_LOGI(TAG, "deferred pet asset applied: revision=%s frames=%d/%d frame_ms=%d size=%dx%d",
+                     ref.revision, installed_frames,
+                     ref.frame_count, installed_frame_ms,
+                     ref.width, ref.height);
         }
         xSemaphoreGive(s_pet_asset_apply_mutex);
     }
@@ -2468,7 +3461,15 @@ static void startup_pet_asset_task(void *arg) {
     }
     ESP_LOGI(TAG, "post-ready pet asset work complete in %lu ms",
              (unsigned long)((esp_timer_get_time() - started_us) / 1000));
+    /* Signal completion before making the handle reusable. A re-arm may create
+     * its next worker as soon as the handle becomes NULL; publishing the join
+     * first prevents this retiring worker from ever signalling the new
+     * worker's completion semaphore or clearing its handle. */
+    taskENTER_CRITICAL(&s_task_state_lock);
+    SemaphoreHandle_t completed = s_startup_pet_asset_stopped;
+    if (completed) xSemaphoreGive(completed);
     s_startup_pet_asset_task = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     // This worker's stack comes from xTaskCreatePinnedToCoreWithCaps().  The
     // regular FreeRTOS deleter frees it through the internal heap and asserts
     // immediately after the full pet pack is installed; use the paired caps
@@ -2476,12 +3477,116 @@ static void startup_pet_asset_task(void *arg) {
     vTaskDeleteWithCaps(NULL);
 }
 
+#define STARTUP_PET_RETRY_MAX 6u
+#define STARTUP_PET_RETRY_INTERVAL_US (10LL * 1000 * 1000)
+
+static bool ensure_startup_pet_retry_timer(void) {
+    taskENTER_CRITICAL(&s_task_state_lock);
+    esp_timer_handle_t existing = s_startup_pet_retry_timer;
+    bool stopped = s_startup_pet_asset_stop_requested;
+    bool callback_admission_open = s_startup_pet_retry_callback_admission_open;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (stopped) return false;
+    if (existing) return callback_admission_open;
+    if (!s_startup_pet_retry_callback_drained) return false;
+    esp_timer_handle_t timer = NULL;
+    const esp_timer_create_args_t timer_args = {
+        .callback = startup_pet_retry_timer_cb,
+        .name = "pet_retry",
+    };
+    if (esp_timer_create(&timer_args, &timer) != ESP_OK) return false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (!s_startup_pet_retry_timer && !s_startup_pet_asset_stop_requested) {
+        while (xSemaphoreTake(s_startup_pet_retry_callback_drained, 0) == pdTRUE) {}
+        s_startup_pet_retry_callback_admission_open = true;
+        s_startup_pet_retry_timer = timer;
+        timer = NULL;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (timer) (void)esp_timer_delete(timer);
+    taskENTER_CRITICAL(&s_task_state_lock);
+    const bool ready = s_startup_pet_retry_timer != NULL &&
+                       s_startup_pet_retry_callback_admission_open &&
+                       !s_startup_pet_asset_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return ready;
+}
+
+/* A retained timer object can be stopped while an optional caller is deciding
+ * to rearm it. Hold the same gate as lifecycle stop across ensure + start, so
+ * rollback cannot return with a newly scheduled callback behind it. */
+static bool schedule_startup_pet_retry_timer(void) {
+    if (!s_startup_pet_retry_timer_mutex ||
+        xSemaphoreTake(s_startup_pet_retry_timer_mutex, 0) != pdTRUE) {
+        return false;
+    }
+    bool scheduled = false;
+    if (ensure_startup_pet_retry_timer()) {
+        esp_timer_handle_t timer = NULL;
+        taskENTER_CRITICAL(&s_task_state_lock);
+        if (s_startup_pet_retry_callback_admission_open &&
+            !s_startup_pet_asset_stop_requested) {
+            timer = s_startup_pet_retry_timer;
+        }
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        scheduled = timer &&
+                    esp_timer_start_once(timer, STARTUP_PET_RETRY_INTERVAL_US) == ESP_OK;
+    }
+    xSemaphoreGive(s_startup_pet_retry_timer_mutex);
+    return scheduled;
+}
+
+static void startup_pet_retry_timer_cb(void *arg) {
+    (void)arg;
+    /* Never call apply_deferred_startup_pet_asset() here.  On Waveshare that
+     * path may examine storage/PSRAM and create a worker, which exceeds the
+     * timer service task's stack and reboots the device.  gateway_poll_task()
+     * owns a PSRAM-backed 16 KiB stack and consumes this flag below. */
+    bool entered = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_startup_pet_retry_callback_admission_open) {
+        ++s_startup_pet_retry_callbacks_inflight;
+        entered = true;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!entered) return;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (!s_startup_pet_asset_stop_requested) s_startup_pet_retry_due = true;
+    --s_startup_pet_retry_callbacks_inflight;
+    bool drained = !s_startup_pet_retry_callback_admission_open &&
+                   s_startup_pet_retry_callbacks_inflight == 0;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (drained && s_startup_pet_retry_callback_drained) {
+        xSemaphoreGive(s_startup_pet_retry_callback_drained);
+    }
+}
+
 static void apply_deferred_startup_pet_asset(void) {
-    if (!s_startup_pet_asset_pending) return;
-    if (!s_startup_pet_asset_ref || !pet_asset_capacity_available(s_startup_pet_asset_ref)) {
+    if (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested()) return;
+    pet_asset_ref_t display_ref;
+    const bool display_ref_ready = s_startup_pet_asset_ref &&
+                                   pet_asset_prepare_for_display(
+                                       s_startup_pet_asset_ref, &display_ref);
+    if (display_ref_ready && !pet_asset_capacity_available(&display_ref)) {
+        // 自愈：旧 revision 缓存注定被这次安装替换，先回收再让门禁重新取样。
+        (void)drop_stale_pet_asset_cache(&display_ref);
+    }
+    if (!display_ref_ready || !pet_asset_capacity_available(&display_ref)) {
         /* Decorative network/cache work is the first domain to yield.  Do not
          * reserve TLS/PSRAM or trigger SPIFFS GC when foreground safety margin
          * is already exhausted; a later Hub state refresh can offer it again. */
+        // The capacity sample happens right after boot while the wake model,
+        // glyph downloads and the first TLS polls still hold large transient
+        // PSRAM blocks.  That pressure subsides within seconds, so retry a few
+        // times before giving the boot's pet pack up entirely.
+        if (display_ref_ready && s_startup_pet_retry_count < STARTUP_PET_RETRY_MAX) {
+            if (schedule_startup_pet_retry_timer()) {
+                ++s_startup_pet_retry_count;
+                ESP_LOGW(TAG, "startup pet asset deferred: capacity tight, retry %u/%u in 10 s",
+                         s_startup_pet_retry_count, STARTUP_PET_RETRY_MAX);
+                return;
+            }
+        }
         ESP_LOGW(TAG, "startup pet asset skipped: shared optional capacity unavailable");
         s_startup_pet_asset_pending = false;
         return;
@@ -2501,12 +3606,66 @@ static void apply_deferred_startup_pet_asset(void) {
     // At idle priority FreeRTOS time-slices this worker with IDLE1; downloads
     // still complete whenever the device is otherwise idle, without trading
     // away the first-frame preview or the full-resolution animation install.
+    // A naturally finished worker leaves its completion token for a possible
+    // observer. Replace it only after its task handle is clear, so a later
+    // stop cannot consume stale completion state for a newly created worker.
+    /* A finished worker leaves its semaphore token behind. Replace it only
+     * while holding the same state lock used by stop/join and task exit, so a
+     * late completion cannot be mistaken for the next worker's join. */
+    taskENTER_CRITICAL(&s_task_state_lock);
+    SemaphoreHandle_t stale_completion = s_startup_pet_asset_stopped;
+    s_startup_pet_asset_stopped = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (stale_completion) vSemaphoreDelete(stale_completion);
+    SemaphoreHandle_t completion = xSemaphoreCreateBinary();
+    if (!completion) {
+        ESP_LOGW(TAG, "cannot allocate deferred pet asset completion semaphore");
+        return;
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_startup_pet_asset_stop_requested = false;
+    s_startup_pet_asset_stopped = completion;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
         startup_pet_asset_task, "maclaw_pet_startup", 8192, NULL, 0,
         &s_startup_pet_asset_task, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (created != pdPASS) {
+        taskENTER_CRITICAL(&s_task_state_lock);
         s_startup_pet_asset_task = NULL;
+        s_startup_pet_asset_stopped = NULL;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        vSemaphoreDelete(completion);
         ESP_LOGW(TAG, "cannot start deferred pet asset worker");
+    }
+}
+
+/* Server audio preempts the cold-start pet install (the two cannot share the
+ * media lane/PSRAM).  When the audio lease finishes, re-arm the deferred
+ * install so the standby pet survives the boot even on a slow backhaul.
+ * The preempted worker may still be unwinding an in-flight frame request, in
+ * which case the retry timer is the backstop that spawns its replacement. */
+static void rearm_preempted_startup_pet_asset(void) {
+    if (!s_startup_pet_asset_present || !s_startup_pet_asset_ref) return;
+    // A pet_profile push or an earlier re-arm may already own the install.
+    if (s_startup_pet_asset_pending) return;
+    pet_asset_ref_t display_ref;
+    if (!pet_asset_prepare_for_display(s_startup_pet_asset_ref, &display_ref)) return;
+    if (s_loaded_pet_asset_revision[0] &&
+        !strcmp(s_loaded_pet_asset_revision, display_ref.revision) &&
+        s_loaded_pet_asset_frame_count >= display_ref.frame_count) {
+        return;
+    }
+    s_startup_pet_asset_pending = true;
+    if (!s_startup_pet_asset_task) {
+        ESP_LOGI(TAG, "startup pet asset re-armed after server audio");
+        apply_deferred_startup_pet_asset();
+        return;
+    }
+    if (schedule_startup_pet_retry_timer()) {
+        ESP_LOGI(TAG, "startup pet asset re-armed after server audio (worker unwinding)");
+    } else {
+        s_startup_pet_asset_pending = false;
+        ESP_LOGW(TAG, "cannot re-arm preempted startup pet asset");
     }
 }
 
@@ -2535,6 +3694,9 @@ static esp_err_t device_status_to_esp_err(device_status_t status) {
         case DEVICE_STATUS_UNAVAILABLE: return ESP_ERR_NOT_SUPPORTED;
         case DEVICE_STATUS_BUSY: return ESP_ERR_INVALID_STATE;
         case DEVICE_STATUS_TIMEOUT: return ESP_ERR_TIMEOUT;
+        // Preserve "no speech detected" end-to-end so interaction_task can
+        // show its retry hint instead of the generic microphone failure.
+        case DEVICE_STATUS_NOT_FOUND: return ESP_ERR_NOT_FOUND;
         case DEVICE_STATUS_RESOURCE_EXHAUSTED: return ESP_ERR_NO_MEM;
         case DEVICE_STATUS_IO_ERROR: return ESP_FAIL;
         default: return ESP_ERR_INVALID_RESPONSE;
@@ -2547,6 +3709,10 @@ static esp_err_t audio_wake_word_start(device_wake_word_cb_t on_wake, void *cont
 
 static esp_err_t audio_wake_word_stop(void) {
     return device_status_to_esp_err(device_wake_word_stop());
+}
+
+static esp_err_t audio_wake_word_stop_with_timeout(uint32_t timeout_ms) {
+    return device_status_to_esp_err(device_wake_word_stop_with_timeout(timeout_ms));
 }
 
 static esp_err_t play_audio_payload(const char *mime, const uint8_t *data, size_t len) {
@@ -2727,10 +3893,18 @@ static void ambient_task(void *arg) {
             break;
         }
     }
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
     taskENTER_CRITICAL(&s_task_state_lock);
-    s_ambient_task = NULL;
+    if (s_ambient_task == self) s_ambient_task = NULL;
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (s_ambient_task_stopped) xSemaphoreGive(s_ambient_task_stopped);
+    /* A natural exit still releases its own entry so a future clock cadence
+     * can start.  Crucially, this task never takes the Registry mutex
+     * unbounded: an owner-wide rollback may be joining it concurrently. If
+     * the short bookkeeping attempt loses that race, the retained immutable
+     * entry remains fail-closed for the lifecycle owner to remove later. */
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_POWER,
+                                                 (void *)self, 10);
     vTaskDelete(NULL);
 }
 
@@ -2745,6 +3919,8 @@ static void gateway_poll_task(void *arg) {
     while (true) {
         taskENTER_CRITICAL(&s_task_state_lock);
         bool stop_requested = s_gateway_poll_stop_requested;
+        bool retry_pet = s_startup_pet_retry_due;
+        s_startup_pet_retry_due = false;
         taskEXIT_CRITICAL(&s_task_state_lock);
         if (stop_requested) break;
         if (s_gateway_token[0]) {
@@ -2778,11 +3954,23 @@ static void gateway_poll_task(void *arg) {
             firmware_identity_set_service_ready(false);
             if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(3000)) != 0) break;
         }
+        if (retry_pet && !s_gateway_poll_stop_requested) {
+            /* The retry timer only admits work.  Run the actual resource
+             * check/worker creation in this normal task, never in esp_timer.
+             * Do it after the poll's HTTP response has released its TLS heap. */
+            apply_deferred_startup_pet_asset();
+        }
     }
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
     taskENTER_CRITICAL(&s_task_state_lock);
-    s_gateway_poll_task = NULL;
+    if (s_gateway_poll_task == self) s_gateway_poll_task = NULL;
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (s_gateway_poll_stopped) xSemaphoreGive(s_gateway_poll_stopped);
+    /* Do not block the PSRAM worker indefinitely behind a lifecycle Registry
+     * stop. A missed short bookkeeping pass deliberately retains its immutable
+     * entry for a later fail-closed owner transaction. */
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                                 (void *)self, 10);
     vTaskDeleteWithCaps(NULL);
 }
 
@@ -2844,16 +4032,48 @@ static bool ensure_gateway_poll_task(void) {
             ESP_LOGE(TAG, "cannot start gateway poll task");
             return false;
         }
+        esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+            .struct_size = sizeof(task_registry_entry_t),
+            .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
+            .name = "gateway_poll",
+            .context = (void *)s_gateway_poll_task,
+            .stop = stop_gateway_poll_registry_entry,
+        });
+        if (registry_err != ESP_OK) {
+            ESP_LOGE(TAG, "cannot register gateway poll lifecycle owner: %s",
+                     esp_err_to_name(registry_err));
+            (void)stop_gateway_poll_task(500);
+            return false;
+        }
     }
     return true;
 }
 
+static bool meeting_resume_supervisor_stop_requested(void) {
+    bool requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    requested = s_meeting_resume_supervisor_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return requested;
+}
+
+/* This registry owner controls only the supervisory retry loop.  If a resume
+ * worker was already created, it owns its own NVS/audio/HTTP transaction and
+ * is deliberately not force-stopped here.  This keeps the join contract
+ * truthful: stopping the supervisor prevents future retries, not a running
+ * meeting upload. */
 static void meeting_resume_supervisor_task(void *arg) {
     (void)arg;
+    if (!s_meeting_resume_supervisor_start_gate ||
+        xSemaphoreTake(s_meeting_resume_supervisor_start_gate, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(TAG, "meeting resume supervisor start gate unavailable");
+        goto finish;
+    }
+
     uint32_t retry_ms = MEETING_RESUME_RETRY_INITIAL_MS;
-    while (s_meeting_pending) {
+    while (s_meeting_pending && !meeting_resume_supervisor_stop_requested()) {
         bool network_available = device_connectivity_is_active_uplink_ready();
-        if (!s_setup_portal_active && s_gateway_token[0] && network_available &&
+        if (!device_connectivity_is_provisioning_active() && s_gateway_token[0] && network_available &&
             !s_meeting_task_running && !s_foreground_http_requested) {
             // MultiNet can consume the final internal task-stack block before
             // this low-priority supervisor gets scheduled. Unload it here so
@@ -2864,21 +4084,28 @@ static void meeting_resume_supervisor_task(void *arg) {
                 ESP_LOGW(TAG, "offline wake stop before resume worker: %s",
                          esp_err_to_name(wake_stop_err));
             }
+            if (meeting_resume_supervisor_stop_requested()) break;
             log_heap_snapshot("meeting-resume-before-task-create");
             if (start_meeting_task(true)) {
                 // The worker persists progress at every chunk. Wait until that
                 // pass finishes before deciding whether another retry is needed.
-                while (s_meeting_task_running) vTaskDelay(pdMS_TO_TICKS(500));
-                if (!s_meeting_pending) break;
+                while (s_meeting_task_running && !meeting_resume_supervisor_stop_requested()) {
+                    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
+                }
+                if (meeting_resume_supervisor_stop_requested() || !s_meeting_pending) break;
                 // A foreground command may have intentionally preempted this
                 // pass. Resume quickly after it releases HTTP instead of
                 // escalating the outage backoff to several minutes.
                 if (s_foreground_http_requested) {
-                    while (s_foreground_http_requested) vTaskDelay(pdMS_TO_TICKS(250));
+                    while (s_foreground_http_requested &&
+                           !meeting_resume_supervisor_stop_requested()) {
+                        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
+                    }
+                    if (meeting_resume_supervisor_stop_requested()) break;
                     retry_ms = MEETING_RESUME_RETRY_INITIAL_MS;
                     continue;
                 }
-            } else if (!s_setup_portal_active) {
+            } else if (!device_connectivity_is_provisioning_active() && !meeting_resume_supervisor_stop_requested()) {
                 esp_err_t wake_start_err = audio_wake_word_start(on_wake_word, NULL);
                 if (wake_start_err != ESP_OK && wake_start_err != ESP_ERR_INVALID_STATE) {
                     ESP_LOGW(TAG, "offline wake restart after resume create failure: %s",
@@ -2886,33 +4113,122 @@ static void meeting_resume_supervisor_task(void *arg) {
                 }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(retry_ms));
+        if (meeting_resume_supervisor_stop_requested()) break;
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(retry_ms));
         if (retry_ms < MEETING_RESUME_RETRY_MAX_MS) {
             retry_ms *= 2;
             if (retry_ms > MEETING_RESUME_RETRY_MAX_MS) retry_ms = MEETING_RESUME_RETRY_MAX_MS;
         }
     }
+
+finish:
     taskENTER_CRITICAL(&s_task_state_lock);
-    s_meeting_resume_supervisor_task = NULL;
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    if (s_meeting_resume_supervisor_task == self) {
+        s_meeting_resume_supervisor_task = NULL;
+    }
+    s_meeting_resume_supervisor_starting = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_meeting_resume_supervisor_stopped) xSemaphoreGive(s_meeting_resume_supervisor_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                                 (void *)self, 10);
     vTaskDeleteWithCaps(NULL);
 }
 
+static esp_err_t stop_meeting_resume_supervisor(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_resume_supervisor_stop_requested = true;
+    task = s_meeting_resume_supervisor_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    xTaskNotifyGive(task);
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_meeting_resume_supervisor_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_meeting_resume_supervisor_stopped,
+                       pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "meeting resume supervisor stopped; active meeting worker, if any, was not interrupted");
+    return ESP_OK;
+}
+
+static esp_err_t stop_meeting_resume_supervisor_registry_entry(void *context,
+                                                                 uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_meeting_resume_supervisor_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_meeting_resume_supervisor(timeout_ms);
+}
+
 static bool ensure_meeting_resume_supervisor(void) {
-    if (!s_meeting_pending || s_meeting_resume_supervisor_task) return true;
+    if (!s_meeting_pending) return true;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool already_running = s_meeting_resume_supervisor_task != NULL ||
+                           s_meeting_resume_supervisor_starting;
+    if (!already_running) s_meeting_resume_supervisor_starting = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (already_running) return true;
+    if (!s_meeting_resume_supervisor_start_gate || !s_meeting_resume_supervisor_stopped) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_resume_supervisor_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "meeting resume supervisor lifecycle primitives unavailable");
+        return false;
+    }
+    while (xSemaphoreTake(s_meeting_resume_supervisor_stopped, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_resume_supervisor_stop_requested = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     // This supervisor only waits and starts a worker. Put its stack in PSRAM
     // so it cannot consume the last contiguous internal block needed by the
     // real upload worker. It never writes flash/NVS, so this is safe.
+    TaskHandle_t task = NULL;
     BaseType_t created = xTaskCreateWithCaps(meeting_resume_supervisor_task,
                                              "maclaw_meeting_resume", 2048,
-                                             NULL, 1,
-                                             &s_meeting_resume_supervisor_task,
+                                             NULL, 1, &task,
                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (created != pdPASS) {
+        taskENTER_CRITICAL(&s_task_state_lock);
         s_meeting_resume_supervisor_task = NULL;
+        s_meeting_resume_supervisor_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
         ESP_LOGE(TAG, "cannot start meeting resume supervisor");
         return false;
     }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_resume_supervisor_task = task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
+        .name = "meeting_resume_supervisor",
+        .context = (void *)task,
+        .stop = stop_meeting_resume_supervisor_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register meeting resume supervisor: %s",
+                 esp_err_to_name(registry_err));
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_resume_supervisor_stop_requested = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        xSemaphoreGive(s_meeting_resume_supervisor_start_gate);
+        (void)stop_meeting_resume_supervisor(500);
+        return false;
+    }
+    xSemaphoreGive(s_meeting_resume_supervisor_start_gate);
     return true;
 }
 
@@ -2973,6 +4289,13 @@ static bool start_gateway_ready_tasks(void) {
         app_ui_show_text("设备启动失败", "无法启动网关轮询");
         return false;
     }
+    /* A retained meeting is durable recovery work.  Start its lightweight
+     * supervisor only after the authenticated poll lane and wake listener are
+     * both initialized, so it shares the normal connectivity lifecycle and
+     * never races cold-start TLS setup. */
+    if (!ensure_meeting_resume_supervisor()) {
+        ESP_LOGW(TAG, "meeting recovery supervisor unavailable; retained audio remains pending");
+    }
     if (s_handshake_startup_welcome_queued) {
         ESP_LOGI(TAG, "startup Welcome gate armed; wake listener ready=%s",
                  wake_ready ? "yes" : "no");
@@ -3026,6 +4349,8 @@ static bool start_gateway_ready_tasks(void) {
 
 static esp_err_t stop_gateway_poll_task(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
     TaskHandle_t task = NULL;
     taskENTER_CRITICAL(&s_task_state_lock);
     task = s_gateway_poll_task;
@@ -3038,8 +4363,10 @@ static esp_err_t stop_gateway_poll_task(uint32_t timeout_ms) {
      * request before waiting, so a 30s network timeout cannot delay rollback.
      * Cellular polling remains bounded by its adapter request timeout; do not
      * touch its private handle from here. */
-    if (s_gateway_poll_client_mutex &&
-        xSemaphoreTake(s_gateway_poll_client_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    const uint32_t cancel_guard_ms = remaining_ms > 100 ? 100 : remaining_ms;
+    if (s_gateway_poll_client_mutex && cancel_guard_ms != 0 &&
+        xSemaphoreTake(s_gateway_poll_client_mutex, pdMS_TO_TICKS(cancel_guard_ms)) == pdTRUE) {
         esp_http_client_handle_t client = s_gateway_poll_active_client;
         if (client) {
             esp_err_t cancel_err = esp_http_client_cancel_request(client);
@@ -3051,12 +4378,19 @@ static esp_err_t stop_gateway_poll_task(uint32_t timeout_ms) {
         xSemaphoreGive(s_gateway_poll_client_mutex);
     }
     xTaskNotifyGive(task);
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
     if (!s_gateway_poll_stopped ||
-        xSemaphoreTake(s_gateway_poll_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_gateway_poll_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     vSemaphoreDelete(s_gateway_poll_stopped);
     s_gateway_poll_stopped = NULL;
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
     ESP_LOGI(TAG, "gateway poll task stopped");
     return ESP_OK;
 }
@@ -3104,11 +4438,26 @@ static void start_ambient_clock_task(void) {
         vSemaphoreDelete(s_ambient_task_stopped);
         s_ambient_task_stopped = NULL;
         ESP_LOGE(TAG, "cannot start ambient clock task");
+        return;
+    }
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_POWER,
+        .name = "ambient_clock",
+        .context = (void *)s_ambient_task,
+        .stop = stop_ambient_clock_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register ambient clock lifecycle owner: %s",
+                 esp_err_to_name(registry_err));
+        (void)stop_ambient_clock_task(500);
     }
 }
 
 static esp_err_t stop_ambient_clock_task(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
     TaskHandle_t task = NULL;
     taskENTER_CRITICAL(&s_task_state_lock);
     task = s_ambient_task;
@@ -3117,14 +4466,39 @@ static esp_err_t stop_ambient_clock_task(uint32_t timeout_ms) {
     if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
 
     xTaskNotifyGive(task);
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
     if (!s_ambient_task_stopped ||
-        xSemaphoreTake(s_ambient_task_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_ambient_task_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     vSemaphoreDelete(s_ambient_task_stopped);
     s_ambient_task_stopped = NULL;
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_POWER, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
     ESP_LOGI(TAG, "ambient clock task stopped");
     return ESP_OK;
+}
+
+static esp_err_t stop_gateway_poll_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_gateway_poll_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_gateway_poll_task(timeout_ms);
+}
+
+static esp_err_t stop_ambient_clock_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_ambient_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_ambient_clock_task(timeout_ms);
 }
 
 static void apply_gateway_server_time(cJSON *json) {
@@ -3162,10 +4536,42 @@ static void apply_gateway_server_time(cJSON *json) {
 
 static void clock_sync_task(void *arg) {
     (void)arg;
+    /* Publish the task handle and registry ownership before this monitor can
+     * observe an already-synchronized clock and exit. Without this admission
+     * gate, a fast SNTP completion can leave a stale registered entry. */
+    if (!s_clock_sync_start_gate ||
+        xSemaphoreTake(s_clock_sync_start_gate, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
     unsigned attempt = 1;
-    while (!s_clock_sync_complete) {
-        esp_err_t wait_err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(CLOCK_SYNC_WAIT_MS));
-        if (wait_err == ESP_OK || s_clock_sync_complete) break;
+    while (true) {
+        bool stop_requested;
+        taskENTER_CRITICAL(&s_task_state_lock);
+        stop_requested = s_clock_sync_stop_requested;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (stop_requested || s_clock_sync_complete) break;
+        /* esp_netif_sntp_sync_wait() has no cancellation handle. Slice its
+         * public timeout so Registry stop/join has the same bounded latency as
+         * the rest of the Connectivity owner, while retaining the former
+         * 12-second total retry window. */
+        esp_err_t wait_err = ESP_ERR_TIMEOUT;
+        TickType_t wait_started = xTaskGetTickCount();
+        const TickType_t wait_budget = pdMS_TO_TICKS(CLOCK_SYNC_WAIT_MS);
+        while ((xTaskGetTickCount() - wait_started) < wait_budget) {
+            TickType_t elapsed = xTaskGetTickCount() - wait_started;
+            TickType_t remaining = wait_budget - elapsed;
+            TickType_t slice = pdMS_TO_TICKS(250);
+            if (slice > remaining) slice = remaining;
+            wait_err = esp_netif_sntp_sync_wait(slice);
+            taskENTER_CRITICAL(&s_task_state_lock);
+            stop_requested = s_clock_sync_stop_requested;
+            taskEXIT_CRITICAL(&s_task_state_lock);
+            if (stop_requested || wait_err == ESP_OK || s_clock_sync_complete) break;
+        }
+        taskENTER_CRITICAL(&s_task_state_lock);
+        stop_requested = s_clock_sync_stop_requested;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (stop_requested || wait_err == ESP_OK || s_clock_sync_complete) break;
 
         unsigned int reachability[CONFIG_LWIP_SNTP_MAX_SERVERS] = {0};
         for (unsigned i = 0; i < CONFIG_LWIP_SNTP_MAX_SERVERS; ++i) {
@@ -3182,23 +4588,104 @@ static void clock_sync_task(void *arg) {
             ESP_LOGW(TAG, "SNTP restart failed: %s", esp_err_to_name(restart_err));
         }
         ++attempt;
-        vTaskDelay(pdMS_TO_TICKS(CLOCK_SYNC_RETRY_MS));
+        /* Direct notification makes the retry backoff interruptible without
+         * touching esp-netif/SNTP from a foreign lifecycle owner. */
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(CLOCK_SYNC_RETRY_MS));
     }
-    s_clock_sync_task = NULL;
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_clock_sync_task == self) s_clock_sync_task = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_clock_sync_stopped) xSemaphoreGive(s_clock_sync_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                                 (void *)self, 10);
     vTaskDeleteWithCaps(NULL);
+}
+
+/* Stop the retry monitor before touching esp-netif SNTP state.  The monitor
+ * slices sync_wait to 250 ms, so this bounded join is also the lifetime fence
+ * that lets the caller prove no task can restart or query SNTP afterwards. */
+static esp_err_t stop_clock_sync_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_clock_sync_stop_requested = true;
+    task = s_clock_sync_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    xTaskNotifyGive(task);
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_clock_sync_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_clock_sync_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "clock sync monitor stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_sntp_service(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    /* The retry monitor join and esp-netif teardown are one SNTP transaction.
+     * `esp_netif_sntp_deinit()` itself has no caller-controlled timeout, so
+     * the only bounded child must consume the parent's remaining allowance. */
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    const uint32_t monitor_timeout_ms =
+        startup_rollback_remaining_timeout_ms(deadline_us);
+    if (monitor_timeout_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t monitor_err = stop_clock_sync_task(monitor_timeout_ms);
+    if (monitor_err != ESP_OK) return monitor_err;
+    if (!s_sntp_initialized) return ESP_OK;
+    /* esp_netif exposes deinit as a void API. It is safe only after the
+     * monitor join above; no unrelated task accesses this singleton. */
+    esp_netif_sntp_deinit();
+    s_sntp_initialized = false;
+    ESP_LOGI(TAG, "SNTP service deinitialized");
+    return ESP_OK;
+}
+
+static esp_err_t stop_clock_sync_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_clock_sync_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    /* Registry entries identify the created task, never the mutable global
+     * that will later be cleared and reused by a new clock-sync monitor. */
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_clock_sync_task(timeout_ms);
 }
 
 static void start_clock_sync(void) {
     start_ambient_clock_task();
+    if (s_sntp_initialized) {
+        ESP_LOGI(TAG, "SNTP service already initialized");
+        return;
+    }
     esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
         3, ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "time.cloudflare.com", "pool.ntp.org"));
     config.sync_cb = clock_sync_cb;
     esp_err_t err = esp_netif_sntp_init(&config);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "SNTP init failed: %s", esp_err_to_name(err));
-    } else if (!s_clock_sync_task) {
+    } else {
+        s_sntp_initialized = true;
+    }
+    if (err == ESP_OK && !s_clock_sync_task) {
         // This monitor mostly sleeps; keep its stack in PSRAM so clock recovery
         // cannot take the last internal block needed by Wi-Fi/TLS or ESP-SR.
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_clock_sync_stop_requested = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        while (xSemaphoreTake(s_clock_sync_stopped, 0) == pdTRUE) {}
         BaseType_t created = xTaskCreateWithCaps(clock_sync_task, "maclaw_clock_sync",
                                                  3072, NULL, 3,
                                                  &s_clock_sync_task,
@@ -3206,6 +4693,22 @@ static void start_clock_sync(void) {
         if (created != pdPASS) {
             s_clock_sync_task = NULL;
             ESP_LOGE(TAG, "cannot start clock sync monitor task");
+        } else {
+            esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+                .struct_size = sizeof(task_registry_entry_t),
+                .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
+                .name = "clock_sync",
+                .context = (void *)s_clock_sync_task,
+                .stop = stop_clock_sync_registry_entry,
+            });
+            if (registry_err != ESP_OK) {
+                ESP_LOGE(TAG, "cannot register clock sync monitor: %s",
+                         esp_err_to_name(registry_err));
+                xSemaphoreGive(s_clock_sync_start_gate);
+                (void)stop_clock_sync_task(500);
+            } else {
+                xSemaphoreGive(s_clock_sync_start_gate);
+            }
         }
     }
 }
@@ -3226,13 +4729,47 @@ static void save_ambient_weather(void) {
 
 static void wake_restart_task(void *arg) {
     (void)arg;
+    /* schedule_wake_restart() registers this one-shot worker before releasing
+     * the gate.  A recognizer that is already torn down can otherwise make a
+     * very fast worker exit between xTaskCreateWithCaps() and registration. */
+    if (!s_wake_restart_start_gate ||
+        xSemaphoreTake(s_wake_restart_start_gate, portMAX_DELAY) != pdTRUE) {
+        TaskHandle_t self = xTaskGetCurrentTaskHandle();
+        taskENTER_CRITICAL(&s_task_state_lock);
+        if (s_wake_restart_task == self) {
+            s_wake_restart_task = NULL;
+            s_wake_restart_scheduled = false;
+        }
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (s_wake_restart_stopped) xSemaphoreGive(s_wake_restart_stopped);
+        (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_AUDIO,
+                                                     (void *)self, 10);
+        vTaskDeleteWithCaps(NULL);
+        return;
+    }
     // Let the meeting worker delete its internal stack before MultiNet claims
     // memory again. This task uses a PSRAM stack and does not write flash.
-    vTaskDelay(pdMS_TO_TICKS(250));
+    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
     esp_err_t err = ESP_FAIL;
     unsigned attempt = 1;
     bool waiting_for_foreground = false;
-    while (attempt <= 12 && !s_setup_portal_active) {
+    bool stop_requested = false;
+    while (!device_connectivity_is_provisioning_active()) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        stop_requested = s_wake_restart_stop_requested;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (stop_requested) break;
+        if (attempt > 12) {
+            /* Keep one registered worker across transient heap pressure.  A
+             * former implementation spawned its replacement before this task
+             * had released its completion token, so a stop could join the old
+             * task while believing the replacement had stopped. */
+            ESP_LOGE(TAG, "offline wake restart exhausted: %s; retrying after backoff",
+                     esp_err_to_name(err));
+            attempt = 1;
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+            continue;
+        }
         taskENTER_CRITICAL(&s_task_state_lock);
         bool foreground_active = s_interaction_task != NULL || s_foreground_http_requested;
         taskEXIT_CRITICAL(&s_task_state_lock);
@@ -3241,7 +4778,7 @@ static void wake_restart_task(void *arg) {
                 ESP_LOGI(TAG, "offline wake restart waiting for foreground audio owner");
                 waiting_for_foreground = true;
             }
-            vTaskDelay(pdMS_TO_TICKS(100));
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
             continue;
         }
         // Startup pet artwork is nonessential and may still own large PSRAM
@@ -3253,7 +4790,7 @@ static void wake_restart_task(void *arg) {
                 ESP_LOGI(TAG, "offline wake restart waiting for optional pet worker");
                 waiting_for_foreground = true;
             }
-            vTaskDelay(pdMS_TO_TICKS(100));
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
             continue;
         }
         // The asset lane's persistent esp_http_client retains TLS buffers
@@ -3267,45 +4804,119 @@ static void wake_restart_task(void *arg) {
         ESP_LOGW(TAG, "offline wake restart attempt %u/12 failed: %s",
                  attempt, esp_err_to_name(err));
         ++attempt;
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "offline wake restarted after foreground interaction");
-    } else if (!s_setup_portal_active) {
-        ESP_LOGE(TAG, "offline wake restart exhausted: %s", esp_err_to_name(err));
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
     }
     taskENTER_CRITICAL(&s_task_state_lock);
-    s_wake_restart_scheduled = false;
-    bool retry_needed = err != ESP_OK && !s_setup_portal_active &&
-                        s_interaction_task == NULL && !s_foreground_http_requested;
+    stop_requested = s_wake_restart_stop_requested;
     taskEXIT_CRITICAL(&s_task_state_lock);
-    if (retry_needed) {
-        // A temporary fragmented-heap or delayed model teardown should not
-        // permanently disable hands-free input. Start a fresh bounded retry
-        // cycle after this worker releases its own stack.
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        schedule_wake_restart();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "offline wake restarted after foreground interaction");
+    } else if (!stop_requested && !device_connectivity_is_provisioning_active()) {
+        ESP_LOGI(TAG, "offline wake restart stopped before completion");
     }
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_wake_restart_task == self) {
+        s_wake_restart_task = NULL;
+        s_wake_restart_scheduled = false;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_wake_restart_stopped) xSemaphoreGive(s_wake_restart_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_AUDIO,
+                                                 (void *)self, 10);
     vTaskDeleteWithCaps(NULL);
 }
 
-static void schedule_wake_restart(void) {
-    if (s_setup_portal_active || !s_startup_sequence_complete) return;
+/* This only drains the restart coordinator.  The actual wake recognizer has
+ * its own board-owned stop contract and is deliberately not force-stopped by
+ * a Registry owner that does not own its audio/I2S resources. */
+static esp_err_t stop_wake_restart_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
     taskENTER_CRITICAL(&s_task_state_lock);
-    bool already_scheduled = s_wake_restart_scheduled;
-    if (!already_scheduled) s_wake_restart_scheduled = true;
+    s_wake_restart_stop_requested = true;
+    s_wake_restart_admission_open = false;
+    task = s_wake_restart_task;
     taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    xTaskNotifyGive(task);
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_wake_restart_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_wake_restart_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_AUDIO, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "offline wake restart worker stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_wake_restart_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_wake_restart_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_wake_restart_task(timeout_ms);
+}
+
+static void schedule_wake_restart(void) {
+    if (device_connectivity_is_provisioning_active() || !s_startup_sequence_complete) return;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool admission_open = s_wake_restart_admission_open;
+    bool already_scheduled = s_wake_restart_scheduled;
+    if (admission_open && !already_scheduled) s_wake_restart_scheduled = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!admission_open) return;
     if (already_scheduled) return;
+    if (!s_wake_restart_start_gate || !s_wake_restart_stopped) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_wake_restart_scheduled = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGW(TAG, "offline wake restart unavailable before lifecycle primitives initialize");
+        return;
+    }
+    while (xSemaphoreTake(s_wake_restart_stopped, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_wake_restart_stop_requested = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     BaseType_t created = xTaskCreateWithCaps(wake_restart_task, "maclaw_wake_restart",
-                                             2048, NULL, 2, NULL,
+                                             2048, NULL, 2, &s_wake_restart_task,
                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (created != pdPASS) {
         taskENTER_CRITICAL(&s_task_state_lock);
+        s_wake_restart_task = NULL;
         s_wake_restart_scheduled = false;
         taskEXIT_CRITICAL(&s_task_state_lock);
         ESP_LOGE(TAG, "cannot schedule offline wake restart");
     } else {
-        ESP_LOGI(TAG, "offline wake restart scheduled");
+        esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+            .struct_size = sizeof(task_registry_entry_t),
+            .owner = TASK_REGISTRY_OWNER_AUDIO,
+            .name = "wake_restart",
+            /* Use this task's immutable handle value as entry identity.  A
+             * failed attempt may schedule the next retry before it deletes
+             * itself; a shared static-handle address would let the retiring
+             * worker unregister that newer entry. */
+            .context = (void *)s_wake_restart_task,
+            .stop = stop_wake_restart_registry_entry,
+        });
+        if (registry_err != ESP_OK) {
+            ESP_LOGE(TAG, "cannot register offline wake restart worker: %s",
+                     esp_err_to_name(registry_err));
+            xSemaphoreGive(s_wake_restart_start_gate);
+            (void)stop_wake_restart_task(500);
+        } else {
+            xSemaphoreGive(s_wake_restart_start_gate);
+            ESP_LOGI(TAG, "offline wake restart scheduled");
+        }
     }
 }
 
@@ -3347,34 +4958,48 @@ static bool is_six_digit_pair_code(const char *code) {
  * result to the composition root so it can stop before radio/gateway work.
  */
 static esp_err_t load_device_config(void) {
-    configuration_snapshot_t snapshot = {0};
-    strlcpy(snapshot.wifi_ssid, CONFIG_MACLAW_WIFI_SSID, sizeof(snapshot.wifi_ssid));
-    strlcpy(snapshot.wifi_password, CONFIG_MACLAW_WIFI_PASSWORD, sizeof(snapshot.wifi_password));
-    strlcpy(snapshot.wifi_security, "personal", sizeof(snapshot.wifi_security));
-    strlcpy(snapshot.wifi_eap_method, "peap", sizeof(snapshot.wifi_eap_method));
-    strlcpy(snapshot.wifi_ttls_phase2, "mschapv2", sizeof(snapshot.wifi_ttls_phase2));
-    strlcpy(snapshot.wifi_ca_mode, "system", sizeof(snapshot.wifi_ca_mode));
-    strlcpy(snapshot.gateway_url, CONFIG_MACLAW_SERVER_URL, sizeof(snapshot.gateway_url));
-    strlcpy(snapshot.gateway_token, CONFIG_MACLAW_GATEWAY_TOKEN, sizeof(snapshot.gateway_token));
-    esp_err_t err = configuration_service_load(&snapshot);
+    /* Measured at boot, this call chain (caller snapshot + service store +
+     * NVS frames) peaked near 4.9 KB of main-task stack and forced a larger
+     * boot stack on memory-tight profiles.  The snapshot is transient, so
+     * keep it in PSRAM and free it before returning. */
+    configuration_snapshot_t *snapshot =
+        heap_caps_calloc(1, sizeof(*snapshot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!snapshot) return ESP_ERR_NO_MEM;
+    strlcpy(snapshot->wifi_ssid, CONFIG_MACLAW_WIFI_SSID, sizeof(snapshot->wifi_ssid));
+    strlcpy(snapshot->wifi_password, CONFIG_MACLAW_WIFI_PASSWORD, sizeof(snapshot->wifi_password));
+    strlcpy(snapshot->wifi_security, "personal", sizeof(snapshot->wifi_security));
+    strlcpy(snapshot->wifi_eap_method, "peap", sizeof(snapshot->wifi_eap_method));
+    strlcpy(snapshot->wifi_ttls_phase2, "mschapv2", sizeof(snapshot->wifi_ttls_phase2));
+    strlcpy(snapshot->wifi_ca_mode, "system", sizeof(snapshot->wifi_ca_mode));
+    strlcpy(snapshot->gateway_url, CONFIG_MACLAW_SERVER_URL, sizeof(snapshot->gateway_url));
+    strlcpy(snapshot->gateway_token, CONFIG_MACLAW_GATEWAY_TOKEN, sizeof(snapshot->gateway_token));
+    esp_err_t err = configuration_service_load(snapshot);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "configuration snapshot rejected: %s", esp_err_to_name(err));
+        heap_caps_free(snapshot);
         return err;
     }
-    strlcpy(s_wifi_ssid, snapshot.wifi_ssid, sizeof(s_wifi_ssid));
-    strlcpy(s_wifi_password, snapshot.wifi_password, sizeof(s_wifi_password));
-    strlcpy(s_wifi_security, snapshot.wifi_security, sizeof(s_wifi_security));
-    strlcpy(s_wifi_eap_method, snapshot.wifi_eap_method, sizeof(s_wifi_eap_method));
-    strlcpy(s_wifi_identity, snapshot.wifi_identity, sizeof(s_wifi_identity));
-    strlcpy(s_wifi_username, snapshot.wifi_username, sizeof(s_wifi_username));
-    strlcpy(s_wifi_ttls_phase2, snapshot.wifi_ttls_phase2, sizeof(s_wifi_ttls_phase2));
-    strlcpy(s_wifi_ca_mode, snapshot.wifi_ca_mode, sizeof(s_wifi_ca_mode));
-    strlcpy(s_wifi_server_domain, snapshot.wifi_server_domain, sizeof(s_wifi_server_domain));
-    strlcpy(s_gateway_url, snapshot.gateway_url, sizeof(s_gateway_url));
-    strlcpy(s_pair_code, snapshot.pair_code, sizeof(s_pair_code));
-    strlcpy(s_gateway_token, snapshot.gateway_token, sizeof(s_gateway_token));
-    s_configured_output_volume = snapshot.output_volume;
-    s_configured_output_volume_saved = snapshot.output_volume_saved;
+    strlcpy(s_wifi_ssid, snapshot->wifi_ssid, sizeof(s_wifi_ssid));
+    strlcpy(s_wifi_password, snapshot->wifi_password, sizeof(s_wifi_password));
+    s_wifi_network_count = snapshot->wifi_network_count;
+    if (s_wifi_network_count > CONFIGURATION_WIFI_NETWORK_CAPACITY) {
+        s_wifi_network_count = CONFIGURATION_WIFI_NETWORK_CAPACITY;
+    }
+    memcpy(s_wifi_networks, snapshot->wifi_networks,
+           s_wifi_network_count * sizeof(s_wifi_networks[0]));
+    strlcpy(s_wifi_security, snapshot->wifi_security, sizeof(s_wifi_security));
+    strlcpy(s_wifi_eap_method, snapshot->wifi_eap_method, sizeof(s_wifi_eap_method));
+    strlcpy(s_wifi_identity, snapshot->wifi_identity, sizeof(s_wifi_identity));
+    strlcpy(s_wifi_username, snapshot->wifi_username, sizeof(s_wifi_username));
+    strlcpy(s_wifi_ttls_phase2, snapshot->wifi_ttls_phase2, sizeof(s_wifi_ttls_phase2));
+    strlcpy(s_wifi_ca_mode, snapshot->wifi_ca_mode, sizeof(s_wifi_ca_mode));
+    strlcpy(s_wifi_server_domain, snapshot->wifi_server_domain, sizeof(s_wifi_server_domain));
+    strlcpy(s_gateway_url, snapshot->gateway_url, sizeof(s_gateway_url));
+    strlcpy(s_pair_code, snapshot->pair_code, sizeof(s_pair_code));
+    strlcpy(s_gateway_token, snapshot->gateway_token, sizeof(s_gateway_token));
+    s_configured_output_volume = snapshot->output_volume;
+    s_configured_output_volume_saved = snapshot->output_volume_saved;
+    heap_caps_free(snapshot);
     return ESP_OK;
 }
 
@@ -3388,6 +5013,29 @@ static esp_err_t save_output_volume(unsigned percent) {
     return err;
 }
 
+static esp_err_t save_display_brightness(unsigned percent) {
+    if (percent > 100) return ESP_ERR_INVALID_ARG;
+    return persistence_service_write_u8(DISPLAY_BRIGHTNESS_NVS_NAMESPACE,
+                                        DISPLAY_BRIGHTNESS_NVS_KEY,
+                                        (uint8_t)percent);
+}
+
+static bool valid_screen_sleep_seconds(int seconds) {
+    switch (seconds) {
+        case 0: case 60: case 180: case 300: case 600: case 1800:
+        case 3600: case 7200: case 10800: case 14400: case 18000:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static esp_err_t save_screen_sleep_seconds(unsigned seconds) {
+	uint32_t value = seconds;
+	return persistence_service_write_blob(DISPLAY_BRIGHTNESS_NVS_NAMESPACE,
+								  DISPLAY_SLEEP_NVS_KEY, &value, sizeof(value));
+}
+
 static void output_volume_persist_task(void *arg) {
     (void)arg;
     output_volume_persist_request_t request = {0};
@@ -3398,37 +5046,132 @@ static void output_volume_persist_task(void *arg) {
         }
         if (request.stop) break;
         output_volume_persist_reply_t reply = {
-            .result = save_output_volume(request.percent),
+            .result = request.brightness
+                          ? save_display_brightness(request.percent)
+                          : save_output_volume(request.percent),
             .generation = request.generation,
         };
         // The reply queue has room for the active completion plus one stale
         // completion from a timed-out caller. Do not lose the correlation ID:
         // the next caller must be able to distinguish that old result.
-        xQueueSend(s_output_volume_persist_reply_queue, &reply, portMAX_DELAY);
+        while (xQueueSend(s_output_volume_persist_reply_queue, &reply,
+                          pdMS_TO_TICKS(50)) != pdTRUE) {
+            bool stop_requested;
+            taskENTER_CRITICAL(&s_task_state_lock);
+            stop_requested = s_output_volume_persist_stop_requested;
+            taskEXIT_CRITICAL(&s_task_state_lock);
+            /* During lifecycle drain the waiting caller has already abandoned
+             * its reply. Do not let a full reply queue prevent the stop
+             * sentinel from ever being consumed. */
+            if (stop_requested) break;
+        }
     }
-    s_output_volume_persist_task_handle = NULL;
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_output_volume_persist_task_handle == self) {
+        s_output_volume_persist_task_handle = NULL;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
     if (s_output_volume_persist_stopped) xSemaphoreGive(s_output_volume_persist_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_STORAGE,
+                                                 (void *)self, 10);
     vTaskDelete(NULL);
+}
+
+static esp_err_t stop_output_volume_persist_worker(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_output_volume_persist_queue || !s_output_volume_persist_stopped ||
+        !s_output_volume_persist_request_mutex) {
+        return ESP_OK;
+    }
+    /* Registry stop passes one owner-wide timeout. Taking the request mutex,
+     * publishing STOP and joining the internal-stack worker are one teardown
+     * transaction, not three independent timeout windows. */
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_output_volume_persist_stop_requested = true;
+    TaskHandle_t task = s_output_volume_persist_task_handle;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    if (xSemaphoreTake(s_output_volume_persist_request_mutex,
+                       pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    /* A caller may have timed out after the worker finished its flash write,
+     * leaving both reply slots occupied. Make room before queuing the stop
+     * sentinel; the lifecycle caller owns the admission mutex, so no active
+     * request can lose a completion at this point. */
+    output_volume_persist_reply_t stale_reply;
+    while (xQueueReceive(s_output_volume_persist_reply_queue, &stale_reply, 0) == pdTRUE) {}
+    output_volume_persist_request_t stop_request = {.stop = true};
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) {
+        xSemaphoreGive(s_output_volume_persist_request_mutex);
+        return ESP_ERR_TIMEOUT;
+    }
+    BaseType_t queued = xQueueSend(s_output_volume_persist_queue, &stop_request,
+                                   pdMS_TO_TICKS(remaining_ms));
+    xSemaphoreGive(s_output_volume_persist_request_mutex);
+    if (queued != pdTRUE) return ESP_ERR_TIMEOUT;
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    if (xSemaphoreTake(s_output_volume_persist_stopped,
+                       pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_STORAGE, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "volume persistence worker stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_output_volume_persist_registry_entry(void *context,
+                                                            uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_output_volume_persist_task_handle;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_output_volume_persist_worker(timeout_ms);
 }
 
 // NVS flash writes cannot run from a task whose stack lives in PSRAM: cache
 // disable makes that stack inaccessible. The regular key handler already runs
 // from internal RAM, but the gateway poller does not, so use one shared
 // internal-stack persistence worker for both call paths.
-static esp_err_t persist_output_volume(unsigned percent) {
+static esp_err_t persist_hardware_level(unsigned percent, bool brightness) {
     if (percent > 100 || !s_output_volume_persist_queue ||
         !s_output_volume_persist_reply_queue || !s_output_volume_persist_request_mutex) {
         return ESP_ERR_INVALID_STATE;
     }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool stop_requested = s_output_volume_persist_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (stop_requested) return ESP_ERR_INVALID_STATE;
     if (xSemaphoreTake(s_output_volume_persist_request_mutex,
                        pdMS_TO_TICKS(4000)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    stop_requested = s_output_volume_persist_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (stop_requested) {
+        xSemaphoreGive(s_output_volume_persist_request_mutex);
+        return ESP_ERR_INVALID_STATE;
     }
     output_volume_persist_reply_t reply = {0};
     while (xQueueReceive(s_output_volume_persist_reply_queue, &reply, 0) == pdTRUE) {}
     output_volume_persist_request_t request = {
         .percent = percent,
         .generation = ++s_output_volume_persist_generation,
+        .brightness = brightness,
     };
     if (request.generation == 0) request.generation = ++s_output_volume_persist_generation;
     esp_err_t err = ESP_ERR_TIMEOUT;
@@ -3454,6 +5197,14 @@ static esp_err_t persist_output_volume(unsigned percent) {
     }
     xSemaphoreGive(s_output_volume_persist_request_mutex);
     return err;
+}
+
+static esp_err_t persist_output_volume(unsigned percent) {
+    return persist_hardware_level(percent, false);
+}
+
+static esp_err_t persist_display_brightness(unsigned percent) {
+    return persist_hardware_level(percent, true);
 }
 
 static void finish_result_speech_transaction(const char *reply_to) {
@@ -3520,28 +5271,32 @@ static esp_err_t save_device_config(const char *ssid, const char *password, cons
                         !is_valid_choice(ttls_phase2, "mschapv2", "pap", NULL) ||
                         !is_valid_choice(ca_mode, "system", "none", NULL) ||
                         strlen(server_domain) >= sizeof(s_wifi_server_domain)))) return ESP_ERR_INVALID_ARG;
-    configuration_snapshot_t snapshot = {
-        .output_volume = (uint8_t)s_configured_output_volume,
-        .output_volume_saved = s_configured_output_volume_saved,
-    };
-    strlcpy(snapshot.wifi_ssid, ssid, sizeof(snapshot.wifi_ssid));
-    strlcpy(snapshot.wifi_password, password, sizeof(snapshot.wifi_password));
-    strlcpy(snapshot.wifi_security, enterprise ? "enterprise" : "personal",
-            sizeof(snapshot.wifi_security));
-    strlcpy(snapshot.wifi_eap_method, enterprise ? eap_method : "peap",
-            sizeof(snapshot.wifi_eap_method));
-    strlcpy(snapshot.wifi_identity, enterprise ? identity : "", sizeof(snapshot.wifi_identity));
-    strlcpy(snapshot.wifi_username, enterprise ? username : "", sizeof(snapshot.wifi_username));
-    strlcpy(snapshot.wifi_ttls_phase2, enterprise ? ttls_phase2 : "mschapv2",
-            sizeof(snapshot.wifi_ttls_phase2));
-    strlcpy(snapshot.wifi_ca_mode, enterprise ? ca_mode : "system", sizeof(snapshot.wifi_ca_mode));
-    strlcpy(snapshot.wifi_server_domain, enterprise ? server_domain : "",
-            sizeof(snapshot.wifi_server_domain));
-    strlcpy(snapshot.gateway_url, gateway_url, sizeof(snapshot.gateway_url));
-    strlcpy(snapshot.pair_code, pair_code, sizeof(snapshot.pair_code));
+    /* 快照随 v3 多热点列表增长到 ~1.6 KB。本函数运行在 httpd 任务（6 KB
+     * 栈）上，工作副本必须放 PSRAM，避免重演保存途中栈溢出重启。 */
+    configuration_snapshot_t *snapshot =
+        heap_caps_calloc(1, sizeof(*snapshot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!snapshot) return ESP_ERR_NO_MEM;
+    snapshot->output_volume = (uint8_t)s_configured_output_volume;
+    snapshot->output_volume_saved = s_configured_output_volume_saved;
+    strlcpy(snapshot->wifi_ssid, ssid, sizeof(snapshot->wifi_ssid));
+    strlcpy(snapshot->wifi_password, password, sizeof(snapshot->wifi_password));
+    strlcpy(snapshot->wifi_security, enterprise ? "enterprise" : "personal",
+            sizeof(snapshot->wifi_security));
+    strlcpy(snapshot->wifi_eap_method, enterprise ? eap_method : "peap",
+            sizeof(snapshot->wifi_eap_method));
+    strlcpy(snapshot->wifi_identity, enterprise ? identity : "", sizeof(snapshot->wifi_identity));
+    strlcpy(snapshot->wifi_username, enterprise ? username : "", sizeof(snapshot->wifi_username));
+    strlcpy(snapshot->wifi_ttls_phase2, enterprise ? ttls_phase2 : "mschapv2",
+            sizeof(snapshot->wifi_ttls_phase2));
+    strlcpy(snapshot->wifi_ca_mode, enterprise ? ca_mode : "system", sizeof(snapshot->wifi_ca_mode));
+    strlcpy(snapshot->wifi_server_domain, enterprise ? server_domain : "",
+            sizeof(snapshot->wifi_server_domain));
+    strlcpy(snapshot->gateway_url, gateway_url, sizeof(snapshot->gateway_url));
+    strlcpy(snapshot->pair_code, pair_code, sizeof(snapshot->pair_code));
     /* New network/pairing data atomically invalidates an old Hub credential. */
-    snapshot.gateway_token[0] = '\0';
-    esp_err_t err = configuration_service_save_provisioning(&snapshot);
+    snapshot->gateway_token[0] = '\0';
+    esp_err_t err = configuration_service_save_provisioning(snapshot);
+    heap_caps_free(snapshot);
     if (err == ESP_OK) {
         strlcpy(s_wifi_ssid, ssid, sizeof(s_wifi_ssid));
         strlcpy(s_wifi_password, password, sizeof(s_wifi_password));
@@ -3559,6 +5314,19 @@ static esp_err_t save_device_config(const char *ssid, const char *password, cons
          * concurrent retry can issue one more authenticated request with an
          * owner token that no longer belongs to the new network/pairing flow. */
         s_gateway_token[0] = '\0';
+        /* Configuration Service makes personal primary credentials and their
+         * multi-network recovery entry durable in the same provisioning
+         * commit. Reload only to refresh this process cache; a refresh failure
+         * cannot weaken the credential/catalogue transaction. */
+        if (!enterprise) {
+            esp_err_t list_err = configuration_service_list_wifi_networks(
+                s_wifi_networks, CONFIGURATION_WIFI_NETWORK_CAPACITY,
+                &s_wifi_network_count);
+            if (list_err != ESP_OK) {
+                ESP_LOGW(TAG, "could not refresh committed saved Wi-Fi list: %s",
+                         esp_err_to_name(list_err));
+            }
+        }
     }
     ESP_LOGI(TAG, "config save: ssid_len=%u security=%s gateway_len=%u code_len=%u result=%s",
              (unsigned)strlen(ssid), security, (unsigned)strlen(gateway_url),
@@ -3624,6 +5392,39 @@ static bool meeting_storage_partition_is_blank(void) {
     return true;
 }
 
+/* 启动存储清单：逐文件记录 /storage 占用，最后一行给总用量/剩余。
+ * 小容量分区（如 waveshare 的 3MB）容量门禁失败时，靠这段日志直接定位
+ * 空间去向。长期保留。这里运行在主任务内置栈上，VFS 遍历是安全的。 */
+static void log_storage_inventory(void) {
+    DIR *dir = opendir("/storage");
+    if (dir) {
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (entry->d_name[0] == '.') continue;
+            // d_name 按 POSIX 上限 255 字节声明，缓冲留足避免截断告警。
+            char path[9 + 256];
+            snprintf(path, sizeof(path), "/storage/%s", entry->d_name);
+            struct stat info;
+            if (stat(path, &info) == 0) {
+                ESP_LOGI(TAG, "storage file: %s size=%ld",
+                         entry->d_name, (long)info.st_size);
+            } else {
+                ESP_LOGW(TAG, "storage file: %s stat failed errno=%d",
+                         entry->d_name, errno);
+            }
+        }
+        closedir(dir);
+    } else {
+        ESP_LOGW(TAG, "storage inventory: opendir failed errno=%d", errno);
+    }
+    size_t total = 0;
+    size_t used = 0;
+    if (esp_spiffs_info("storage", &total, &used) == ESP_OK && used <= total) {
+        ESP_LOGI(TAG, "storage usage: total=%u used=%u free=%u",
+                 (unsigned)total, (unsigned)used, (unsigned)(total - used));
+    }
+}
+
 static esp_err_t mount_meeting_storage(void) {
     esp_vfs_spiffs_conf_t config = {
         .base_path = "/storage",
@@ -3652,6 +5453,7 @@ static esp_err_t mount_meeting_storage(void) {
             ESP_LOGI(TAG, "meeting storage mounted: total=%u used=%u",
                      (unsigned)total, (unsigned)used);
         }
+        log_storage_inventory();
         return ESP_OK;
     }
     ESP_LOGE(TAG, "meeting storage mount failed; preserving existing contents: %s",
@@ -3782,6 +5584,8 @@ static esp_err_t gateway_handshake(bool cold_start) {
     cJSON_AddBoolToObject(features, "ambientDisplay", true);
     cJSON_AddBoolToObject(features, "meetingRecorder", true);
     cJSON_AddBoolToObject(features, "volumeControl", true);
+    cJSON_AddBoolToObject(features, "brightnessControl", true);
+    cJSON_AddBoolToObject(features, "screenSleepControl", true);
     cJSON *legacy_capabilities = cJSON_AddObjectToObject(request_json, "capabilities");
     cJSON *firmware = legacy_capabilities ? cJSON_AddObjectToObject(legacy_capabilities, "firmwareIdentity") : NULL;
     if (!firmware) {
@@ -3963,6 +5767,7 @@ static esp_err_t gateway_handshake(bool cold_start) {
     cJSON *pet_asset = cJSON_GetObjectItemCaseSensitive(json, "petAsset");
     if (cold_start) {
         s_startup_pet_asset_pending = true;
+        s_startup_pet_retry_count = 0;
         if (!s_startup_pet_asset_ref) {
             s_startup_pet_asset_ref = heap_caps_calloc(
                 1, sizeof(*s_startup_pet_asset_ref), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -4101,6 +5906,11 @@ static esp_err_t pair_by_code(void) {
     char *payload = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     if (!payload) return ESP_ERR_NO_MEM;
+    // One-time 6-digit code with a 30-minute TTL; logging the code and Hub URL
+    // actually used is the only on-device evidence when the Hub reports
+    // invalid_pairing_code despite a freshly generated code.
+    ESP_LOGI(TAG, "pairing request: url=%s client=%s code=%s",
+             s_gateway_url, s_device_id, s_pair_code);
     http_response_t response;
     esp_err_t err = request("POST", "/api/device-gateway/v1/pair", "application/json", payload, strlen(payload), &response);
     free(payload);
@@ -4200,7 +6010,13 @@ static esp_err_t upload_voice(const uint8_t *wav, size_t wav_len, char *media_id
     }
     free(payload);
     if (err != ESP_OK || response.status != 200) {
-        ESP_LOGE(TAG, "media prepare failed: err=%s status=%d body=%s", esp_err_to_name(err), response.status, response.data);
+        if (err == ESP_ERR_INVALID_STATE) {
+            // Foreground cancellation skips/aborts the request; that is a user
+            // action, not an upload failure worth an alarm.
+            ESP_LOGI(TAG, "media prepare cancelled by user");
+        } else {
+            ESP_LOGE(TAG, "media prepare failed: err=%s status=%d body=%s", esp_err_to_name(err), response.status, response.data);
+        }
         esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
         response_release(&response);
         return result;
@@ -4237,7 +6053,11 @@ static esp_err_t upload_voice(const uint8_t *wav, size_t wav_len, char *media_id
         voice_upload_retry_delay(attempt);
     }
     if (err != ESP_OK || (put_response.status != 200 && put_response.status != 201)) {
-        ESP_LOGE(TAG, "media upload failed: err=%s status=%d", esp_err_to_name(err), put_response.status);
+        if (err == ESP_ERR_INVALID_STATE) {
+            ESP_LOGI(TAG, "media upload cancelled by user");
+        } else {
+            ESP_LOGE(TAG, "media upload failed: err=%s status=%d", esp_err_to_name(err), put_response.status);
+        }
         esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
         response_release(&put_response);
         return result;
@@ -4621,7 +6441,25 @@ static esp_err_t poll_reply(void) {
                 pet_profile_handled = asset_err == ESP_OK;
                 pet_profile_permanently_invalid = audio_error_is_permanent(asset_err) ||
                                                   asset_err == ESP_ERR_INVALID_CRC;
-                if (!pet_profile_handled) ESP_LOGW(TAG, "pet asset update failed: %s", esp_err_to_name(asset_err));
+                if (!pet_profile_handled) {
+                    if (id && !strcmp(id, s_pet_asset_retry_id)) {
+                        ++s_pet_asset_retry_count;
+                    } else {
+                        strlcpy(s_pet_asset_retry_id, id ? id : "",
+                                sizeof(s_pet_asset_retry_id));
+                        s_pet_asset_retry_count = 1;
+                    }
+                    // 连续失败达到上限按永久失败处理，避免堵死整页消息。
+                    if (s_pet_asset_retry_count >= PET_ASSET_RETRY_LIMIT) {
+                        pet_profile_permanently_invalid = true;
+                    }
+                    ESP_LOGW(TAG, "pet asset update failed: %s (retry %d/%d)",
+                             esp_err_to_name(asset_err), s_pet_asset_retry_count,
+                             PET_ASSET_RETRY_LIMIT);
+                } else {
+                    s_pet_asset_retry_id[0] = '\0';
+                    s_pet_asset_retry_count = 0;
+                }
             } else {
                 // An asset-less profile means the server selected the native
                 // fallback (or rejected malformed GUI data). Remove the old
@@ -4638,13 +6476,28 @@ static esp_err_t poll_reply(void) {
         if (type && !strcmp(type, "ambient")) apply_ambient_json(item);
         if (hardware_config_message && cJSON_IsObject(extra)) {
             int volume = 0;
-            if (json_number(extra, "volume", &volume) && volume >= 0 && volume <= 100) {
+            int brightness = 0;
+            int screen_sleep_seconds = 0;
+            bool has_volume = json_number(extra, "volume", &volume);
+            bool has_brightness = json_number(extra, "brightness", &brightness);
+            bool has_screen_sleep = json_number(extra, "screenSleepSeconds", &screen_sleep_seconds);
+            // Each hardware_config field is independently durable. A partial
+            // success must stay queued so a reconnect can retry the failed
+            // setting instead of ACKing it as if all three applied.
+            bool volume_handled = !has_volume;
+            bool brightness_handled = !has_brightness;
+            bool screen_sleep_handled = !has_screen_sleep;
+            if (!has_volume && !has_brightness && !has_screen_sleep) {
+                hardware_config_permanently_invalid = true;
+                ESP_LOGW(TAG, "ignored hardware config without volume/brightness/screen sleep");
+            }
+            if (has_volume && volume >= 0 && volume <= 100) {
                 device_status_t volume_status = device_audio_set_output_volume((uint8_t)volume);
                 if (volume_status == DEVICE_STATUS_OK) {
                     ESP_LOGI(TAG, "server output volume: %d%%", volume);
                     esp_err_t save_err = persist_output_volume((unsigned)volume);
-                    hardware_config_handled = save_err == ESP_OK;
-                    if (!hardware_config_handled) {
+                    volume_handled = save_err == ESP_OK;
+                    if (!volume_handled) {
                         ESP_LOGW(TAG, "server output volume persistence failed: %s",
                                  esp_err_to_name(save_err));
                     }
@@ -4653,10 +6506,45 @@ static esp_err_t poll_reply(void) {
                 } else {
                     hardware_config_permanently_invalid = true;
                 }
-            } else {
+            } else if (has_volume) {
                 hardware_config_permanently_invalid = true;
                 ESP_LOGW(TAG, "ignored invalid server output volume");
             }
+            // 亮度与音量同通道下发：0 = 背光熄灭但系统继续运行，>=1 恢复。
+            if (has_brightness && brightness >= 0 && brightness <= 100) {
+                device_status_t brightness_status =
+                    app_ui_apply_remote_brightness((uint8_t)brightness);
+                if (brightness_status == DEVICE_STATUS_OK) {
+                    ESP_LOGI(TAG, "server display brightness: %d%%", brightness);
+                    esp_err_t save_err = persist_display_brightness((unsigned)brightness);
+                    brightness_handled = save_err == ESP_OK;
+                    if (!brightness_handled) {
+                        ESP_LOGW(TAG, "server display brightness persistence failed: %s",
+                                 esp_err_to_name(save_err));
+                    }
+                } else if (brightness_status != DEVICE_STATUS_UNAVAILABLE) {
+                    ESP_LOGW(TAG, "server display brightness failed: device status=%d", brightness_status);
+                } else {
+                    hardware_config_permanently_invalid = true;
+                }
+            } else if (has_brightness) {
+                hardware_config_permanently_invalid = true;
+                ESP_LOGW(TAG, "ignored invalid server display brightness");
+            }
+            if (has_screen_sleep && valid_screen_sleep_seconds(screen_sleep_seconds)) {
+                esp_err_t save_err = save_screen_sleep_seconds((unsigned)screen_sleep_seconds);
+                if (save_err == ESP_OK) {
+                    app_ui_set_display_off_idle_ms((uint32_t)screen_sleep_seconds * 1000u);
+                    screen_sleep_handled = true;
+                    ESP_LOGI(TAG, "server screen sleep timeout: %d seconds", screen_sleep_seconds);
+                } else {
+                    ESP_LOGW(TAG, "screen sleep timeout persistence failed: %s", esp_err_to_name(save_err));
+                }
+            } else if (has_screen_sleep) {
+                hardware_config_permanently_invalid = true;
+                ESP_LOGW(TAG, "ignored invalid server screen sleep timeout");
+            }
+            hardware_config_handled = volume_handled && brightness_handled && screen_sleep_handled;
         } else if (hardware_config_message) {
             hardware_config_permanently_invalid = true;
             ESP_LOGW(TAG, "ignored hardware config without extra object");
@@ -5151,12 +7039,32 @@ static device_status_t read_meeting_chunk_body(void *context, void *buffer,
     return ferror((FILE *)context) ? DEVICE_STATUS_IO_ERROR : DEVICE_STATUS_INVALID_ARGUMENT;
 }
 
+/* The meeting's Wi-Fi PUT uses open/write/fetch rather than request_with_capacity(),
+ * so it has to publish its own cancellable client pointer.  The pointer is valid
+ * only while the worker owns the HTTP transaction; the stopper takes this mutex
+ * before issuing cancel_request(), and the worker clears it before cleanup. */
+static void meeting_task_set_active_http_client(esp_http_client_handle_t client) {
+    if (!s_meeting_task_client_mutex) return;
+    xSemaphoreTake(s_meeting_task_client_mutex, portMAX_DELAY);
+    s_meeting_task_active_client = client;
+    xSemaphoreGive(s_meeting_task_client_mutex);
+}
+
+static bool meeting_task_stop_requested(void) {
+    bool requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    requested = s_meeting_task_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return requested;
+}
+
 static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE *file,
                                       size_t offset, size_t length, const char sha256_hex[65],
                                       uint8_t *buffer, size_t buffer_size,
                                       size_t completed_before, size_t total_bytes,
                                       bool publish_progress,
                                       esp_http_client_handle_t *reusable_client) {
+    if (meeting_task_stop_requested()) return ESP_ERR_INVALID_STATE;
     char path[MEETING_BASE_PATH_CAPACITY + MEETING_RECORDING_ID_CAPACITY + 48];
     char url[URL_CAPACITY];
     int path_len = snprintf(path, sizeof(path), "%s/%s/chunks/%d",
@@ -5186,12 +7094,14 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
                 .response = response.data, .response_capacity = (uint32_t)response.capacity,
                 .response_len = &cellular_response_len, .status_code = &response.status,
                 .truncated = &response.truncated, .timeout_ms = 60000,
+                .cancellation_owner = (const void *)xTaskGetCurrentTaskHandle(),
             },
             .body_reader = read_meeting_chunk_body, .body_reader_context = file,
             .stream_buffer = buffer, .stream_buffer_size = (uint32_t)buffer_size,
         };
         esp_err_t err = device_status_to_platform_error(
             device_connectivity_cellular_http_stream_request(&cellular_request));
+        if (meeting_task_stop_requested() && err == ESP_OK) err = ESP_ERR_INVALID_STATE;
         response.len = cellular_response_len;
         uint32_t total_ms = (uint32_t)((esp_timer_get_time() - started_us) / 1000);
         ESP_LOGI(TAG, "meeting chunk %d upload bytes=%u connection=ML307 total=%ums status=%d err=%s",
@@ -5254,6 +7164,7 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
         xSemaphoreGive(s_http_mutex);
         return client ? err : ESP_ERR_NO_MEM;
     }
+    meeting_task_set_active_http_client(client);
     int64_t request_started_us = esp_timer_get_time();
     err = esp_http_client_open(client, (int)length);
     bool stale_connection_retry = false;
@@ -5265,6 +7176,7 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
         ESP_LOGW(TAG, "meeting chunk %d stale keep-alive open failed: %s; retrying fresh TLS",
                  index, esp_err_to_name(err));
         stale_connection_retry = true;
+        meeting_task_set_active_http_client(NULL);
         esp_http_client_cleanup(client);
         client = NULL;
         if (reusable_client) *reusable_client = NULL;
@@ -5283,6 +7195,7 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
             client = esp_http_client_init(&retry_config);
             err = client ? configure_meeting_chunk_client(client, url, sha256_hex, &response)
                          : ESP_ERR_NO_MEM;
+            if (client) meeting_task_set_active_http_client(client);
             if (err == ESP_OK) err = esp_http_client_open(client, (int)length);
         }
     }
@@ -5299,6 +7212,10 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
     }
     size_t remaining = length;
     while (err == ESP_OK && remaining > 0) {
+        if (meeting_task_stop_requested()) {
+            err = ESP_ERR_INVALID_STATE;
+            break;
+        }
         size_t wanted = remaining < buffer_size ? remaining : buffer_size;
         size_t count = fread(buffer, 1, wanted, file);
         if (count != wanted) {
@@ -5333,6 +7250,10 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
         int headers = esp_http_client_fetch_headers(client);
         if (headers < 0) err = ESP_FAIL;
         while (err == ESP_OK && !esp_http_client_is_complete_data_received(client)) {
+            if (meeting_task_stop_requested()) {
+                err = ESP_ERR_INVALID_STATE;
+                break;
+            }
             int count = esp_http_client_read(client, (char *)buffer, buffer_size);
             if (count < 0) err = ESP_FAIL;
             if (count <= 0 && !esp_http_client_is_complete_data_received(client)) err = ESP_FAIL;
@@ -5352,6 +7273,7 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
                        esp_http_client_is_complete_data_received(client) &&
                        reusable_client;
     esp_http_client_set_user_data(client, NULL);
+    meeting_task_set_active_http_client(NULL);
     if (keep_client) {
         *reusable_client = client;
     } else {
@@ -5493,6 +7415,10 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
     int chunks = (int)((file_size + s_meeting_chunk_size - 1) / s_meeting_chunk_size);
     esp_http_client_handle_t meeting_upload_client = NULL;
     for (int index = next_chunk; err == ESP_OK && index < chunks; ++index) {
+        if (meeting_task_stop_requested()) {
+            err = ESP_ERR_INVALID_STATE;
+            break;
+        }
         size_t offset = (size_t)index * s_meeting_chunk_size;
         size_t length = file_size - offset;
         if (length > s_meeting_chunk_size) length = s_meeting_chunk_size;
@@ -5523,11 +7449,12 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
         }
     }
     if (meeting_upload_client) {
+        meeting_task_set_active_http_client(NULL);
         esp_http_client_cleanup(meeting_upload_client);
         meeting_upload_client = NULL;
     }
     char whole_hash[65];
-    if (err == ESP_OK && phase < 1) {
+    if (err == ESP_OK && !meeting_task_stop_requested() && phase < 1) {
         if (publish_state) meeting_set_state(MEETING_FINALIZING);
         if (publish_state) app_ui_show_upload_progress(file_size, file_size, "正在校验录音");
         err = hash_file_range(file, 0, file_size, buffer, MEETING_IO_BUFFER_SIZE, whole_hash);
@@ -5546,7 +7473,7 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
             err = save_meeting_recovery(true, recording_id, next_chunk, phase);
         }
     }
-    if (err == ESP_OK && phase >= 1) {
+    if (err == ESP_OK && !meeting_task_stop_requested() && phase >= 1) {
         char status[20] = {0};
         if (get_meeting_status(recording_id, status, sizeof(status)) == ESP_OK &&
             (!strcmp(status, "processing") || !strcmp(status, "ready"))) {
@@ -5554,7 +7481,7 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
             (void)save_meeting_recovery(true, recording_id, next_chunk, phase);
         }
     }
-    if (err == ESP_OK && phase < 2) {
+    if (err == ESP_OK && !meeting_task_stop_requested() && phase < 2) {
         if (publish_state) meeting_set_state(MEETING_PROCESSING);
         if (publish_state) app_ui_show_upload_progress(file_size, file_size, "正在提交处理");
         char payload[48];
@@ -5568,6 +7495,7 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
     }
     free(buffer);
     fclose(file);
+    if (err == ESP_OK && meeting_task_stop_requested()) err = ESP_ERR_INVALID_STATE;
     if (err == ESP_OK) {
         err = clear_meeting_recovery(true);
         if (err != ESP_OK) {
@@ -5579,6 +7507,8 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
 
 static void meeting_task(void *arg) {
     meeting_task_context_t *context = arg;
+    uint32_t operation_generation = 0;
+    bool resume_only = false;
     if (!context) {
         vTaskDelete(NULL);
         return;
@@ -5586,10 +7516,18 @@ static void meeting_task(void *arg) {
     /* Publish s_meeting_task/s_meeting_task_running before this worker can
      * complete a fast local failure.  Otherwise a cross-core task create can
      * leave the creator writing a stale handle after the worker cleared it. */
-    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    const uint32_t operation_generation = context->generation;
-    const bool resume_only = context->resume_only;
+    if (!s_meeting_task_start_gate ||
+        xSemaphoreTake(s_meeting_task_start_gate, portMAX_DELAY) != pdTRUE) {
+        free(context);
+        context = NULL;
+        ESP_LOGW(TAG, "meeting task start gate unavailable");
+        goto finish;
+    }
+    operation_generation = context->generation;
+    resume_only = context->resume_only;
     free(context);
+    context = NULL;
+    if (meeting_task_stop_requested()) goto finish;
     if (!resume_only && !meeting_operation_is_current(operation_generation)) {
         ESP_LOGW(TAG, "stale meeting worker discarded: generation=%lu",
                  (unsigned long)operation_generation);
@@ -5655,6 +7593,10 @@ static void meeting_task(void *arg) {
         app_ui_set_recording_mode(true);
         app_ui_set_recording_visual(true, false, 0);
         while (s_meeting_state == MEETING_RECORDING || s_meeting_state == MEETING_PAUSED) {
+            if (meeting_task_stop_requested()) {
+                meeting_set_state(MEETING_ERROR);
+                break;
+            }
             if (!meeting_operation_is_current(operation_generation)) {
                 meeting_set_state(MEETING_ERROR);
                 break;
@@ -5753,6 +7695,7 @@ static void meeting_task(void *arg) {
     }
     log_heap_snapshot("meeting-upload-after-wake-stop");
 
+    if (meeting_task_stop_requested()) goto finish;
     if (!resume_only && !meeting_operation_is_current(operation_generation)) goto finish;
     esp_err_t upload_err = upload_pending_meeting(!resume_only);
 
@@ -5761,7 +7704,10 @@ static void meeting_task(void *arg) {
             meeting_set_state(MEETING_DONE);
             pet("done");
             app_ui_show_text("会议记录已保存", "可在文稿库中查看");
-            vTaskDelay(pdMS_TO_TICKS(3000));
+            /* A rollback must not spend the whole result dwell time waiting
+             * for this worker. The same notification used by stop wakes this
+             * cosmetic delay without changing the durable upload outcome. */
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(3000));
             s_command_display_locked = false;
             app_ui_set_command_display_lock(false);
             pet("idle");
@@ -5778,7 +7724,7 @@ static void meeting_task(void *arg) {
             meeting_set_state(MEETING_ERROR);
             pet("alert");
             app_ui_show_text("上传未完成", "联网后将自动续传");
-            vTaskDelay(pdMS_TO_TICKS(2200));
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2200));
             s_command_display_locked = false;
             app_ui_set_command_display_lock(false);
             pet("idle");
@@ -5793,7 +7739,8 @@ finish:
      * outcome after another foreground operation owns the slot. */
     if (!resume_only) (void)operation_context_commit_terminal(operation_generation);
     taskENTER_CRITICAL(&s_task_state_lock);
-    s_meeting_task = NULL;
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    if (s_meeting_task == self) s_meeting_task = NULL;
     s_meeting_task_running = false;
     device_power_lease_t meeting_lease = s_meeting_power_lease;
     s_meeting_power_lease = DEVICE_POWER_LEASE_INVALID;
@@ -5806,8 +7753,70 @@ finish:
         app_ui_set_command_display_lock(false);
         if (s_interaction_lock) xSemaphoreGive(s_interaction_lock);
     }
+    meeting_task_set_active_http_client(NULL);
+    if (s_meeting_task_stopped) xSemaphoreGive(s_meeting_task_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_AUDIO,
+                                                 (void *)self, 10);
     schedule_wake_restart();
     vTaskDelete(NULL);
+}
+
+static esp_err_t stop_meeting_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_task_stop_requested = true;
+    task = s_meeting_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    /* The meeting worker owns the audio stream mutex.  Do not release it from
+     * this coordinator: FreeRTOS mutex ownership is task-local and a cross-
+     * task give would corrupt the next foreground capture.  The worker checks
+     * the token after its bounded read and releases the stream itself. */
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    const uint32_t cancel_guard_ms = remaining_ms > 100 ? 100 : remaining_ms;
+    if (s_meeting_task_client_mutex && cancel_guard_ms != 0 &&
+        xSemaphoreTake(s_meeting_task_client_mutex, pdMS_TO_TICKS(cancel_guard_ms)) == pdTRUE) {
+        esp_http_client_handle_t client = s_meeting_task_active_client;
+        if (client) {
+            esp_err_t cancel_err = esp_http_client_cancel_request(client);
+            if (cancel_err != ESP_OK) {
+                ESP_LOGW(TAG, "meeting HTTP cancel failed: %s", esp_err_to_name(cancel_err));
+            }
+        }
+        xSemaphoreGive(s_meeting_task_client_mutex);
+    }
+    if (device_connectivity_is_active_cellular() &&
+        device_connectivity_cancel_cellular_requests_for_owner((const void *)task)) {
+        ESP_LOGI(TAG, "meeting ML307 HTTP request cancellation requested");
+    }
+    if (s_meeting_task_start_gate) xSemaphoreGive(s_meeting_task_start_gate);
+    xTaskNotifyGive(task);
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_meeting_task_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_meeting_task_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_AUDIO, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "meeting worker stopped; retained audio remains resumable");
+    return ESP_OK;
+}
+
+static esp_err_t stop_meeting_task_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_meeting_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_meeting_task(timeout_ms);
 }
 
 static bool start_meeting_task(bool resume_only) {
@@ -5829,6 +7838,17 @@ static bool start_meeting_task(bool resume_only) {
         return false;
     }
     s_meeting_task_running = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!s_meeting_task_start_gate || !s_meeting_task_stopped || !s_meeting_task_client_mutex) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_task_running = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "meeting task lifecycle primitives unavailable");
+        return false;
+    }
+    while (xSemaphoreTake(s_meeting_task_stopped, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_task_stop_requested = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (!resume_only && (!s_interaction_lock || xSemaphoreTake(s_interaction_lock, pdMS_TO_TICKS(1500)) != pdTRUE)) {
         ESP_LOGI(TAG, "meeting start deferred: foreground interaction owns the lock");
@@ -5917,59 +7937,177 @@ static bool start_meeting_task(bool resume_only) {
         log_heap_snapshot("meeting-task-create-fail");
         return false;
     }
-    xTaskNotifyGive(handle);
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_AUDIO,
+        .name = "meeting_worker",
+        .context = (void *)handle,
+        .stop = stop_meeting_task_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register meeting worker: %s", esp_err_to_name(registry_err));
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_task_stop_requested = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        xSemaphoreGive(s_meeting_task_start_gate);
+        (void)stop_meeting_task(500);
+        return false;
+    }
+    xSemaphoreGive(s_meeting_task_start_gate);
     return true;
 }
 
-// A Hub can be upgraded while the watch remains online.  Meeting capability is
+static bool meeting_capability_refresh_stop_requested(void) {
+    bool requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    requested = s_meeting_capability_refresh_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return requested;
+}
+
+// A Hub can be upgraded while the watch remains online. Meeting capability is
 // negotiated during handshake, so do not make the user reboot the device just
-// because it still holds an older, capability-less response in RAM.  The
+// because it still holds an older, capability-less response in RAM. The
 // refresh runs outside the input scan task because TLS can take several
 // seconds; after a successful refresh it retries the original double-tap.
+//
+// It is deliberately a small CONNECTIVITY owner rather than a disguised
+// meeting-worker owner: stopping it cancels only its one handshake/retry pass.
+// A meeting task it has already started retains its independent NVS/audio/HTTP
+// recovery contract and is never force-deleted by this lifecycle slice.
 static void meeting_capability_refresh_task(void *arg) {
     (void)arg;
+    if (!s_meeting_capability_refresh_start_gate ||
+        xSemaphoreTake(s_meeting_capability_refresh_start_gate, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(TAG, "meeting capability refresh start gate unavailable");
+        goto finish;
+    }
+    if (meeting_capability_refresh_stop_requested()) goto finish;
     ESP_LOGI(TAG, "refreshing gateway handshake for meeting recording");
     app_ui_show_text("会议录音", "正在检查网关支持");
     esp_err_t err = gateway_handshake(false);
-    if (err == ESP_OK && s_meeting_available) {
+    if (!meeting_capability_refresh_stop_requested() && err == ESP_OK && s_meeting_available) {
         // A just-finished touch/voice action can still own the foreground
         // mutex for a moment.  This task is deliberately off the input scan
         // path, so wait and retry instead of turning that harmless race into
         // a visible recording failure.
         bool started = false;
-        for (unsigned retry = 0; retry < 32 && !started; ++retry) {
+        for (unsigned retry = 0; retry < 32 && !started &&
+                                  !meeting_capability_refresh_stop_requested(); ++retry) {
             started = start_meeting_task(false);
             if (!started) {
                 if (retry == 0) {
                     app_ui_show_text("会议录音", "正在等待设备就绪");
                 }
-                vTaskDelay(pdMS_TO_TICKS(250));
+                (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
             }
         }
-        if (!started) {
+        if (!started && !meeting_capability_refresh_stop_requested()) {
             pet("alert");
             char meeting_retry_hint[72];
             snprintf(meeting_retry_hint, sizeof(meeting_retry_hint),
                      "请稍后再次双击%s", device_input_primary_interaction_label());
             app_ui_show_text("录音启动失败", meeting_retry_hint);
         }
-    } else {
+    } else if (!meeting_capability_refresh_stop_requested()) {
         ESP_LOGW(TAG, "meeting capability refresh failed: err=%s available=%s",
                  esp_err_to_name(err), s_meeting_available ? "yes" : "no");
         pet("alert");
         app_ui_show_text("会议录音不可用", "请检查网关连接");
     }
+finish:
     taskENTER_CRITICAL(&s_task_state_lock);
-    s_meeting_capability_refresh_task = NULL;
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    if (s_meeting_capability_refresh_task == self) {
+        s_meeting_capability_refresh_task = NULL;
+    }
+    s_meeting_capability_refresh_starting = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_meeting_capability_refresh_stopped) {
+        xSemaphoreGive(s_meeting_capability_refresh_stopped);
+    }
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                                 (void *)self, 10);
     vTaskDeleteWithCaps(NULL);
+}
+
+static esp_err_t stop_meeting_capability_refresh_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_capability_refresh_stop_requested = true;
+    task = s_meeting_capability_refresh_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+
+    /* The refresh uses the normal HTTP lane, but publishes its active ESP
+     * client only for the perform interval. Hold the guard through cancel so
+     * request cleanup cannot race a stale client pointer. */
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    const uint32_t cancel_guard_ms = remaining_ms > 100 ? 100 : remaining_ms;
+    if (s_meeting_capability_refresh_client_mutex && cancel_guard_ms != 0 &&
+        xSemaphoreTake(s_meeting_capability_refresh_client_mutex,
+                       pdMS_TO_TICKS(cancel_guard_ms)) == pdTRUE) {
+        esp_http_client_handle_t client = s_meeting_capability_refresh_active_client;
+        if (client) {
+            esp_err_t cancel_err = esp_http_client_cancel_request(client);
+            if (cancel_err != ESP_OK) {
+                ESP_LOGW(TAG, "meeting capability refresh HTTP cancel returned: %s",
+                         esp_err_to_name(cancel_err));
+            }
+        }
+        xSemaphoreGive(s_meeting_capability_refresh_client_mutex);
+    }
+    xTaskNotifyGive(task);
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_meeting_capability_refresh_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_meeting_capability_refresh_stopped,
+                       pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "meeting capability refresh stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_meeting_capability_refresh_registry_entry(void *context,
+                                                                  uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_meeting_capability_refresh_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_meeting_capability_refresh_task(timeout_ms);
 }
 
 static bool refresh_meeting_capability(void) {
     taskENTER_CRITICAL(&s_task_state_lock);
-    bool already_refreshing = s_meeting_capability_refresh_task != NULL;
+    bool already_refreshing = s_meeting_capability_refresh_task != NULL ||
+                              s_meeting_capability_refresh_starting;
+    if (!already_refreshing) s_meeting_capability_refresh_starting = true;
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (already_refreshing) return true;
+    if (!s_meeting_capability_refresh_start_gate ||
+        !s_meeting_capability_refresh_stopped ||
+        !s_meeting_capability_refresh_client_mutex) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_capability_refresh_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "meeting capability refresh lifecycle primitives unavailable");
+        return false;
+    }
+    while (xSemaphoreTake(s_meeting_capability_refresh_stopped, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_capability_refresh_stop_requested = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     TaskHandle_t handle = NULL;
     // gateway_handshake() persists fresh ambient data in NVS.  Flash writes
     // temporarily disable the cache, so this task's stack must remain in
@@ -5980,11 +8118,30 @@ static bool refresh_meeting_capability(void) {
                                      &handle);
     taskENTER_CRITICAL(&s_task_state_lock);
     s_meeting_capability_refresh_task = created == pdPASS ? handle : NULL;
+    if (created != pdPASS) s_meeting_capability_refresh_starting = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (created != pdPASS) {
         ESP_LOGE(TAG, "cannot start meeting capability refresh task");
         return false;
     }
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
+        .name = "meeting_capability_refresh",
+        .context = (void *)handle,
+        .stop = stop_meeting_capability_refresh_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register meeting capability refresh: %s",
+                 esp_err_to_name(registry_err));
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_capability_refresh_stop_requested = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        xSemaphoreGive(s_meeting_capability_refresh_start_gate);
+        (void)stop_meeting_capability_refresh_task(500);
+        return false;
+    }
+    xSemaphoreGive(s_meeting_capability_refresh_start_gate);
     return true;
 }
 
@@ -5996,7 +8153,12 @@ static void interaction_task(void *arg) {
      * token. The creator releases this one-shot gate only after publishing
      * the handle under the same lock. Later notifications retain their normal
      * result/progress/cancellation meaning. */
-    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (!s_interaction_start_gate ||
+        xSemaphoreTake(s_interaction_start_gate, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(TAG, "interaction start gate unavailable");
+        goto finish;
+    }
+    if (interaction_stop_requested()) goto finish;
     int64_t interaction_started_us = esp_timer_get_time();
     // The wake-phrase path creates this worker from inside MultiNet, while a
     // panel tap unloads it before task creation. Converge both paths here so
@@ -6018,9 +8180,13 @@ static void interaction_task(void *arg) {
     ESP_LOGI(TAG, "voice capture complete: generation=%lu err=%s wav=%u elapsed=%lldms",
              (unsigned long)interaction_generation, esp_err_to_name(err), (unsigned)wav_len,
              (long long)((esp_timer_get_time() - interaction_started_us) / 1000));
+    if (interaction_stop_requested()) {
+        device_audio_release_captured_wav(wav);
+        goto finish;
+    }
     if (command_cancel_requested_for(interaction_generation)) {
         app_ui_set_recording_visual(false, false, 0);
-        free(wav);
+        device_audio_release_captured_wav(wav);
         finish_cancelled_command(interaction_generation);
         return;
     }
@@ -6031,7 +8197,7 @@ static void interaction_task(void *arg) {
         if (err == ESP_ERR_NOT_FOUND) {
             app_ui_set_recording_visual(false, false, 0);
             app_ui_show_text("未检测到语音", "请再试一次");
-            free(wav);
+            device_audio_release_captured_wav(wav);
             finish_interaction_message(interaction_generation, 1400);
             return;
         }
@@ -6042,14 +8208,14 @@ static void interaction_task(void *arg) {
         pet("alert");
         app_ui_set_recording_visual(false, false, 0);
         app_ui_show_text("麦克风不可用", "请稍后再试");
-        free(wav);
+        device_audio_release_captured_wav(wav);
         finish_interaction_message(interaction_generation, 1800);
         return;
     }
     if (!s_gateway_token[0]) {
         app_ui_show_text("设备配对", "请说出六位配对码");
         err = pair_by_voice(wav, wav_len);
-        free(wav);
+        device_audio_release_captured_wav(wav);
         if (err == ESP_OK && gateway_handshake(false) == ESP_OK) {
             if (ensure_gateway_poll_task()) {
                 pet("done");
@@ -6097,9 +8263,20 @@ static void interaction_task(void *arg) {
     // server-side reply wait. Do not switch the shared I2S bus to playback
     // here: on EchoEar it races the just-stopped microphone DMA and resets
     // the CPU. The thinking screen is the immediate acknowledgement.
+    // A cancel that arrived during capture must not still upload the audio.
+    if (interaction_stop_requested()) {
+        device_audio_release_captured_wav(wav);
+        goto finish;
+    }
+    if (command_cancel_requested_for(interaction_generation)) {
+        device_audio_release_captured_wav(wav);
+        finish_cancelled_command(interaction_generation);
+        return;
+    }
     err = upload_voice(wav, wav_len, media_id, sizeof(media_id));
     if (err == ESP_OK) s_command_timing_upload_done_us = esp_timer_get_time();
-    free(wav);
+    device_audio_release_captured_wav(wav);
+    if (interaction_stop_requested()) goto finish;
     if (command_cancel_requested_for(interaction_generation)) { finish_cancelled_command(interaction_generation); return; }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "voice media upload failed: %s (0x%x)",
@@ -6115,6 +8292,7 @@ static void interaction_task(void *arg) {
     snprintf(command_event_id, sizeof(command_event_id), "voice-%lld",
              (long long)esp_timer_get_time());
     for (unsigned attempt = 1; attempt <= COMMAND_SUBMIT_RETRY_COUNT; ++attempt) {
+        if (interaction_stop_requested()) goto finish;
         err = send_voice_event(media_id, command_event_id, reply_to, sizeof(reply_to));
         if (err == ESP_OK || command_cancel_requested_for(interaction_generation)) break;
         ESP_LOGW(TAG, "voice command submit attempt %u/%u failed: %s",
@@ -6123,7 +8301,7 @@ static void interaction_task(void *arg) {
             // Reuse the idempotency key. If the Hub accepted an attempt but
             // its response was lost, the retry resolves the same command
             // instead of starting a duplicate Agent task.
-            vTaskDelay(pdMS_TO_TICKS(500u << (attempt - 1u)));
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500u << (attempt - 1u)));
         }
     }
     if (err == ESP_OK && !reply_to[0]) {
@@ -6142,6 +8320,7 @@ static void interaction_task(void *arg) {
         strlcpy(s_active_command_reply_to, reply_to, sizeof(s_active_command_reply_to));
     }
     taskEXIT_CRITICAL(&s_task_state_lock);
+    if (interaction_stop_requested()) goto finish;
     if (command_cancel_requested_for(interaction_generation)) { finish_cancelled_command(interaction_generation); return; }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "voice command submit failed: %s (0x%x)",
@@ -6158,6 +8337,7 @@ static void interaction_task(void *arg) {
     // or the user explicitly cancels it. Refresh the message periodically so
     // the device never looks stalled while the remote Agent is still working.
     while (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(COMMAND_RESULT_PROGRESS_MS)) == 0) {
+        if (interaction_stop_requested()) goto finish;
         if (command_cancel_requested_for(interaction_generation)) break;
         // Keep the animated thinking surface intact. This is a state
         // reassertion, not a full-screen refresh; unchanged labels do no LCD IO.
@@ -6167,6 +8347,7 @@ static void interaction_task(void *arg) {
         ESP_LOGI(TAG, "remote wait detail: replyTo=%s elapsed=%lldms",
                  reply_to, (long long)((esp_timer_get_time() - interaction_started_us) / 1000));
     }
+    if (interaction_stop_requested()) goto finish;
     if (command_cancel_requested_for(interaction_generation)) { finish_cancelled_command(interaction_generation); return; }
     // The poller has already painted the final reply in the speaking state.
     // Returning through done/idle immediately after the notification repaints
@@ -6174,6 +8355,73 @@ static void interaction_task(void *arg) {
     // Leave the response visible until the next user interaction or a later
     // server state update explicitly changes it.
     finish_interaction_task(interaction_generation);
+
+finish:
+    /* The standard finish helper owns the operation/power/foreground token.
+     * Use it for every lifecycle stop too, but avoid drawing a terminal UI
+     * from a rollback path. */
+    finish_interaction_task_with_surface(interaction_generation, false);
+}
+
+static esp_err_t stop_interaction_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    uint32_t generation = 0;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_interaction_stop_requested = true;
+    task = s_interaction_task;
+    generation = s_interaction_generation;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+
+    /* Capture observes this board-neutral cooperative request at its next
+     * bounded read. It is safe from the input, rollback, or registry task;
+     * the actual stream mutex remains owned and released by the worker. */
+    device_audio_request_capture_stop();
+    (void)operation_context_request_cancel(generation);
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    const uint32_t cancel_guard_ms = remaining_ms > 100 ? 100 : remaining_ms;
+    if (s_foreground_http_client_mutex && cancel_guard_ms != 0 &&
+        xSemaphoreTake(s_foreground_http_client_mutex, pdMS_TO_TICKS(cancel_guard_ms)) == pdTRUE) {
+        esp_http_client_handle_t client = s_foreground_http_client;
+        if (client) {
+            esp_err_t cancel_err = esp_http_client_cancel_request(client);
+            if (cancel_err != ESP_OK) {
+                ESP_LOGW(TAG, "interaction HTTP cancel failed: %s", esp_err_to_name(cancel_err));
+            }
+        }
+        xSemaphoreGive(s_foreground_http_client_mutex);
+    }
+    if (device_connectivity_is_active_cellular()) {
+        (void)device_connectivity_cancel_cellular_foreground_request();
+    }
+    if (s_interaction_start_gate) xSemaphoreGive(s_interaction_start_gate);
+    xTaskNotifyGive(task);
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_interaction_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_interaction_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_INTERACTION, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "foreground interaction worker stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_interaction_task_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_interaction_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_interaction_task(timeout_ms);
 }
 
 static bool start_voice_interaction(bool physical_screen_wake) {
@@ -6190,10 +8438,10 @@ static bool start_voice_interaction(bool physical_screen_wake) {
         return false;
     }
     bool network_available = device_connectivity_is_active_uplink_ready();
-    if (s_setup_portal_active || !s_gateway_token[0] || !network_available) {
+    if (device_connectivity_is_provisioning_active() || !s_gateway_token[0] || !network_available) {
         ESP_LOGW(TAG,
                  "voice interaction rejected before capture: setup=%s paired=%s network=%s",
-                 s_setup_portal_active ? "active" : "inactive",
+                 device_connectivity_is_provisioning_active() ? "active" : "inactive",
                  s_gateway_token[0] ? "yes" : "no",
                  network_available ? "connected" : "offline");
         app_ui_show_text("暂时无法说话",
@@ -6235,17 +8483,6 @@ static bool start_voice_interaction(bool physical_screen_wake) {
                  (int)lease_status);
         return false;
     }
-    if (physical_screen_wake) {
-        // MultiNet leaves the largest internal block below this worker's 10 KiB
-        // stack requirement. A physical tap can safely release the model here;
-        // wake-phrase entry instead releases it inside interaction_task().
-        esp_err_t wake_stop_err = audio_wake_word_stop();
-        if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "offline wake stop before voice task: %s",
-                     esp_err_to_name(wake_stop_err));
-        }
-        log_heap_snapshot("voice-before-task-create");
-    }
     s_foreground_http_requested = true;
     s_command_display_locked = true;
     s_command_timing_started_us = esp_timer_get_time();
@@ -6275,9 +8512,39 @@ static bool start_voice_interaction(bool physical_screen_wake) {
     ESP_LOGI(TAG, "voice operation started: id=%llu generation=%lu",
              (unsigned long long)operation.operation_id,
              (unsigned long)interaction_generation);
+    if (physical_screen_wake) {
+        // MultiNet leaves the largest internal block below this worker's 10 KiB
+        // stack requirement. A physical tap can safely release the model here;
+        // wake-phrase entry instead releases it inside interaction_task().
+        // RECORDING was already published above, so a stop press during this
+        // teardown window is routed to the new capture's stop flag instead of
+        // being silently swallowed while the phase still looked idle.
+        esp_err_t wake_stop_err = audio_wake_word_stop();
+        if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "offline wake stop before voice task: %s",
+                     esp_err_to_name(wake_stop_err));
+        }
+        log_heap_snapshot("voice-before-task-create");
+    }
     if (s_command_cancel_ui_ready) {
         while (xSemaphoreTake(s_command_cancel_ui_ready, 0) == pdTRUE) {}
     }
+    if (!s_interaction_start_gate || !s_interaction_stopped) {
+        device_power_lease_release(interaction_lease);
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_interaction_power_lease = DEVICE_POWER_LEASE_INVALID;
+        s_interaction_phase = INTERACTION_RESULT;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        (void)operation_context_commit_terminal(interaction_generation);
+        xSemaphoreGive(s_interaction_lock);
+        ESP_LOGE(TAG, "interaction lifecycle primitives unavailable");
+        return false;
+    }
+    while (xSemaphoreTake(s_interaction_stopped, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_interaction_stop_requested = false;
+    s_interaction_starting = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     app_ui_set_command_display_lock(true);
     app_ui_cancel_ready_prompt();
     TaskHandle_t created_handle = NULL;
@@ -6299,6 +8566,7 @@ static bool start_voice_interaction(bool physical_screen_wake) {
         taskENTER_CRITICAL(&s_task_state_lock);
         s_interaction_power_lease = DEVICE_POWER_LEASE_INVALID;
         s_interaction_phase = INTERACTION_RESULT;
+        s_interaction_starting = false;
         taskEXIT_CRITICAL(&s_task_state_lock);
         (void)operation_context_commit_terminal(interaction_generation);
         log_heap_snapshot("interaction-task-create-fail");
@@ -6308,10 +8576,27 @@ static bool start_voice_interaction(bool physical_screen_wake) {
         app_ui_show_text("操作失败", "无法启动语音任务");
         return false;
     }
-    // Release only after the task handle is visible to cancellation, reply
-    // correlation and the completion path. This establishes one owner per
-    // interaction generation before the worker can cause side effects.
-    xTaskNotifyGive(created_handle);
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_INTERACTION,
+        .name = "foreground_interaction",
+        .context = (void *)created_handle,
+        .stop = stop_interaction_task_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register foreground interaction: %s",
+                 esp_err_to_name(registry_err));
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_interaction_stop_requested = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        xSemaphoreGive(s_interaction_start_gate);
+        (void)stop_interaction_task(500);
+        return false;
+    }
+    // Release only after the task handle and Registry identity are visible to
+    // cancellation/reply correlation. No worker side effect can escape this
+    // task's lifecycle contract during the create-to-register window.
+    xSemaphoreGive(s_interaction_start_gate);
     return true;
 }
 
@@ -6328,9 +8613,9 @@ static void on_wake_word(void *arg) {
         return;
     }
     bool network_available = device_connectivity_is_active_uplink_ready();
-    if (s_setup_portal_active || !s_gateway_token[0] || !network_available) {
+    if (device_connectivity_is_provisioning_active() || !s_gateway_token[0] || !network_available) {
         ESP_LOGW(TAG, "offline wake detected but online interaction is unavailable: setup=%s paired=%s network=%s",
-                 s_setup_portal_active ? "active" : "inactive",
+                 device_connectivity_is_provisioning_active() ? "active" : "inactive",
                  s_gateway_token[0] ? "yes" : "no",
                  network_available ? "connected" : "offline");
         // Recognition is one-shot on EchoEar: the model is released before
@@ -6359,21 +8644,131 @@ static void enter_setup_portal(void) {
     start_setup_portal(true);
 }
 
-static bool s_deferred_setup_running;
+static bool deferred_setup_stop_requested(void) {
+    bool requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    requested = s_deferred_setup_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return requested;
+}
 
 static void deferred_setup_task(void *arg) {
     (void)arg;
+    if (!s_deferred_setup_start_gate ||
+        xSemaphoreTake(s_deferred_setup_start_gate, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(TAG, "deferred setup start gate unavailable");
+        goto finish;
+    }
     /* The setup operation changes Wi-Fi mode, starts HTTP/DNS tasks and paints
      * a QR page. Always run it outside the hardware button task so the GPIO
      * scanner stays responsive and networking callbacks can make progress. */
     int64_t deadline = esp_timer_get_time() + 5000000;
-    while (meeting_is_active() && esp_timer_get_time() < deadline) {
-        vTaskDelay(pdMS_TO_TICKS(100));
+    while (!deferred_setup_stop_requested() && meeting_is_active() &&
+           esp_timer_get_time() < deadline) {
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
     }
+    if (deferred_setup_stop_requested()) goto finish;
     ESP_LOGI(TAG, "deferred configuration portal starting");
     enter_setup_portal();
-    s_deferred_setup_running = false;
+finish:
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_deferred_setup_task == self) s_deferred_setup_task = NULL;
+    s_deferred_setup_starting = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_deferred_setup_stopped) xSemaphoreGive(s_deferred_setup_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                                 (void *)self, 10);
     vTaskDelete(NULL);
+}
+
+static esp_err_t stop_deferred_setup_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_deferred_setup_stop_requested = true;
+    task = s_deferred_setup_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    /* A registry stop can race the creator between registration and releasing
+     * the start gate. Release it here as well so the worker observes the stop
+     * token rather than stranding the join on its initial semaphore wait. */
+    if (s_deferred_setup_start_gate) xSemaphoreGive(s_deferred_setup_start_gate);
+    xTaskNotifyGive(task);
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_deferred_setup_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_deferred_setup_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "deferred setup coordinator stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_deferred_setup_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_deferred_setup_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_deferred_setup_task(timeout_ms);
+}
+
+static bool start_deferred_setup_task(void) {
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool already_starting = s_deferred_setup_task != NULL || s_deferred_setup_starting;
+    if (!already_starting) s_deferred_setup_starting = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (already_starting) return true;
+    if (!s_deferred_setup_start_gate || !s_deferred_setup_stopped) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_deferred_setup_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "deferred setup lifecycle primitives unavailable");
+        return false;
+    }
+    while (xSemaphoreTake(s_deferred_setup_stopped, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_deferred_setup_stop_requested = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    TaskHandle_t task = NULL;
+    if (xTaskCreate(deferred_setup_task, "maclaw_setup_wait", 12288, NULL, 5, &task) != pdPASS) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_deferred_setup_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "cannot create configuration portal worker");
+        return false;
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_deferred_setup_task = task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
+        .name = "deferred_setup",
+        .context = (void *)task,
+        .stop = stop_deferred_setup_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register deferred setup coordinator: %s",
+                 esp_err_to_name(registry_err));
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_deferred_setup_stop_requested = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        xSemaphoreGive(s_deferred_setup_start_gate);
+        (void)stop_deferred_setup_task(500);
+        return false;
+    }
+    xSemaphoreGive(s_deferred_setup_start_gate);
+    return true;
 }
 
 // Alarm ringing is a local safety-critical foreground owner. The scheduler
@@ -6404,7 +8799,8 @@ static void on_fall_detection_event(fall_detection_event_t event, void *arg) {
 static void on_app_intent(const app_intent_event_t *event, void *arg) {
     (void)arg;
     if (!event || event->struct_size != sizeof(*event) ||
-        event->abi_version != APP_INTENT_ABI_VERSION) {
+        event->abi_version != APP_INTENT_ABI_VERSION ||
+        event->input_generation == 0) {
         ESP_LOGW(TAG, "discarded invalid app intent event");
         return;
     }
@@ -6413,6 +8809,12 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
     bool primary_interaction_source = event->primary_interaction_source;
     static bool suppress_alarm_dismiss_gesture;
     static device_input_source_t alarm_dismiss_source = DEVICE_INPUT_SOURCE_UNKNOWN;
+    /* DISPLAY_OFF is exited on a physical down edge, while the input adapter
+     * will still subsequently publish the completed short/double/long
+     * gesture for that same contact.  Remember its source so waking the panel
+     * cannot fall through into voice capture when the gesture completes. */
+    static bool suppress_display_wake_gesture;
+    static device_input_source_t display_wake_source = DEVICE_INPUT_SOURCE_UNKNOWN;
 
     /* DISPLAY_OFF is a presentation-only state.  Consume the very first
      * primary contact at the shared business boundary, before any recorder or
@@ -6422,9 +8824,33 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
      * controls follow the same wake-then-act contract. */
     if (primary_interaction_source && app_ui_wake_from_idle()) {
         sleep_schedule_service_note_manual_wake();
+        suppress_display_wake_gesture = true;
+        display_wake_source = source;
         ESP_LOGI(TAG, "primary interaction consumed as display wake: source=%d action=%d",
                  (int)source, (int)action);
         return;
+    }
+
+    /* Consume the completed gesture emitted for the interaction that woke the
+     * display.  Keep the barrier armed across every contact-down: a first
+     * interaction can be a double tap/click, whose second down edge arrives
+     * before the scanner emits its final SECONDARY action.  Clearing on that
+     * edge would make a wake double-tap start a meeting/command. This keeps
+     * the contract identical for touch, Bread/Fangtang's activation key, and
+     * future primary controls: one whole initial gesture wakes only; the next
+     * completed, deliberate gesture may invoke a command. */
+    if (suppress_display_wake_gesture && source == display_wake_source) {
+        if (action == APP_INTENT_PRIMARY_CONTACT_DOWN ||
+            action == APP_INTENT_AUXILIARY_CONTACT_DOWN) {
+            ESP_LOGD(TAG, "display-wake contact retained until gesture completes: source=%d",
+                     (int)source);
+        } else {
+            suppress_display_wake_gesture = false;
+            display_wake_source = DEVICE_INPUT_SOURCE_UNKNOWN;
+            ESP_LOGI(TAG, "completed display-wake gesture consumed: source=%d action=%d",
+                     (int)source, (int)action);
+            return;
+        }
     }
 
     /* A suspected-fall prompt is a local safety surface.  Accept the normal
@@ -6440,6 +8866,16 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
     }
 
     if (s_command_capture_stop_gesture_pending &&
+        esp_timer_get_time() >= (int64_t)s_command_capture_stop_gesture_deadline_us) {
+        /* A malformed/aborted physical contact must not leave the old
+         * completion barrier armed indefinitely.  The next activation is a
+         * new user gesture and must retain its normal command semantics. */
+        s_command_capture_stop_gesture_pending = false;
+        s_command_capture_stop_source = DEVICE_INPUT_SOURCE_UNKNOWN;
+        s_command_capture_stop_gesture_deadline_us = 0;
+        ESP_LOGW(TAG, "command-capture stop gesture barrier expired");
+    }
+    if (s_command_capture_stop_gesture_pending &&
         source == s_command_capture_stop_source) {
         if (action == APP_INTENT_PRIMARY_CONTACT_DOWN ||
             action == APP_INTENT_AUXILIARY_CONTACT_DOWN) {
@@ -6447,6 +8883,7 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
             // contact. Admit it normally after retiring the old barrier.
             s_command_capture_stop_gesture_pending = false;
             s_command_capture_stop_source = DEVICE_INPUT_SOURCE_UNKNOWN;
+            s_command_capture_stop_gesture_deadline_us = 0;
         } else {
             ESP_LOGI(TAG, "completed command-capture stop gesture consumed");
             return;
@@ -6477,7 +8914,14 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
         // Startup owns the audio/display path until the optional greeting has
         // completed and the wake listener is loaded. Volume keys remain useful,
         // but activation gestures must not overtake this ordering boundary.
-        if (action != APP_INTENT_INCREASE_VOLUME && action != APP_INTENT_DECREASE_VOLUME) {
+        // The configuration gesture is the exception: it is the maintenance
+        // escape hatch precisely for the states that can never complete the
+        // Welcome sequence (e.g. a saved Wi-Fi password that no longer
+        // connects leaves the device on the "network unavailable" surface
+        // with the sequence unfinished), so it must always reach the handler
+        // that persists the setup request and reboots into the portal.
+        if (action != APP_INTENT_INCREASE_VOLUME && action != APP_INTENT_DECREASE_VOLUME &&
+            action != APP_INTENT_OPEN_CONFIGURATION) {
             ESP_LOGI(TAG, "input ignored until startup Welcome sequence completes");
             return;
         }
@@ -6513,6 +8957,8 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
             device_audio_request_capture_stop();
             s_command_capture_stop_gesture_pending = true;
             s_command_capture_stop_source = source;
+            s_command_capture_stop_gesture_deadline_us =
+                (uint64_t)esp_timer_get_time() + INPUT_GESTURE_DRAIN_WINDOW_US;
             ESP_LOGI(TAG, "command recording stop requested by input source=%d",
                      (int)source);
         }
@@ -6548,7 +8994,7 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
     // input as inert until the submitted form deliberately restarts the
     // device; otherwise a stray tap starts normal voice UI and repaints the
     // QR while the phone is trying to configure the AP.
-    if (s_setup_portal_active) {
+    if (device_connectivity_is_provisioning_active()) {
         ESP_LOGI(TAG, "button ignored while setup portal is active");
         return;
     }
@@ -6574,14 +9020,8 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
         if (meeting == MEETING_RECORDING || meeting == MEETING_PAUSED) {
             meeting_set_state(MEETING_FINALIZING);
         }
-        if (!s_deferred_setup_running) {
-            s_deferred_setup_running = true;
-            if (xTaskCreate(deferred_setup_task, "maclaw_setup_wait", 12288, NULL, 5, NULL) != pdPASS) {
-                s_deferred_setup_running = false;
-                ESP_LOGE(TAG, "cannot create configuration portal worker");
-            } else {
-                ESP_LOGI(TAG, "configuration portal worker created");
-            }
+        if (start_deferred_setup_task()) {
+            ESP_LOGI(TAG, "configuration portal worker created");
         }
         return;
     }
@@ -6664,6 +9104,19 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
         return;
     }
     if (action != APP_INTENT_PRIMARY_ACTIVATE) return;
+    // A completed short press during command capture requests the same stop
+    // as its down edge. Without this branch the release gesture fell through
+    // to start_voice_interaction() and was silently rejected by the
+    // interaction lock.
+    interaction_phase_t primary_phase;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    primary_phase = s_interaction_phase;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (primary_phase == INTERACTION_RECORDING) {
+        device_audio_request_capture_stop();
+        ESP_LOGI(TAG, "command recording stop requested by completed primary gesture");
+        return;
+    }
     // The result is a deliberate terminal step in the command flow. The first
     // activation press closes it and returns to the clock/date/weather screen;
     // only a later press starts a new recording. This avoids accidentally
@@ -6685,48 +9138,163 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
     // hands-free and therefore wakes the panel and records in the same event.
     (void)start_voice_interaction(true);
 }
-static void init_network_core(void) {
-    if (s_network_initialized) return;
-    s_wifi_events = xEventGroupCreate();
-    ESP_ERROR_CHECK(s_wifi_events ? ESP_OK : ESP_ERR_NO_MEM);
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+/* This is deliberately an explicit transaction rather than ESP_ERROR_CHECK:
+ * a failed cold network start must enter the composition root's degraded
+ * rollback path, not reboot into the same partial allocation indefinitely.
+ * `s_network_initialized` is published only after both ESP-NETIF and the
+ * default event loop exist, so callers never treat a partially initialized
+ * core as restartable. */
+static esp_err_t init_network_core(void) {
+    /* A full-ready bit is meaningful only while both singleton owners still
+     * exist.  A failed rollback may have released the event loop before
+     * `esp_netif_deinit()` failed; in that state `s_network_initialized`
+     * deliberately remains true for diagnostics, but it must never let a
+     * later caller use a half-dismantled core as if it were ready. */
+    if (s_network_initialized && s_netif_initialized &&
+        s_default_event_loop_created) {
+        return ESP_OK;
+    }
+    /* Do not try to create a second netif/event loop after a partial start or
+     * partial stop. The rollback owner below must first consume the recorded
+     * resources; a fresh generation here could collide with ESP-IDF's
+     * singleton netif/event-loop state. */
+    if (s_network_initialized || s_netif_initialized ||
+        s_default_event_loop_created) {
+        ESP_LOGW(TAG, "network core start rejected: prior partial generation still owns resources");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!device_connectivity_initialize()) return ESP_ERR_NO_MEM;
+
+    esp_err_t err = esp_netif_init();
+    if (err != ESP_OK) {
+        /* Connectivity's logical EventGroup has no useful lifetime without
+         * the physical netif root. Do not retain it after a failed first
+         * allocation and accidentally treat a later retry as the same Wi-Fi
+         * generation. */
+        device_status_t stop_status = device_connectivity_deinit(500);
+        if (stop_status != DEVICE_STATUS_OK) {
+            ESP_LOGW(TAG, "cannot stop Connectivity after netif init failure: %d",
+                     (int)stop_status);
+        }
+        return err;
+    }
+    s_netif_initialized = true;
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK) {
+        /* No event-loop client exists yet, but `esp_netif_init()` has an
+         * independent singleton lifetime.  Preserve the ownership flag until
+         * the common root transaction actually releases it; even a failed
+         * cleanup now remains observable and cannot be overwritten by a
+         * second init attempt. */
+        ESP_LOGW(TAG, "default event-loop init failed; rolling back recorded netif owner: %s",
+                 esp_err_to_name(err));
+        esp_err_t rollback_err = stop_connectivity_root_transaction(500);
+        if (rollback_err != ESP_OK) {
+            ESP_LOGW(TAG, "network-core rollback after event-loop init failure incomplete: %s",
+                     esp_err_to_name(rollback_err));
+        }
+        return err;
+    }
+    s_default_event_loop_created = true;
     s_network_initialized = true;
+    return ESP_OK;
 }
 
-static void init_network(void) {
-    init_network_core();
-    if (s_wifi_driver_initialized) return;
+/* Wi-Fi driver initialization is likewise a bounded transaction.  Event
+ * handlers are registered one by one by ESP-IDF, hence a later registration
+ * failure must remove each earlier instance before deinitializing the driver.
+ * This gives the cold-start rollback a truthful ownership picture. */
+static esp_err_t init_network(void) {
+    esp_err_t err = init_network_core();
+    if (err != ESP_OK) return err;
+    if (s_wifi_driver_initialized) return ESP_OK;
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     // This access point triggers an ESP-IDF 6.0.2 Wi-Fi RX timer crash after
     // the first block-ack (BA) setup.  EchoEar's command traffic is tiny, so
     // disable aggregation before driver startup for a stable station link.
     init.ampdu_rx_enable = 0;
     init.ampdu_tx_enable = 0;
-    ESP_ERROR_CHECK(esp_wifi_init(&init));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_ASSIGNED_IP_TO_CLIENT,
-                                                         wifi_event, NULL, NULL));
+    err = esp_wifi_init(&init);
+    if (err != ESP_OK) {
+        /* esp_wifi_init() is itself after the netif/event-loop transaction.
+         * Reuse the sole cold-start teardown root even though no driver flag
+         * was published, so a retry never inherits a live Connectivity
+         * EventGroup or ESP-IDF singleton core. */
+        ESP_LOGW(TAG, "Wi-Fi driver initialization failed: %s", esp_err_to_name(err));
+        esp_err_t rollback_err = stop_connectivity_root_transaction(500);
+        if (rollback_err != ESP_OK) {
+            ESP_LOGW(TAG, "network-core rollback after Wi-Fi driver init failure incomplete: %s",
+                     esp_err_to_name(rollback_err));
+        }
+        return err;
+    }
     s_wifi_driver_initialized = true;
+    err = esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL, &s_wifi_event_instance);
+    if (err != ESP_OK) goto fail;
+    err = esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL, &s_wifi_got_ip_event_instance);
+    if (err != ESP_OK) goto fail;
+    err = esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_ASSIGNED_IP_TO_CLIENT, wifi_event, NULL,
+        &s_wifi_assigned_ip_event_instance);
+    if (err != ESP_OK) goto fail;
+    /* A previous closed generation may have left a drain notification after
+     * its last callback. It belongs to that generation, never to this newly
+     * admitted set of handlers. */
+    while (s_wifi_event_callbacks_drained &&
+           xSemaphoreTake(s_wifi_event_callbacks_drained, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_wifi_event_callback_admission_open = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    s_wifi_driver_initialized = true;
+    return ESP_OK;
+
+fail:
+    /* No station/AP netif has been created at this stage.  The shared stop
+     * transaction safely removes any prior handler instances and the driver;
+     * when that cleanup succeeds it also releases the core.  If it cannot,
+     * its retained handles make the failure fail-closed rather than
+     * pretending a full runtime restart has occurred. */
+    ESP_LOGW(TAG, "Wi-Fi initialization transaction failed: %s", esp_err_to_name(err));
+    (void)stop_connectivity_root_transaction(500);
+    return err;
 }
 
 static void ensure_setup_ap_netif(void) {
     if (!s_ap_netif_created) {
         s_setup_ap_netif = esp_netif_create_default_wifi_ap();
-        s_ap_netif_created = true;
+        if (s_setup_ap_netif) s_ap_netif_created = true;
     }
 }
 
 static void ensure_station_netif(void) {
     if (!s_sta_netif_created) {
-        esp_netif_create_default_wifi_sta();
-        s_sta_netif_created = true;
+        s_sta_netif = esp_netif_create_default_wifi_sta();
+        if (s_sta_netif) s_sta_netif_created = true;
     }
 }
 
 static void setup_qrcode_display(esp_qrcode_handle_t qrcode, void *user_data) {
-    app_ui_show_qrcode(qrcode, user_data ? (const char *)user_data : NULL);
+    if (!qrcode) return;
+    const int size = esp_qrcode_get_size(qrcode);
+    if (size <= 0 || size > 177) return;
+    const size_t module_count = (size_t)size * (size_t)size;
+    uint8_t *modules = malloc(module_count);
+    if (!modules) {
+        ESP_LOGW(TAG, "cannot allocate setup QR module matrix");
+        return;
+    }
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            modules[(size_t)y * (size_t)size + (size_t)x] =
+                esp_qrcode_get_module(qrcode, x, y) ? 1u : 0u;
+        }
+    }
+    const bool shown = app_ui_show_qrcode_modules(
+        modules, module_count, user_data ? (const char *)user_data : NULL);
+    free(modules);
+    if (!shown) ESP_LOGW(TAG, "cannot publish setup QR module matrix");
 }
 
 static void show_setup_qrcode(const char *ssid) {
@@ -6942,16 +9510,21 @@ static bool refresh_setup_ssid_options(void) {
     return refreshed;
 }
 
-static void configure_setup_ap_ip(void) {
-    if (!s_setup_ap_netif) return;
+/* The captive DNS worker may successfully bind while the AP's DHCP service is
+ * still misconfigured.  Treat the entire IP/DHCP advertisement as one
+ * prerequisite: the portal must not subsequently start a radio that hands
+ * clients a stale resolver or no gateway. */
+static esp_err_t configure_setup_ap_ip(void) {
+    if (!s_setup_ap_netif) return ESP_ERR_INVALID_STATE;
     esp_netif_ip_info_t ip_info = {0};
     IP4_ADDR(&ip_info.ip, 192, 168, 4, 1);
     IP4_ADDR(&ip_info.gw, 192, 168, 4, 1);
     IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
     esp_err_t stop_err = esp_netif_dhcps_stop(s_setup_ap_netif);
     if (stop_err != ESP_OK && stop_err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
-        ESP_LOGW(TAG, "cannot pause DHCP server to configure setup IP: %s", esp_err_to_name(stop_err));
-        return;
+        ESP_LOGW(TAG, "cannot pause DHCP server to configure setup IP: %s",
+                 esp_err_to_name(stop_err));
+        return stop_err;
     }
     esp_err_t ip_err = esp_netif_set_ip_info(s_setup_ap_netif, &ip_info);
     // Explicitly advertise the SoftAP as DNS. On IDF 6 the DHCP server can
@@ -6984,53 +9557,129 @@ static void configure_setup_ap_ip(void) {
         ESP_LOGW(TAG, "cannot configure setup DHCP server: ip=%s dns=%s portal=%s start=%s",
                  esp_err_to_name(ip_err), esp_err_to_name(dns_err),
                  esp_err_to_name(portal_uri_err), esp_err_to_name(start_err));
+        if (ip_err != ESP_OK) return ip_err;
+        if (dns_err != ESP_OK) return dns_err;
+        if (portal_uri_err != ESP_OK) return portal_uri_err;
+        return start_err;
     } else {
         ESP_LOGI(TAG, "setup DHCP advertises gateway/DNS/portal=%s", SETUP_CAPTIVE_PORTAL_URI);
     }
+    return ESP_OK;
 }
 
 static void dns_server_task(void *arg) {
     (void)arg;
+    /* The task is created before it is entered in Task Registry.  Keep it
+     * dormant until the entry is published so a rollback never races an
+     * untracked DNS socket with portal/AP teardown. */
+    if (!s_dns_start_gate ||
+        xSemaphoreTake(s_dns_start_gate, portMAX_DELAY) != pdTRUE) {
+        TaskHandle_t self = xTaskGetCurrentTaskHandle();
+        taskENTER_CRITICAL(&s_task_state_lock);
+        if (s_dns_task == self) s_dns_task = NULL;
+        s_dns_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (s_dns_stopped) xSemaphoreGive(s_dns_stopped);
+        vTaskDelete(NULL);
+        return;
+    }
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    bool ready_published = false;
     int socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (socket_fd < 0) {
         ESP_LOGE(TAG, "cannot create captive DNS socket: errno=%d", errno);
-        s_dns_task = NULL;
-        vTaskDelete(NULL);
-        return;
+        goto finish;
     }
     struct sockaddr_in address = {
         .sin_family = AF_INET,
         .sin_port = htons(DNS_PORT),
         .sin_addr.s_addr = htonl(INADDR_ANY),
     };
-    struct timeval receive_timeout = {.tv_sec = 1, .tv_usec = 0};
+    /* Bounded receive is the DNS worker's cancellation safe point.  Do not
+     * close the descriptor from another task: lwIP socket ownership stays with
+     * this worker until it has left recvfrom() and completed its join. */
+    struct timeval receive_timeout = {.tv_sec = 0, .tv_usec = 100000};
     (void)setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
     if (bind(socket_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         ESP_LOGE(TAG, "cannot bind captive DNS socket: errno=%d", errno);
-        close(socket_fd);
-        s_dns_task = NULL;
-        vTaskDelete(NULL);
-        return;
+        goto finish;
     }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_dns_ready_success = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_dns_ready) xSemaphoreGive(s_dns_ready);
+    ready_published = true;
     ESP_LOGI(TAG, "captive DNS is answering all hostnames at %s", SETUP_AP_IP_ADDR);
-    while (s_setup_portal_active) {
+    while (device_connectivity_is_provisioning_active()) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        bool stop_requested = s_dns_stop_requested;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (stop_requested) break;
         uint8_t packet[DNS_PACKET_CAPACITY];
         struct sockaddr_in source = {0};
         socklen_t source_len = sizeof(source);
         int received = recvfrom(socket_fd, packet, sizeof(packet), 0,
                                 (struct sockaddr *)&source, &source_len);
-        if (received < 12 || received + 16 > sizeof(packet)) continue;
-        // Match the proven reference implementation: reply to every DNS
-        // question with the portal address.  Phones often send HTTPS, AAAA,
-        // and A probes together; treating every request uniformly prevents an
-        // early non-A lookup from delaying captive-network detection.
-        size_t cursor = (size_t)received;
-        packet[2] |= 0x80;
-        packet[3] |= 0x80;
-        packet[6] = 0;
-        packet[7] = 1;
+        if (received < 12) continue;
+        // This responder is authoritative only for ordinary DNS queries. Do
+        // not turn a malformed response, UPDATE, or another opcode into a
+        // seemingly valid captive-portal response.
+        if ((packet[2] & 0x80) || (packet[2] & 0x78) ||
+            packet[4] != 0 || packet[5] != 1) {
+            continue;
+        }
+        // Locate the end of the first question. The answer MUST be appended
+        // immediately after the question section: modern phones attach an EDNS
+        // OPT record (ARCOUNT=1) to their queries, and replying after those
+        // trailing bytes makes resolvers parse the OPT record as the answer,
+        // so the captive-probe hostname never resolves and no portal pops up.
+        size_t question_end = 12;
+        while (question_end < (size_t)received && packet[question_end] != 0) {
+            const uint8_t label_len = packet[question_end];
+            // DNS labels are limited to 63 octets.  The two high bits encode
+            // compression/reserved forms, which this one-question responder
+            // deliberately does not accept in client queries.
+            if (label_len > 63 ||
+                question_end + 1u + label_len >= (size_t)received) {
+                question_end = 0;
+                break;
+            }
+            question_end += 1u + label_len;
+        }
+        if (question_end == 0 || question_end + 5u > (size_t)received) continue;
+        question_end += 5; // root label + QTYPE + QCLASS
+        // The A answer is appended below.  Check against the received DNS
+        // message as well as the backing array: a short datagram with a valid
+        // question must not be expanded in place to an answer beyond its
+        // original payload length.
+        if (question_end + 16u > (size_t)received ||
+            question_end + 16u > sizeof(packet)) continue;
+        // Keep the high-frequency captive probes at debug level. Logging every
+        // DNS query at INFO can starve the small serial/log path just as a
+        // phone is issuing parallel A, AAAA and HTTPS checks.
+        ESP_LOGD(TAG, "captive DNS query received");
+        // The packet always carries an IPv4 A record.  Return a syntactically
+        // valid negative reply for unsupported question types instead of
+        // claiming an A answer to an AAAA/HTTPS query; several current mobile
+        // resolvers reject that type mismatch and never send the HTTP probe.
+        const uint16_t qtype = ((uint16_t)packet[question_end - 4] << 8) |
+                               packet[question_end - 3];
+        const uint16_t qclass = ((uint16_t)packet[question_end - 2] << 8) |
+                                packet[question_end - 1];
+        // Mark the answer authoritative. This is not a recursive resolver,
+        // so clear the incoming CD/Z/RCODE bits and never advertise RA.
+        packet[2] = (packet[2] & 0x01) | 0x84;
+        packet[3] = 0;
+        packet[4] = 0; packet[5] = 1;   // the reply carries the first question only
+        packet[6] = 0; packet[7] = qtype == 1 && qclass == 1 ? 1 : 0;
         packet[8] = 0; packet[9] = 0;
-        packet[10] = 0; packet[11] = 0;
+        packet[10] = 0; packet[11] = 0; // drop any additional (EDNS) records
+        size_t cursor = question_end;
+        if (qtype != 1 || qclass != 1) {
+            (void)sendto(socket_fd, packet, cursor, 0,
+                         (struct sockaddr *)&source, source_len);
+            continue;
+        }
         packet[cursor++] = 0xC0; packet[cursor++] = 0x0C; // answer name = question name
         packet[cursor++] = 0; packet[cursor++] = 1;        // A
         packet[cursor++] = 0; packet[cursor++] = 1;        // IN
@@ -7040,21 +9689,144 @@ static void dns_server_task(void *arg) {
         packet[cursor++] = 192; packet[cursor++] = 168; packet[cursor++] = 4; packet[cursor++] = 1;
         (void)sendto(socket_fd, packet, cursor, 0, (struct sockaddr *)&source, source_len);
     }
-    close(socket_fd);
-    s_dns_task = NULL;
+finish:
+    if (socket_fd >= 0) close(socket_fd);
+    if (!ready_published) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_dns_ready_success = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (s_dns_ready) xSemaphoreGive(s_dns_ready);
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_dns_task == self) s_dns_task = NULL;
+    s_dns_starting = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_dns_stopped) xSemaphoreGive(s_dns_stopped);
     vTaskDelete(NULL);
 }
 
-static void start_captive_dns(void) {
-    if (s_dns_task) return;
-    BaseType_t created = xTaskCreate(dns_server_task, "maclaw_captive_dns", 3072, NULL, 3, &s_dns_task);
-    if (created != pdPASS) {
-        s_dns_task = NULL;
-        ESP_LOGW(TAG, "cannot start captive DNS task");
+/* Captive DNS owns only its UDP/53 socket and task.  This does not stop the
+ * enclosing portal's HTTP server, DHCP server, SoftAP/STA mode or Wi-Fi event
+ * handlers; those remain outside this Registry entry until they share a real
+ * Provisioning Service shutdown contract. */
+static esp_err_t stop_captive_dns_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_dns_admission_open = false;
+    s_dns_stop_requested = true;
+    task = s_dns_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    xTaskNotifyGive(task);
+    const uint32_t join_timeout_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (join_timeout_ms == 0 || !s_dns_stopped ||
+        xSemaphoreTake(s_dns_stopped, pdMS_TO_TICKS(join_timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
     }
+    /* The worker has published completion but must not take the Registry's
+     * unbounded natural-exit path while an owner-wide stop holds its deadline.
+     * Remove its immutable registration identity here using only residual
+     * budget.  A bookkeeping timeout intentionally leaves the entry in place,
+     * so a caller cannot mistake this generation for fully drained. */
+    const uint32_t unregister_timeout_ms =
+        startup_rollback_remaining_timeout_ms(deadline_us);
+    if (unregister_timeout_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)task, unregister_timeout_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "captive DNS worker stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_captive_dns_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_dns_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_captive_dns_task(timeout_ms);
+}
+
+static bool start_captive_dns(void) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool admission_open = s_dns_admission_open;
+    bool already_starting = s_dns_starting || s_dns_task != NULL;
+    if (admission_open && !already_starting) s_dns_starting = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!admission_open) {
+        ESP_LOGW(TAG, "captive DNS start rejected: lifecycle admission is closed");
+        return false;
+    }
+    if (already_starting) return true;
+    if (!s_dns_start_gate || !s_dns_stopped) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_dns_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "captive DNS lifecycle primitives unavailable");
+        return false;
+    }
+    while (xSemaphoreTake(s_dns_stopped, 0) == pdTRUE) {}
+    while (s_dns_ready && xSemaphoreTake(s_dns_ready, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_dns_stop_requested = false;
+    s_dns_ready_success = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (xTaskCreate(dns_server_task, "maclaw_captive_dns", 3072, NULL, 3, &task) != pdPASS) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_dns_task = NULL;
+        s_dns_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGW(TAG, "cannot start captive DNS task");
+        return false;
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_dns_task = task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
+        .name = "captive_dns",
+        .context = (void *)task,
+        .stop = stop_captive_dns_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register captive DNS worker: %s", esp_err_to_name(registry_err));
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_dns_stop_requested = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        xSemaphoreGive(s_dns_start_gate);
+        (void)stop_captive_dns_task(500);
+        return false;
+    }
+    xSemaphoreGive(s_dns_start_gate);
+    /* The worker reports only after bind(UDP/53). This stops the portal from
+     * advertising a captive form whose DNS interceptor never came online. */
+    if (!s_dns_ready ||
+        xSemaphoreTake(s_dns_ready, pdMS_TO_TICKS(1200)) != pdTRUE) {
+        ESP_LOGE(TAG, "captive DNS did not report readiness");
+        (void)stop_captive_dns_task(500);
+        return false;
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool ready = s_dns_ready_success;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!ready) {
+        ESP_LOGE(TAG, "captive DNS failed before readiness");
+        (void)stop_captive_dns_task(500);
+    }
+    return ready;
 }
 
 static esp_err_t setup_get_handler(httpd_req_t *req) {
+    if (!setup_portal_http_admission_open()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return httpd_resp_sendstr(req, "Setup portal is stopping.");
+    }
     // Keep the setup page small and deterministic. The earlier generated page
     // could exceed its fixed stack buffer when many SSIDs were present, which
     // reset the ESP exactly when a phone requested the portal.
@@ -7063,6 +9835,8 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
         "<style>body{font-family:system-ui,sans-serif;max-width:26rem;margin:2rem auto;padding:0 1rem;color:#102a43}"
         "label{display:block;margin:1rem 0 .3rem}input,select{box-sizing:border-box;width:100%;padding:.7rem;font-size:1rem}"
         ".enterprise{margin-top:1rem;padding:.85rem;border:1px solid #b9c9d7;background:#f5f9fc}.hint{font-size:.85rem;color:#486581;line-height:1.45}"
+        ".saved{display:flex;align-items:center;justify-content:space-between;gap:.6rem;padding:.45rem 0;border-bottom:1px solid #dbe4ec;word-break:break-all}"
+        ".saved form{margin:0}.saved button{margin:0;padding:.45rem .8rem;background:#b23b3b}"
         "button{margin-top:1.3rem;padding:.8rem 1.2rem;font-size:1rem;background:#1769aa;color:#fff;border:0;border-radius:.4rem}</style>"
         "</head><body><h1>MaClaw Pet setup</h1><p>Choose your home or office Wi-Fi. The device will restart and connect automatically.</p>"
         "<form method=post action=/save><label>Wi-Fi network</label><select name=ssid required>";
@@ -7079,7 +9853,10 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
         "<label>Server domain (optional)</label><input name=server_domain maxlength=127 autocapitalize=none placeholder='Example: radius.company.com'></section>"
         "<label>MaClaw Hub URL</label><input name=gateway value='https://hub.mypapers.top' required maxlength=255>"
         "<label>6-digit pairing code</label><input name=code inputmode=numeric pattern='[0-9]{6}' maxlength=6 required>"
-        "<button>Save and connect</button></form><script>(function(){var n=document.querySelector('[name=ssid]'),s=document.getElementById('security');function u(){if(n&&n.selectedOptions[0]&&n.selectedOptions[0].dataset.enterprise==='1'){s.value='enterprise';s.dispatchEvent(new Event('change'))}}n&&n.addEventListener('change',u);u()})()</script></body></html>";
+        "<button>Save and connect</button></form>";
+    // 已存热点列表 chunk 之后是收尾脚本与页面结束标签。
+    static const char setup_page_tail[] =
+        "<script>(function(){var n=document.querySelector('[name=ssid]'),s=document.getElementById('security');function u(){if(n&&n.selectedOptions[0]&&n.selectedOptions[0].dataset.enterprise==='1'){s.value='enterprise';s.dispatchEvent(new Event('change'))}}n&&n.addEventListener('change',u);u()})()</script></body></html>";
     static const char scan_failed_notice[] =
         "<p class=hint role=alert>Could not refresh Wi-Fi networks. Showing the previous list; please try again.</p>";
     static const char pairing_page[] =
@@ -7096,7 +9873,9 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "setup portal request: %s", req->uri);
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    if (s_pairing_recovery_portal) return httpd_resp_send(req, pairing_page, HTTPD_RESP_USE_STRLEN);
+    if (device_connectivity_is_pairing_recovery_provisioning()) {
+        return httpd_resp_send(req, pairing_page, HTTPD_RESP_USE_STRLEN);
+    }
     if (!s_setup_options_mutex ||
         xSemaphoreTake(s_setup_options_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
         httpd_resp_set_status(req, "503 Service Unavailable");
@@ -7106,10 +9885,14 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
     bool scan_failed = httpd_req_get_url_query_len(req) < sizeof(query) &&
                        httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
                        !strcmp(query, "scan=failed");
+    build_setup_saved_networks_html();
     if (httpd_resp_sendstr_chunk(req, setup_page_prefix) != ESP_OK ||
         (scan_failed && httpd_resp_sendstr_chunk(req, scan_failed_notice) != ESP_OK) ||
         httpd_resp_sendstr_chunk(req, s_setup_ssid_options) != ESP_OK ||
-        httpd_resp_sendstr_chunk(req, setup_page_suffix) != ESP_OK) {
+        httpd_resp_sendstr_chunk(req, setup_page_suffix) != ESP_OK ||
+        (s_setup_saved_html && s_setup_saved_html[0] &&
+         httpd_resp_sendstr_chunk(req, s_setup_saved_html) != ESP_OK) ||
+        httpd_resp_sendstr_chunk(req, setup_page_tail) != ESP_OK) {
         xSemaphoreGive(s_setup_options_mutex);
         return ESP_FAIL;
     }
@@ -7119,9 +9902,19 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
 }
 
 static esp_err_t captive_redirect_handler(httpd_req_t *req) {
+    if (!setup_portal_http_admission_open()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return httpd_resp_sendstr(req, "Setup portal is stopping.");
+    }
     // A 302 is intentionally used here instead of a successful probe body:
     // the OS then identifies this as a captive network and presents its login
     // surface, which follows the redirect to the configuration page.
+    // Captive probes arrive in parallel and are retried aggressively. Keep
+    // the per-request trace out of the normal serial path so it cannot delay
+    // the portal on constrained boards; enable debug logging when diagnosing
+    // a particular phone/OS instead.
+    ESP_LOGD(TAG, "captive probe: %s", req->uri);
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", "http://" SETUP_AP_IP_ADDR "/");
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -7133,7 +9926,28 @@ static esp_err_t captive_redirect_handler(httpd_req_t *req) {
     return httpd_resp_send(req, NULL, 0);
 }
 
+/* RFC 8908 Captive Portal API response for the DHCP option-114 URI.  Keeping
+ * this distinct from the form is important: compliant clients parse JSON here
+ * and use user-portal-url to open their captive-network surface. */
+static esp_err_t captive_portal_api_handler(httpd_req_t *req) {
+    if (!setup_portal_http_admission_open()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return httpd_resp_sendstr(req, "Setup portal is stopping.");
+    }
+    httpd_resp_set_type(req, "application/captive+json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    return httpd_resp_sendstr(req,
+        "{\"captive\":true,\"user-portal-url\":\"http://" SETUP_AP_IP_ADDR "/\"}");
+}
+
 static esp_err_t setup_refresh_handler(httpd_req_t *req) {
+    if (!setup_portal_http_admission_open()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return httpd_resp_sendstr(req, "Setup portal is stopping.");
+    }
     // Refresh only on explicit user action.  Scanning on every GET would delay
     // the short captive-check requests that are meant to open this page.
     bool refreshed = refresh_setup_ssid_options();
@@ -7169,13 +9983,93 @@ static bool form_value(const char *body, const char *key, char *out, size_t cap)
     return url_decode(encoded, out, cap);
 }
 
+/* The form body lived on the httpd task stack and, together with the
+ * configuration write chain, overflowed its 6 KB stack mid-save (the
+ * reboot swallowed every newly submitted pairing code).  esp_http_server
+ * runs all handlers on its single task, so one PSRAM buffer is safe. */
+#define SETUP_SAVE_BODY_CAPACITY 1536
+static char *s_setup_save_body;
+
+/* Form input can contain Wi-Fi/EAP credentials and pairing input.  Free it
+ * only after HTTP has joined; scrub the form body first. */
+static void release_setup_portal_scratch(void) {
+    if (s_setup_save_body) {
+        mbedtls_platform_zeroize(s_setup_save_body, SETUP_SAVE_BODY_CAPACITY);
+        heap_caps_free(s_setup_save_body);
+        s_setup_save_body = NULL;
+    }
+    if (s_setup_ssid_options) {
+        heap_caps_free(s_setup_ssid_options);
+        s_setup_ssid_options = NULL;
+    }
+    if (s_setup_ssid_choices) {
+        heap_caps_free(s_setup_ssid_choices);
+        s_setup_ssid_choices = NULL;
+    }
+    if (s_setup_scan_records) {
+        heap_caps_free(s_setup_scan_records);
+        s_setup_scan_records = NULL;
+    }
+    if (s_setup_saved_html) {
+        heap_caps_free(s_setup_saved_html);
+        s_setup_saved_html = NULL;
+    }
+}
+
+/* 生成"已存网络"页面片段：只显示 ssid（永不输出密码），每条带删除按钮，
+ * 删除走 POST /delete 写回 NVS。 */
+static void build_setup_saved_networks_html(void) {
+    if (!s_setup_saved_html) return;
+    s_setup_saved_html[0] = '\0';
+    if (!s_wifi_network_count) return;
+    static const char header[] =
+        "<h2>Saved networks</h2><p class=hint>The device connects to the strongest visible saved network automatically.</p>";
+    size_t used = strlen(header);
+    memcpy(s_setup_saved_html, header, used + 1);
+    for (uint8_t i = 0; i < s_wifi_network_count; ++i) {
+        static const char row_prefix[] = "<div class=saved><span>";
+        static const char row_middle[] = "</span><form method=post action=/delete><input type=hidden name=ssid value=\"";
+        static const char row_suffix[] = "\"><button type=submit>Delete</button></form></div>";
+        // ssid 出现两次（显示文本 + 表单值），都按转义后的长度预留空间。
+        size_t escaped = setup_html_escaped_length(s_wifi_networks[i].ssid);
+        if (used + strlen(row_prefix) + strlen(row_middle) + strlen(row_suffix) +
+                escaped * 2 + 1 >= SETUP_SAVED_HTML_CAPACITY) {
+            break; // 空间不足时截断剩余条目，已生成部分仍可正常展示
+        }
+        memcpy(s_setup_saved_html + used, row_prefix, strlen(row_prefix));
+        used += strlen(row_prefix);
+        used = append_setup_html_escaped(s_setup_saved_html, used, SETUP_SAVED_HTML_CAPACITY,
+                                         s_wifi_networks[i].ssid);
+        memcpy(s_setup_saved_html + used, row_middle, strlen(row_middle));
+        used += strlen(row_middle);
+        used = append_setup_html_escaped(s_setup_saved_html, used, SETUP_SAVED_HTML_CAPACITY,
+                                         s_wifi_networks[i].ssid);
+        memcpy(s_setup_saved_html + used, row_suffix, strlen(row_suffix) + 1);
+        used += strlen(row_suffix);
+    }
+}
+
 static esp_err_t setup_save_handler(httpd_req_t *req) {
-    char body[1536] = {0}, ssid[WIFI_VALUE_CAPACITY] = {0}, password[WIFI_VALUE_CAPACITY] = {0},
+    if (!setup_portal_http_admission_open()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return httpd_resp_sendstr(req, "Setup portal is stopping.");
+    }
+    if (!s_setup_save_body) {
+        s_setup_save_body = heap_caps_malloc(SETUP_SAVE_BODY_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!s_setup_save_body) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    char *body = s_setup_save_body;
+    body[0] = 0;
+    char ssid[WIFI_VALUE_CAPACITY] = {0}, password[WIFI_VALUE_CAPACITY] = {0},
          gateway[URL_CAPACITY] = {0}, code[PAIR_CODE_CAPACITY] = {0}, security[WIFI_EAP_MODE_CAPACITY] = "personal",
          eap_method[WIFI_EAP_MODE_CAPACITY] = "peap", identity[WIFI_ENTERPRISE_VALUE_CAPACITY] = {0},
          username[WIFI_ENTERPRISE_VALUE_CAPACITY] = {0}, ttls_phase2[WIFI_EAP_MODE_CAPACITY] = "mschapv2",
          ca_mode[WIFI_EAP_MODE_CAPACITY] = "system", server_domain[WIFI_ENTERPRISE_VALUE_CAPACITY] = {0};
-    if (req->content_len <= 0 || req->content_len >= sizeof(body)) {
+    if (req->content_len <= 0 || req->content_len >= SETUP_SAVE_BODY_CAPACITY) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Form data is too large");
         return ESP_FAIL;
     }
@@ -7259,43 +10153,423 @@ static esp_err_t setup_save_handler(httpd_req_t *req) {
     }
     // Do not reset from the HTTP server task.  esp_http_server sends responses
     // asynchronously, so a reset here can race its final socket write and, on
-    // this board, leave the setup QR frame on screen indefinitely.  Schedule
-    // the reset after this handler has returned and the response is flushed.
-    httpd_resp_sendstr(req, "Saved. The device is restarting and will connect to MaClaw.");
-    if (!s_setup_restart_task) {
-        BaseType_t created = xTaskCreate(setup_restart_task, "maclaw_setup_restart", 2048,
-                                         NULL, 2, &s_setup_restart_task);
-        if (created != pdPASS) {
-            s_setup_restart_task = NULL;
-            ESP_LOGE(TAG, "cannot schedule restart after setup save");
+    // this board, leave the setup QR frame on screen indefinitely.  Publish
+    // the gated restart coordinator before claiming that a restart will occur:
+    // a task/registry allocation failure cannot roll back the already durable
+    // credentials, but it must not return a false "restarting" success while
+    // the old portal remains live.  The worker itself waits for the response
+    // flush and performs the terminal portal cleanup before resetting.
+    if (!schedule_setup_restart()) {
+        /* Configuration has committed but there is no registered owner left
+         * that can safely perform the terminal cleanup/reset.  Keep the HTTP
+         * server process alive solely long enough to return this request's
+         * unambiguous error, but close admission before doing so.  A browser,
+         * captive probe or delayed POST must not continue mutating a portal
+         * generation whose persisted credentials no longer describe its
+         * runtime state.  Do not call httpd_stop() from its own handler: that
+         * would reintroduce the response-flush/self-join race the coordinator
+         * exists to avoid.  The explicit recovery action is a manual reset.
+         */
+        set_setup_portal_http_admission(false);
+        ESP_LOGE(TAG, "setup saved but restart coordinator could not start");
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return httpd_resp_sendstr(
+            req, "Configuration was saved, but automatic restart is unavailable. "
+                 "Please restart the device manually.");
+    }
+    return httpd_resp_sendstr(req,
+                              "Saved. The device is restarting and will connect to MaClaw.");
+}
+
+/* 删除已存热点：按 ssid 从多热点列表移除并写回 NVS。主凭据若正是被删的
+ * 个人热点，服务侧会一并清除，避免重启后单凭据回退把它又连回去。 */
+static esp_err_t setup_delete_handler(httpd_req_t *req) {
+    if (!setup_portal_http_admission_open()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return httpd_resp_sendstr(req, "Setup portal is stopping.");
+    }
+    if (!s_setup_save_body) {
+        s_setup_save_body = heap_caps_malloc(SETUP_SAVE_BODY_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!s_setup_save_body) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    char *body = s_setup_save_body;
+    if (req->content_len <= 0 || req->content_len >= SETUP_SAVE_BODY_CAPACITY) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Form data is too large");
+        return ESP_FAIL;
+    }
+    int received = 0;
+    while (received < req->content_len) {
+        int n = httpd_req_recv(req, body + received, req->content_len - received);
+        if (n <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Could not receive the complete form");
+            return ESP_FAIL;
+        }
+        received += n;
+    }
+    body[received] = '\0';
+    char ssid[WIFI_VALUE_CAPACITY] = {0};
+    if (!form_value(body, "ssid", ssid, sizeof(ssid)) || !ssid[0]) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing network name");
+        return ESP_FAIL;
+    }
+    esp_err_t err = configuration_service_delete_wifi_network(ssid);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "saved Wi-Fi deleted via portal: ssid_len=%u", (unsigned)strlen(ssid));
+        // 同步运行时镜像；刷新失败不影响已落库的删除结果。
+        (void)configuration_service_list_wifi_networks(
+            s_wifi_networks, CONFIGURATION_WIFI_NETWORK_CAPACITY, &s_wifi_network_count);
+        if (!strcmp(ssid, s_wifi_ssid) && !is_enterprise_wifi()) {
+            s_wifi_ssid[0] = '\0';
+            s_wifi_password[0] = '\0';
+        }
+    } else if (err != ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "cannot delete saved Wi-Fi: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not delete the saved network");
+        return ESP_FAIL;
+    }
+    // 删除成功（或本就不存在）都回门户首页刷新列表。
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, "Deleted.");
+}
+
+/* ESP-IDF HTTP server owns and joins its own worker/task set inside
+ * httpd_stop().  The API has no caller-supplied bounded timeout, so this
+ * narrow lifecycle slice deliberately owns only admission + handle teardown:
+ * callers must invoke it before changing AP/DHCP/DNS state, but must not claim
+ * that Wi-Fi/netif/event-loop deinitialization is now supported. */
+static esp_err_t stop_setup_portal_http_server(void) {
+    set_setup_portal_http_admission(false);
+    httpd_handle_t server = s_setup_server;
+    if (!server) return ESP_OK;
+    s_setup_server = NULL;
+    esp_err_t err = httpd_stop(server);
+    if (err != ESP_OK) {
+        /* A non-null handle is the only reliable indication that the server
+         * remains live.  Restore it on failure so a later recovery/retry does
+         * not accidentally create a second listener on the same port. */
+        s_setup_server = server;
+        ESP_LOGW(TAG, "cannot stop setup HTTP server: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "setup HTTP server stopped");
+    }
+    return err;
+}
+
+/*
+ * Provisioning shutdown has a strict, fail-closed dependency order:
+ * admission -> HTTP -> DNS -> logical session -> credential scratch/lease.
+ *
+ * HTTP owns the portal handlers and DNS owns UDP/53.  If either join fails we
+ * retain the remaining resources and keep the logical session active, because
+ * clearing it would let other workers resume while an old credential handler
+ * or captive responder can still run.  AP/STA, DHCP, netif, event-loop and
+ * Wi-Fi driver lifetime are deliberately outside this narrow transaction.
+ */
+static esp_err_t stop_setup_portal_transaction_locked(uint32_t timeout_ms,
+                                                      bool restore_wake_word) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    esp_err_t http_stop_err = stop_setup_portal_http_server();
+    if (http_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "setup HTTP server did not stop: %s",
+                 esp_err_to_name(http_stop_err));
+        return http_stop_err;
+    }
+    /* `httpd_stop()` exposes no deadline in ESP-IDF.  It is the one documented
+     * uncontrollable boundary of this transaction; the DNS join must consume
+     * only the residual caller budget after it returns. */
+    const uint32_t dns_timeout_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (dns_timeout_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t dns_stop_err = stop_captive_dns_task(dns_timeout_ms);
+    if (dns_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "captive DNS did not stop: %s", esp_err_to_name(dns_stop_err));
+        return dns_stop_err;
+    }
+    device_connectivity_end_provisioning();
+    /* HTTP has joined and DNS has released UDP/53. No remaining worker may
+     * dereference the session's form/scratch buffers. */
+    release_setup_portal_scratch();
+    if (s_setup_power_lease != DEVICE_POWER_LEASE_INVALID) {
+        device_power_lease_release(s_setup_power_lease);
+        s_setup_power_lease = DEVICE_POWER_LEASE_INVALID;
+    }
+    if (restore_wake_word) {
+        esp_err_t wake_err = audio_wake_word_start(on_wake_word, NULL);
+        if (wake_err != ESP_OK && wake_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "cannot restore offline wake after setup transaction: %s",
+                     esp_err_to_name(wake_err));
         }
     }
     return ESP_OK;
 }
 
-static void recover_after_setup_portal_start_failure(bool wake_was_stopped) {
-    s_setup_portal_active = false;
-    s_pairing_recovery_portal = false;
-    if (s_setup_power_lease != DEVICE_POWER_LEASE_INVALID) {
-        device_power_lease_release(s_setup_power_lease);
-        s_setup_power_lease = DEVICE_POWER_LEASE_INVALID;
+/* Portal start and stop change the same generation's HTTP/DNS handles,
+ * provisioning bit, scratch buffers and power lease.  Serialize that composite
+ * ownership rather than relying on individual handles becoming non-null late
+ * in startup.  `httpd_stop()` is still an ESP-IDF boundary without a caller
+ * timeout; the lock merely makes its state transition linearizable with portal
+ * starts. */
+static esp_err_t stop_setup_portal_transaction(uint32_t timeout_ms,
+                                               bool restore_wake_word) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    if (!s_setup_portal_mutex ||
+        xSemaphoreTake(s_setup_portal_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
     }
-    // The portal stops MultiNet before allocating its HTTP server.  If one of
-    // those allocations fails on a configured device, restore the normal local
-    // interaction path instead of leaving the device silent until a reboot.
-    if (!wake_was_stopped) return;
-    esp_err_t err = audio_wake_word_start(on_wake_word, NULL);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "cannot restore offline wake after setup portal failure: %s",
-                 esp_err_to_name(err));
+    const uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    esp_err_t err = remaining_ms == 0
+                        ? ESP_ERR_TIMEOUT
+                        : stop_setup_portal_transaction_locked(remaining_ms, restore_wake_word);
+    xSemaphoreGive(s_setup_portal_mutex);
+    return err;
+}
+
+/* Wi-Fi core teardown is deliberately a separate, stronger lifecycle level
+ * than portal stop: it is used only by failed cold-start rollback, after all
+ * Connectivity Registry workers have joined.  A normal portal close keeps
+ * AP/STA and the driver alive so it can remain a low-risk runtime operation.
+ *
+ * The order follows ESP-IDF ownership: stop application SNTP users; stop the
+ * radio; unregister our application event instances; detach/destroy default
+ * Wi-Fi netifs; deinit Wi-Fi; then delete the default event loop and esp-netif
+ * core. On an error we retain the corresponding ownership flag/handle and
+ * return immediately, never claiming this partially stopped stack can be
+ * restarted safely. */
+static esp_err_t stop_network_core_transaction(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    /* First stop application callback admission and drain a handler that was
+     * already executing when teardown began.  ESP-IDF unregister posts its own
+     * asynchronous cleanup event and has no caller deadline; after this drain
+     * no callback can start a worker or touch Connectivity/UI while the radio,
+     * default loop and netifs are being released. */
+    const uint32_t callback_timeout_ms =
+        startup_rollback_remaining_timeout_ms(deadline_us);
+    if (callback_timeout_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t callback_stop_err =
+        stop_wifi_event_callback_admission(callback_timeout_ms);
+    if (callback_stop_err != ESP_OK) return callback_stop_err;
+    const uint32_t sntp_timeout_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (sntp_timeout_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t err = stop_sntp_service(sntp_timeout_ms);
+    if (err != ESP_OK) return err;
+
+    if (s_wifi_driver_initialized && s_wifi_started) {
+        err = esp_wifi_stop();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STARTED) {
+            ESP_LOGW(TAG, "cannot stop Wi-Fi driver: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_wifi_started = false;
+        device_connectivity_set_wifi_ready(false);
+    }
+    if (s_wifi_event_instance) {
+        err = esp_event_handler_instance_unregister(
+            WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_event_instance);
+        if (err != ESP_OK) return err;
+        s_wifi_event_instance = NULL;
+    }
+    if (s_wifi_got_ip_event_instance) {
+        err = esp_event_handler_instance_unregister(
+            IP_EVENT, IP_EVENT_STA_GOT_IP, s_wifi_got_ip_event_instance);
+        if (err != ESP_OK) return err;
+        s_wifi_got_ip_event_instance = NULL;
+    }
+    if (s_wifi_assigned_ip_event_instance) {
+        err = esp_event_handler_instance_unregister(
+            IP_EVENT, IP_EVENT_ASSIGNED_IP_TO_CLIENT, s_wifi_assigned_ip_event_instance);
+        if (err != ESP_OK) return err;
+        s_wifi_assigned_ip_event_instance = NULL;
+    }
+    if (s_setup_ap_netif) {
+        esp_netif_destroy_default_wifi(s_setup_ap_netif);
+        s_setup_ap_netif = NULL;
+        s_ap_netif_created = false;
+    }
+    if (s_sta_netif) {
+        esp_netif_destroy_default_wifi(s_sta_netif);
+        s_sta_netif = NULL;
+        s_sta_netif_created = false;
+    }
+    if (s_wifi_driver_initialized) {
+        err = esp_wifi_deinit();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "cannot deinitialize Wi-Fi driver: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_wifi_driver_initialized = false;
+        s_wifi_enterprise_enabled = false;
+    }
+    if (s_default_event_loop_created) {
+        err = esp_event_loop_delete_default();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "cannot delete default event loop: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_default_event_loop_created = false;
+    }
+    if (s_netif_initialized) {
+        err = esp_netif_deinit();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "cannot deinitialize esp-netif: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_netif_initialized = false;
+    }
+    s_network_initialized = false;
+    return ESP_OK;
+}
+
+/* Keep lifecycle layering explicit: the composition root first stops all
+ * ESP-IDF Wi-Fi/SNTP/netif/event-loop resources, then and only then lets the
+ * hardware-neutral Connectivity Service delete its attempt EventGroup.  A
+ * failed physical stop intentionally retains the logical generation: live
+ * registered callbacks may still need that state and a new generation would
+ * be unsafe. */
+static esp_err_t stop_connectivity_root_transaction(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    const uint32_t network_timeout_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (network_timeout_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t err = stop_network_core_transaction(network_timeout_ms);
+    if (err != ESP_OK) return err;
+    const uint32_t service_timeout_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (service_timeout_ms == 0) return ESP_ERR_TIMEOUT;
+    device_status_t service_status = device_connectivity_deinit(service_timeout_ms);
+    if (service_status == DEVICE_STATUS_OK) return ESP_OK;
+    ESP_LOGW(TAG, "cannot stop Connectivity Service after physical network stop: %d",
+             (int)service_status);
+    return device_status_to_platform_error(service_status);
+}
+
+/* The portal shares one Wi-Fi driver with an already connected station.  A
+ * failed portal must therefore restore the exact pre-entry radio shape rather
+ * than blindly stopping Wi-Fi (which would unnecessarily disconnect a normal
+ * station) or leaving an unauthenticated AP beacon after HTTP/DNS failed. */
+typedef struct {
+    bool captured;
+    bool radio_changed;
+    bool wifi_was_started;
+    bool station_auto_connect;
+    bool station_expected_disconnect;
+    wifi_mode_t wifi_mode;
+} setup_portal_radio_snapshot_t;
+
+static esp_err_t capture_setup_portal_radio_snapshot(setup_portal_radio_snapshot_t *snapshot) {
+    if (!snapshot) return ESP_ERR_INVALID_ARG;
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->wifi_was_started = s_wifi_started;
+    snapshot->station_auto_connect = s_station_auto_connect;
+    snapshot->station_expected_disconnect = s_station_expected_disconnect;
+    esp_err_t err = esp_wifi_get_mode(&snapshot->wifi_mode);
+    if (err != ESP_OK) return err;
+    snapshot->captured = true;
+    return ESP_OK;
+}
+
+static esp_err_t restore_setup_portal_radio_snapshot(
+    const setup_portal_radio_snapshot_t *snapshot) {
+    if (!snapshot || !snapshot->captured) return ESP_OK;
+
+    /* Do not let an event callback reconnect while mode/start state is being
+     * restored. Its policy flags are put back only after the hardware state
+     * has converged. */
+    s_station_auto_connect = false;
+    s_station_expected_disconnect = true;
+    esp_err_t err = ESP_OK;
+    if (snapshot->radio_changed && s_wifi_started && !snapshot->wifi_was_started) {
+        err = esp_wifi_stop();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STARTED) {
+            ESP_LOGW(TAG, "cannot stop failed setup radio: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_wifi_started = false;
+        device_connectivity_set_wifi_ready(false);
+    }
+    if (snapshot->radio_changed) {
+        err = esp_wifi_set_mode(snapshot->wifi_mode);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "cannot restore pre-setup Wi-Fi mode: %s", esp_err_to_name(err));
+            return err;
+        }
+    }
+    s_station_auto_connect = snapshot->station_auto_connect;
+    s_station_expected_disconnect = snapshot->station_expected_disconnect;
+    /* A prior running STA may have been disconnected deliberately while
+     * entering the portal. Re-arm its normal recovery only after AP mode is
+     * gone; a failure to reconnect remains the existing offline condition. */
+    if (snapshot->wifi_was_started && snapshot->station_auto_connect &&
+        (snapshot->wifi_mode == WIFI_MODE_STA || snapshot->wifi_mode == WIFI_MODE_APSTA)) {
+        err = esp_wifi_connect();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+            ESP_LOGW(TAG, "cannot reconnect station after failed setup: %s",
+                     esp_err_to_name(err));
+        }
+    }
+    return ESP_OK;
+}
+
+static void recover_after_setup_portal_start_failure(
+    bool wake_was_stopped, const setup_portal_radio_snapshot_t *radio_snapshot) {
+    /* The portal stops MultiNet before allocating its HTTP server. If a
+     * configured device fails to start its portal, restore the normal local
+     * interaction path only after all portal borrowers have exited. */
+    /* Called only from the serialized portal-start transaction.  Taking the
+     * public portal lock again would deadlock the recovery path. */
+    esp_err_t stop_err = stop_setup_portal_transaction_locked(500, wake_was_stopped);
+    if (stop_err != ESP_OK) return;
+    esp_err_t radio_err = restore_setup_portal_radio_snapshot(radio_snapshot);
+    if (radio_err != ESP_OK) {
+        ESP_LOGW(TAG, "failed setup radio remains fail-closed: %s", esp_err_to_name(radio_err));
     }
 }
 
 static void start_setup_portal(bool keep_station) {
+    /* The visible portal result is best-effort, but resource mutation is not:
+     * all portal generations enter through this gate.  Use a bounded wait so a
+     * stalled ESP-IDF HTTP stop cannot block an input or event-loop task
+     * forever.  The active generation remains intact/fail-closed on timeout. */
+    if (!s_setup_portal_mutex ||
+        xSemaphoreTake(s_setup_portal_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        ESP_LOGW(TAG, "setup portal transition already in progress");
+        return;
+    }
+    start_setup_portal_locked(keep_station);
+    xSemaphoreGive(s_setup_portal_mutex);
+}
+
+static void start_setup_portal_locked(bool keep_station) {
     // Set this before any slow display or Wi-Fi operation. A button event can
     // be delivered by its independent task while the QR page is being drawn.
-    if (s_setup_portal_active && s_setup_server) {
+    if (setup_restart_is_pending()) {
+        /* `/save` has durably committed a new configuration and the one
+         * terminal coordinator owns the remaining cleanup/reset.  Starting a
+         * fresh portal here would reopen DNS/HTTP admission against that old
+         * generation and make the eventual reset non-linearizable. */
+        ESP_LOGW(TAG, "setup portal start rejected: post-save reset is pending");
+        app_ui_show_text("配置已保存", "设备正在重启，请稍候");
+        return;
+    }
+    if (device_connectivity_is_provisioning_active() && s_setup_server &&
+        setup_portal_http_admission_open()) {
         ESP_LOGI(TAG, "setup portal already active");
+        return;
+    }
+    /* A stale handle means an earlier stop failed.  Do not stack a second HTTP
+     * server on it; keep the existing listener fail-closed and surface a
+     * recoverable configuration error instead. */
+    if (s_setup_server) {
+        set_setup_portal_http_admission(false);
+        ESP_LOGE(TAG, "setup portal HTTP server is still active; refusing duplicate start");
+        app_ui_show_text("设置失败", "网页服务正在恢复，请重启设备");
         return;
     }
     if (!s_setup_ssid_options) {
@@ -7311,27 +10585,38 @@ static void start_setup_portal(bool keep_station) {
             SETUP_SCAN_MAX_APS, sizeof(*s_setup_scan_records),
             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     }
-    if (!s_setup_ssid_options || !s_setup_ssid_choices || !s_setup_scan_records) {
-        s_pairing_recovery_portal = false;
+    if (!s_setup_saved_html) {
+        s_setup_saved_html = heap_caps_calloc(
+            1, SETUP_SAVED_HTML_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!s_setup_ssid_options || !s_setup_ssid_choices || !s_setup_scan_records ||
+        !s_setup_saved_html) {
+        release_setup_portal_scratch();
         ESP_LOGE(TAG, "cannot allocate setup portal Wi-Fi list buffers");
         app_ui_show_text("设置失败", "内存不足，请重启后再试");
         return;
     }
-    // A prior DNS task may still be in its one-second receive timeout after an
-    // earlier failed startup. Ask it to exit before creating another responder.
+    // A prior DNS responder owns UDP/53 independently of HTTP/AP state. Join
+    // it before creating another responder; a timeout preserves its Registry
+    // entry and rejects a competing bind instead of guessing it has exited.
     if (s_dns_task) {
-        s_setup_portal_active = false;
         ESP_LOGW(TAG, "waiting for previous captive DNS task before starting portal");
-        for (unsigned wait = 0; wait < 12 && s_dns_task; ++wait) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        if (s_dns_task) {
-            s_pairing_recovery_portal = false;
-            ESP_LOGE(TAG, "previous captive DNS task did not exit");
+        esp_err_t dns_stop_err = stop_captive_dns_task(1200);
+        if (dns_stop_err != ESP_OK || s_dns_task) {
+            ESP_LOGE(TAG, "previous captive DNS task did not exit: %s",
+                     esp_err_to_name(dns_stop_err));
             app_ui_show_text("配置失败", "请重启设备后再试");
             return;
         }
     }
+    /* A previous portal attempt may have intentionally closed DNS admission
+     * while draining its socket.  This is the next explicit provisioning
+     * transaction, so reopen only this worker's admission before creating its
+     * new Registry entry; the wider portal/AP lifecycle remains unchanged. */
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_dns_admission_open = true;
+    s_dns_stop_requested = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     if (s_setup_power_lease == DEVICE_POWER_LEASE_INVALID) {
         device_status_t lease_status = device_power_lease_acquire(
             DEVICE_POWER_LEASE_OWNER_PROVISIONING, &s_setup_power_lease);
@@ -7346,7 +10631,7 @@ static void start_setup_portal(bool keep_station) {
          * the QR/form render below owns the subsequent scene. */
         (void)device_power_wake_display_from_schedule();
     }
-    s_setup_portal_active = true;
+    device_connectivity_begin_provisioning(keep_station);
     // Provisioning has no use for the always-listening recognizer. Pause it
     // so it cannot compete for audio/I2S work while the captive portal runs.
     device_wake_word_pause(true);
@@ -7364,36 +10649,92 @@ static void start_setup_portal(bool keep_station) {
                  esp_err_to_name(wake_stop_err));
     }
     uint8_t mac[6];
-    ESP_ERROR_CHECK(esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP));
+    esp_err_t mac_err = esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    if (mac_err != ESP_OK) {
+        recover_after_setup_portal_start_failure(wake_was_stopped, NULL);
+        ESP_LOGE(TAG, "cannot read SoftAP MAC for setup portal: %s",
+                 esp_err_to_name(mac_err));
+        app_ui_show_text("Setup failed", "Network identity unavailable; restart device");
+        return;
+    }
     char ap_ssid[33];
     snprintf(ap_ssid, sizeof(ap_ssid), "MACLAW-SETUP-%02X%02X", mac[4], mac[5]);
-    init_network();
+    esp_err_t network_init_err = init_network();
+    if (network_init_err != ESP_OK) {
+        recover_after_setup_portal_start_failure(wake_was_stopped, NULL);
+        ESP_LOGE(TAG, "cannot initialize network core for setup portal: %s",
+                 esp_err_to_name(network_init_err));
+        app_ui_show_text("Setup failed", "Network service unavailable; restart device");
+        return;
+    }
+    /* Capture only after the driver exists. First-boot portal entry reaches
+     * this point with an initialized-but-not-started Wi-Fi driver, whereas
+     * esp_wifi_get_mode() before init would turn a normal setup path into a
+     * false failure. */
+    setup_portal_radio_snapshot_t radio_snapshot;
+    esp_err_t radio_snapshot_err = capture_setup_portal_radio_snapshot(&radio_snapshot);
+    if (radio_snapshot_err != ESP_OK) {
+        recover_after_setup_portal_start_failure(wake_was_stopped, NULL);
+        ESP_LOGE(TAG, "cannot inspect Wi-Fi state before setup portal: %s",
+                 esp_err_to_name(radio_snapshot_err));
+        app_ui_show_text("Setup failed", "Network state unavailable; restart device");
+        return;
+    }
     ensure_setup_ap_netif();
+    if (!s_setup_ap_netif) {
+        recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
+        ESP_LOGE(TAG, "cannot create setup AP netif");
+        app_ui_show_text("Setup failed", "Network interface unavailable; restart device");
+        return;
+    }
     // Use the same AP address/DHCP sequence as the working Nulllab AI Vox3
     // provisioning component before any client can associate.
-    configure_setup_ap_ip();
+    esp_err_t ap_ip_err = configure_setup_ap_ip();
+    if (ap_ip_err != ESP_OK) {
+        recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
+        ESP_LOGE(TAG, "cannot configure setup AP/DHCP transaction: %s",
+                 esp_err_to_name(ap_ip_err));
+        app_ui_show_text("Setup failed", "Hotspot network unavailable; restart device");
+        return;
+    }
     // Bind the captive DNS responder before enabling the AP, matching the
     // working Nulllab implementation.  This closes the gap where a phone can
     // obtain a lease and send its first probe before DNS is listening.
-    start_captive_dns();
+    if (!start_captive_dns()) {
+        recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
+        ESP_LOGE(TAG, "cannot start captive DNS before setup hotspot");
+        app_ui_show_text("设置失败", "配网 DNS 服务启动失败，请重启后再试");
+        return;
+    }
     // A failed first-time Wi-Fi join should show the full form again, even
     // though the submitted SSID is now persisted. Pairing recovery is the
     // only flow that intentionally reuses Wi-Fi and asks solely for a code.
-    s_pairing_recovery_portal = keep_station;
     // Wi-Fi scans require a STA interface, so normal provisioning uses APSTA.
     // Fangtang cellular pairing recovery only asks for a new pairing code: its
     // ML307 remains the backhaul, and starting an unused STA/scan path here can
     // leave ESP-IDF's scan timer with a stale notification target. Use a plain
     // SoftAP for that one flow.
     bool cellular_pairing_ap_only = device_connectivity_is_active_cellular() &&
-                                    s_pairing_recovery_portal;
-    if (!cellular_pairing_ap_only) ensure_station_netif();
+                                    device_connectivity_is_pairing_recovery_provisioning();
+    if (!cellular_pairing_ap_only) {
+        ensure_station_netif();
+        if (!s_sta_netif) {
+            recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
+            ESP_LOGE(TAG, "cannot create setup station netif");
+            app_ui_show_text("Setup failed", "Network interface unavailable; restart device");
+            return;
+        }
+    }
     // A Fangtang in 4G mode still uses the Wi-Fi AP for local provisioning,
     // but its backhaul is the independent ML307.  Do not reconnect the saved
     // Wi-Fi STA while bringing up that AP: doing so races the setup scan and
     // needlessly runs two network bring-up paths at once.
-    bool keep_wifi_station = s_pairing_recovery_portal &&
+    bool keep_wifi_station = device_connectivity_is_pairing_recovery_provisioning() &&
                              !device_connectivity_is_active_cellular();
+    /* The station policy/disconnect are part of the same radio transaction as
+     * APSTA selection. Mark the snapshot before changing either, so a later
+     * set_mode failure does not strand a previously associated station. */
+    radio_snapshot.radio_changed = true;
     s_station_auto_connect = keep_wifi_station;
     if (!keep_wifi_station && s_wifi_started) {
         s_station_expected_disconnect = true;
@@ -7411,14 +10752,14 @@ static void start_setup_portal(bool keep_station) {
                                                  ? WIFI_MODE_AP
                                                  : WIFI_MODE_APSTA);
     if (portal_err != ESP_OK) {
-        recover_after_setup_portal_start_failure(wake_was_stopped);
+        recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
         ESP_LOGE(TAG, "cannot enter setup Wi-Fi mode: %s", esp_err_to_name(portal_err));
         app_ui_show_text("设置失败", "请在网页重新设置");
         return;
     }
     portal_err = esp_wifi_set_config(WIFI_IF_AP, &ap);
     if (portal_err != ESP_OK) {
-        recover_after_setup_portal_start_failure(wake_was_stopped);
+        recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
         ESP_LOGE(TAG, "cannot configure setup hotspot: %s", esp_err_to_name(portal_err));
         app_ui_show_text("设置失败", "请在网页重新设置");
         return;
@@ -7431,7 +10772,7 @@ static void start_setup_portal(bool keep_station) {
     if (!s_wifi_started) {
         portal_err = esp_wifi_start();
         if (portal_err != ESP_OK) {
-            recover_after_setup_portal_start_failure(wake_was_stopped);
+            recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
             ESP_LOGE(TAG, "cannot start setup hotspot: %s", esp_err_to_name(portal_err));
             app_ui_show_text("设置失败", "请在网页重新设置");
             return;
@@ -7450,7 +10791,7 @@ static void start_setup_portal(bool keep_station) {
     wifi_mode_t active_mode = WIFI_MODE_NULL;
     portal_err = esp_wifi_get_mode(&active_mode);
     if (portal_err != ESP_OK || (active_mode != WIFI_MODE_AP && active_mode != WIFI_MODE_APSTA)) {
-        recover_after_setup_portal_start_failure(wake_was_stopped);
+        recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
         ESP_LOGE(TAG, "setup hotspot did not enter AP mode: err=%s mode=%d",
                  esp_err_to_name(portal_err), (int)active_mode);
         app_ui_show_text("设置热点失败", "请重启后再试");
@@ -7466,34 +10807,47 @@ static void start_setup_portal(bool keep_station) {
     // internal RAM because the handler writes NVS and flash operations disable
     // the external-RAM cache while checking the current task stack.
     server_config.stack_size = 6144;
-    // Thirteen platform-specific captive-check endpoints, exact root, refresh,
-    // GET wildcard and POST /save. iOS, Android, Windows and Firefox vary by
-    // OS version, carrier and whether they are retrying a prior probe.
+    // Fourteen platform-specific captive-check endpoints plus the RFC 8908
+    // API, exact root, refresh, GET redirect fallback, POST /save and POST
+    // /delete. iOS, Android, Windows and Firefox vary by OS version, carrier
+    // and whether they are retrying a prior probe.
     // This capacity is checked when routes are registered at runtime.
-    server_config.max_uri_handlers = 24;
+    server_config.max_uri_handlers = 25;
     // Captive checks are usually parallel.  Keep enough connections for their
     // redirects and the portal web view to coexist; otherwise a probe can
     // occupy the tiny server while the OS decides the hotspot has no portal.
     server_config.max_open_sockets = 5;
     server_config.lru_purge_enable = true;
     // Make the AP behave like a captive portal. Android, iOS and Windows all
-    // probe different HTTP paths before showing the setup page; the wildcard
-    // returns the same deterministic form for those paths and manual URLs.
+    // probe different HTTP paths before showing the setup page; unknown GET
+    // paths redirect to the root form rather than receiving a successful 200
+    // response that could be mistaken for unrestricted internet access.
     server_config.uri_match_fn = httpd_uri_match_wildcard;
     portal_err = httpd_start(&s_setup_server, &server_config);
     if (portal_err != ESP_OK) {
-        recover_after_setup_portal_start_failure(wake_was_stopped);
+        recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
         ESP_LOGE(TAG, "cannot start setup web server: %s, free_heap=%u",
                  esp_err_to_name(portal_err), (unsigned)esp_get_free_heap_size());
         app_ui_show_text("设置失败", "网页服务内存不足，请重启");
         return;
     }
+    /* The handle is live before route registration, but requests cannot be
+     * admitted until the complete route set has registered successfully. */
+    set_setup_portal_http_admission(false);
     httpd_uri_t apple_success = {.uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t apple_library_success = {.uri = "/library/test/success.html", .method = HTTP_GET, .handler = captive_redirect_handler};
-    httpd_uri_t android_generate_204 = {.uri = "/generate_204", .method = HTTP_GET, .handler = captive_redirect_handler};
+    // Match query/path variants too. Waveshare's reference portal registers
+    // this as a wildcard because Android adds a cache-busting suffix on some
+    // releases; serving the normal setup HTML with 200 in that case prevents
+    // Android from classifying the AP as captive.
+    httpd_uri_t android_generate_204 = {.uri = "/generate_204*", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t android_gen_204 = {.uri = "/gen_204", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t android_redirect = {.uri = "/redirect", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t android_mobile_status = {.uri = "/mobile/status.php", .method = HTTP_GET, .handler = captive_redirect_handler};
+    // Recent Android NetworkMonitor uses this probe. It must receive the same
+    // redirect rather than the setup page's 200 response, which otherwise
+    // makes the user open 192.168.4.1 manually.
+    httpd_uri_t android_canonical = {.uri = "/canonical.html", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t windows_connect = {.uri = "/connecttest.txt", .method = HTTP_GET, .handler = captive_redirect_handler};
     // Older Windows releases use the NCSI probe host/path rather than
     // msftconnecttest.com/connecttest.txt.  It needs the same redirect to
@@ -7504,13 +10858,15 @@ static void start_setup_portal(bool keep_station) {
     httpd_uri_t firefox_connectivity = {.uri = "/connectivity-check.html", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t generic_success = {.uri = "/success.txt", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t generic_portal = {.uri = "/portal.html", .method = HTTP_GET, .handler = captive_redirect_handler};
+    httpd_uri_t captive_portal_api = {.uri = "/captive-portal/api", .method = HTTP_GET, .handler = captive_portal_api_handler};
     // ESP-IDF wildcard matching treats "/*" as paths with a slash after the
     // root; register the exact root separately so a direct 192.168.4.1 request
     // and the redirect target never depend on wildcard edge-case behaviour.
     httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = setup_get_handler};
     httpd_uri_t refresh = {.uri = "/refresh", .method = HTTP_GET, .handler = setup_refresh_handler};
-    httpd_uri_t captive = {.uri = "/*", .method = HTTP_GET, .handler = setup_get_handler};
+    httpd_uri_t captive = {.uri = "/*", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t save = {.uri = "/save", .method = HTTP_POST, .handler = setup_save_handler};
+    httpd_uri_t delete_saved = {.uri = "/delete", .method = HTTP_POST, .handler = setup_delete_handler};
     // Register the wildcard last: ESP-IDF preserves registration order during
     // matching, so it must not shadow the platform-specific probe routes.
     portal_err = httpd_register_uri_handler(s_setup_server, &apple_success);
@@ -7519,6 +10875,7 @@ static void start_setup_portal(bool keep_station) {
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &android_gen_204);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &android_redirect);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &android_mobile_status);
+    if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &android_canonical);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &windows_connect);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &windows_ncsi);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &windows_network_status);
@@ -7526,36 +10883,39 @@ static void start_setup_portal(bool keep_station) {
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &firefox_connectivity);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &generic_success);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &generic_portal);
+    if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &captive_portal_api);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &root);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &refresh);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &captive);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &save);
+    if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &delete_saved);
     if (portal_err != ESP_OK) {
         ESP_LOGE(TAG, "cannot register setup portal routes: %s, free_heap=%u",
                  esp_err_to_name(portal_err), (unsigned)esp_get_free_heap_size());
-        httpd_stop(s_setup_server);
-        s_setup_server = NULL;
-        recover_after_setup_portal_start_failure(wake_was_stopped);
+        recover_after_setup_portal_start_failure(wake_was_stopped, &radio_snapshot);
         app_ui_show_text("设置失败", "配置网页路由启动失败");
         return;
     }
-    if (s_pairing_recovery_portal) {
+    set_setup_portal_http_admission(true);
+    if (device_connectivity_is_pairing_recovery_provisioning()) {
         app_ui_show_text("设备配对设置", ap_ssid);
     } else {
         show_setup_qrcode(ap_ssid);
     }
     ESP_LOGI(TAG, "%s portal ready: join %s and open http://192.168.4.1",
-             s_pairing_recovery_portal ? "pairing recovery" : "setup", ap_ssid);
+             device_connectivity_is_pairing_recovery_provisioning() ? "pairing recovery" : "setup",
+             ap_ssid);
 }
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     (void)arg;
+    if (!wifi_event_callback_enter()) return;
     if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STACONNECTED) {
         const wifi_event_ap_staconnected_t *event = data;
         if (event) {
             ESP_LOGI(TAG, "setup client associated: " MACSTR, MAC2STR(event->mac));
         }
-        return;
+        goto finish;
     }
     if (base == IP_EVENT && id == IP_EVENT_ASSIGNED_IP_TO_CLIENT) {
         const ip_event_assigned_ip_to_client_t *event = data;
@@ -7563,32 +10923,53 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (event) esp_ip4addr_ntoa(&event->ip, address, sizeof(address));
         ESP_LOGI(TAG, "setup client leased IP=%s hostname=%s", address[0] ? address : "unknown",
                  event && event->hostname[0] ? event->hostname : "unknown");
-        return;
+        goto finish;
     }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         if (s_station_auto_connect) esp_wifi_connect();
-        return;
+        goto finish;
     }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
-        device_connectivity_set_wifi_ready(false);
+        const wifi_event_sta_disconnected_t *event = data;
+        char disconnected_ssid[sizeof(event->ssid) + 1] = {0};
+        if (event) memcpy(disconnected_ssid, event->ssid, sizeof(event->ssid));
+        bool accepted = event && device_connectivity_observe_wifi_disconnected(
+                                     disconnected_ssid);
+        if (!accepted) {
+            ESP_LOGW(TAG, "ignoring Wi-Fi disconnect outside current attempt");
+            goto finish;
+        }
         app_ui_set_wifi_status(s_wifi_ssid, false);
         app_ui_set_service_ready(false);
         firmware_identity_set_service_ready(false);
         if (s_station_expected_disconnect) {
             s_station_expected_disconnect = false;
             ESP_LOGI(TAG, "station disconnected for setup scan");
-            return;
+            goto finish;
         }
         if (s_station_auto_connect) {
             ESP_LOGW(TAG, "Wi-Fi disconnected from %s; retrying", s_wifi_ssid);
             esp_wifi_connect();
         }
-        return;
+        goto finish;
     }
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
-        device_connectivity_set_wifi_ready(true);
+        wifi_ap_record_t connected_ap = {0};
+        bool accepted = false;
+        if (esp_wifi_sta_get_ap_info(&connected_ap) == ESP_OK) {
+            char connected_ssid[sizeof(connected_ap.ssid) + 1];
+            memcpy(connected_ssid, connected_ap.ssid, sizeof(connected_ap.ssid));
+            connected_ssid[sizeof(connected_ap.ssid)] = '\0';
+            accepted = device_connectivity_observe_wifi_got_ip(connected_ssid);
+        } else {
+            /* Fail closed: an IP event without a live association identity
+             * cannot be attributed to a bounded connection attempt. */
+            ESP_LOGW(TAG, "Wi-Fi got IP but cannot read associated SSID");
+        }
+        if (!accepted) {
+            ESP_LOGW(TAG, "ignoring DHCP event outside current Wi-Fi attempt");
+            goto finish;
+        }
         // The normal status surface is still covered by the explicit startup
         // screen here. Avoid a full LCD transfer from the IP event loop; the
         // ready transition will publish the connected state after handshake.
@@ -7597,7 +10978,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         bool recover_gateway = s_gateway_startup_allowed &&
                                !s_gateway_startup_running &&
                                !s_startup_sequence_complete &&
-                               !s_setup_portal_active;
+                                !device_connectivity_is_provisioning_active();
         taskEXIT_CRITICAL(&s_task_state_lock);
         if (recover_gateway) {
             ESP_LOGI(TAG, "starting gateway startup after Wi-Fi recovery");
@@ -7606,13 +10987,31 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
             }
         }
     }
+finish:
+    wifi_event_callback_leave();
+}
+
+static bool cellular_recovery_stop_requested(void) {
+    bool requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    requested = s_cellular_recovery_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return requested;
 }
 
 static void cellular_recovery_task(void *arg) {
     (void)arg;
+    if (!s_cellular_recovery_start_gate ||
+        xSemaphoreTake(s_cellular_recovery_start_gate, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(TAG, "ML307 recovery start gate unavailable");
+        goto finish;
+    }
+    if (cellular_recovery_stop_requested()) goto finish;
     uint32_t retry_ms = GATEWAY_RETRY_INITIAL_MS;
     bool needs_gateway_restart = !device_connectivity_is_cellular_transport_ready();
-    while (!s_setup_portal_active && device_connectivity_is_active_cellular()) {
+    while (!cellular_recovery_stop_requested() &&
+           !device_connectivity_is_provisioning_active() &&
+           device_connectivity_is_active_cellular()) {
         if (!device_connectivity_is_cellular_transport_ready()) {
             device_connectivity_set_cellular_ready(false);
             needs_gateway_restart = true;
@@ -7624,7 +11023,7 @@ static void cellular_recovery_task(void *arg) {
             if (transport_status != DEVICE_STATUS_OK) {
                 ESP_LOGW(TAG, "cellular recovery failed: device status=%d; retry in %lu ms",
                          transport_status, (unsigned long)retry_ms);
-                vTaskDelay(pdMS_TO_TICKS(retry_ms));
+                (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(retry_ms));
                 if (retry_ms < GATEWAY_RETRY_MAX_MS) {
                     retry_ms *= 2;
                     if (retry_ms > GATEWAY_RETRY_MAX_MS) retry_ms = GATEWAY_RETRY_MAX_MS;
@@ -7637,27 +11036,121 @@ static void cellular_recovery_task(void *arg) {
         }
 
         retry_ms = GATEWAY_RETRY_INITIAL_MS;
-        if (needs_gateway_restart && !s_gateway_startup_running &&
+        if (!cellular_recovery_stop_requested() && needs_gateway_restart &&
+            !s_gateway_startup_running &&
             (s_gateway_token[0] || s_pair_code[0])) {
             ESP_LOGI(TAG, "restarting gateway startup after ML307 recovery");
             if (start_gateway_startup_task()) needs_gateway_restart = false;
         }
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(3000));
     }
-    s_cellular_recovery_task = NULL;
+finish:
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_cellular_recovery_task == self) s_cellular_recovery_task = NULL;
+    s_cellular_recovery_starting = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_cellular_recovery_stopped) xSemaphoreGive(s_cellular_recovery_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                                 (void *)self, 10);
     vTaskDelete(NULL);
 }
 
+static esp_err_t stop_cellular_recovery_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_cellular_recovery_admission_open = false;
+    s_cellular_recovery_stop_requested = true;
+    task = s_cellular_recovery_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    xTaskNotifyGive(task);
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_cellular_recovery_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_cellular_recovery_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "ML307 recovery coordinator stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_cellular_recovery_registry_entry(void *context,
+                                                        uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_cellular_recovery_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    /* The task handle is immutable registry identity. A stale entry must not
+     * be allowed to stop a newer coordinator. */
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_cellular_recovery_task(timeout_ms);
+}
+
 static bool ensure_cellular_recovery_task(void) {
-    if (s_cellular_recovery_task) return true;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool admission_open = s_cellular_recovery_admission_open;
+    bool already_starting = s_cellular_recovery_starting || s_cellular_recovery_task != NULL;
+    if (admission_open && !already_starting) s_cellular_recovery_starting = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!admission_open) {
+        ESP_LOGW(TAG, "ML307 recovery start rejected: lifecycle admission is closed");
+        return false;
+    }
+    if (already_starting) return true;
+    if (!s_cellular_recovery_start_gate || !s_cellular_recovery_stopped) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_cellular_recovery_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "ML307 recovery lifecycle primitives unavailable");
+        return false;
+    }
+    while (xSemaphoreTake(s_cellular_recovery_stopped, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_cellular_recovery_stop_requested = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    TaskHandle_t task = NULL;
     BaseType_t created = xTaskCreatePinnedToCore(
         cellular_recovery_task, "maclaw_cellular_recovery", 6144,
-        NULL, 3, &s_cellular_recovery_task, 1);
+        NULL, 3, &task, 1);
     if (created != pdPASS) {
+        taskENTER_CRITICAL(&s_task_state_lock);
         s_cellular_recovery_task = NULL;
+        s_cellular_recovery_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
         ESP_LOGE(TAG, "cannot start ML307 recovery task");
         return false;
     }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_cellular_recovery_task = task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
+        .name = "cellular_recovery",
+        .context = (void *)task,
+        .stop = stop_cellular_recovery_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register ML307 recovery coordinator: %s",
+                 esp_err_to_name(registry_err));
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_cellular_recovery_stop_requested = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        xSemaphoreGive(s_cellular_recovery_start_gate);
+        (void)stop_cellular_recovery_task(500);
+        return false;
+    }
+    xSemaphoreGive(s_cellular_recovery_start_gate);
     return true;
 }
 
@@ -7694,28 +11187,166 @@ static bool start_cellular(void) {
     return true;
 }
 
+/* 多热点自动选网：扫描可见 AP，把已存热点按最强 RSSI 从强到弱排序后逐个
+ * 尝试连接，某个热点拿到 IP 即返回 true。扫描失败、没有可见的已存热点或
+ * 全部连接失败时返回 false，由调用方回退到原单凭据连接流程（失败后的
+ * "网络暂时不可用"/配网逻辑保持不变）。 */
+static bool start_wifi_saved_list(void) {
+    wifi_ap_record_t *records =
+        heap_caps_calloc(SETUP_SCAN_MAX_APS, sizeof(*records),
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!records) return false;
+    // 逐个尝试期间禁止断线回调自动重连，避免它抢连尚未切换的旧配置。
+    s_station_auto_connect = false;
+    if (!s_wifi_started) {
+        esp_err_t start_err = esp_wifi_start();
+        if (start_err != ESP_OK) {
+            ESP_LOGW(TAG, "cannot start Wi-Fi for saved-network scan: %s",
+                     esp_err_to_name(start_err));
+            heap_caps_free(records);
+            s_station_auto_connect = true;
+            return false;
+        }
+        s_wifi_started = true;
+    }
+    wifi_scan_config_t scan_config = { .show_hidden = false };
+    esp_err_t err = esp_wifi_scan_start(&scan_config, true);
+    uint16_t ap_count = SETUP_SCAN_MAX_APS;
+    if (err == ESP_OK) {
+        err = esp_wifi_scan_get_ap_records(&ap_count, records);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi scan for saved networks failed: %s", esp_err_to_name(err));
+        heap_caps_free(records);
+        s_station_auto_connect = true;
+        return false;
+    }
+    // 已存热点按可见 AP 的最强 RSSI 排序（候选最多 5 个，直接插入排序）。
+    uint8_t order[CONFIGURATION_WIFI_NETWORK_CAPACITY];
+    int8_t best_rssi[CONFIGURATION_WIFI_NETWORK_CAPACITY];
+    uint8_t candidate_count = 0;
+    for (uint8_t i = 0; i < s_wifi_network_count; ++i) {
+        int8_t rssi = INT8_MIN;
+        for (uint16_t ap = 0; ap < ap_count; ++ap) {
+            // 扫描记录的 ssid 达到 32 字节时没有 NUL 结尾，按定长比较。
+            if (!strncmp((const char *)records[ap].ssid, s_wifi_networks[i].ssid,
+                         sizeof(records[ap].ssid)) &&
+                records[ap].rssi > rssi) {
+                rssi = records[ap].rssi;
+            }
+        }
+        if (rssi == INT8_MIN) continue; // 当前不可见
+        uint8_t pos = candidate_count;
+        while (pos > 0 && best_rssi[pos - 1] < rssi) {
+            order[pos] = order[pos - 1];
+            best_rssi[pos] = best_rssi[pos - 1];
+            --pos;
+        }
+        order[pos] = i;
+        best_rssi[pos] = rssi;
+        ++candidate_count;
+    }
+    heap_caps_free(records);
+    if (!candidate_count) {
+        ESP_LOGI(TAG, "no saved Wi-Fi network is currently visible");
+        s_station_auto_connect = true;
+        return false;
+    }
+    bool connected = false;
+    for (uint8_t c = 0; c < candidate_count && !connected; ++c) {
+        const configuration_wifi_network_t *network = &s_wifi_networks[order[c]];
+        ESP_LOGI(TAG, "trying saved Wi-Fi %s (%d dBm)", network->ssid, (int)best_rssi[c]);
+        strlcpy(s_wifi_ssid, network->ssid, sizeof(s_wifi_ssid));
+        strlcpy(s_wifi_password, network->password, sizeof(s_wifi_password));
+        wifi_config_t config = { .sta = { .threshold.authmode = WIFI_AUTH_WPA2_PSK } };
+        strlcpy((char *)config.sta.ssid, s_wifi_ssid, sizeof(config.sta.ssid));
+        strlcpy((char *)config.sta.password, s_wifi_password, sizeof(config.sta.password));
+        esp_err_t config_err = esp_wifi_set_config(WIFI_IF_STA, &config);
+        if (config_err != ESP_OK) {
+            ESP_LOGW(TAG, "cannot configure saved Wi-Fi %s: %s", s_wifi_ssid,
+                     esp_err_to_name(config_err));
+            continue;
+        }
+        app_ui_set_wifi_status(s_wifi_ssid, false);
+        if (c > 0) {
+            esp_err_t disconnect_err = esp_wifi_disconnect();
+            if (disconnect_err != ESP_OK && disconnect_err != ESP_ERR_WIFI_NOT_CONNECT) {
+                ESP_LOGW(TAG, "cannot switch saved Wi-Fi candidate: %s",
+                         esp_err_to_name(disconnect_err));
+            }
+        }
+        /* Each candidate receives a new Connectivity-owned attempt epoch.
+         * A late DHCP event for a prior candidate may update the physical
+         * observation, but it cannot satisfy this candidate's waiter unless
+         * it was published after the epoch became current. */
+        uint32_t attempt_epoch = device_connectivity_begin_wifi_attempt(s_wifi_ssid);
+        if (attempt_epoch == 0) {
+            ESP_LOGE(TAG, "cannot create Wi-Fi readiness attempt");
+            break;
+        }
+        esp_err_t connect_err = esp_wifi_connect();
+        if (connect_err != ESP_OK && connect_err != ESP_ERR_WIFI_CONN) {
+            ESP_LOGW(TAG, "cannot start saved Wi-Fi attempt: %s",
+                     esp_err_to_name(connect_err));
+            continue; // 发起失败直接试下一个候选
+        }
+        connected = device_connectivity_wait_wifi_attempt(
+            attempt_epoch, WIFI_CANDIDATE_CONNECT_TIMEOUT_MS);
+        if (!connected) {
+            ESP_LOGW(TAG, "saved Wi-Fi %s did not connect within %u ms",
+                     s_wifi_ssid, WIFI_CANDIDATE_CONNECT_TIMEOUT_MS);
+        }
+    }
+    s_station_auto_connect = true;
+    if (!connected) {
+        // 全部失败：保持原有后台自动重连行为（以最后一个候选继续重试）。
+        device_connectivity_set_wifi_ready(false);
+        app_ui_set_wifi_status(s_wifi_ssid, false);
+    }
+    return connected;
+}
+
 static bool start_wifi(void) {
     /* A prior DHCP session is not evidence for this new adapter start. The
      * IP event publishes readiness only after this attempt acquires an
      * address. This is particularly important when Fangtang switches from
      * ML307 back to Wi-Fi during a recovery path. */
-    device_connectivity_set_wifi_ready(false);
-    init_network();
+    esp_err_t network_init_err = init_network();
+    if (network_init_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot initialize Wi-Fi transport: %s",
+                 esp_err_to_name(network_init_err));
+        return false;
+    }
     ensure_station_netif();
+    if (!s_sta_netif) {
+        ESP_LOGE(TAG, "cannot create Wi-Fi station netif");
+        return false;
+    }
     s_station_auto_connect = true;
     s_station_expected_disconnect = false;
     bool enterprise = is_enterprise_wifi();
     wifi_config_t config = { .sta = { .threshold.authmode = enterprise ? WIFI_AUTH_WPA2_ENTERPRISE : WIFI_AUTH_WPA2_PSK } };
     strlcpy((char *)config.sta.ssid, s_wifi_ssid, sizeof(config.sta.ssid));
     if (!enterprise) strlcpy((char *)config.sta.password, s_wifi_password, sizeof(config.sta.password));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(s_setup_server ? WIFI_MODE_APSTA : WIFI_MODE_STA));
+    esp_err_t wifi_err = esp_wifi_set_mode(s_setup_server ? WIFI_MODE_APSTA : WIFI_MODE_STA);
+    if (wifi_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot select Wi-Fi station mode: %s", esp_err_to_name(wifi_err));
+        return false;
+    }
     // The connected router's 802.11n management traffic triggers a double
     // exception in this ESP-IDF 6.0.2 S3 Wi-Fi binary immediately after DHCP.
     // EchoEar needs reliability rather than throughput, so use legacy b/g
     // station negotiation until that driver path is upgraded.
-    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA,
-                                          WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
+    wifi_err = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G);
+    if (wifi_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot select Wi-Fi station protocol: %s", esp_err_to_name(wifi_err));
+        return false;
+    }
+    wifi_err = esp_wifi_set_config(WIFI_IF_STA, &config);
+    if (wifi_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot configure Wi-Fi station: %s", esp_err_to_name(wifi_err));
+        return false;
+    }
     // ESP-IDF 6.0.2's modem-sleep path can tear down the PHY's esp_timer while
     // its ISR is still armed on this S3 build. The resulting task-notify ISR
     // assertion occurs just after association and reboots the device. EchoEar
@@ -7724,26 +11355,43 @@ static bool start_wifi(void) {
     if (ps_err != ESP_OK) {
         ESP_LOGW(TAG, "cannot disable Wi-Fi power save: %s", esp_err_to_name(ps_err));
     }
+    /* 多热点：个人网络且已存列表非空时，先扫描并连接可见的最强已存热点。
+     * 扫描失败、无可见已存热点或全部连接失败都会落回下方原单凭据流程，
+     * 保持"网络暂时不可用"与后台重连行为不变。 */
+    if (!enterprise && s_wifi_network_count > 0 && start_wifi_saved_list()) {
+        return true;
+    }
     if (enterprise) {
         // Android/iOS-style defaults: PEAP + MSCHAPv2, username as identity
         // when anonymous identity is omitted, and platform trust anchors.
         const char *identity = s_wifi_identity[0] ? s_wifi_identity : s_wifi_username;
         esp_eap_method_t method = !strcmp(s_wifi_eap_method, "ttls") ? ESP_EAP_TYPE_TTLS : ESP_EAP_TYPE_PEAP;
-        ESP_ERROR_CHECK(esp_eap_client_set_identity((const unsigned char *)identity, strlen(identity)));
-        ESP_ERROR_CHECK(esp_eap_client_set_username((const unsigned char *)s_wifi_username, strlen(s_wifi_username)));
-        ESP_ERROR_CHECK(esp_eap_client_set_password((const unsigned char *)s_wifi_password, strlen(s_wifi_password)));
+        wifi_err = esp_eap_client_set_identity((const unsigned char *)identity, strlen(identity));
+        if (wifi_err != ESP_OK) goto enterprise_config_failed;
+        wifi_err = esp_eap_client_set_username((const unsigned char *)s_wifi_username,
+                                               strlen(s_wifi_username));
+        if (wifi_err != ESP_OK) goto enterprise_config_failed;
+        wifi_err = esp_eap_client_set_password((const unsigned char *)s_wifi_password,
+                                               strlen(s_wifi_password));
+        if (wifi_err != ESP_OK) goto enterprise_config_failed;
         if (!strcmp(s_wifi_eap_method, "ttls")) {
-            ESP_ERROR_CHECK(esp_eap_client_set_ttls_phase2_method(
-                !strcmp(s_wifi_ttls_phase2, "pap") ? ESP_EAP_TTLS_PHASE2_PAP : ESP_EAP_TTLS_PHASE2_MSCHAPV2));
+            wifi_err = esp_eap_client_set_ttls_phase2_method(
+                !strcmp(s_wifi_ttls_phase2, "pap") ? ESP_EAP_TTLS_PHASE2_PAP :
+                                                       ESP_EAP_TTLS_PHASE2_MSCHAPV2);
+            if (wifi_err != ESP_OK) goto enterprise_config_failed;
         }
         if (!strcmp(s_wifi_ca_mode, "system")) {
-            ESP_ERROR_CHECK(esp_eap_client_use_default_cert_bundle(true));
+            wifi_err = esp_eap_client_use_default_cert_bundle(true);
+            if (wifi_err != ESP_OK) goto enterprise_config_failed;
         }
         if (s_wifi_server_domain[0]) {
-            ESP_ERROR_CHECK(esp_eap_client_set_domain_name(s_wifi_server_domain));
+            wifi_err = esp_eap_client_set_domain_name(s_wifi_server_domain);
+            if (wifi_err != ESP_OK) goto enterprise_config_failed;
         }
-        ESP_ERROR_CHECK(esp_eap_client_set_eap_methods(method));
-        ESP_ERROR_CHECK(esp_wifi_sta_enterprise_enable());
+        wifi_err = esp_eap_client_set_eap_methods(method);
+        if (wifi_err != ESP_OK) goto enterprise_config_failed;
+        wifi_err = esp_wifi_sta_enterprise_enable();
+        if (wifi_err != ESP_OK) goto enterprise_config_failed;
         s_wifi_enterprise_enabled = true;
     } else {
         // Enterprise state can only exist after a prior runtime enterprise
@@ -7758,30 +11406,70 @@ static bool start_wifi(void) {
             s_wifi_enterprise_enabled = false;
         }
     }
+    /* Start a fresh Connectivity-owned readiness session before any station
+     * operation can synchronously emit a DHCP event. */
+    uint32_t attempt_epoch = device_connectivity_begin_wifi_attempt(s_wifi_ssid);
+    if (attempt_epoch == 0) {
+        ESP_LOGE(TAG, "cannot create Wi-Fi readiness attempt");
+        return false;
+    }
     app_ui_set_wifi_status(s_wifi_ssid, false);
     if (!s_wifi_started) {
-        ESP_ERROR_CHECK(esp_wifi_start());
+        wifi_err = esp_wifi_start();
+        if (wifi_err != ESP_OK) {
+            ESP_LOGE(TAG, "cannot start Wi-Fi station: %s", esp_err_to_name(wifi_err));
+            return false;
+        }
         s_wifi_started = true;
     } else {
-        ESP_ERROR_CHECK(esp_wifi_connect());
+        wifi_err = esp_wifi_connect();
+        if (wifi_err != ESP_OK && wifi_err != ESP_ERR_WIFI_CONN) {
+            ESP_LOGE(TAG, "cannot connect Wi-Fi station: %s", esp_err_to_name(wifi_err));
+            return false;
+        }
     }
-    EventBits_t result = xEventGroupWaitBits(s_wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE,
-                                             pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
-    if (result & WIFI_CONNECTED_BIT) {
-        /* The IP event normally publishes this first. Repeat the publication
-         * here so a future alternate Wi-Fi adapter cannot create a successful
-         * synchronous start with a stale service observation. */
-        device_connectivity_set_wifi_ready(true);
+    if (device_connectivity_wait_wifi_attempt(attempt_epoch, WIFI_CONNECT_TIMEOUT_MS)) {
         return true;
     }
-    device_connectivity_set_wifi_ready(false);
     app_ui_set_wifi_status(s_wifi_ssid, false);
     ESP_LOGW(TAG, "Wi-Fi did not connect within %u ms: %s", WIFI_CONNECT_TIMEOUT_MS, s_wifi_ssid);
     return false;
+
+enterprise_config_failed:
+    /* EAP setup can fail for malformed credentials, missing certificate
+     * support, or a transient driver state.  It must not reboot the device;
+     * readiness remains false and the regular Connectivity recovery policy
+     * can surface the fault.  Only undo enterprise mode if this attempt had
+     * actually enabled it, avoiding the IDF cold-personal-Wi-Fi disable bug. */
+    ESP_LOGE(TAG, "cannot configure enterprise Wi-Fi: %s", esp_err_to_name(wifi_err));
+    if (s_wifi_enterprise_enabled) {
+        esp_err_t disable_err = esp_wifi_sta_enterprise_disable();
+        if (disable_err != ESP_OK) {
+            ESP_LOGW(TAG, "cannot undo failed enterprise Wi-Fi setup: %s",
+                     esp_err_to_name(disable_err));
+        } else {
+            s_wifi_enterprise_enabled = false;
+        }
+    }
+    return false;
+}
+
+static bool gateway_startup_stop_requested(void) {
+    bool requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    requested = s_gateway_startup_stop_requested;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return requested;
 }
 
 static void gateway_startup_task(void *arg) {
     (void)arg;
+    if (!s_gateway_startup_start_gate ||
+        xSemaphoreTake(s_gateway_startup_start_gate, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(TAG, "gateway startup start gate unavailable");
+        goto finish;
+    }
+    if (gateway_startup_stop_requested()) goto finish;
     // Startup remains the clean ambient pet face. Connection progress belongs
     // in the serial log; it must never cover the clock, weather or pet.
     ESP_LOGI(TAG, "gateway startup: url=%s paired=%s pair_code=%s", s_gateway_url, s_gateway_token[0] ? "yes" : "no", s_pair_code[0] ? "present" : "missing");
@@ -7795,9 +11483,10 @@ static void gateway_startup_task(void *arg) {
         uint32_t retry_ms = GATEWAY_RETRY_INITIAL_MS;
         unsigned attempt = 0;
         bool paired = false;
-        while (true) {
+        while (!gateway_startup_stop_requested()) {
             ++attempt;
             esp_err_t err = paired ? gateway_handshake(true) : pair_by_code();
+            if (gateway_startup_stop_requested()) break;
             if (err == ESP_OK) {
                 if (!paired) {
                     paired = true;
@@ -7822,22 +11511,25 @@ static void gateway_startup_task(void *arg) {
             ESP_LOGW(TAG, "gateway %s attempt %u failed: %s; retry in %lu ms",
                      paired ? "handshake" : "pairing", attempt, esp_err_to_name(err),
                      (unsigned long)retry_ms);
-            vTaskDelay(pdMS_TO_TICKS(retry_ms));
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(retry_ms));
             if (retry_ms < GATEWAY_RETRY_MAX_MS) {
                 retry_ms *= 2;
                 if (retry_ms > GATEWAY_RETRY_MAX_MS) retry_ms = GATEWAY_RETRY_MAX_MS;
             }
         }
     } else if (!s_gateway_token[0]) {
-        pet("quiet");
-        app_ui_show_text("设备未配对", "正在开启配对热点");
-        start_setup_portal(true);
+        if (!gateway_startup_stop_requested()) {
+            pet("quiet");
+            app_ui_show_text("设备未配对", "正在开启配对热点");
+            start_setup_portal(true);
+        }
     } else {
         uint32_t retry_ms = GATEWAY_RETRY_INITIAL_MS;
         unsigned attempt = 0;
-        while (true) {
+        while (!gateway_startup_stop_requested()) {
             ++attempt;
             esp_err_t err = gateway_handshake(true);
+            if (gateway_startup_stop_requested()) break;
             if (err == ESP_OK) {
                 (void)start_gateway_ready_tasks();
                 apply_deferred_startup_pet_asset();
@@ -7859,28 +11551,99 @@ static void gateway_startup_task(void *arg) {
             app_ui_show_startup_screen();
             ESP_LOGW(TAG, "gateway handshake attempt %u failed: %s; retry in %lu ms",
                      attempt, esp_err_to_name(err), (unsigned long)retry_ms);
-            vTaskDelay(pdMS_TO_TICKS(retry_ms));
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(retry_ms));
             if (retry_ms < GATEWAY_RETRY_MAX_MS) {
                 retry_ms *= 2;
                 if (retry_ms > GATEWAY_RETRY_MAX_MS) retry_ms = GATEWAY_RETRY_MAX_MS;
             }
         }
     }
+finish:
     taskENTER_CRITICAL(&s_task_state_lock);
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    if (s_gateway_task == self) s_gateway_task = NULL;
     s_gateway_startup_running = false;
-    s_gateway_task = NULL;
+    s_gateway_startup_starting = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_gateway_startup_stopped) xSemaphoreGive(s_gateway_startup_stopped);
+    (void)task_registry_unregister_with_timeout(TASK_REGISTRY_OWNER_CONNECTIVITY,
+                                                 (void *)self, 10);
     vTaskDelete(NULL);
+}
+
+static esp_err_t stop_gateway_startup_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_gateway_startup_stop_requested = true;
+    task = s_gateway_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    const uint32_t cancel_guard_ms = remaining_ms > 100 ? 100 : remaining_ms;
+    if (s_gateway_startup_client_mutex && cancel_guard_ms != 0 &&
+        xSemaphoreTake(s_gateway_startup_client_mutex, pdMS_TO_TICKS(cancel_guard_ms)) == pdTRUE) {
+        esp_http_client_handle_t client = s_gateway_startup_active_client;
+        if (client) {
+            esp_err_t cancel_err = esp_http_client_cancel_request(client);
+            if (cancel_err != ESP_OK) {
+                ESP_LOGW(TAG, "gateway startup HTTP cancel returned: %s",
+                         esp_err_to_name(cancel_err));
+            }
+        }
+        xSemaphoreGive(s_gateway_startup_client_mutex);
+    }
+    xTaskNotifyGive(task);
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (!s_gateway_startup_stopped ||
+        remaining_ms == 0 ||
+        xSemaphoreTake(s_gateway_startup_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
+    esp_err_t unregister_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)task, remaining_ms);
+    if (unregister_err != ESP_OK) return unregister_err;
+    ESP_LOGI(TAG, "gateway startup coordinator stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_gateway_startup_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_gateway_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return stop_gateway_startup_task(timeout_ms);
 }
 
 static bool start_gateway_startup_task(void) {
     TaskHandle_t task = NULL;
     taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_gateway_startup_running) {
+    if (s_gateway_startup_running || s_gateway_startup_starting) {
         taskEXIT_CRITICAL(&s_task_state_lock);
         return true;
     }
     s_gateway_startup_running = true;
+    s_gateway_startup_starting = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+
+    if (!s_gateway_startup_start_gate || !s_gateway_startup_stopped ||
+        !s_gateway_startup_client_mutex) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_gateway_startup_running = false;
+        s_gateway_startup_starting = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        ESP_LOGE(TAG, "gateway startup lifecycle primitives unavailable");
+        return false;
+    }
+    while (xSemaphoreTake(s_gateway_startup_stopped, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_gateway_startup_stop_requested = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
 
     /*
@@ -7902,17 +11665,33 @@ static bool start_gateway_startup_task(void) {
     if (created != pdPASS) {
         taskENTER_CRITICAL(&s_task_state_lock);
         s_gateway_startup_running = false;
+        s_gateway_startup_starting = false;
         s_gateway_task = NULL;
         taskEXIT_CRITICAL(&s_task_state_lock);
         ESP_LOGE(TAG, "cannot start gateway startup task");
         return false;
     }
     taskENTER_CRITICAL(&s_task_state_lock);
-    // A very fast terminal path can finish before task creation returns. Do
-    // not resurrect its stale FreeRTOS handle after it has cleared the running
-    // flag in gateway_startup_task().
-    if (s_gateway_startup_running) s_gateway_task = task;
+    s_gateway_task = task;
     taskEXIT_CRITICAL(&s_task_state_lock);
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
+        .name = "gateway_startup",
+        .context = (void *)task,
+        .stop = stop_gateway_startup_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot register gateway startup coordinator: %s",
+                 esp_err_to_name(registry_err));
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_gateway_startup_stop_requested = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        xSemaphoreGive(s_gateway_startup_start_gate);
+        (void)stop_gateway_startup_task(500);
+        return false;
+    }
+    xSemaphoreGive(s_gateway_startup_start_gate);
     return true;
 }
 
@@ -7958,6 +11737,35 @@ static device_status_t startup_status_from_esp_err(esp_err_t err) {
     }
 }
 
+/* Rollback is a composition-root transaction.  Do not forward the original
+ * allowance repeatedly: helpers receive only what remains of this monotonic
+ * deadline.  Round up a non-zero remainder so a child can observe and return
+ * a real timeout instead of treating a sub-millisecond budget as invalid. */
+static uint32_t startup_rollback_remaining_timeout_ms(int64_t deadline_us) {
+    const int64_t remaining_us = deadline_us - esp_timer_get_time();
+    if (remaining_us <= 0) return 0;
+    const uint64_t rounded_ms = ((uint64_t)remaining_us + 999u) / 1000u;
+    return rounded_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)rounded_ms;
+}
+
+static void startup_rollback_deadline_exhausted(const char *next_step) {
+    ESP_LOGW(TAG,
+             "startup rollback deadline exhausted before %s; "
+             "retaining unvisited owners fail-closed",
+             next_step ? next_step : "next step");
+}
+
+/* A rollback step that cannot quiesce is a live dependency boundary, not a
+ * best-effort warning. The composition root must not continue and release
+ * downstream state that the retained task/callback can still enter. */
+static void startup_rollback_step_blocked(const char *step, const char *detail) {
+    ESP_LOGW(TAG,
+             "startup rollback stopped at %s%s%s; retaining downstream owners fail-closed",
+             step ? step : "unknown step",
+             detail ? ": " : "",
+             detail ? detail : "");
+}
+
 /* The first lifecycle slice deliberately stops before radio/gateway work when
  * a required local service cannot start.  It is not a full SAFE_MODE: it
  * merely leaves serial identity diagnostics alive and avoids a panic/reboot
@@ -7981,104 +11789,386 @@ static void startup_enter_degraded(device_runtime_phase_t phase,
  * Other services are intentionally not force-deleted here: their lifecycle
  * contracts are still being migrated and may own timers, I/O, or callbacks. */
 static void startup_stop_local_workers(void) {
-    const TickType_t timeout = pdMS_TO_TICKS(500);
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)STARTUP_ROLLBACK_TIMEOUT_MS * 1000;
+    uint32_t timeout_ms = 0;
+#define STARTUP_ROLLBACK_NEXT_TIMEOUT(step_name)                                      \
+    do {                                                                               \
+        timeout_ms = startup_rollback_remaining_timeout_ms(deadline_us);              \
+        if (timeout_ms == 0) {                                                         \
+            startup_rollback_deadline_exhausted(step_name);                            \
+            return;                                                                    \
+        }                                                                              \
+    } while (0)
+    /* A saved-configuration coordinator can be between its response-flush
+     * delay and the terminal portal transaction when startup rollback begins.
+     * It is a Connectivity Registry entry, but the portal below is also
+     * explicitly stopped before the generic Registry sweep.  Draining both in
+     * parallel would let two callers issue httpd_stop()/DNS join against the
+     * same generation.  Stop the coordinator first; its completion is defined
+     * to cover its portal cleanup, so only then may this rollback issue an
+     * idempotent portal transaction of its own.
+     *
+     * On timeout keep the generation fail-closed and do not continue tearing
+     * down the coordinator's dependencies underneath it.  In particular, do
+     * not turn a bounded-stop failure into a racing second portal teardown.
+     */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("post-save restart coordinator");
+    esp_err_t setup_restart_stop_err = stop_setup_restart_task(timeout_ms);
+    if (setup_restart_stop_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "post-save restart coordinator did not stop before rollback: %s; "
+                 "leaving provisioning generation isolated",
+                 esp_err_to_name(setup_restart_stop_err));
+        startup_rollback_step_blocked("post-save restart coordinator", NULL);
+        return;
+    }
+
+    /* A provisioning attempt can have started after the regular local-service
+     * startup boundary (for example through force-setup or rejected pairing).
+     * Drain its independently-owned HTTP/DNS resources before the generic
+     * Connectivity Registry is stopped.  On a join error the helper remains
+     * fail-closed and deliberately retains the logical session, scratch and
+     * lease; the degraded boot must not resume gateway/command work beneath a
+     * possibly live credentials handler. */
+    if (device_connectivity_is_provisioning_active() || s_setup_server || s_dns_task) {
+        STARTUP_ROLLBACK_NEXT_TIMEOUT("provisioning transaction");
+        esp_err_t portal_stop_err = stop_setup_portal_transaction(timeout_ms, false);
+        if (portal_stop_err != ESP_OK) {
+            ESP_LOGW(TAG, "provisioning transaction did not stop during startup rollback: %s",
+                     esp_err_to_name(portal_stop_err));
+            startup_rollback_step_blocked("provisioning transaction", NULL);
+            return;
+        }
+    }
 
     /* Close the publisher before draining its persistence workers.  The call
      * is idempotent, so it is also safe on early failures before Input Service
      * was started.  Never delete a foreground interaction here: it has its
      * own operation/cancel protocol and is not yet part of this rollback set. */
-    device_status_t input_stop_status = app_intent_service_stop(500);
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("input service");
+    device_status_t input_stop_status = app_intent_service_stop(timeout_ms);
     if (input_stop_status != DEVICE_STATUS_OK) {
         ESP_LOGW(TAG, "input service did not stop during startup rollback: %d",
                  (int)input_stop_status);
+        startup_rollback_step_blocked("input service", NULL);
+        return;
     }
 
     /* Decorative board tasks may hold the LCD mutex and continue rendering
      * after the shared local services have entered DEGRADED. Stop/join the
      * explicitly covered animation workers before Power Service can tear down
      * display-off timing; this is intentionally not a full board deinit. */
-    esp_err_t board_background_stop_err = board_port_stop_background_tasks(500);
-    if (board_background_stop_err != ESP_OK) {
-        ESP_LOGW(TAG, "board background tasks did not stop during startup rollback: %s",
-                 esp_err_to_name(board_background_stop_err));
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("board background workers");
+    device_status_t board_background_stop_status =
+        platform_lifecycle_stop_board_background_tasks(timeout_ms);
+    if (board_background_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "board background tasks did not stop during startup rollback: %d",
+                 (int)board_background_stop_status);
+        startup_rollback_step_blocked("board background workers", NULL);
+        return;
     }
 
-    esp_err_t ambient_stop_err = stop_ambient_clock_task(500);
-    if (ambient_stop_err != ESP_OK) {
-        ESP_LOGW(TAG, "ambient clock task did not stop during startup rollback: %s",
-                 esp_err_to_name(ambient_stop_err));
+    /* Display Service owns the only task that can enter Platform Display.
+     * Stop it after board-local animation workers have released their LCD
+     * borrowing, but before Power can tear down display-off scheduling. The
+     * selected renderer/panel remain boot-lifetime diagnostic resources; this
+     * is task quiescence, not a restartable display deinit. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Display Service");
+    esp_err_t display_stop_err =
+        task_registry_stop_owner(TASK_REGISTRY_OWNER_BOARD, timeout_ms);
+    if (display_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "Display Service did not stop during startup rollback: %s",
+                 esp_err_to_name(display_stop_err));
+        startup_rollback_step_blocked("Display Service", NULL);
+        return;
     }
 
-    esp_err_t gateway_poll_stop_err = stop_gateway_poll_task(500);
-    if (gateway_poll_stop_err != ESP_OK) {
-        ESP_LOGW(TAG, "gateway poll task did not stop during startup rollback: %s",
-                 esp_err_to_name(gateway_poll_stop_err));
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Power registry workers");
+    esp_err_t power_worker_stop_err =
+        task_registry_stop_owner(TASK_REGISTRY_OWNER_POWER, timeout_ms);
+    if (power_worker_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "registered power workers did not stop during startup rollback: %s",
+                 esp_err_to_name(power_worker_stop_err));
+        startup_rollback_step_blocked("Power registry workers", NULL);
+        return;
     }
 
-    TaskHandle_t cancel_task = NULL;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_command_cancel_stop_requested = true;
-    cancel_task = s_command_cancel_task;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (cancel_task) {
-        xTaskNotifyGive(cancel_task);
-        if (s_command_cancel_stopped &&
-            xSemaphoreTake(s_command_cancel_stopped, timeout) != pdTRUE) {
-            ESP_LOGW(TAG, "command cancel worker did not stop within startup rollback timeout");
+    /* The cold-start pet is decorative, but it owns independent HTTP, media
+     * lease and renderer/cache work. Quiesce it before the Gateway worker and
+     * later service teardown can release those shared dependencies. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("startup pet worker");
+    esp_err_t startup_pet_stop_err = stop_startup_pet_asset_task(timeout_ms);
+    if (startup_pet_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "startup pet asset task did not stop during startup rollback: %s",
+                 esp_err_to_name(startup_pet_stop_err));
+        startup_rollback_step_blocked("startup pet worker", NULL);
+        return;
+    }
+
+    /* Cache work runs on an internal stack and borrows its frame from either
+     * the startup worker or a runtime update. Drain it independently: joining
+     * the startup worker alone is not proof that Flash/VFS no longer owns the
+     * borrowed frame or the shared cache mutex. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("pet cache worker");
+    esp_err_t pet_cache_stop_err = stop_pet_cache_task(timeout_ms);
+    if (pet_cache_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "pet cache task did not stop during startup rollback: %s",
+                 esp_err_to_name(pet_cache_stop_err));
+        startup_rollback_step_blocked("pet cache worker", NULL);
+        return;
+    }
+
+    /* The restart coordinator is an AUDIO owner but does not own the board's
+     * recognizer itself.  Stop it before tearing down connectivity/persistence
+     * dependencies so a late retry cannot recreate wake processing during a
+     * degraded boot. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Audio registry workers");
+    esp_err_t audio_worker_stop_err =
+        task_registry_stop_owner(TASK_REGISTRY_OWNER_AUDIO, timeout_ms);
+    if (audio_worker_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "registered audio workers did not stop during startup rollback: %s",
+                 esp_err_to_name(audio_worker_stop_err));
+        startup_rollback_step_blocked("Audio registry workers", NULL);
+        return;
+    }
+
+    /* The selected board owns the recognizer's MultiNet/I2S resources rather
+     * than a main.c Registry entry, but it is still part of this audio fault
+     * domain.  Drain its callback handoff under the same parent deadline
+     * before a rollback can tear down services that it may otherwise reenter.
+     * A timeout retains the closed generation and stops this dependency chain
+     * fail-closed; no later owner may be released underneath a live callback. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("offline wake-word generation");
+    esp_err_t wake_stop_err = audio_wake_word_stop_with_timeout(timeout_ms);
+    if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG,
+                 "offline wake-word generation did not stop during startup rollback: %s; "
+                 "leaving audio generation isolated",
+                 esp_err_to_name(wake_stop_err));
+        startup_rollback_step_blocked("offline wake-word generation", NULL);
+        return;
+    }
+
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Connectivity registry workers");
+    esp_err_t connectivity_worker_stop_err =
+        task_registry_stop_owner(TASK_REGISTRY_OWNER_CONNECTIVITY, timeout_ms);
+    if (connectivity_worker_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "registered connectivity workers did not stop during startup rollback: %s",
+                 esp_err_to_name(connectivity_worker_stop_err));
+        startup_rollback_step_blocked("Connectivity registry workers", NULL);
+        return;
+    }
+
+    /* Registry stops the recovery coordinator before this adapter boundary.
+     * The transport quiesce then closes new ML307 start/HTTP admission and
+     * joins its registration/probe coordination. It deliberately retains the
+     * UART/modem and any active non-foreground HTTP borrower, so a timeout is
+     * logged as incomplete isolation rather than treated as full shutdown. */
+    if (device_connectivity_is_active_cellular()) {
+        STARTUP_ROLLBACK_NEXT_TIMEOUT("cellular transport");
+        device_status_t cellular_quiesce_status =
+            device_connectivity_quiesce_cellular_transport(timeout_ms);
+        if (cellular_quiesce_status != DEVICE_STATUS_OK) {
+            ESP_LOGW(TAG, "cellular transport did not quiesce during startup rollback: %d",
+                     (int)cellular_quiesce_status);
+            startup_rollback_step_blocked("cellular transport", NULL);
+            return;
         }
     }
 
-    if (s_output_volume_persist_task_handle && s_output_volume_persist_queue) {
-        output_volume_persist_request_t stop_request = {.stop = true};
-        if (xQueueSend(s_output_volume_persist_queue, &stop_request, timeout) != pdTRUE) {
-            ESP_LOGW(TAG, "volume persistence worker stop queue is full");
-        } else if (s_output_volume_persist_stopped &&
-                   xSemaphoreTake(s_output_volume_persist_stopped, timeout) != pdTRUE) {
-            ESP_LOGW(TAG, "volume persistence worker did not stop within startup rollback timeout");
-        }
+    /* All Connectivity-owned workers (including the clock monitor) have now
+     * been stopped. A cold-start rollback may therefore release the actual
+     * Wi-Fi/SNTP/netif/event-loop resources without callbacks racing a dead
+     * handler. This is intentionally attempted only in the rollback path;
+     * normal setup transitions retain the running radio. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("network core");
+    esp_err_t network_core_stop_err = stop_connectivity_root_transaction(timeout_ms);
+    if (network_core_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "network core did not fully stop during startup rollback: %s",
+                 esp_err_to_name(network_core_stop_err));
+        startup_rollback_step_blocked("network core", NULL);
+        return;
     }
 
-    device_status_t fall_stop_status = fall_detection_service_deinit(500);
-    if (fall_stop_status != DEVICE_STATUS_OK) {
-        ESP_LOGW(TAG, "fall detection did not stop during startup rollback: %d",
-                 (int)fall_stop_status);
+    /* Update Service is a synchronous Persistence consumer. Close tool and
+     * Hub-metadata admission before Persistence shuts its request boundary. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Update Service");
+    esp_err_t update_stop_err = update_service_deinit(timeout_ms);
+    if (update_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "update service did not stop during startup rollback: %s",
+                 esp_err_to_name(update_stop_err));
+        startup_rollback_step_blocked("Update Service", NULL);
+        return;
     }
 
-    device_status_t power_stop_status = device_power_deinit(500);
-    if (power_stop_status != DEVICE_STATUS_OK) {
-        ESP_LOGW(TAG, "power service did not stop during startup rollback: %d",
-                 (int)power_stop_status);
+    /* Weather cache and meeting-recovery metadata are synchronous Persistence
+     * consumers. Close their admission after connectivity/meeting workers have
+     * stopped, but before the shared NVS request boundary can be closed. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("weather cache");
+    esp_err_t weather_cache_stop_err = weather_cache_service_deinit(timeout_ms);
+    if (weather_cache_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "weather cache did not stop during startup rollback: %s",
+                 esp_err_to_name(weather_cache_stop_err));
+        startup_rollback_step_blocked("weather cache", NULL);
+        return;
+    }
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("meeting recovery metadata");
+    esp_err_t meeting_recovery_stop_err = meeting_recovery_service_deinit(timeout_ms);
+    if (meeting_recovery_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "meeting recovery metadata did not stop during startup rollback: %s",
+                 esp_err_to_name(meeting_recovery_stop_err));
+        startup_rollback_step_blocked("meeting recovery metadata", NULL);
+        return;
     }
 
-    /* Deadline clients must leave first. Alarm normally starts only after
-     * gateway TLS, but include it here so this rollback stays correct as new
-     * post-alarm startup phases are added. A failed alarm join keeps the
-     * shared dispatcher alive rather than freeing callback state beneath it. */
-    esp_err_t alarm_stop_err = alarm_manager_deinit(500);
+    /* Resource Pressure samples SPIFFS capacity. Stop that observation before
+     * any future rollback releases or remounts Storage/VFS; late optional-pet
+     * callers then fail closed instead of querying a stale filesystem label. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("resource-pressure service");
+    device_status_t pressure_stop_status = resource_pressure_service_deinit(timeout_ms);
+    if (pressure_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "resource pressure service did not stop during startup rollback: %d",
+                 (int)pressure_stop_status);
+        startup_rollback_step_blocked("resource-pressure service", NULL);
+        return;
+    }
+
+    /* These workers have their own admission, stop sentinel and completion
+     * contracts. Registry ownership keeps this coordinator from reaching into
+     * task handles and preserves an entry when a bounded join times out. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Interaction registry workers");
+    esp_err_t interaction_worker_stop_err =
+        task_registry_stop_owner(TASK_REGISTRY_OWNER_INTERACTION, timeout_ms);
+    if (interaction_worker_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "registered interaction workers did not stop during startup rollback: %s",
+                 esp_err_to_name(interaction_worker_stop_err));
+        startup_rollback_step_blocked("Interaction registry workers", NULL);
+        return;
+    }
+
+    /* Configuration has no worker of its own, but it owns three substantial
+     * PSRAM schema scratch buffers and an admission boundary used by portal,
+     * volume, connectivity and interaction callers. Those clients have all
+     * joined above, so release Configuration before this degraded boot retains
+     * only diagnostics. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Configuration Service");
+    esp_err_t configuration_stop_err = configuration_service_deinit(timeout_ms);
+    if (configuration_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "configuration service did not deinitialize during startup rollback: %s",
+                 esp_err_to_name(configuration_stop_err));
+        startup_rollback_step_blocked("Configuration Service", NULL);
+        return;
+    }
+
+    /* Deadline clients may own a foreground presentation lease. Drain them
+     * before closing the lease domain, otherwise a timeout would leave their
+     * valid cleanup handle unable to release during the degraded transition. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("alarm manager");
+    esp_err_t alarm_stop_err = alarm_manager_deinit(timeout_ms);
     if (alarm_stop_err == ESP_OK) {
         s_alarm_manager_started = false;
     } else {
         ESP_LOGW(TAG, "alarm manager did not stop during startup rollback: %s",
                  esp_err_to_name(alarm_stop_err));
+        startup_rollback_step_blocked("alarm manager", NULL);
+        return;
     }
-    esp_err_t schedule_stop_err = sleep_schedule_service_deinit(500);
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("sleep schedule");
+    esp_err_t schedule_stop_err = sleep_schedule_service_deinit(timeout_ms);
     if (schedule_stop_err != ESP_OK) {
         ESP_LOGW(TAG, "sleep schedule did not stop during startup rollback: %s",
                  esp_err_to_name(schedule_stop_err));
+        startup_rollback_step_blocked("sleep schedule", NULL);
+        return;
     } else if (alarm_stop_err == ESP_OK) {
-        esp_err_t deadline_stop_err = wake_deadline_service_deinit(500);
+        STARTUP_ROLLBACK_NEXT_TIMEOUT("wake deadline dispatcher");
+        esp_err_t deadline_stop_err = wake_deadline_service_deinit(timeout_ms);
         if (deadline_stop_err != ESP_OK) {
             ESP_LOGW(TAG, "wake deadline dispatcher did not stop during startup rollback: %s",
                      esp_err_to_name(deadline_stop_err));
+            startup_rollback_step_blocked("wake deadline dispatcher", NULL);
+            return;
         }
     } else {
         ESP_LOGW(TAG, "wake deadline dispatcher retained because alarm client is still active");
+        startup_rollback_step_blocked("wake deadline dispatcher", "alarm client remains active");
+        return;
     }
+
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("fall detection");
+    device_status_t fall_stop_status = fall_detection_service_deinit(timeout_ms);
+    if (fall_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "fall detection did not stop during startup rollback: %d",
+                 (int)fall_stop_status);
+        startup_rollback_step_blocked("fall detection", NULL);
+        return;
+    }
+
+    /* Alarm, schedule and fall-detection are also Persistence consumers. They
+     * must close their own tool/callback admission before the shared NVS
+     * boundary may stop; keeping this below their deinit calls prevents their
+     * final store operation from racing an already-stopped worker. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Storage registry workers");
+    esp_err_t persistence_stop_err =
+        task_registry_stop_owner(TASK_REGISTRY_OWNER_STORAGE, timeout_ms);
+    if (persistence_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "registered storage workers did not stop during startup rollback: %s",
+                 esp_err_to_name(persistence_stop_err));
+        startup_rollback_step_blocked("Storage registry workers", NULL);
+        return;
+    }
+    /* The registry is the ordinary owner path. Call the service boundary once
+     * more so a stop that raced self-unregistration can finish its closed
+     * generation and reclaim its queue/semaphores. It intentionally does not
+     * destroy main.c's shared NVS transaction mutex. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Persistence Service");
+    esp_err_t persistence_deinit_err = persistence_service_deinit(timeout_ms);
+    if (persistence_deinit_err != ESP_OK) {
+        ESP_LOGW(TAG, "persistence service did not fully deinitialize during startup rollback: %s",
+                 esp_err_to_name(persistence_deinit_err));
+        startup_rollback_step_blocked("Persistence Service", NULL);
+        return;
+    }
+
+    /* Battery Policy is a synchronous consumer of normalized Power telemetry.
+     * Close it before Power Service teardown so late diagnostics and tool
+     * requests fail closed rather than observing a released provider. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("battery policy");
+    device_status_t battery_policy_stop_status = battery_policy_service_deinit(timeout_ms);
+    if (battery_policy_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "battery policy did not stop during startup rollback: %d",
+                 (int)battery_policy_stop_status);
+        startup_rollback_step_blocked("battery policy", NULL);
+        return;
+    }
+
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Power Service");
+    device_status_t power_stop_status = device_power_deinit(timeout_ms);
+    if (power_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "power service did not stop during startup rollback: %d",
+                 (int)power_stop_status);
+        startup_rollback_step_blocked("Power Service", NULL);
+        return;
+    }
+
+    /* Serial/JTAG identity has no dependency on the normal radio or NVS
+     * services, so degraded boot intentionally leaves it alive for recovery
+     * tooling.  It is nevertheless a registered DIAGNOSTICS owner: if a
+     * future lifecycle path must reconfigure the console, its task now has an
+     * admission gate and cooperative join contract. Do not stop it here. */
+
+#undef STARTUP_ROLLBACK_NEXT_TIMEOUT
 }
 
 void app_main(void) {
     ESP_LOGW(TAG, "boot reset reason=%d", (int)esp_reset_reason());
     lifecycle_service_begin();
+    if (task_registry_init() != ESP_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_PROFILE_VALIDATED,
+                               DEVICE_STATUS_RESOURCE_EXHAUSTED, "task registry");
+        return;
+    }
     operation_context_service_init();
     if (!validate_compiled_board_profile()) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_PROFILE_VALIDATED,
@@ -8131,6 +12221,8 @@ void app_main(void) {
     if (!s_gateway_poll_client_mutex) goto startup_core_no_memory;
     s_gateway_asset_http_mutex = xSemaphoreCreateMutex();
     if (!s_gateway_asset_http_mutex) goto startup_core_no_memory;
+    s_gateway_asset_client_mutex = xSemaphoreCreateMutex();
+    if (!s_gateway_asset_client_mutex) goto startup_core_no_memory;
     s_media_transfer_mutex = xSemaphoreCreateMutex();
     if (!s_media_transfer_mutex) goto startup_core_no_memory;
     s_pet_asset_apply_mutex = xSemaphoreCreateMutex();
@@ -8143,6 +12235,72 @@ void app_main(void) {
     if (!s_command_cancel_ui_ready) goto startup_core_no_memory;
     s_command_cancel_stopped = xSemaphoreCreateBinary();
     if (!s_command_cancel_stopped) goto startup_core_no_memory;
+    s_clock_sync_start_gate = xSemaphoreCreateBinary();
+    if (!s_clock_sync_start_gate) goto startup_core_no_memory;
+    s_clock_sync_stopped = xSemaphoreCreateBinary();
+    if (!s_clock_sync_stopped) goto startup_core_no_memory;
+    s_interaction_start_gate = xSemaphoreCreateBinary();
+    if (!s_interaction_start_gate) goto startup_core_no_memory;
+    s_interaction_stopped = xSemaphoreCreateBinary();
+    if (!s_interaction_stopped) goto startup_core_no_memory;
+    s_meeting_task_start_gate = xSemaphoreCreateBinary();
+    if (!s_meeting_task_start_gate) goto startup_core_no_memory;
+    s_meeting_task_stopped = xSemaphoreCreateBinary();
+    if (!s_meeting_task_stopped) goto startup_core_no_memory;
+    s_meeting_task_client_mutex = xSemaphoreCreateMutex();
+    if (!s_meeting_task_client_mutex) goto startup_core_no_memory;
+    s_meeting_resume_supervisor_start_gate = xSemaphoreCreateBinary();
+    if (!s_meeting_resume_supervisor_start_gate) goto startup_core_no_memory;
+    s_meeting_resume_supervisor_stopped = xSemaphoreCreateBinary();
+    if (!s_meeting_resume_supervisor_stopped) goto startup_core_no_memory;
+    s_meeting_capability_refresh_start_gate = xSemaphoreCreateBinary();
+    if (!s_meeting_capability_refresh_start_gate) goto startup_core_no_memory;
+    s_meeting_capability_refresh_stopped = xSemaphoreCreateBinary();
+    if (!s_meeting_capability_refresh_stopped) goto startup_core_no_memory;
+    s_meeting_capability_refresh_client_mutex = xSemaphoreCreateMutex();
+    if (!s_meeting_capability_refresh_client_mutex) goto startup_core_no_memory;
+    s_gateway_startup_start_gate = xSemaphoreCreateBinary();
+    if (!s_gateway_startup_start_gate) goto startup_core_no_memory;
+    s_gateway_startup_stopped = xSemaphoreCreateBinary();
+    if (!s_gateway_startup_stopped) goto startup_core_no_memory;
+    s_gateway_startup_client_mutex = xSemaphoreCreateMutex();
+    if (!s_gateway_startup_client_mutex) goto startup_core_no_memory;
+    s_wake_restart_start_gate = xSemaphoreCreateBinary();
+    if (!s_wake_restart_start_gate) goto startup_core_no_memory;
+    s_wake_restart_stopped = xSemaphoreCreateBinary();
+    if (!s_wake_restart_stopped) goto startup_core_no_memory;
+    s_setup_restart_start_gate = xSemaphoreCreateBinary();
+    if (!s_setup_restart_start_gate) goto startup_core_no_memory;
+    s_setup_restart_stopped = xSemaphoreCreateBinary();
+    if (!s_setup_restart_stopped) goto startup_core_no_memory;
+    s_deferred_setup_start_gate = xSemaphoreCreateBinary();
+    if (!s_deferred_setup_start_gate) goto startup_core_no_memory;
+    s_deferred_setup_stopped = xSemaphoreCreateBinary();
+    if (!s_deferred_setup_stopped) goto startup_core_no_memory;
+    s_dns_start_gate = xSemaphoreCreateBinary();
+    if (!s_dns_start_gate) goto startup_core_no_memory;
+    s_dns_stopped = xSemaphoreCreateBinary();
+    if (!s_dns_stopped) goto startup_core_no_memory;
+    s_dns_ready = xSemaphoreCreateBinary();
+    if (!s_dns_ready) goto startup_core_no_memory;
+    s_setup_portal_mutex = xSemaphoreCreateMutex();
+    if (!s_setup_portal_mutex) goto startup_core_no_memory;
+    s_wifi_event_callbacks_drained = xSemaphoreCreateBinary();
+    if (!s_wifi_event_callbacks_drained) goto startup_core_no_memory;
+    s_startup_pet_retry_callback_drained = xSemaphoreCreateBinary();
+    if (!s_startup_pet_retry_callback_drained) goto startup_core_no_memory;
+    s_startup_pet_retry_timer_mutex = xSemaphoreCreateMutex();
+    if (!s_startup_pet_retry_timer_mutex) goto startup_core_no_memory;
+    s_cellular_recovery_start_gate = xSemaphoreCreateBinary();
+    if (!s_cellular_recovery_start_gate) goto startup_core_no_memory;
+    s_cellular_recovery_stopped = xSemaphoreCreateBinary();
+    if (!s_cellular_recovery_stopped) goto startup_core_no_memory;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_wake_restart_admission_open = true;
+    s_setup_restart_admission_open = true;
+    s_dns_admission_open = true;
+    s_cellular_recovery_admission_open = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     s_startup_welcome_done = xSemaphoreCreateBinary();
     if (!s_startup_welcome_done) goto startup_core_no_memory;
     s_nvs_mutex = xSemaphoreCreateMutex();
@@ -8214,14 +12372,48 @@ void app_main(void) {
     // rather than an ownership-tracked mutex.
     s_interaction_lock = xSemaphoreCreateBinary();
     if (!s_interaction_lock || xSemaphoreGive(s_interaction_lock) != pdTRUE) goto startup_core_no_memory;
-    if (xTaskCreate(command_cancel_worker, "maclaw_cancel", 4096, NULL, 6,
+    // The cancel worker draws a full CJK frame, cancels the foreground TLS or
+    // ML307 request and then posts "/cancel" through a complete HTTPS/AT
+    // round trip. 4096 bytes overflowed on Fangtang (crash/reboot on cancel);
+    // 8192 matches the other network-facing workers. Plain xTaskCreate keeps
+    // the stack in internal RAM, so the Wi-Fi path stays cache-safe.
+    if (xTaskCreate(command_cancel_worker, "maclaw_cancel", 8192, NULL, 6,
                     &s_command_cancel_task) != pdPASS) goto startup_core_no_memory;
+    esp_err_t cancel_registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_INTERACTION,
+        .name = "command_cancel",
+        .context = (void *)s_command_cancel_task,
+        .stop = stop_command_cancel_registry_entry,
+    });
+    if (cancel_registry_err != ESP_OK) {
+        (void)stop_command_cancel_worker(500);
+        goto startup_core_no_memory;
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_output_volume_persist_stop_requested = false;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     if (xTaskCreate(output_volume_persist_task,
-                    "maclaw_volume_nvs", 3072, NULL, 4,
+                    "maclaw_volume_nvs", 4096, NULL, 4,
                     &s_output_volume_persist_task_handle) != pdPASS) goto startup_core_no_memory;
+    esp_err_t volume_registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_STORAGE,
+        .name = "output_volume_persist",
+        .context = (void *)s_output_volume_persist_task_handle,
+        .stop = stop_output_volume_persist_registry_entry,
+    });
+    if (volume_registry_err != ESP_OK) {
+        (void)stop_output_volume_persist_worker(500);
+        goto startup_core_no_memory;
+    }
     device_connectivity_restore_selected_uplink();
     load_gateway_token();
     load_ambient_weather();
+    /* Establish the one synchronous display-submission owner before App UI
+     * can restore brightness or publish its startup/ambient scene. The board
+     * renderer remains boot-lifetime; this only owns service-side ordering. */
+    if (!display_service_init()) goto startup_core_no_memory;
     app_ui_init();
     s_startup_ui_initialized = true;
     device_status_t input_status = app_intent_service_start(on_app_intent, NULL);
@@ -8284,6 +12476,36 @@ void app_main(void) {
         }
     }
 
+    // 亮度是独立 scalar key（不走 versioned 配置 blob），找到才恢复；
+    // 未找到时保持各板默认亮度（waveshare/echoear/fangtang 100，bread 50）。
+    uint8_t restored_brightness = 0;
+    esp_err_t brightness_err = persistence_service_read_u8(
+        DISPLAY_BRIGHTNESS_NVS_NAMESPACE, DISPLAY_BRIGHTNESS_NVS_KEY,
+        &restored_brightness);
+    if (brightness_err == ESP_OK && restored_brightness <= 100) {
+        device_status_t brightness_status =
+            device_display_set_brightness(restored_brightness);
+        if (brightness_status == DEVICE_STATUS_OK) {
+            ESP_LOGI(TAG, "restored display brightness: %u%%",
+                     (unsigned)restored_brightness);
+        } else {
+            ESP_LOGW(TAG, "cannot restore display brightness: device status=%d",
+                     brightness_status);
+        }
+    }
+
+    uint32_t restored_screen_sleep_seconds = 0;
+    size_t screen_sleep_size = sizeof(restored_screen_sleep_seconds);
+    esp_err_t screen_sleep_err = persistence_service_read_blob(
+        DISPLAY_BRIGHTNESS_NVS_NAMESPACE, DISPLAY_SLEEP_NVS_KEY,
+        &restored_screen_sleep_seconds, &screen_sleep_size);
+	if (screen_sleep_err == ESP_OK && screen_sleep_size == sizeof(restored_screen_sleep_seconds) &&
+		valid_screen_sleep_seconds((int)restored_screen_sleep_seconds)) {
+        app_ui_set_display_off_idle_ms(restored_screen_sleep_seconds * 1000u);
+        ESP_LOGI(TAG, "restored screen sleep timeout: %lu seconds",
+                 (unsigned long)restored_screen_sleep_seconds);
+    }
+
     // A profile may provide a bounded boot selector (for example a physical
     // double-click) and an uplink-specific Gateway compatibility adaptation.
     // The business startup path sees only the selected normalized transport.
@@ -8319,8 +12541,11 @@ void app_main(void) {
                                "configuration force-setup request");
         return;
     }
-    if (force_setup) {
-        ESP_LOGW(TAG, "booting directly into requested configuration portal");
+    if (force_setup || provisioning_failure_injection_force_portal_at_boot()) {
+        ESP_LOGW(TAG, "booting directly into %s configuration portal%s",
+                 force_setup ? "requested" : "test-forced",
+                 provisioning_failure_injection_force_portal_at_boot()
+                     ? " (test injection)" : "");
         start_setup_portal(false);
         return;
     }
@@ -8357,7 +12582,7 @@ void app_main(void) {
     taskENTER_CRITICAL(&s_task_state_lock);
     s_gateway_startup_allowed = true;
     taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!network_ready && !device_connectivity_is_active_cellular() && s_wifi_events) {
+    if (!network_ready && !device_connectivity_is_active_cellular()) {
         network_ready = device_connectivity_is_active_uplink_ready();
         if (network_ready) {
             ESP_LOGI(TAG, "Wi-Fi recovered at startup boundary; continuing gateway startup");

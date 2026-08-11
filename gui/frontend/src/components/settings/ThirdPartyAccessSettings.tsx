@@ -5,9 +5,10 @@ import {
     DeleteThirdPartyHardwareDevice,
     GenerateHardwareWelcomeAudio,
     GetHardwareWelcomeAudioDataURL,
+	LoadConfigForUI,
 	GetPetPackPreviewDataURL,
 	ListThirdPartyHardwareDeviceBindings,
-    LoadConfig,
+	ListExperts,
     ResetHardwareWelcomeAudio,
     RefreshDeviceAmbientWeather,
     RestartThirdPartyGateway,
@@ -16,7 +17,10 @@ import {
 	SendHardwareDevicePetProfile,
 	SetHardwareAllowCustomPets,
 	SendHardwareDeviceVolume,
+	SendHardwareDeviceBrightness,
+	SendHardwareDeviceScreenSleepTimeout,
 	SetThirdPartyHardwareDeviceAlias,
+	SetHardwareAgentBinding,
     SendHardwareWelcomeAudioRemote,
     SetHardwareEnabled,
     SetThirdPartyGatewayLocalMode,
@@ -27,6 +31,8 @@ import { useDialog } from '../CustomDialog';
 import { getPetSkinOption, packInfoToSkinOption, petSkinOptions, type PetSkinOption } from '../petSkins';
 import { channelModeLabel, textForLang, watchLabel } from './imSettingsShared';
 import { WelcomeResetButton } from './WelcomeResetButton';
+import { ttsVoiceOptions } from '../../constants/ttsVoices';
+import { parseExpertListJSON, type ExpertDefinition } from '../ai/expertTypes';
 
 type ThirdPartyAccessSettingsProps = {
     config: corelib.AppConfig | null;
@@ -39,6 +45,7 @@ type ThirdPartyAccessSettingsProps = {
     setThirdPartyGatewayStatus: Dispatch<SetStateAction<string>>;
     thirdPartyGatewayLocalMode: boolean;
     setThirdPartyGatewayLocalModeState: Dispatch<SetStateAction<boolean>>;
+    mode?: 'im' | 'hardware';
 };
 
 type HardwareDevice = {
@@ -49,7 +56,12 @@ type HardwareDevice = {
     lastSeenAt?: string;
     online?: boolean;
 	volume?: number;
+	brightness?: number;
+	screenSleepSeconds?: number;
 	petSkin?: string;
+	assistantMode?: string;
+	expertId?: string;
+	ttsVoiceId?: string;
 };
 
 type HardwareDeviceBindings = {
@@ -63,6 +75,32 @@ type HardwareDeviceBindings = {
 	MaxDevices?: number;
 	BoundCount?: number;
 };
+
+type HardwareAgentBindingValue = {
+	assistantMode: string;
+	expertId: string;
+	ttsVoiceId: string;
+};
+
+const hardwareAgentBindingValue = (device: Pick<HardwareDevice, 'assistantMode' | 'expertId' | 'ttsVoiceId'>): HardwareAgentBindingValue => ({
+	assistantMode: device.assistantMode === 'expert' ? 'expert' : 'general',
+	expertId: device.assistantMode === 'expert' ? (device.expertId || '') : '',
+	ttsVoiceId: device.ttsVoiceId || 'zf_xiaoxiao',
+});
+
+const screenSleepOptions = [
+	{ seconds: 60, en: '1 minute', zh: '1 分钟' },
+	{ seconds: 180, en: '3 minutes', zh: '3 分钟' },
+	{ seconds: 300, en: '5 minutes', zh: '5 分钟' },
+	{ seconds: 600, en: '10 minutes', zh: '10 分钟' },
+	{ seconds: 1800, en: '30 minutes', zh: '30 分钟' },
+	{ seconds: 3600, en: '1 hour', zh: '1 小时' },
+	{ seconds: 7200, en: '2 hours', zh: '2 小时' },
+	{ seconds: 10800, en: '3 hours', zh: '3 小时' },
+	{ seconds: 14400, en: '4 hours', zh: '4 小时' },
+	{ seconds: 18000, en: '5 hours', zh: '5 小时' },
+	{ seconds: 0, en: 'Never', zh: '不关闭' },
+] as const;
 
 const hardwareBindingLimit = 5;
 
@@ -86,6 +124,13 @@ const normalizeHardwareDeviceBindings = (value: HardwareDeviceBindings | null | 
 
 type WelcomeAction = 'generate' | 'import' | 'reset' | 'preview-local';
 
+type HardwarePairing = {
+	pairCode?: string;
+	expiresAt?: string;
+	transport?: string;
+	gatewayURL?: string;
+};
+
 const gatewayStatusLabel = (status: string, lang: string) => ({
     connected: lang === 'en' ? 'Running' : '已启动',
     connecting: lang === 'en' ? 'Starting' : '启动中',
@@ -96,6 +141,42 @@ const gatewayStatusLabel = (status: string, lang: string) => ({
 
 const welcomePreviewErrorMessage = (error: unknown, isZh: boolean) => {
     const message = (error as any)?.message || String(error);
+    const errorCode = message.toUpperCase();
+    if (message.includes('welcome audio is too long after conversion')) {
+        return isZh
+            ? '欢迎音频超过硬件约 3 秒的容量。已自动尝试加快语速；请再缩短欢迎词后重试。'
+            : 'The welcome audio exceeds the hardware’s roughly 3-second capacity. It was automatically sped up; shorten the message and try again.';
+    }
+    if (errorCode.includes('HARDWARE_NOT_OWNED')) {
+        return isZh
+            ? '当前设备的绑定身份与 Hub 不一致。请刷新设备列表并等待设备重连；若问题持续，请检查它是否连接到了正确的 Hub。'
+            : 'This device’s binding identity no longer matches the Hub. Refresh the device list and wait for it to reconnect; if this persists, check that it is connected to the correct Hub.';
+    }
+    if (errorCode.includes('HARDWARE_OFFLINE')) {
+        return isZh
+            ? '该硬件当前离线或刚断开连接。请等待设备重连后再试。'
+            : 'This hardware is offline or was just disconnected. Wait for it to reconnect and try again.';
+    }
+    if (errorCode.includes('HARDWARE_UNSUPPORTED')) {
+        return isZh
+            ? '该硬件不支持欢迎音频远程播放。请升级 ESP32 固件并检查播放能力。'
+            : 'This hardware does not support remote welcome-audio playback. Update the ESP32 firmware and check its playback capability.';
+    }
+    if (errorCode.includes('HARDWARE_DISABLED')) {
+        return isZh
+            ? '当前 GUI 未启用硬件控制。请先启用硬件后重试。'
+            : 'Hardware control is disabled in this GUI. Enable hardware and try again.';
+    }
+    if (errorCode.includes('HARDWARE_STALE_REPLY')) {
+        return isZh
+            ? '该硬件连接已更新，之前的播放请求已失效。请等待设备稳定连接后再试。'
+            : 'The hardware connection changed and the earlier playback request expired. Wait for it to reconnect steadily and try again.';
+    }
+    if (errorCode.includes('HARDWARE_UNAVAILABLE')) {
+        return isZh
+            ? 'Hub 暂时无法向该硬件下发命令。请稍后重试；若持续出现，请检查 Hub 与设备连接。'
+            : 'The Hub cannot send a command to this hardware right now. Try again shortly; if this persists, check the Hub and device connection.';
+    }
     if (!isZh) return message;
     if (message.includes('NO_COMPATIBLE_HARDWARE') || message.includes('no online remote ESP32')) {
         return '没有在线且支持欢迎音频播放的远程 ESP32。请检查设备联网、配对状态和固件能力。';
@@ -112,6 +193,17 @@ const welcomePreviewErrorMessage = (error: unknown, isZh: boolean) => {
     return message;
 };
 
+const welcomeTextCapacityHint = (text: string, isZh: boolean) => {
+    const characters = Array.from(text.trim()).length;
+    if (characters === 0) return '';
+    if (characters > 40) {
+        return isZh
+            ? `当前 ${characters}/80 字，较长的欢迎词可能超过硬件约 3 秒的容量。`
+            : `${characters}/80 characters — a longer greeting may exceed the hardware’s roughly 3-second capacity.`;
+    }
+    return isZh ? `${characters}/80 字` : `${characters}/80 characters`;
+};
+
 export const ThirdPartyAccessSettings = ({
     config,
     setConfig,
@@ -123,9 +215,12 @@ export const ThirdPartyAccessSettings = ({
     setThirdPartyGatewayStatus,
     thirdPartyGatewayLocalMode,
     setThirdPartyGatewayLocalModeState,
+    mode = 'im',
 }: ThirdPartyAccessSettingsProps) => {
     const { showConfirm } = useDialog();
-    const [pairing, setPairing] = useState<any>(null);
+	const [pairing, setPairing] = useState<HardwarePairing | null>(null);
+	const [pairingBusy, setPairingBusy] = useState(false);
+	const pairingRequestRef = useRef(0);
     const [welcomeText, setWelcomeText] = useState('');
     const [welcomeVoiceID, setWelcomeVoiceID] = useState('af_heart');
     const [welcomeVoiceSaving, setWelcomeVoiceSaving] = useState(false);
@@ -144,6 +239,7 @@ export const ThirdPartyAccessSettings = ({
 	const [savingDeviceNameClientIds, setSavingDeviceNameClientIds] = useState<Set<string>>(() => new Set());
 	const [openPetPickerClientId, setOpenPetPickerClientId] = useState<string | null>(null);
 	const [previewingClientIds, setPreviewingClientIds] = useState<Set<string>>(() => new Set());
+	const [experts, setExperts] = useState<ExpertDefinition[]>([]);
     const [ambientCityDraft, setAmbientCityDraft] = useState(() => String((config as any)?.pet_ambient_city || ''));
     const [detectedAmbientCity, setDetectedAmbientCity] = useState<string | null>(null);
     const [ambientRefreshState, setAmbientRefreshState] = useState<'idle' | 'refreshing' | 'done' | 'error'>('idle');
@@ -151,6 +247,10 @@ export const ThirdPartyAccessSettings = ({
     const localPreviewCleanupRef = useRef<(() => void) | null>(null);
     const localPreviewSourceRef = useRef('');
     const localPreviewSourceLoadRef = useRef<Promise<string> | null>(null);
+	// A config refresh can replace the welcome WAV while an older preview
+	// request is still in flight. Keep a generation so its late response cannot
+	// become the cache used by the next preview.
+	const localPreviewSourceVersionRef = useRef(0);
     const mountedRef = useRef(true);
     const devicesRequestRef = useRef(0);
     const refreshDevicesRef = useRef<() => Promise<void>>(async () => undefined);
@@ -161,6 +261,27 @@ export const ThirdPartyAccessSettings = ({
 	const volumeSendsInFlightRef = useRef(new Set<string>());
 	const volumeFlushPendingRef = useRef(new Set<string>());
 		const deviceVolumeBeforeEditRef = useRef(new Map<string, number>());
+		const brightnessSendTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+		const pendingBrightnessRef = useRef(new Map<string, number>());
+		const brightnessSendsInFlightRef = useRef(new Set<string>());
+	const brightnessFlushPendingRef = useRef(new Set<string>());
+	const deviceBrightnessBeforeEditRef = useRef(new Map<string, number>());
+	const pendingScreenSleepsRef = useRef(new Map<string, number>());
+	// Keep the optimistic selection separate from the send queue. The queued
+	// value is removed just before its request starts, whereas a concurrent
+	// device-list refresh must continue to render the user's latest choice
+	// until Hub confirms or rejects it.
+	const optimisticScreenSleepsRef = useRef(new Map<string, number>());
+	const screenSleepSendsInFlightRef = useRef(new Set<string>());
+	const screenSleepFlushPendingRef = useRef(new Set<string>());
+	const confirmedScreenSleepsRef = useRef(new Map<string, number>());
+	// Preserve a just-selected expert or reply voice while a device-list refresh
+	// is still returning the older Hub record.
+	type AgentBindingDraft = { value: HardwareAgentBindingValue; request: number };
+	const optimisticAgentBindingsRef = useRef(new Map<string, AgentBindingDraft>());
+	const confirmedAgentBindingsRef = useRef(new Map<string, HardwareAgentBindingValue>());
+	const agentBindingRequestRef = useRef(new Map<string, number>());
+	const agentBindingSaveTailsRef = useRef(new Map<string, Promise<void>>());
 		const deletedClientIdsRef = useRef(new Set<string>());
 		const pendingDeletedClientIdsRef = useRef(new Set<string>());
 		// A client ID can be paired again after it was removed. Keep a small
@@ -168,6 +289,10 @@ export const ThirdPartyAccessSettings = ({
 		// or notify against its newly-paired replacement.
 		const deviceLifecycleRef = useRef(new Map<string, number>());
 		const confirmedAbsentDeletedClientIdsRef = useRef(new Set<string>());
+		// Local deletion time per client ID. A Hub binding whose pairedAt is newer
+		// than this mark is a fresh re-pairing, not a stale pre-delete list entry,
+		// so the pending-delete filter below must release it again.
+		const deletedAtClientIdsRef = useRef(new Map<string, number>());
     const ambientRefreshRequestRef = useRef(0);
     const ambientSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingAmbientCityRef = useRef<string | null>(null);
@@ -183,14 +308,17 @@ export const ThirdPartyAccessSettings = ({
     saveRemoteConfigFieldRef.current = saveRemoteConfigField;
 
     const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
-    const enabled = Boolean((config as any)?.thirdparty_gateway_enabled);
+    const isZhHant = lang === 'zh-Hant';
+    const hardwareOnly = mode === 'hardware';
+    const imGatewayEnabled = Boolean((config as any)?.thirdparty_gateway_enabled);
     const hardwareEnabled = Boolean((config as any)?.hardware_enabled);
     const settingsBusy = busy || gatewayBusy;
-    const hardwareControlsDisabled = settingsBusy || !hardwareEnabled || !enabled;
+    const hardwareControlsDisabled = settingsBusy || !hardwareEnabled;
     // Welcome content can be prepared and previewed locally before hardware is
     // enabled. Only transport-dependent controls use hardwareControlsDisabled.
     const welcomeEditingDisabled = settingsBusy;
 	const defaultVolume = Number((config as any)?.hardware_volume ?? 70);
+	const defaultBrightness = Number((config as any)?.hardware_brightness ?? 70);
 	const allowCustomHardwarePets = Boolean((config as any)?.hardware_allow_custom_pets);
 	const hardwareBindingAtCapacity = boundDeviceCount >= hardwareBindingLimit;
     const welcomeAudioPath = String((config as any)?.hardware_welcome_audio_path || '').trim();
@@ -202,6 +330,36 @@ export const ThirdPartyAccessSettings = ({
     useEffect(() => {
         setWelcomeVoiceID(String((config as any)?.hardware_welcome_voice_id || 'af_heart'));
     }, [(config as any)?.hardware_welcome_voice_id]);
+
+    useEffect(() => {
+		if (hardwareEnabled) return;
+		pairingRequestRef.current += 1;
+		setPairingBusy(false);
+		setPairing(null);
+	}, [hardwareEnabled]);
+
+	useEffect(() => {
+		const expiresAt = String(pairing?.expiresAt || '');
+		const expiresAtMs = Date.parse(expiresAt);
+		if (!expiresAt || Number.isNaN(expiresAtMs)) return;
+		const remaining = expiresAtMs - Date.now();
+		if (remaining <= 0) {
+			setPairing(null);
+			return;
+		}
+		const timer = window.setTimeout(() => {
+			setPairing((current) => current?.expiresAt === expiresAt ? null : current);
+			showToastMessageRef.current(isZh ? '配对码已过期，请重新生成。' : 'Pairing code expired. Generate a new one.');
+		}, remaining);
+		return () => window.clearTimeout(timer);
+	}, [isZh, pairing?.expiresAt]);
+
+	useEffect(() => {
+		if (hardwareOnly) return;
+		pairingRequestRef.current += 1;
+		setPairingBusy(false);
+		setPairing(null);
+	}, [hardwareOnly]);
 
     useEffect(() => {
         const configuredCity = String((config as any)?.pet_ambient_city || '');
@@ -216,11 +374,11 @@ export const ThirdPartyAccessSettings = ({
         setAmbientRefreshState('idle');
     }, [(config as any)?.pet_ambient_city]);
 
-    const refreshConfig = async () => setConfig(await LoadConfig() as any);
+    const refreshConfig = async () => setConfig(await LoadConfigForUI() as any);
 
 		const refreshDevices = useCallback(async () => {
         const requestID = ++devicesRequestRef.current;
-        if (thirdPartyGatewayLocalMode || !hardwareEnabled) {
+        if (!hardwareEnabled) {
             setDevices([]);
 			setBoundDeviceCount(0);
             setDevicesError('');
@@ -240,15 +398,51 @@ export const ThirdPartyAccessSettings = ({
 				}
 				const next = bindings.devices.filter((device) => {
 					if (!pendingDeletedIDs.has(device.clientId)) return true;
+					// A binding paired after our delete is a fresh re-pairing, not
+					// a stale pre-delete list entry. The tolerance absorbs clock
+					// skew between this desktop and the Hub.
+					const deletedAt = deletedAtClientIdsRef.current.get(device.clientId);
+					const pairedAtMs = Date.parse(device.pairedAt || '');
+					if (deletedAt !== undefined && !Number.isNaN(pairedAtMs) && pairedAtMs + 15000 > deletedAt) {
+						pendingDeletedIDs.delete(device.clientId);
+						deletedClientIdsRef.current.delete(device.clientId);
+						confirmedAbsentIDs.delete(device.clientId);
+						deletedAtClientIdsRef.current.delete(device.clientId);
+						return true;
+					}
 					// Hub first confirmed that the old binding disappeared. A later
 					// appearance of this ID is a new pairing, not a stale list entry.
 					if (!confirmedAbsentIDs.has(device.clientId)) return false;
 					pendingDeletedIDs.delete(device.clientId);
 					deletedClientIdsRef.current.delete(device.clientId);
 					confirmedAbsentIDs.delete(device.clientId);
+					deletedAtClientIdsRef.current.delete(device.clientId);
 					return true;
 				});
-				setDevices(next);
+				setDevices(next.map((device) => {
+					const optimisticSleep = optimisticScreenSleepsRef.current.get(device.clientId);
+					const optimisticAgentBinding = optimisticAgentBindingsRef.current.get(device.clientId);
+				let withOptimisticAgentBinding = device;
+				if (optimisticAgentBinding !== undefined) {
+					const bindingMatches = device.assistantMode === optimisticAgentBinding.value.assistantMode
+						&& (device.expertId || '') === optimisticAgentBinding.value.expertId
+						&& (device.ttsVoiceId || '') === optimisticAgentBinding.value.ttsVoiceId;
+					if (bindingMatches) {
+						optimisticAgentBindingsRef.current.delete(device.clientId);
+						confirmedAgentBindingsRef.current.set(device.clientId, optimisticAgentBinding.value);
+					}
+					else withOptimisticAgentBinding = { ...device, ...optimisticAgentBinding.value };
+				} else confirmedAgentBindingsRef.current.set(device.clientId, hardwareAgentBindingValue(device));
+					if (optimisticSleep === undefined) return withOptimisticAgentBinding;
+					// Clear only after Hub's authoritative list has caught up. This
+					// also protects against a list request that began before a save
+					// succeeded but returned afterwards with the old timeout.
+					if (device.screenSleepSeconds === optimisticSleep) {
+						optimisticScreenSleepsRef.current.delete(device.clientId);
+						return withOptimisticAgentBinding;
+					}
+					return { ...withOptimisticAgentBinding, screenSleepSeconds: optimisticSleep };
+				}));
 				const pendingBoundCount = bindings.devices.filter((device) => pendingDeletedIDs.has(device.clientId)).length;
 				setBoundDeviceCount(Math.max(0, bindings.boundCount - pendingBoundCount));
         } catch (err: any) {
@@ -260,11 +454,25 @@ export const ThirdPartyAccessSettings = ({
         } finally {
             if (mountedRef.current && requestID === devicesRequestRef.current) setDevicesLoading(false);
         }
-    }, [hardwareEnabled, thirdPartyGatewayLocalMode]);
+    }, [hardwareEnabled]);
     refreshDevicesRef.current = refreshDevices;
 
-    useEffect(() => { void refreshDevicesRef.current(); }, [hardwareEnabled, thirdPartyGatewayLocalMode, thirdPartyGatewayStatus]);
+    useEffect(() => {
+		if (!hardwareOnly) return;
+		void refreshDevicesRef.current();
+	}, [hardwareEnabled, hardwareOnly]);
 	useEffect(() => {
+		if (!hardwareOnly) return;
+		let cancelled = false;
+		void ListExperts().then((raw) => {
+			if (!cancelled) setExperts(parseExpertListJSON(raw));
+		}).catch(() => {
+			if (!cancelled) setExperts([]);
+		});
+		return () => { cancelled = true; };
+	}, [hardwareOnly]);
+	useEffect(() => {
+		if (!hardwareOnly || !allowCustomHardwarePets) return;
 		let cancelled = false;
 		void ListPetPacks()
 			.then(async (packs) => {
@@ -284,7 +492,7 @@ export const ThirdPartyAccessSettings = ({
 			})
 			.catch(() => undefined);
 		return () => { cancelled = true; };
-	}, [lang]);
+	}, [allowCustomHardwarePets, hardwareOnly, lang]);
 	useEffect(() => {
 		if (!openPetPickerClientId) return;
 		const closeWhenOutside = (event: PointerEvent) => {
@@ -305,12 +513,15 @@ export const ThirdPartyAccessSettings = ({
         // Restore the guard during setup so the live second mount is not mistaken
         // for an unmounted component.
         mountedRef.current = true;
-        return () => {
-            mountedRef.current = false;
-            devicesRequestRef.current += 1;
-            previewRunRef.current += 1;
+		return () => {
+			mountedRef.current = false;
+			pairingRequestRef.current += 1;
+			devicesRequestRef.current += 1;
+			previewRunRef.current += 1;
 			volumeSendTimersRef.current.forEach((timer) => clearTimeout(timer));
 			volumeSendTimersRef.current.clear();
+			brightnessSendTimersRef.current.forEach((timer) => clearTimeout(timer));
+			brightnessSendTimersRef.current.clear();
             if (ambientSaveTimerRef.current !== null) clearTimeout(ambientSaveTimerRef.current);
             if (pendingAmbientCityRef.current !== null) {
                 const city = pendingAmbientCityRef.current;
@@ -328,6 +539,17 @@ export const ThirdPartyAccessSettings = ({
 			pendingVolumesRef.current.clear();
 			volumeFlushPendingRef.current.clear();
 			deviceVolumeBeforeEditRef.current.clear();
+			pendingBrightnessRef.current.clear();
+			brightnessFlushPendingRef.current.clear();
+			deviceBrightnessBeforeEditRef.current.clear();
+			pendingScreenSleepsRef.current.clear();
+			optimisticScreenSleepsRef.current.clear();
+			screenSleepFlushPendingRef.current.clear();
+			confirmedScreenSleepsRef.current.clear();
+			optimisticAgentBindingsRef.current.clear();
+			confirmedAgentBindingsRef.current.clear();
+			agentBindingRequestRef.current.clear();
+			agentBindingSaveTailsRef.current.clear();
             localPreviewCleanupRef.current?.();
         };
     }, []);
@@ -339,8 +561,14 @@ export const ThirdPartyAccessSettings = ({
         }
         if (!force && localPreviewSourceRef.current) return Promise.resolve(localPreviewSourceRef.current);
         if (!force && localPreviewSourceLoadRef.current) return localPreviewSourceLoadRef.current;
+        if (force) {
+			localPreviewSourceVersionRef.current += 1;
+			localPreviewSourceRef.current = '';
+			localPreviewSourceLoadRef.current = null;
+		}
+		const version = localPreviewSourceVersionRef.current;
         const request = Promise.resolve(GetHardwareWelcomeAudioDataURL()).then((source) => {
-            if (mountedRef.current) localPreviewSourceRef.current = source;
+			if (mountedRef.current && version === localPreviewSourceVersionRef.current) localPreviewSourceRef.current = source;
             return source;
         });
         localPreviewSourceLoadRef.current = request;
@@ -351,9 +579,13 @@ export const ThirdPartyAccessSettings = ({
     }, [welcomeAudioPath]);
 
     useEffect(() => {
+        if (!hardwareOnly) return;
+        // Invalidate only. Fetch the WAV when the user asks to preview it so
+        // opening Hardware Access does not eagerly move an audio payload.
+		localPreviewSourceVersionRef.current += 1;
         localPreviewSourceRef.current = '';
-        if (welcomeAudioPath) void refreshLocalWelcomePreviewSource().catch(() => undefined);
-    }, [refreshLocalWelcomePreviewSource, welcomeAudioPath]);
+		localPreviewSourceLoadRef.current = null;
+    }, [hardwareOnly, welcomeAudioPath]);
 
     const stopLocalWelcomePreview = () => {
         previewRunRef.current += 1;
@@ -483,6 +715,191 @@ export const ThirdPartyAccessSettings = ({
 		deviceVolumeBeforeEditRef.current.delete(clientId);
 		}, []);
 
+		const sendDeviceBrightness = useCallback(async (clientId: string, value: number, lifecycle: number) => {
+		const timer = brightnessSendTimersRef.current.get(clientId);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			brightnessSendTimersRef.current.delete(clientId);
+		}
+		pendingBrightnessRef.current.set(clientId, Math.max(0, Math.min(100, Math.round(value))));
+		if (brightnessSendsInFlightRef.current.has(clientId)) return;
+
+		brightnessSendsInFlightRef.current.add(clientId);
+		try {
+			while (pendingBrightnessRef.current.has(clientId)) {
+				const next = pendingBrightnessRef.current.get(clientId)!;
+				pendingBrightnessRef.current.delete(clientId);
+				try {
+					await SendHardwareDeviceBrightness(clientId, next);
+					if (deletedClientIdsRef.current.has(clientId) || !isCurrentDeviceLifecycle(clientId, lifecycle)) break;
+					deviceBrightnessBeforeEditRef.current.delete(clientId);
+				} catch (err: any) {
+					if (deletedClientIdsRef.current.has(clientId) || !isCurrentDeviceLifecycle(clientId, lifecycle)) break;
+					pendingBrightnessRef.current.delete(clientId);
+					const previous = deviceBrightnessBeforeEditRef.current.get(clientId);
+					deviceBrightnessBeforeEditRef.current.delete(clientId);
+					if (previous !== undefined && mountedRef.current) {
+						setDevices((current) => current.map((item) => item.clientId === clientId ? { ...item, brightness: previous } : item));
+					}
+					showToastMessageRef.current(err?.message || String(err));
+					await refreshDevicesRef.current().catch(() => undefined);
+					break;
+				}
+			}
+		} finally {
+			brightnessSendsInFlightRef.current.delete(clientId);
+			if (brightnessFlushPendingRef.current.delete(clientId) && pendingBrightnessRef.current.has(clientId) && mountedRef.current) {
+					void sendDeviceBrightness(clientId, pendingBrightnessRef.current.get(clientId)!, deviceLifecycle(clientId));
+				}
+			}
+		}, []);
+
+	const rememberDeviceBrightnessBeforeEdit = useCallback((clientId: string) => {
+		if (deviceBrightnessBeforeEditRef.current.has(clientId)) return;
+		setDevices((current) => {
+			const currentDevice = current.find((item) => item.clientId === clientId);
+			if (currentDevice) {
+				deviceBrightnessBeforeEditRef.current.set(clientId, Math.max(0, Math.min(100, Math.round(Number(currentDevice.brightness ?? defaultBrightness)))));
+			}
+			return current;
+		});
+	}, [defaultBrightness]);
+
+		const scheduleDeviceBrightness = useCallback((clientId: string, value: number, immediate = false) => {
+			const lifecycle = deviceLifecycle(clientId);
+		const next = Math.max(0, Math.min(100, Math.round(value)));
+		pendingBrightnessRef.current.set(clientId, next);
+		const timer = brightnessSendTimersRef.current.get(clientId);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			brightnessSendTimersRef.current.delete(clientId);
+		}
+		if (immediate) {
+			if (brightnessSendsInFlightRef.current.has(clientId)) brightnessFlushPendingRef.current.add(clientId);
+				void sendDeviceBrightness(clientId, next, lifecycle);
+			return;
+		}
+		brightnessSendTimersRef.current.set(clientId, setTimeout(() => {
+			brightnessSendTimersRef.current.delete(clientId);
+				void sendDeviceBrightness(clientId, pendingBrightnessRef.current.get(clientId) ?? next, lifecycle);
+			}, 100));
+	}, [sendDeviceBrightness]);
+
+	const discardPendingDeviceBrightness = useCallback((clientId: string) => {
+		const timer = brightnessSendTimersRef.current.get(clientId);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			brightnessSendTimersRef.current.delete(clientId);
+		}
+		pendingBrightnessRef.current.delete(clientId);
+		brightnessFlushPendingRef.current.delete(clientId);
+		deviceBrightnessBeforeEditRef.current.delete(clientId);
+	}, []);
+
+	const sendDeviceScreenSleepTimeout = useCallback(async (clientId: string, seconds: number, lifecycle: number) => {
+		pendingScreenSleepsRef.current.set(clientId, seconds);
+		if (screenSleepSendsInFlightRef.current.has(clientId)) return;
+
+		screenSleepSendsInFlightRef.current.add(clientId);
+		try {
+			while (pendingScreenSleepsRef.current.has(clientId)) {
+				const next = pendingScreenSleepsRef.current.get(clientId)!;
+				pendingScreenSleepsRef.current.delete(clientId);
+				try {
+					await SendHardwareDeviceScreenSleepTimeout(clientId, next);
+					if (deletedClientIdsRef.current.has(clientId) || !isCurrentDeviceLifecycle(clientId, lifecycle)) break;
+					confirmedScreenSleepsRef.current.set(clientId, next);
+				} catch (err: any) {
+					if (deletedClientIdsRef.current.has(clientId) || !isCurrentDeviceLifecycle(clientId, lifecycle)) break;
+					pendingScreenSleepsRef.current.delete(clientId);
+					optimisticScreenSleepsRef.current.delete(clientId);
+					const previous = confirmedScreenSleepsRef.current.get(clientId);
+					if (previous !== undefined && mountedRef.current) {
+						setDevices((current) => current.map((device) => device.clientId === clientId ? { ...device, screenSleepSeconds: previous } : device));
+					}
+					showToastMessageRef.current(err?.message || String(err));
+					await refreshDevicesRef.current().catch(() => undefined);
+					break;
+				}
+			}
+		} finally {
+			screenSleepSendsInFlightRef.current.delete(clientId);
+			if (screenSleepFlushPendingRef.current.delete(clientId) && pendingScreenSleepsRef.current.has(clientId) && mountedRef.current) {
+				void sendDeviceScreenSleepTimeout(clientId, pendingScreenSleepsRef.current.get(clientId)!, deviceLifecycle(clientId));
+			} else if (!pendingScreenSleepsRef.current.has(clientId)) {
+				confirmedScreenSleepsRef.current.delete(clientId);
+			}
+		}
+	}, []);
+
+	const changeDeviceScreenSleepTimeout = useCallback((clientId: string, seconds: number) => {
+		if (!screenSleepOptions.some((option) => option.seconds === seconds)) return;
+		const lifecycle = deviceLifecycle(clientId);
+		if (!confirmedScreenSleepsRef.current.has(clientId)) {
+			setDevices((current) => {
+				const device = current.find((item) => item.clientId === clientId);
+				if (device) confirmedScreenSleepsRef.current.set(clientId, device.screenSleepSeconds ?? 60);
+				return current;
+			});
+		}
+		setDevices((current) => current.map((device) => device.clientId === clientId ? { ...device, screenSleepSeconds: seconds } : device));
+		optimisticScreenSleepsRef.current.set(clientId, seconds);
+		if (screenSleepSendsInFlightRef.current.has(clientId)) screenSleepFlushPendingRef.current.add(clientId);
+		void sendDeviceScreenSleepTimeout(clientId, seconds, lifecycle);
+	}, [sendDeviceScreenSleepTimeout]);
+
+	const discardPendingDeviceScreenSleep = useCallback((clientId: string) => {
+		pendingScreenSleepsRef.current.delete(clientId);
+		optimisticScreenSleepsRef.current.delete(clientId);
+		screenSleepFlushPendingRef.current.delete(clientId);
+		confirmedScreenSleepsRef.current.delete(clientId);
+	}, []);
+
+	const saveDeviceAgentBinding = (device: HardwareDevice, next: HardwareAgentBindingValue) => {
+		const lifecycle = deviceLifecycle(device.clientId);
+		if (next.assistantMode === 'expert' && !next.expertId) {
+			showToastMessage(isZh ? '请先选择 AI 专家。' : 'Select an AI expert first.');
+			return;
+		}
+		const request = (agentBindingRequestRef.current.get(device.clientId) ?? 0) + 1;
+		agentBindingRequestRef.current.set(device.clientId, request);
+		optimisticAgentBindingsRef.current.set(device.clientId, { value: next, request });
+		setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, ...next } : item));
+		// Wails accepts concurrent calls, but the backend persists each whole
+		// binding. Serialize saves for one device so a delayed older selection
+		// cannot overwrite a later expert/voice choice on disk.
+		const previousSave = agentBindingSaveTailsRef.current.get(device.clientId) ?? Promise.resolve();
+		const save = previousSave.catch(() => undefined).then(async () => {
+			if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
+			try {
+				await SetHardwareAgentBinding(device.clientId, {
+					assistant_mode: next.assistantMode,
+					expert_id: next.assistantMode === 'expert' ? next.expertId : '',
+					tts_voice_id: next.ttsVoiceId,
+				});
+				if (!deletedClientIdsRef.current.has(device.clientId) && isCurrentDeviceLifecycle(device.clientId, lifecycle)) {
+					confirmedAgentBindingsRef.current.set(device.clientId, next);
+				}
+			} catch (err: any) {
+				if (agentBindingRequestRef.current.get(device.clientId) !== request) return;
+				optimisticAgentBindingsRef.current.delete(device.clientId);
+				if (mountedRef.current && isCurrentDeviceLifecycle(device.clientId, lifecycle)) {
+					const confirmed = confirmedAgentBindingsRef.current.get(device.clientId) ?? hardwareAgentBindingValue(device);
+					setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, ...confirmed } : item));
+					showToastMessage(err?.message || String(err));
+				}
+			}
+		});
+		const tail = save.catch(() => undefined);
+		agentBindingSaveTailsRef.current.set(device.clientId, tail);
+		void tail.finally(() => {
+			if (agentBindingSaveTailsRef.current.get(device.clientId) === tail) {
+				agentBindingSaveTailsRef.current.delete(device.clientId);
+			}
+		});
+		return save;
+	};
+
 		const setDevicePet = async (device: HardwareDevice, skin: string) => {
 			const lifecycle = deviceLifecycle(device.clientId);
 			const previous = device.petSkin || String((config as any)?.pet_skin || 'clawmate');
@@ -550,7 +967,7 @@ export const ThirdPartyAccessSettings = ({
 		setBusy(true);
 		try {
 			await SetHardwareAllowCustomPets(enabled);
-			setConfig((current: any) => current ? { ...current, hardware_allow_custom_pets: enabled } : current);
+			await refreshConfig();
 			if (!enabled) await refreshDevicesRef.current();
 		} catch (err: any) {
 			showToastMessage(err?.message || String(err));
@@ -632,16 +1049,12 @@ export const ThirdPartyAccessSettings = ({
 
     const changeHardwareEnabled = async (next: boolean) => {
         setBusy(true);
-        try {
-            const status = await SetHardwareEnabled(next);
-            setThirdPartyGatewayStatus(status);
-            if (next) {
-                setThirdPartyGatewayLocalModeState(false);
-                setPairing(null);
-            }
+		try {
+			const status = await SetHardwareEnabled(next);
+			setThirdPartyGatewayStatus(status);
             await refreshConfig();
             showToastMessage(next
-                ? (isZh ? '硬件已启用，第三方接入已切换为多机模式并重新启动。' : 'Hardware enabled. Third-party access switched to Hub mode and restarted.')
+                ? (isZh ? '硬件已启用，系统将通过 Hub 管理硬件连接。' : 'Hardware enabled. The system now manages hardware connections through Hub.')
                 : (isZh ? '硬件已停用。第三方接入保持当前状态。' : 'Hardware disabled. Third-party access remains unchanged.'));
         } catch (err: any) {
             await refreshConfig().catch(() => undefined);
@@ -791,16 +1204,17 @@ export const ThirdPartyAccessSettings = ({
     };
 
     return <section className="im-settings-card im-settings-channel">
+        {!hardwareOnly && <>
         <p className="im-settings-description">
             {isZh ? '开放本机 HTTP 消息接入端口，第三方软件主动连接 MaClaw，无需提供回调地址。' : 'Expose a local HTTP message gateway. Third-party software connects to MaClaw without a callback URL.'}
         </p>
         <div className="im-settings-toolbar">
-            <label className="im-settings-toggle" title={hardwareEnabled ? (isZh ? '请先停用硬件' : 'Disable hardware first') : undefined}>
+            <label className="im-settings-toggle">
                 <input
                     type="checkbox"
-                    disabled={settingsBusy || hardwareEnabled}
+                    disabled={settingsBusy}
                     aria-label={textForLang(lang, 'Enable third-party access', '开启第三方软件接入', '開啟第三方軟體接入')}
-                    checked={enabled}
+                    checked={imGatewayEnabled}
                     onChange={(e) => void changeGatewayEnabled(e.target.checked)}
                 />
                 <span>{textForLang(lang, 'Enable third-party access', '开启第三方软件接入', '開啟第三方軟體接入')}</span>
@@ -808,7 +1222,7 @@ export const ThirdPartyAccessSettings = ({
             <span className="im-settings-status" data-status={thirdPartyGatewayStatus} aria-live="polite">
                 {gatewayStatusLabel(thirdPartyGatewayStatus, lang)}
             </span>
-            <button type="button" className="im-settings-button" disabled={!enabled || settingsBusy} onClick={() => void restartGateway()}>
+            <button type="button" className="im-settings-button" disabled={!imGatewayEnabled || settingsBusy} onClick={() => void restartGateway()}>
                 {gatewayBusy ? (isZh ? '处理中…' : 'Working…') : textForLang(lang, 'Restart', '重启接口', '重啟介面')}
             </button>
             <button type="button" className="im-settings-button im-settings-button--audit" onClick={() => setIMAuditPlatform('thirdparty')}>
@@ -826,8 +1240,8 @@ export const ThirdPartyAccessSettings = ({
                     key={String(option.value)}
                     type="button"
                     aria-label={option.desc}
-                    title={hardwareEnabled && option.value ? (isZh ? '启用硬件时必须使用多机模式' : 'Hardware requires Hub mode') : option.desc}
-                    disabled={settingsBusy || (hardwareEnabled && option.value)}
+                    title={option.desc}
+                    disabled={settingsBusy}
                     data-active={thirdPartyGatewayLocalMode === option.value}
                     onClick={() => void changeGatewayMode(option.value)}
                 >{option.label}</button>)}
@@ -837,17 +1251,17 @@ export const ThirdPartyAccessSettings = ({
         <div className="im-settings-grid im-settings-grid--gateway">
             <label className="im-settings-field">
                 <span>Host</span>
-                <input type="text" disabled={settingsBusy || hardwareEnabled} title={hardwareEnabled ? (isZh ? '停用硬件后才能更改监听地址' : 'Disable hardware before changing the listener address') : undefined} value={(config as any)?.thirdparty_gateway_host || '127.0.0.1'} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_host: e.target.value })} placeholder="127.0.0.1" spellCheck={false} />
+                <input type="text" disabled={settingsBusy} value={(config as any)?.thirdparty_gateway_host || '127.0.0.1'} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_host: e.target.value })} placeholder="127.0.0.1" spellCheck={false} />
             </label>
             <label className="im-settings-field im-settings-field--port">
                 <span>Port</span>
-                <input type="number" disabled={settingsBusy || hardwareEnabled} title={hardwareEnabled ? (isZh ? '停用硬件后才能更改监听端口' : 'Disable hardware before changing the listener port') : undefined} min={1} max={65535} value={(config as any)?.thirdparty_gateway_port || 18777} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_port: Number(e.target.value || 18777) })} />
+                <input type="number" disabled={settingsBusy} min={1} max={65535} value={(config as any)?.thirdparty_gateway_port || 18777} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_port: Number(e.target.value || 18777) })} />
             </label>
             <label className="im-settings-field im-settings-field--token">
                 <span>Token</span>
                 <span className="im-settings-token-row">
-                    <input type="password" disabled={settingsBusy || hardwareEnabled} title={hardwareEnabled ? (isZh ? '停用硬件后才能更改 Token' : 'Disable hardware before changing the token') : undefined} value={(config as any)?.thirdparty_gateway_token || ''} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_token: e.target.value })} placeholder="Bearer token" autoComplete="off" />
-                    <button type="button" className="im-settings-button im-settings-button--primary" disabled={settingsBusy || hardwareEnabled} title={hardwareEnabled ? (isZh ? '停用硬件后才能更改 Token' : 'Disable hardware before changing the token') : undefined} onClick={() => void generateToken()}>
+                    <input type="password" disabled={settingsBusy} value={(config as any)?.thirdparty_gateway_token || ''} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_token: e.target.value })} placeholder="Bearer token" autoComplete="off" />
+                    <button type="button" className="im-settings-button im-settings-button--primary" disabled={settingsBusy} onClick={() => void generateToken()}>
                         {isZh ? '生成 Token' : 'Generate Token'}
                     </button>
                 </span>
@@ -861,8 +1275,9 @@ export const ThirdPartyAccessSettings = ({
                 BrowserOpenURL(base ? base + '/connector' : '/connector');
             }}>{textForLang(lang, 'Open docs', '打开接入文档', '開啟接入文件')}</button>
         </div>
+        </>}
 
-		<div className="im-settings-hardware" aria-label={isZh ? '硬件配置' : 'Hardware configuration'} aria-busy={settingsBusy}>
+		{hardwareOnly && <div className="im-settings-hardware" aria-label={isZh ? '硬件配置' : 'Hardware configuration'} aria-busy={settingsBusy}>
             <div className="im-settings-hardware__heading">
                 <div>
                     <strong>{isZh ? '硬件配置' : 'Hardware configuration'}</strong>
@@ -874,7 +1289,7 @@ export const ThirdPartyAccessSettings = ({
                 </label>
             </div>
             <p className="im-settings-hardware__mode-note">
-                {isZh ? '启用后将自动切换为多机模式，并重新启动第三方接入。' : 'Enabling switches third-party access to Hub mode and restarts the gateway.'}
+                {isZh ? '硬件连接由系统通过 Hub 管理，不会修改第三方接入的模式或 Token。' : 'Hardware connections are system-managed through Hub and do not change the IM gateway mode or token.'}
             </p>
 			<label className="im-settings-toggle im-settings-hardware__custom-pets">
 				<input
@@ -921,15 +1336,24 @@ export const ThirdPartyAccessSettings = ({
                         : <small>{isZh ? '点击获取后，在硬件配置页输入。' : 'Get a code, then enter it in the hardware setup portal.'}</small>}
                 </div>
                 <div className="im-settings-hardware__actions">
-                    <button type="button" className="im-settings-button im-settings-button--primary" disabled={hardwareControlsDisabled} onClick={async () => {
+                    <button type="button" className="im-settings-button im-settings-button--primary" disabled={hardwareControlsDisabled || hardwareBindingAtCapacity || pairingBusy} onClick={async () => {
+						const requestID = ++pairingRequestRef.current;
+						setPairingBusy(true);
                         try {
-                            setPairing(await CreateThirdPartyDevicePairing());
-                            showToastMessage(isZh ? '已生成配对码，有效期 30 分钟。' : 'Pairing code generated; valid for 30 minutes.');
+							const nextPairing = await CreateThirdPartyDevicePairing() as HardwarePairing;
+							if (!mountedRef.current || requestID !== pairingRequestRef.current) return;
+							setPairing(nextPairing);
+							showToastMessage(isZh ? '已生成配对码，有效期 30 分钟。' : 'Pairing code generated; valid for 30 minutes.');
                         } catch (err: any) {
+							if (!mountedRef.current || requestID !== pairingRequestRef.current) return;
                             showToastMessage(err?.message || String(err));
+						} finally {
+							if (mountedRef.current && requestID === pairingRequestRef.current) setPairingBusy(false);
                         }
-                    }}>{pairing?.pairCode ? (isZh ? '重新生成' : 'Regenerate') : (isZh ? '获取配对码' : 'Get code')}</button>
-                    {pairing?.gatewayURL && <code>{pairing.gatewayURL}</code>}
+					}}>{pairingBusy
+						? (isZh ? '生成中…' : 'Generating…')
+						: (pairing?.pairCode ? (isZh ? '重新生成' : 'Regenerate') : (isZh ? '获取配对码' : 'Get code'))}</button>
+					{pairing?.gatewayURL && <code>{pairing.gatewayURL}</code>}
                 </div>
             </div>
 
@@ -967,9 +1391,21 @@ export const ThirdPartyAccessSettings = ({
                                 const parsedLastSeen = device.lastSeenAt ? new Date(device.lastSeenAt) : null;
                                 const lastSeen = parsedLastSeen && !Number.isNaN(parsedLastSeen.getTime()) ? parsedLastSeen.toLocaleString() : '';
 								const deviceVolume = Math.max(0, Math.min(100, Math.round(Number(device.volume ?? defaultVolume))));
+								const deviceBrightness = Math.max(0, Math.min(100, Math.round(Number(device.brightness ?? defaultBrightness))));
+								const deviceScreenSleepSeconds = screenSleepOptions.some((option) => option.seconds === device.screenSleepSeconds) ? device.screenSleepSeconds! : 60;
 								const devicePetSkin = device.petSkin || String((config as any)?.pet_skin || 'clawmate');
 								const devicePet = getPetSkinOption(devicePetSkin, petOptions);
 								const availablePetOptions = petOptions.some((pet) => pet.id === devicePetSkin) ? petOptions : [devicePet, ...petOptions];
+								const assistantMode = device.assistantMode === 'expert' ? 'expert' : 'general';
+								const selectedExpertID = device.expertId || '';
+								// An expert can be deleted after a hardware device was bound to
+								// it. Keep that persisted selection visible instead of letting
+								// the native select render blank; the user can then deliberately
+								// fall back to AI assistant or pick a replacement expert.
+								const selectedExpertUnavailable = assistantMode === 'expert'
+									&& selectedExpertID !== ''
+									&& !experts.some((expert) => expert.id === selectedExpertID);
+								const replyVoiceID = device.ttsVoiceId || 'zf_xiaoxiao';
                                 return <div className="im-settings-hardware__device" key={device.clientId}>
                                     <span className="im-settings-hardware__device-status" data-online={Boolean(device.online)} aria-hidden="true" />
 									<div className="im-settings-hardware__device-details">
@@ -1001,6 +1437,65 @@ export const ThirdPartyAccessSettings = ({
                                         </small>
                                     </div>
 									<div className="im-settings-hardware__device-actions">
+										<div className="im-settings-hardware__device-adjustments">
+										<div className="im-settings-hardware__device-screen-sleep">
+											<label htmlFor={`hardware-screen-sleep-${device.clientId}`}>{isZh ? '休眠时间' : 'Screen sleep'}</label>
+											<select
+												id={`hardware-screen-sleep-${device.clientId}`}
+												aria-label={`${isZh ? '休眠时间' : 'Screen sleep'} ${name}`}
+												title={isZh ? '无操作后关闭屏幕。' : 'Turns the screen off after inactivity.'}
+												value={deviceScreenSleepSeconds}
+												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)}
+												onChange={(event) => changeDeviceScreenSleepTimeout(device.clientId, Number(event.target.value))}
+											>
+												{screenSleepOptions.map((option) => <option key={option.seconds} value={option.seconds}>{isZh ? option.zh : option.en}</option>)}
+											</select>
+										</div>
+										<div className="im-settings-hardware__device-brightness">
+										<label htmlFor={`hardware-brightness-${device.clientId}`}><span>{isZh ? '亮度' : 'Brightness'}</span> <strong>{deviceBrightness}%</strong></label>
+											<input id={`hardware-brightness-${device.clientId}`} aria-label={`${isZh ? '亮度' : 'Brightness'} ${name}`} title={device.online ? (isZh ? '调整仅应用于此设备。' : 'Changes apply only to this device.') : (isZh ? '设备离线；设置会在下次连接时生效。' : 'Offline; applied when this device reconnects.')} type="range" min={0} max={100} step={1} value={deviceBrightness} disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)} onPointerDown={() => rememberDeviceBrightnessBeforeEdit(device.clientId)} onKeyDown={(event) => {
+											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) rememberDeviceBrightnessBeforeEdit(device.clientId);
+										}} onChange={(event) => {
+											const next = Number(event.target.value);
+											setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, brightness: next } : item));
+											scheduleDeviceBrightness(device.clientId, next);
+										}} onPointerUp={(event) => scheduleDeviceBrightness(device.clientId, Number((event.target as HTMLInputElement).value), true)} onKeyUp={(event) => {
+											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) scheduleDeviceBrightness(device.clientId, Number((event.target as HTMLInputElement).value), true);
+										}} />
+										</div>
+										<div className="im-settings-hardware__device-volume">
+										<label htmlFor={`hardware-volume-${device.clientId}`}><span>{isZh ? '音量' : 'Volume'}</span> <strong>{deviceVolume}%</strong></label>
+											<input id={`hardware-volume-${device.clientId}`} aria-label={`${isZh ? '音量' : 'Volume'} ${name}`} title={device.online ? (isZh ? '调整仅应用于此设备。' : 'Changes apply only to this device.') : (isZh ? '设备离线；设置会在下次连接时生效。' : 'Offline; applied when this device reconnects.')} type="range" min={0} max={100} step={1} value={deviceVolume} disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)} onPointerDown={() => rememberDeviceVolumeBeforeEdit(device.clientId)} onKeyDown={(event) => {
+											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) rememberDeviceVolumeBeforeEdit(device.clientId);
+										}} onChange={(event) => {
+											const next = Number(event.target.value);
+											setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, volume: next } : item));
+											scheduleDeviceVolume(device.clientId, next);
+										}} onPointerUp={(event) => scheduleDeviceVolume(device.clientId, Number((event.target as HTMLInputElement).value), true)} onKeyUp={(event) => {
+											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) scheduleDeviceVolume(device.clientId, Number((event.target as HTMLInputElement).value), true);
+										}} />
+										</div>
+										<div className="im-settings-hardware__device-agent">
+											<label htmlFor={`hardware-agent-${device.clientId}`}>{isZh ? 'AI 专家' : 'AI assistant'}</label>
+											<select
+												id={`hardware-agent-${device.clientId}`}
+												aria-label={`${isZh ? 'AI 专家' : 'AI assistant'} ${name}`}
+												value={assistantMode === 'expert' ? selectedExpertID : '__general__'}
+												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)}
+												onChange={(event) => {
+													const selected = event.target.value;
+													void saveDeviceAgentBinding(device, {
+														assistantMode: selected === '__general__' ? 'general' : 'expert',
+														expertId: selected === '__general__' ? '' : selected,
+														ttsVoiceId: replyVoiceID,
+													});
+												}}
+									>
+										<option value="__general__">{isZh ? 'AI 助手（默认）' : 'AI assistant (default)'}</option>
+										{selectedExpertUnavailable && <option value={selectedExpertID} disabled>{isZh ? `已不可用：${selectedExpertID}` : `Unavailable: ${selectedExpertID}`}</option>}
+										{experts.map((expert) => <option key={expert.id} value={expert.id}>{expert.icon ? `${expert.icon} ` : ''}{expert.name || expert.id}</option>)}
+									</select>
+										</div>
 										{allowCustomHardwarePets && <div className="im-settings-hardware__device-pet" title={devicePet.label} ref={openPetPickerClientId === device.clientId ? petPickerRootRef : undefined}>
 											<span className="im-settings-hardware__device-pet-preview"><img src={devicePet.image} alt="" /></span>
 											<span>{isZh ? '宠物' : 'Pet'}</span>
@@ -1039,21 +1534,22 @@ export const ThirdPartyAccessSettings = ({
 												><img src={pet.image} alt="" /><span>{pet.label}</span></button>)}
 											</div>}
 										</div>}
-										<div className="im-settings-hardware__device-volume">
-										<label htmlFor={`hardware-volume-${device.clientId}`}>{isZh ? '音量' : 'Volume'} <strong>{deviceVolume}%</strong></label>
-											<input id={`hardware-volume-${device.clientId}`} aria-label={`${isZh ? '音量' : 'Volume'} ${name}`} type="range" min={0} max={100} step={1} value={deviceVolume} disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)} onPointerDown={() => rememberDeviceVolumeBeforeEdit(device.clientId)} onKeyDown={(event) => {
-											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) rememberDeviceVolumeBeforeEdit(device.clientId);
-										}} onChange={(event) => {
-											const next = Number(event.target.value);
-											setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, volume: next } : item));
-											scheduleDeviceVolume(device.clientId, next);
-										}} onPointerUp={(event) => scheduleDeviceVolume(device.clientId, Number((event.target as HTMLInputElement).value), true)} onKeyUp={(event) => {
-											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) scheduleDeviceVolume(device.clientId, Number((event.target as HTMLInputElement).value), true);
-										}} />
-										<small>{device.online ? (isZh ? '调整后仅发送到此设备。' : 'Changes apply only to this device.') : (isZh ? '设备离线；设置会在下次连接时生效。' : 'Offline; applied when this device reconnects.')}</small>
-									</div>
-	                                        <button type="button" className="im-settings-button im-settings-button--primary" aria-label={`${isZh ? '远程播放' : 'Play remotely'} ${name}`} disabled={hardwareControlsDisabled || !welcomeAudioPath || !device.online || deletingClientIds.has(device.clientId) || previewingClientIds.has(device.clientId)} title={!device.online ? (isZh ? '设备离线，无法远程播放。' : 'This device is offline.') : undefined} onClick={() => void previewRemoteHardware(device)}>{previewingClientIds.has(device.clientId) ? (isZh ? '播放中…' : 'Playing…') : (isZh ? '远程播放' : 'Play remotely')}</button>
-	                                    <button type="button" className="im-settings-button im-settings-button--danger" aria-label={`${isZh ? '解绑' : 'Remove'} ${name}`} disabled={deletingClientIds.has(device.clientId) || savingDeviceNameClientIds.has(device.clientId)} onClick={async () => {
+										<div className="im-settings-hardware__device-agent">
+											<label htmlFor={`hardware-reply-voice-${device.clientId}`}>{isZh ? '回复音色' : 'Reply voice'}</label>
+											<select
+												id={`hardware-reply-voice-${device.clientId}`}
+												aria-label={`${isZh ? '回复音色' : 'Reply voice'} ${name}`}
+												value={replyVoiceID}
+												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)}
+												onChange={(event) => void saveDeviceAgentBinding(device, { assistantMode, expertId: selectedExpertID, ttsVoiceId: event.target.value })}
+											>
+												{ttsVoiceOptions.map((voice) => <option key={voice.id} value={voice.id}>{isZh ? voice.zh : voice.label}</option>)}
+											</select>
+										</div>
+										</div>
+										<div className="im-settings-hardware__device-command-actions">
+		                                        <button type="button" className="im-settings-button im-settings-button--primary" aria-label={`${isZh ? '远程播放' : 'Play remotely'} ${name}`} disabled={hardwareControlsDisabled || !welcomeAudioPath || !device.online || deletingClientIds.has(device.clientId) || previewingClientIds.has(device.clientId)} title={!device.online ? (isZh ? '设备离线，无法远程播放。' : 'This device is offline.') : undefined} onClick={() => void previewRemoteHardware(device)}>{previewingClientIds.has(device.clientId) ? (isZh ? '播放中…' : 'Playing…') : (isZh ? '远程播放' : 'Play remotely')}</button>
+		                                    <button type="button" className="im-settings-button im-settings-button--danger" aria-label={`${isZh ? '解绑' : 'Remove'} ${name}`} disabled={deletingClientIds.has(device.clientId) || savingDeviceNameClientIds.has(device.clientId)} onClick={async () => {
                                         const confirmed = await showConfirm(
                                             isZh ? `解绑后，${name} 的 Token 将立即失效；如需再次使用，必须重新配对。` : `${name}'s token will be revoked immediately. The device must pair again before it can reconnect.`,
                                             isZh ? '解绑硬件？' : 'Remove hardware?',
@@ -1062,6 +1558,7 @@ export const ThirdPartyAccessSettings = ({
 	                                        if (!confirmed || !mountedRef.current) return;
 	                                        pendingDeletedClientIdsRef.current.add(device.clientId);
 	                                        deletedClientIdsRef.current.add(device.clientId);
+	                                        deletedAtClientIdsRef.current.set(device.clientId, Date.now());
 										invalidateDeviceLifecycle(device.clientId);
 										// Detach stale in-flight UI state before a same-ID device can
 										// be paired again. The guarded finalizers above cannot then
@@ -1071,14 +1568,20 @@ export const ThirdPartyAccessSettings = ({
 											next.delete(device.clientId);
 											return next;
 										});
-										setSavingPetClientIds((current) => {
+												setSavingPetClientIds((current) => {
 											const next = new Set(current);
 											next.delete(device.clientId);
 											return next;
-										});
+												});
 										setDeletingClientIds((current) => new Set(current).add(device.clientId));
 										setEditingDeviceNameClientId((current) => current === device.clientId ? null : current);
 										discardPendingDeviceVolume(device.clientId);
+										discardPendingDeviceBrightness(device.clientId);
+										discardPendingDeviceScreenSleep(device.clientId);
+										optimisticAgentBindingsRef.current.delete(device.clientId);
+										confirmedAgentBindingsRef.current.delete(device.clientId);
+										agentBindingRequestRef.current.delete(device.clientId);
+										agentBindingSaveTailsRef.current.delete(device.clientId);
 	                                        try {
                                             await DeleteThirdPartyHardwareDevice(device.clientId);
                                             if (mountedRef.current) {
@@ -1087,11 +1590,13 @@ export const ThirdPartyAccessSettings = ({
                                                 setDevices((current) => current.filter((item) => item.clientId !== device.clientId));
 												setBoundDeviceCount((count) => Math.max(0, count - 1));
                                                 showToastMessage(isZh ? '硬件已解绑。' : 'Hardware removed.');
+																		void refreshDevicesRef.current();
                                             }
 	                                        } catch (err: any) {
 										pendingDeletedClientIdsRef.current.delete(device.clientId);
 										deletedClientIdsRef.current.delete(device.clientId);
-                                            if (mountedRef.current) showToastMessage(err?.message || String(err));
+										deletedAtClientIdsRef.current.delete(device.clientId);
+										if (mountedRef.current) showToastMessage(welcomePreviewErrorMessage(err, isZh));
                                         } finally {
 	                                            if (mountedRef.current) setDeletingClientIds((current) => {
 												const next = new Set(current);
@@ -1099,8 +1604,9 @@ export const ThirdPartyAccessSettings = ({
 												return next;
 											});
 	                                        }
-	                                    }}>{deletingClientIds.has(device.clientId) ? (isZh ? '解绑中…' : 'Removing…') : (isZh ? '解绑' : 'Remove')}</button>
-	                                    </div>
+		                                    }}>{deletingClientIds.has(device.clientId) ? (isZh ? '解绑中…' : 'Removing…') : (isZh ? '解绑' : 'Remove')}</button>
+										</div>
+									</div>
                                 </div>;
                             })}</div>}
             </div>
@@ -1118,20 +1624,24 @@ export const ThirdPartyAccessSettings = ({
                 </div>
                 <p>{isZh ? '设备每次开机初始化完成后仅播放一次。输入文字生成 WAV，或选择 MP3、WAV、Ogg / Opus 自动转换为硬件可播放的 16 kHz 单声道 WAV。' : 'Plays once after each device boot finishes initializing. Generate WAV from text, or import MP3, WAV, Ogg / Opus and convert it to 16 kHz mono WAV.'}</p>
                 <label className="im-settings-field im-settings-hardware__welcome-voice">
-                    <span>{isZh ? '英文发音' : 'English voice'}</span>
+                    <span>{isZhHant ? '發音模型' : isZh ? '发音模型' : 'Voice model'}</span>
                     <select
-                        aria-label={isZh ? '英文发音' : 'English voice'}
+                        aria-label={isZhHant ? '發音模型' : isZh ? '发音模型' : 'Voice model'}
                         disabled={welcomeEditingDisabled || welcomeVoiceSaving}
                         value={welcomeVoiceID}
                         onChange={(event) => void changeWelcomeVoice(event.target.value)}
                     >
-                        <option value="af_heart">{isZh ? '甜美女声' : 'Sweet female'}</option>
-                        <option value="am_adam">{isZh ? '自然男声' : 'Natural male'}</option>
+                        {ttsVoiceOptions.map((voice) => (
+                            <option key={voice.id} value={voice.id}>{isZhHant ? voice.welcomeZhHant : isZh ? voice.welcomeZh : voice.welcomeEn}</option>
+                        ))}
                     </select>
-                    <small>{isZh ? '选择后重新生成音频；默认使用温暖、清晰的美式女声。' : 'Regenerate after changing the voice. The warm, clear American female voice is the default.'}</small>
+                    <small>{isZhHant ? '可選擇內置的全部發音模型；中文歡迎詞建議使用中文音色。選擇後請重新生成音頻。' : isZh ? '可选择内置的全部发音模型；中文欢迎词建议使用中文音色。选择后请重新生成音频。' : 'All bundled voice models are available. For Chinese welcome text, choose a Chinese voice and regenerate the audio.'}</small>
                 </label>
                 <div className="im-settings-hardware__welcome-controls">
-                    <textarea disabled={welcomeEditingDisabled} value={welcomeText} maxLength={80} onChange={(e) => setWelcomeText(e.target.value)} placeholder={isZh ? '例如：Hello, Maclaw' : 'For example: Hello, Maclaw'} />
+					<div className="im-settings-hardware__welcome-text-field">
+						<textarea disabled={welcomeEditingDisabled} value={welcomeText} maxLength={80} onChange={(e) => setWelcomeText(e.target.value)} placeholder={isZh ? '例如：Hello, Maclaw' : 'For example: Hello, Maclaw'} aria-describedby="hardware-welcome-capacity" />
+						<small id="hardware-welcome-capacity" className="im-settings-hardware__welcome-text-status">{welcomeTextCapacityHint(welcomeText, isZh)}</small>
+					</div>
                     <button type="button" className="im-settings-button" disabled={welcomeEditingDisabled || welcomeVoiceSaving || !welcomeText.trim()} onClick={() => void runWelcomeAction('generate', async () => {
                         try {
                             await GenerateHardwareWelcomeAudio(welcomeText, welcomeVoiceID);
@@ -1139,7 +1649,7 @@ export const ThirdPartyAccessSettings = ({
                             await refreshLocalWelcomePreviewSource(true).catch(() => undefined);
                             showToastMessage(isZh ? '欢迎音频已生成。' : 'Welcome audio generated.');
                         } catch (err: any) {
-                            showToastMessage(err?.message || String(err));
+                            showToastMessage(welcomePreviewErrorMessage(err, isZh));
                         }
                     })}>{welcomeAction === 'generate' ? (isZh ? '生成中…' : 'Generating…') : (isZh ? '生成音频' : 'Generate audio')}</button>
                     <button type="button" className="im-settings-button" disabled={welcomeEditingDisabled} onClick={() => void runWelcomeAction('import', async () => {
@@ -1161,8 +1671,9 @@ export const ThirdPartyAccessSettings = ({
                     })}>{welcomeAction === 'preview-local' ? (isZh ? 'GUI 播放中…' : 'Playing in GUI…') : (isZh ? 'GUI 本地试听' : 'Preview in GUI')}</button>
 	                </div>
                 {welcomeAudioPath && <small className="im-settings-hardware__audio-status">{isZh ? '已准备硬件 WAV：' : 'Hardware WAV ready: '}{welcomeAudioPath.split(/[\\/]/).pop()}</small>}
+				<small className="im-settings-hardware__welcome-capacity">{isZh ? '硬件容量约 3 秒；接近上限时会自动加快语速，仍超出时请缩短欢迎词。' : 'Hardware capacity is roughly 3 seconds. Near the limit, speech is automatically sped up; shorten the message if it still does not fit.'}</small>
 	                <small className="im-settings-hardware__preview-note">{isZh ? 'GUI 本地试听用于检查生成质量；请在上方对应的已绑定硬件旁点击“远程播放”，仅向该 ESP32 下发并等待“播放完成”确认。' : 'GUI preview checks generated audio quality. Use the remote-play button beside a bound device to send only to that ESP32 and wait for its playback receipt.'}</small>
             </div>
-        </div>
+        </div>}
     </section>;
 };

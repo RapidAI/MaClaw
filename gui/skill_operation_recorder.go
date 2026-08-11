@@ -1174,7 +1174,7 @@ var triggerValidExtensions = map[string]bool{
 	"pdf": true, "md": true, "txt": true, "html": true, "csv": true, "json": true,
 	"py": true, "js": true, "ts": true, "go": true, "rs": true, "java": true,
 	"png": true, "jpg": true, "svg": true, "mp3": true, "mp4": true,
-	"docx": true, "xlsx": true, "pptx": true, "yaml": true, "xml": true,
+	"doc": true, "docx": true, "xls": true, "xlsx": true, "ppt": true, "pptx": true, "yaml": true, "xml": true,
 }
 
 // detectDependencies scans bash commands for pip/npm install patterns.

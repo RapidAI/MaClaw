@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 
 #define POWER_LEASE_MAX_SLOTS 8u
@@ -16,6 +17,7 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static power_lease_slot_t s_slots[POWER_LEASE_MAX_SLOTS];
 static bool s_initialized;
 static bool s_initializing;
+static bool s_stopping;
 
 static bool owner_is_valid(device_power_lease_owner_t owner) {
     return owner > DEVICE_POWER_LEASE_OWNER_NONE &&
@@ -34,13 +36,58 @@ device_status_t power_lease_service_init(void) {
         taskEXIT_CRITICAL(&s_lock);
         return DEVICE_STATUS_OK;
     }
-    if (s_initializing) {
+    if (s_initializing || s_stopping) {
         taskEXIT_CRITICAL(&s_lock);
         return DEVICE_STATUS_BUSY;
     }
     s_initializing = true;
-    memset(s_slots, 0, sizeof(s_slots));
+    /* Keep the slot generations across a fully drained generation. A stale
+     * handle from before a later init must not match the first newly issued
+     * lease in the same slot. */
+    for (size_t i = 0; i < POWER_LEASE_MAX_SLOTS; ++i) {
+        s_slots[i].active = false;
+        s_slots[i].owner = DEVICE_POWER_LEASE_OWNER_NONE;
+    }
     s_initialized = true;
+    s_initializing = false;
+    taskEXIT_CRITICAL(&s_lock);
+    return DEVICE_STATUS_OK;
+}
+
+void power_lease_service_close_admission(void) {
+    taskENTER_CRITICAL(&s_lock);
+    if (s_initialized || s_stopping) {
+        s_initialized = false;
+        s_stopping = true;
+    }
+    taskEXIT_CRITICAL(&s_lock);
+}
+
+device_status_t power_lease_service_deinit(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    power_lease_service_close_admission();
+
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    for (;;) {
+        taskENTER_CRITICAL(&s_lock);
+        uint8_t active_count = 0;
+        for (size_t i = 0; i < POWER_LEASE_MAX_SLOTS; ++i) {
+            if (s_slots[i].active) ++active_count;
+        }
+        const bool stopping = s_stopping;
+        taskEXIT_CRITICAL(&s_lock);
+        if (!stopping || active_count == 0) break;
+        if (esp_timer_get_time() >= deadline_us) {
+            /* Keep admission closed; existing owners retain the only legal
+             * operation (release) until a later drain attempt succeeds. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    taskENTER_CRITICAL(&s_lock);
+    s_initialized = false;
+    s_stopping = false;
     s_initializing = false;
     taskEXIT_CRITICAL(&s_lock);
     return DEVICE_STATUS_OK;
@@ -51,7 +98,7 @@ device_status_t power_lease_service_acquire(device_power_lease_owner_t owner,
     if (!out_lease || !owner_is_valid(owner)) return DEVICE_STATUS_INVALID_ARGUMENT;
     *out_lease = DEVICE_POWER_LEASE_INVALID;
     taskENTER_CRITICAL(&s_lock);
-    if (!s_initialized) {
+    if (!s_initialized || s_stopping) {
         taskEXIT_CRITICAL(&s_lock);
         return DEVICE_STATUS_BUSY;
     }
@@ -88,7 +135,7 @@ void power_lease_service_release(device_power_lease_t lease) {
 bool power_lease_service_allows_display_off(void) {
     bool allowed = true;
     taskENTER_CRITICAL(&s_lock);
-    if (!s_initialized) {
+    if (!s_initialized || s_stopping) {
         allowed = false;
     } else {
         for (size_t i = 0; i < POWER_LEASE_MAX_SLOTS; ++i) {
@@ -106,7 +153,7 @@ bool power_lease_service_get_snapshot(device_power_lease_snapshot_t *out_snapsho
     if (!out_snapshot) return false;
     memset(out_snapshot, 0, sizeof(*out_snapshot));
     taskENTER_CRITICAL(&s_lock);
-    out_snapshot->initialized = s_initialized;
+    out_snapshot->initialized = s_initialized && !s_stopping;
     for (size_t i = 0; i < POWER_LEASE_MAX_SLOTS; ++i) {
         if (!s_slots[i].active) continue;
         ++out_snapshot->active_count;

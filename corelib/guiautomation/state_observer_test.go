@@ -422,3 +422,38 @@ func fakeScreenshot() (string, error) {
 }
 
 var _ = fmt.Sprintf
+
+type countingOCR struct {
+	calls   int
+	results []taskengine.OCRResult
+}
+
+func (o *countingOCR) Recognize(string) ([]taskengine.OCRResult, error) {
+	o.calls++
+	return o.results, nil
+}
+func (o *countingOCR) IsAvailable() bool { return true }
+func (o *countingOCR) Close()            {}
+
+func TestVerify_MultipleTextContainsShareOneOCRPass(t *testing.T) {
+	ocr := &countingOCR{results: []taskengine.OCRResult{
+		{Text: "Welcome", Confidence: 0.9},
+		{Text: "Login successful", Confidence: 0.9},
+	}}
+	obs := NewGUIStateObserver(nil, ocr, fakeScreenshot, nil)
+
+	result, err := obs.Verify([]taskengine.CriterionSpec{
+		{Type: "text_contains", Pattern: "Welcome"},
+		{Type: "text_contains", Pattern: "Login successful"},
+		{Type: "text_contains", Pattern: "Missing text"},
+	})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if result.Passed {
+		t.Fatal("third criterion should fail")
+	}
+	if ocr.calls != 1 {
+		t.Fatalf("Recognize called %d times for 3 criteria on one screenshot, want 1", ocr.calls)
+	}
+}

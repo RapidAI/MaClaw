@@ -368,6 +368,7 @@ func nCBase(n, c, C, H, W int) int { return (n*C + c) * H * W }
 // written as explicit zeros so pooled buffers need no clearing.
 func im2row(B, x []float32, xG, pix0, rows, oW, H, W, Cg int, p *convParams) {
 	kH, kW := p.kH, p.kW
+
 	if p.dilations[1] == 1 && kH <= 8 && kW <= 8 {
 		im2rowFast(B, x, xG, pix0, rows, oW, H, W, Cg, p)
 		return
@@ -742,7 +743,24 @@ func convGeneral(out, x, w, bias []float32, N, C, M, H, W, oH, oW int, p *convPa
 			xG := (nI*C + gI*Cg) * H * W
 			im2row(B, x, xG, pix0, rows, oW, H, W, Cg, p)
 			wSlice := w[gI*Mg*K : (gI+1)*Mg*K]
-			// out block: [Mg, rows] temporary, then scatter into out.
+			outG := (nI*M + gI*Mg) * OHW
+			// A full output-row block is already contiguous when this task owns
+			// the entire output plane. Writing GEMM directly into the arena tensor
+			// eliminates the temporary panel plus Mg copies (a common PP-OCR case:
+			// 3x3 feature-map convs fit below maxElems). Conv bias is channel
+			// (matrix-row) oriented, so it remains a SIMD vector pass.
+			if pix0 == 0 && rows == OHW {
+				dst := out[outG : outG+Mg*OHW]
+				xt.MatMul(dst, wSlice, B, Mg, OHW, K)
+				if bias != nil {
+					for m := 0; m < Mg; m++ {
+						vek32.AddNumber_Inplace(dst[m*OHW:(m+1)*OHW], bias[gI*Mg+m])
+					}
+				}
+				continue
+			}
+			// Tiled output: [Mg, rows] temporary, then scatter into the final
+			// [Mg, OHW] planes. Retain it across blocks handled by this worker.
 			if need := Mg * rows; cap(blkOut) < need {
 				if blkOut != nil {
 					putScratch(blkOut)
@@ -753,11 +771,9 @@ func convGeneral(out, x, w, bias []float32, N, C, M, H, W, oH, oW int, p *convPa
 			xt.MatMul(blkOut, wSlice, B, Mg, rows, K)
 			if bias != nil {
 				for m := 0; m < Mg; m++ {
-					row := blkOut[m*rows : (m+1)*rows]
-					vek32.AddNumber_Inplace(row, bias[gI*Mg+m])
+					vek32.AddNumber_Inplace(blkOut[m*rows:(m+1)*rows], bias[gI*Mg+m])
 				}
 			}
-			outG := (nI*M + gI*Mg) * OHW
 			for m := 0; m < Mg; m++ {
 				copy(out[outG+m*OHW+pix0:outG+m*OHW+pix1], blkOut[m*rows:(m+1)*rows])
 			}

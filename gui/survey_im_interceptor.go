@@ -41,6 +41,16 @@ func surveyScopedUserID(groupID, userID string) string {
 	return userID
 }
 
+// supportsSurveyInterception reports whether this gateway may use the Hub
+// survey protocol. That protocol identifies a Lansenger session by platform,
+// user and group only; it has no bot-profile field. Profile-bound bots must
+// therefore stay out of it, otherwise two bots in the same group could resume
+// or mutate each other's survey session. The legacy singleton retains the
+// existing survey integration for backward compatibility.
+func (m *lansengerGatewayManager) supportsSurveyInterception() bool {
+	return m != nil && m.profile == nil
+}
+
 // surveyHintAction maps a Hub IM event code to a session-hint mutation.
 // Legacy Hubs send no event: non-command handled replies still mark (old behavior).
 func surveyHintAction(ev string, isCmd bool) (clear, mark bool) {
@@ -105,7 +115,7 @@ func surveyShouldBypassMention(enabled bool, strippedText string, hasActiveSessi
 // surveyCandidateBypassesMention reports whether a group message that failed
 // requireMention should still enter the survey interceptor (session answers / commands).
 func (m *lansengerGatewayManager) surveyCandidateBypassesMention(msg lansenger.IncomingMessage) bool {
-	if m == nil || m.app == nil || !m.app.surveyEnabled() {
+	if !m.supportsSurveyInterception() || m.app == nil || !m.app.surveyEnabled() {
 		return false
 	}
 	text := stripLansengerBotMentions(msg)
@@ -130,7 +140,7 @@ func (m *lansengerGatewayManager) surveyCandidateBypassesMention(msg lansenger.I
 // Must run after mention gate and before passthrough / agent / Hub forward.
 // Returns true if handled (caller must not continue normal agent routing).
 func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingMessage) bool {
-	if m == nil || m.app == nil {
+	if !m.supportsSurveyInterception() || m.app == nil {
 		return false
 	}
 	text := stripLansengerBotMentions(msg)

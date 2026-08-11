@@ -122,7 +122,10 @@ func parallelChunks(n int, fn func(start, end int)) {
 // consumer left). Plain goroutines leave all pool workers free to drain the
 // nested jobs.
 func parallelOuter(total int, fn func(start, end int)) {
-	nw := runtime.NumCPU()
+	// Match the runtime's active CPU budget. In fixed-core inference (and
+	// GOMAXPROCS-constrained services), spawning one outer goroutine per
+	// physical core only adds scheduling overhead around nested MatMul work.
+	nw := runtime.GOMAXPROCS(0)
 	if nw > 12 {
 		nw = 12 // mirror the pool's worker cap
 	}

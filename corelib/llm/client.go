@@ -1100,6 +1100,19 @@ func sanitizeOpenAIContentBlocks(blocks []interface{}) []interface{} {
 					out = append(out, map[string]interface{}{"type": "image_url", "image_url": clean})
 				}
 			}
+		case "image":
+			// Anthropic-native image block. Normalize to the OpenAI image_url
+			// shape so the block survives regardless of which protocol the
+			// request ends up using; the Anthropic request builder converts it
+			// back downstream (ConvertToAnthropicMessages).
+			if source := toStringInterfaceMap(mm["source"]); source != nil {
+				if url := anthropicImageSourceToDataURL(source); url != "" {
+					out = append(out, map[string]interface{}{
+						"type":      "image_url",
+						"image_url": map[string]interface{}{"url": url},
+					})
+				}
+			}
 		case "input_audio":
 			if audio := toStringInterfaceMap(mm["input_audio"]); audio != nil {
 				clean := map[string]interface{}{}

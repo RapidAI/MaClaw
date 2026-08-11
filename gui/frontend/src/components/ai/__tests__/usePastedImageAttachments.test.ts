@@ -358,6 +358,162 @@ describe('usePastedImageAttachments', () => {
         expect(consoleError.mock.calls.some(call => String(call[0] || '').includes('unmounted component'))).toBe(false);
     });
 
+    it('attaches a clipboard screenshot only once when items and files expose mismatched metadata', async () => {
+        const savePastedImage = vi.fn().mockResolvedValue('D:\\tmp\\paste_meta.png');
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mismatched-shot');
+        vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+        (window as any).go = { main: { App: { SavePastedImage: savePastedImage } } };
+        const { result } = renderHook(() => usePastedImageAttachments('desktop-user'));
+        const fromItems = new File(['png-bytes'], 'image.png', { type: 'image/png', lastModified: 111 });
+        const fromFiles = new File(['png-bytes'], 'screenshot.png', { type: 'image/png', lastModified: 222 });
+
+        await act(async () => {
+            result.current.handlePaste({
+                preventDefault: vi.fn(),
+                clipboardData: {
+                    items: [{ kind: 'file', type: 'image/png', getAsFile: () => fromItems }],
+                    files: [fromFiles],
+                },
+            } as any);
+            await Promise.resolve();
+        });
+
+        await waitForCondition(() => result.current.pendingAttachments.length === 1);
+        expect(savePastedImage).toHaveBeenCalledTimes(1);
+    });
+
+    it('suppresses the same clipboard image delivered by back-to-back paste events', async () => {
+        const savePastedImage = vi.fn().mockResolvedValue('D:\\tmp\\paste_repeat.png');
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:repeated-shot');
+        vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+        (window as any).go = { main: { App: { SavePastedImage: savePastedImage } } };
+        const { result } = renderHook(() => usePastedImageAttachments('desktop-user'));
+        const first = new File(['png-bytes'], 'image.png', { type: 'image/png', lastModified: 333 });
+        const second = new File(['png-bytes'], 'image.png', { type: 'image/png', lastModified: 444 });
+        const pasteEvent = (file: File) => ({
+            preventDefault: vi.fn(),
+            clipboardData: {
+                items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+                files: [file],
+            },
+        }) as any;
+
+        await act(async () => {
+            result.current.handlePaste(pasteEvent(first));
+            result.current.handlePaste(pasteEvent(second));
+            await Promise.resolve();
+        });
+
+        await waitForCondition(() => result.current.pendingAttachments.length === 1);
+        expect(savePastedImage).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows the same image to be pasted into different sessions within the duplicate window', async () => {
+        const savePastedImage = vi.fn()
+            .mockResolvedValueOnce('D:\\tmp\\paste_sess_a.png')
+            .mockResolvedValueOnce('D:\\tmp\\paste_sess_b.png');
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:cross-session-shot');
+        vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+        (window as any).go = { main: { App: { SavePastedImage: savePastedImage } } };
+        const { result, rerender } = renderHook(
+            ({ sessionKey }) => usePastedImageAttachments(sessionKey),
+            { initialProps: { sessionKey: 'desktop-user:D:/proj-a' } },
+        );
+        const makeFile = () => new File(['png-bytes'], 'image.png', { type: 'image/png' });
+        const pasteEvent = (file: File) => ({
+            preventDefault: vi.fn(),
+            clipboardData: {
+                items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+                files: [file],
+            },
+        }) as any;
+
+        await act(async () => {
+            result.current.handlePaste(pasteEvent(makeFile()));
+            await Promise.resolve();
+        });
+        await waitForCondition(() => result.current.pendingAttachments.length === 1);
+
+        rerender({ sessionKey: 'desktop-user:D:/proj-b' });
+        await act(async () => {
+            result.current.handlePaste(pasteEvent(makeFile()));
+            await Promise.resolve();
+        });
+        await waitForCondition(() => result.current.pendingAttachments.length === 1);
+
+        expect(savePastedImage).toHaveBeenCalledTimes(2);
+        rerender({ sessionKey: 'desktop-user:D:/proj-a' });
+        expect(result.current.pendingAttachments.map(att => att.filePath)).toEqual(['D:\\tmp\\paste_sess_a.png']);
+    });
+
+    it('attaches the same image again when a repeat paste arrives after the duplicate window', async () => {
+        const savePastedImage = vi.fn()
+            .mockResolvedValueOnce('D:\\tmp\\paste_first.png')
+            .mockResolvedValueOnce('D:\\tmp\\paste_second.png');
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:windowed-shot');
+        vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+        (window as any).go = { main: { App: { SavePastedImage: savePastedImage } } };
+        const { result } = renderHook(() => usePastedImageAttachments('desktop-user'));
+        const dateNow = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+        const makeFile = () => new File(['png-bytes'], 'image.png', { type: 'image/png' });
+        const pasteEvent = (file: File) => ({
+            preventDefault: vi.fn(),
+            clipboardData: {
+                items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+                files: [file],
+            },
+        }) as any;
+
+        await act(async () => {
+            result.current.handlePaste(pasteEvent(makeFile()));
+            await Promise.resolve();
+        });
+        await waitForCondition(() => result.current.pendingAttachments.length === 1);
+
+        dateNow.mockReturnValue(1_000_000 + 1600);
+        await act(async () => {
+            result.current.handlePaste(pasteEvent(makeFile()));
+            await Promise.resolve();
+        });
+
+        await waitForCondition(() => result.current.pendingAttachments.length === 2);
+        expect(savePastedImage).toHaveBeenCalledTimes(2);
+    });
+
+    it('allows an immediate retry paste after a failed attach', async () => {
+        const savePastedImage = vi.fn()
+            .mockRejectedValueOnce(new Error('boom'))
+            .mockResolvedValueOnce('D:\\tmp\\paste_retry.png');
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:retry-shot');
+        vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+        (window as any).go = { main: { App: { SavePastedImage: savePastedImage } } };
+        const { result } = renderHook(() => usePastedImageAttachments('desktop-user'));
+        const makeFile = () => new File(['png-bytes'], 'image.png', { type: 'image/png' });
+        const pasteEvent = (file: File) => ({
+            preventDefault: vi.fn(),
+            clipboardData: {
+                items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+                files: [file],
+            },
+        }) as any;
+
+        await act(async () => {
+            result.current.handlePaste(pasteEvent(makeFile()));
+            await Promise.resolve();
+        });
+        await waitForCondition(() => consoleError.mock.calls.length === 1);
+        expect(result.current.pendingAttachments).toEqual([]);
+
+        await act(async () => {
+            result.current.handlePaste(pasteEvent(makeFile()));
+            await Promise.resolve();
+        });
+
+        await waitForCondition(() => result.current.pendingAttachments.length === 1);
+        expect(savePastedImage).toHaveBeenCalledTimes(2);
+    });
+
     it('revokes image preview URLs when an async image attachment is rejected by a reset', async () => {
         let resolveSave!: (path: string) => void;
         const savePastedImage = vi.fn(() => new Promise<string>((resolve) => { resolveSave = resolve; }));

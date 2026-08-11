@@ -95,6 +95,7 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 		}
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
+	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
 	tools = stripExecutionContractMetadataForLLM(tools)
 	return tools, estimateToolsTokens(tools)
 }
@@ -215,6 +216,7 @@ func (h *IMMessageHandler) augmentToolsFromSessionPins(ctx *LoopContext, userID 
 			}
 			currentTools = filterToolsForLansengerGroupPermissions(currentTools, *ctx.LansengerGroupPermissions)
 		}
+		currentTools = filterComputerUseToolsForLocalFileWork(ctx, "", currentTools)
 		currentTools = stripExecutionContractMetadataForLLM(currentTools)
 		currentBudget = estimateToolsTokens(currentTools)
 

@@ -2,6 +2,75 @@ package main
 
 import "testing"
 
+func TestNormalizeScreenSizeForWindowDPI(t *testing.T) {
+	tests := []struct {
+		name                      string
+		physicalW, physicalH, dpi int
+		wantW, wantH              int
+	}{
+		{name: "100 percent", physicalW: 1920, physicalH: 1080, dpi: 96, wantW: 1920, wantH: 1080},
+		{name: "1080p at 125 percent", physicalW: 1920, physicalH: 1080, dpi: 120, wantW: 1536, wantH: 864},
+		{name: "1080p at 150 percent", physicalW: 1920, physicalH: 1080, dpi: 144, wantW: 1280, wantH: 720},
+		{name: "invalid size", physicalW: 0, physicalH: 1080, dpi: 120, wantW: 0, wantH: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotW, gotH := normalizeScreenSizeForWindowDPI(tt.physicalW, tt.physicalH, tt.dpi)
+			if gotW != tt.wantW || gotH != tt.wantH {
+				t.Fatalf("normalizeScreenSizeForWindowDPI(%d, %d, %d) = %dx%d, want %dx%d", tt.physicalW, tt.physicalH, tt.dpi, gotW, gotH, tt.wantW, tt.wantH)
+			}
+		})
+	}
+}
+
+func TestNormalizeScreenSizeForWindowDPIRoundsSafely(t *testing.T) {
+	gotW, gotH := normalizeScreenSizeForWindowDPI(1366, 768, 120)
+	if gotW != 1092 || gotH != 614 {
+		t.Fatalf("125%% conversion = %dx%d, want 1092x614", gotW, gotH)
+	}
+}
+
+func TestAdaptiveWindowSizeForScreenUsesProvidedMonitor(t *testing.T) {
+	// The main window can be on a monitor with a different DPI than the primary
+	// one. The caller is responsible for normalising physical pixels first;
+	// this helper must honour those current-monitor logical dimensions.
+	width, height := adaptiveWindowSizeForScreen(1536, 864)
+	if width != 1280 || height != 784 {
+		t.Fatalf("adaptiveWindowSizeForScreen(1536, 864) = %dx%d, want 1280x784", width, height)
+	}
+}
+
+func TestAdaptiveWindowSizeForScreenDoesNotReserveTaskbarTwice(t *testing.T) {
+	// A current Windows monitor query supplies rcWork, so its height already
+	// excludes the taskbar. A 1080p@125% screen with a 40px physical taskbar
+	// has an 832px working area: preserve that exact available height rather
+	// than applying the old generic 80px bottom-taskbar estimate a second time.
+	width, height := adaptiveWindowSizeForWorkArea(1536, 832)
+	if width != 1280 || height != 800 {
+		t.Fatalf("adaptiveWindowSizeForWorkArea(1536, 832) = %dx%d, want 1280x800", width, height)
+	}
+}
+
+func TestAdaptiveWindowSizeForWorkAreaPreservesPortraitTaskbarBounds(t *testing.T) {
+	// RcWork can be portrait too. The selected preset needs 1,280px of height;
+	// a 1,200px work area must constrain it to that exact usable boundary.
+	width, height := adaptiveWindowSizeForWorkArea(1080, 1200)
+	if width != 960 || height != 1200 {
+		t.Fatalf("adaptiveWindowSizeForWorkArea(1080, 1200) = %dx%d, want 960x1200", width, height)
+	}
+}
+
+func TestAdaptiveWindowSizeForUnavailableWorkAreaUsesScreenReserve(t *testing.T) {
+	// A missing HWND cannot supply rcWork. The caller must retain the normal
+	// screen/taskbar fallback rather than treating raw full-screen bounds as a
+	// work area with zero reserve.
+	width, height := adaptiveWindowSizeForScreen(1536, 832)
+	if width != 1280 || height != 752 {
+		t.Fatalf("adaptiveWindowSizeForScreen(1536, 832) = %dx%d, want 1280x752", width, height)
+	}
+}
+
 func TestAdaptiveLandscape_Presets(t *testing.T) {
 	tests := []struct {
 		name       string

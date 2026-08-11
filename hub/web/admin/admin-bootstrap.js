@@ -58,8 +58,8 @@
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
     var tenantAdmin = isTenantAdminProfile(profile);
     var tasks = tenantAdmin
-      ? ['loadOverviewTenantInfo', 'loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadTenantMailSenderName', 'loadTenantMigrationSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
-      : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants'];
+      ? ['loadOverviewTenantInfo', 'loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadTenantMailSenderName', 'loadTenantMigrationSettings', 'loadTenantDigitalAssetsSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
+      : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants', 'loadTenantDigitalAssetsSettings'];
     var results = await Promise.allSettled(tasks.map(callIfAvailable));
     reportRefreshFailures(results);
     // After login/refresh: soft-block when system-free is not ready.

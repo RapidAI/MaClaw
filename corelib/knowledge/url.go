@@ -3,6 +3,7 @@ package knowledge
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"html"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
@@ -308,6 +310,13 @@ func findExistingURLSourceForSave(ctx context.Context, tx *sql.Tx, source Source
 }
 
 func (s *SQLiteStore) RefreshSource(ctx context.Context, id string) (Source, error) {
+	return s.RefreshSourceWithOfficeReadConfig(ctx, id, nil)
+}
+
+// RefreshSourceWithOfficeReadConfig refreshes a source under an optional
+// trusted OfficeRead policy. It preserves the desktop provider behavior when
+// config is nil and lets multi-tenant hosts avoid process-wide policy bleed.
+func (s *SQLiteStore) RefreshSourceWithOfficeReadConfig(ctx context.Context, id string, config *agent.OfficeReadConfig) (Source, error) {
 	existing, err := s.GetSource(ctx, id)
 	if err != nil {
 		return Source{}, err
@@ -316,12 +325,18 @@ func (s *SQLiteStore) RefreshSource(ctx context.Context, id string) (Source, err
 		return s.refreshURLSource(ctx, existing)
 	}
 	if isRefreshableFileSource(existing.Kind) {
-		return s.refreshFileSource(ctx, existing)
+		return s.refreshFileSourceWithOfficeReadConfig(ctx, existing, config)
 	}
 	return Source{}, fmt.Errorf("source %s kind %q is not refreshable", id, existing.Kind)
 }
 
 func (s *SQLiteStore) PreviewSourceRefresh(ctx context.Context, id string) (SourceChangePreview, error) {
+	return s.PreviewSourceRefreshWithOfficeReadConfig(ctx, id, nil)
+}
+
+// PreviewSourceRefreshWithOfficeReadConfig computes a refresh preview under
+// the same optional trusted policy that will be used for the actual refresh.
+func (s *SQLiteStore) PreviewSourceRefreshWithOfficeReadConfig(ctx context.Context, id string, config *agent.OfficeReadConfig) (SourceChangePreview, error) {
 	existing, err := s.GetSource(ctx, id)
 	if err != nil {
 		return SourceChangePreview{}, err
@@ -360,8 +375,35 @@ func (s *SQLiteStore) PreviewSourceRefresh(ctx context.Context, id string) (Sour
 		}, existing)
 	} else {
 		var distill bool
-		next, nextNodes, distill, err = buildFileRefreshSourceAndNodes(existing)
+		var input *knowledgeDocumentInput
+		next, nextNodes, _, _, distill, input, err = buildFileRefreshSourceAndNodesWithOfficeReadConfigForImport(existing, config)
+		if input != nil {
+			defer input.close()
+		}
+		err = sanitizeKnowledgeParseError(existing.Kind, err)
 		_ = distill
+		if err == nil && next.Kind == SourceKindPDF {
+			var nativeErr error
+			if next.Status == StatusFailed && strings.TrimSpace(next.ErrorMessage) != "" {
+				nativeErr = errors.New(next.ErrorMessage)
+			}
+			ocrPath := next.URI
+			if input != nil {
+				ocrPath = input.path
+			}
+			ocr, ocrErr := s.extractPDFOCRNodesWithNativeFallback(ctx, next, ocrPath, nextNodes, nativeErr, true)
+			if ocrErr != nil {
+				err = ocrErr
+			} else {
+				nextNodes, nativeErr = mergePDFNodes(nextNodes, nativeErr, ocr)
+				if nativeErr != nil {
+					err = nativeErr
+				} else {
+					next.Status = StatusParsed
+					next.ErrorMessage = ""
+				}
+			}
+		}
 	}
 	if err != nil {
 		preview.Error = err.Error()
@@ -385,6 +427,12 @@ func (s *SQLiteStore) PreviewSourceRefresh(ctx context.Context, id string) (Sour
 }
 
 func (s *SQLiteStore) PreviewSourcesRefresh(ctx context.Context, ids []string) SourceChangePreviewResult {
+	return s.PreviewSourcesRefreshWithOfficeReadConfig(ctx, ids, nil)
+}
+
+// PreviewSourcesRefreshWithOfficeReadConfig previews a group of refreshes
+// under one immutable, trusted OfficeRead policy snapshot.
+func (s *SQLiteStore) PreviewSourcesRefreshWithOfficeReadConfig(ctx context.Context, ids []string, config *agent.OfficeReadConfig) SourceChangePreviewResult {
 	result := SourceChangePreviewResult{}
 	seen := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
@@ -397,7 +445,7 @@ func (s *SQLiteStore) PreviewSourcesRefresh(ctx context.Context, ids []string) S
 		}
 		seen[id] = struct{}{}
 		result.Requested++
-		preview, err := s.PreviewSourceRefresh(ctx, id)
+		preview, err := s.PreviewSourceRefreshWithOfficeReadConfig(ctx, id, config)
 		if err != nil {
 			result.Failed++
 			result.Failures = append(result.Failures, SourceChangePreviewFailure{SourceID: id, Error: err.Error()})
@@ -417,6 +465,12 @@ func (s *SQLiteStore) PreviewSourcesRefresh(ctx context.Context, ids []string) S
 }
 
 func (s *SQLiteStore) PreviewSourcesRefreshByFilter(ctx context.Context, opts ListSourcesOptions) (SourceChangePreviewResult, error) {
+	return s.PreviewSourcesRefreshByFilterWithOfficeReadConfig(ctx, opts, nil)
+}
+
+// PreviewSourcesRefreshByFilterWithOfficeReadConfig applies a request-scoped
+// OfficeRead policy to every preview selected by the filter.
+func (s *SQLiteStore) PreviewSourcesRefreshByFilterWithOfficeReadConfig(ctx context.Context, opts ListSourcesOptions, config *agent.OfficeReadConfig) (SourceChangePreviewResult, error) {
 	opts.Limit = sourceFilterLimit(opts, 100, 500, 5000)
 	if opts.Status == "" {
 		opts.IncludeDisabled = true
@@ -429,28 +483,40 @@ func (s *SQLiteStore) PreviewSourcesRefreshByFilter(ctx context.Context, opts Li
 	for _, source := range sources {
 		ids = append(ids, source.ID)
 	}
-	return s.PreviewSourcesRefresh(ctx, ids), nil
+	return s.PreviewSourcesRefreshWithOfficeReadConfig(ctx, ids, config), nil
 }
 
 func (s *SQLiteStore) RefreshChangedSources(ctx context.Context, ids []string) ChangedSourceRefreshResult {
-	preview := s.PreviewSourcesRefresh(ctx, ids)
+	return s.RefreshChangedSourcesWithOfficeReadConfig(ctx, ids, nil)
+}
+
+// RefreshChangedSourcesWithOfficeReadConfig previews and refreshes under the
+// same policy, so a setting change cannot make the two phases disagree.
+func (s *SQLiteStore) RefreshChangedSourcesWithOfficeReadConfig(ctx context.Context, ids []string, config *agent.OfficeReadConfig) ChangedSourceRefreshResult {
+	preview := s.PreviewSourcesRefreshWithOfficeReadConfig(ctx, ids, config)
 	changedIDs := sourceIDsFromChangedPreviews(preview.Previews)
 	return ChangedSourceRefreshResult{
 		Preview:   preview,
-		Refresh:   s.RefreshSources(ctx, changedIDs),
+		Refresh:   s.RefreshSourcesWithOfficeReadConfig(ctx, changedIDs, config),
 		SourceIDs: changedIDs,
 	}
 }
 
 func (s *SQLiteStore) RefreshChangedSourcesByFilter(ctx context.Context, opts ListSourcesOptions) (ChangedSourceRefreshResult, error) {
-	preview, err := s.PreviewSourcesRefreshByFilter(ctx, opts)
+	return s.RefreshChangedSourcesByFilterWithOfficeReadConfig(ctx, opts, nil)
+}
+
+// RefreshChangedSourcesByFilterWithOfficeReadConfig keeps preview and apply
+// parsing bound to the caller's request-scoped OfficeRead configuration.
+func (s *SQLiteStore) RefreshChangedSourcesByFilterWithOfficeReadConfig(ctx context.Context, opts ListSourcesOptions, config *agent.OfficeReadConfig) (ChangedSourceRefreshResult, error) {
+	preview, err := s.PreviewSourcesRefreshByFilterWithOfficeReadConfig(ctx, opts, config)
 	if err != nil {
 		return ChangedSourceRefreshResult{}, err
 	}
 	changedIDs := sourceIDsFromChangedPreviews(preview.Previews)
 	return ChangedSourceRefreshResult{
 		Preview:   preview,
-		Refresh:   s.RefreshSources(ctx, changedIDs),
+		Refresh:   s.RefreshSourcesWithOfficeReadConfig(ctx, changedIDs, config),
 		SourceIDs: changedIDs,
 	}, nil
 }
@@ -473,6 +539,12 @@ func sourceIDsFromChangedPreviews(previews []SourceChangePreview) []string {
 }
 
 func (s *SQLiteStore) RefreshSources(ctx context.Context, ids []string) SourceRefreshResult {
+	return s.RefreshSourcesWithOfficeReadConfig(ctx, ids, nil)
+}
+
+// RefreshSourcesWithOfficeReadConfig refreshes a group of sources under one
+// immutable, trusted OfficeRead policy snapshot.
+func (s *SQLiteStore) RefreshSourcesWithOfficeReadConfig(ctx context.Context, ids []string, config *agent.OfficeReadConfig) SourceRefreshResult {
 	result := SourceRefreshResult{}
 	seen := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
@@ -485,7 +557,7 @@ func (s *SQLiteStore) RefreshSources(ctx context.Context, ids []string) SourceRe
 		}
 		seen[id] = struct{}{}
 		result.Requested++
-		source, err := s.RefreshSource(ctx, id)
+		source, err := s.RefreshSourceWithOfficeReadConfig(ctx, id, config)
 		if err != nil {
 			result.Failed++
 			appendSourceRefreshFailure(&result, id, err)
@@ -498,6 +570,12 @@ func (s *SQLiteStore) RefreshSources(ctx context.Context, ids []string) SourceRe
 }
 
 func (s *SQLiteStore) RefreshSourcesByFilter(ctx context.Context, opts ListSourcesOptions) (SourceRefreshResult, error) {
+	return s.RefreshSourcesByFilterWithOfficeReadConfig(ctx, opts, nil)
+}
+
+// RefreshSourcesByFilterWithOfficeReadConfig applies a request-scoped
+// OfficeRead policy to each selected source.
+func (s *SQLiteStore) RefreshSourcesByFilterWithOfficeReadConfig(ctx context.Context, opts ListSourcesOptions, config *agent.OfficeReadConfig) (SourceRefreshResult, error) {
 	opts.Limit = sourceFilterLimit(opts, 100, 500, 5000)
 	if opts.Status == "" {
 		opts.IncludeDisabled = true
@@ -510,7 +588,7 @@ func (s *SQLiteStore) RefreshSourcesByFilter(ctx context.Context, opts ListSourc
 	for _, source := range sources {
 		ids = append(ids, source.ID)
 	}
-	return s.RefreshSources(ctx, ids), nil
+	return s.RefreshSourcesWithOfficeReadConfig(ctx, ids, config), nil
 }
 
 func appendSourceRefreshFailure(result *SourceRefreshResult, sourceID string, err error) {
@@ -541,49 +619,152 @@ func (s *SQLiteStore) refreshURLSource(ctx context.Context, existing Source) (So
 }
 
 func (s *SQLiteStore) refreshFileSource(ctx context.Context, existing Source) (Source, error) {
-	source, nodes, distill, err := buildFileRefreshSourceAndNodes(existing)
-	if err != nil {
-		return Source{}, err
+	return s.refreshFileSourceWithOfficeReadConfig(ctx, existing, nil)
+}
+
+func (s *SQLiteStore) refreshFileSourceWithOfficeReadConfig(ctx context.Context, existing Source, config *agent.OfficeReadConfig) (Source, error) {
+	source, nodes, richContent, richContentAvailable, distill, input, err := buildFileRefreshSourceAndNodesWithOfficeReadConfigForImport(existing, config)
+	if input != nil {
+		defer input.close()
 	}
-	return s.replaceSourceDerivedRows(ctx, source, nodes, distill, "refresh")
+	if err != nil {
+		return Source{}, sanitizeKnowledgeParseError(existing.Kind, err)
+	}
+	if source.Kind == SourceKindPDF {
+		var nativeErr error
+		if source.Status == StatusFailed && strings.TrimSpace(source.ErrorMessage) != "" {
+			nativeErr = errors.New(source.ErrorMessage)
+		}
+		ocrPath := source.URI
+		if input != nil {
+			ocrPath = input.path
+		}
+		ocr, ocrErr := s.extractPDFOCRNodesWithNativeFallback(ctx, source, ocrPath, nodes, nativeErr, true)
+		if ocrErr != nil {
+			// Refresh must be non-destructive: a transient OCR or render failure
+			// must not replace a previously searchable source with an empty,
+			// failed record.
+			return Source{}, ocrErr
+		}
+		nodes, nativeErr = mergePDFNodes(nodes, nativeErr, ocr)
+		if nativeErr != nil {
+			return Source{}, nativeErr
+		}
+		source.Status = StatusParsed
+		source.ErrorMessage = ""
+	}
+	imagePath := source.URI
+	if input != nil {
+		imagePath = input.path
+	}
+	if isSpreadsheetKind(source.Kind) {
+		// Rich OfficeRead content has already been extracted from this import-owned
+		// snapshot. Preserve spreadsheet images as managed knowledge assets before
+		// the rows are atomically replaced, without reopening the workbook through
+		// a legacy image parser. When rich content is disabled the established
+		// spreadsheet path remains image-free.
+		imageNodes := []DocumentNode(nil)
+		if richContentAvailable {
+			imageNodes = s.extractAndProcessDocumentImagesUsingRichOfficeContent(ctx, source, imagePath, source.Kind, nodes, richContent, true)
+			nodes = append(nodes, imageNodes...)
+		}
+		// The structured row importer is the spreadsheet counterpart to the
+		// document-node refresh. It must consume the same private parser snapshot
+		// as the text nodes, and its writes must join the replacement transaction
+		// so a refresh can never leave fresh nodes with stale (or absent) tables.
+		refreshed, replaceErr := s.replaceSourceDerivedRowsWithSpreadsheet(ctx, source, nodes, distill, "refresh", imagePath)
+		if replaceErr != nil {
+			s.deleteProvisionalEmbeddedImageAssets(officeReadImageAssetIDs(imageNodes))
+			return Source{}, replaceErr
+		}
+		return refreshed, nil
+	}
+	imageNodes := s.extractAndProcessDocumentImagesUsingRichOfficeContent(ctx, source, imagePath, source.Kind, nodes, richContent, richContentAvailable)
+	// Image assets are published before their nodes so OCR/vision work does not
+	// hold the SQLite write transaction.  A refresh is different from the batch
+	// importer: it has no outer provisional-asset rollback.  Retain the newly
+	// created opaque IDs here and reclaim them if the derived-row replacement
+	// cannot commit; otherwise a failed refresh leaves files no database node can
+	// reference (and a later asset doctor has to clean them up).
+	provisionalImageAssetIDs := officeReadImageAssetIDs(imageNodes)
+	if len(imageNodes) > 0 {
+		nodes = append(nodes, imageNodes...)
+	}
+	refreshed, replaceErr := s.replaceSourceDerivedRows(ctx, source, nodes, distill, "refresh")
+	if replaceErr != nil {
+		s.deleteProvisionalEmbeddedImageAssets(provisionalImageAssetIDs)
+		return Source{}, replaceErr
+	}
+	return refreshed, nil
 }
 
 func buildFileRefreshSourceAndNodes(existing Source) (Source, []DocumentNode, bool, error) {
+	source, nodes, _, _, distill, err := buildFileRefreshSourceAndNodesWithOfficeReadRichContent(existing)
+	return source, nodes, distill, err
+}
+
+// buildFileRefreshSourceAndNodesWithOfficeReadRichContent keeps its historical
+// non-owning result contract for preview and other text-only callers.
+func buildFileRefreshSourceAndNodesWithOfficeReadRichContent(existing Source) (Source, []DocumentNode, agent.OfficeReadRichContent, bool, bool, error) {
+	source, nodes, content, available, distill, input, err := buildFileRefreshSourceAndNodesWithOfficeReadRichContentForImport(existing)
+	if input != nil {
+		input.close()
+	}
+	return source, nodes, content, available, distill, err
+}
+
+// buildFileRefreshSourceAndNodesWithOfficeReadRichContent mirrors the normal
+// import parser selection and keeps the bounded rich payload local to a
+// refresh operation. This makes refreshing an OfficeRead-enabled document
+// rebuild both structured text and its managed image assets consistently.
+func buildFileRefreshSourceAndNodesWithOfficeReadRichContentForImport(existing Source) (Source, []DocumentNode, agent.OfficeReadRichContent, bool, bool, *knowledgeDocumentInput, error) {
+	return buildFileRefreshSourceAndNodesWithOfficeReadConfigForImport(existing, nil)
+}
+
+func buildFileRefreshSourceAndNodesWithOfficeReadConfigForImport(existing Source, config *agent.OfficeReadConfig) (Source, []DocumentNode, agent.OfficeReadRichContent, bool, bool, *knowledgeDocumentInput, error) {
 	path := strings.TrimSpace(existing.URI)
 	if path == "" {
-		return Source{}, nil, false, fmt.Errorf("source %s has no file path", existing.ID)
+		return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, fmt.Errorf("source %s has no file path", existing.ID)
 	}
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return Source{}, nil, false, err
+		return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, err
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return Source{}, nil, false, err
+		return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return Source{}, nil, false, fmt.Errorf("source %s points to a symbolic link", existing.ID)
+		return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, fmt.Errorf("source %s points to a symbolic link", existing.ID)
 	}
 	if !info.Mode().IsRegular() {
-		return Source{}, nil, false, fmt.Errorf("source %s is not a regular file", existing.ID)
+		return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, fmt.Errorf("source %s is not a regular file", existing.ID)
 	}
 	kind := existing.Kind
 	if extKind := kindForExt(filepath.Ext(absPath)); extKind != "" {
 		kind = extKind
 	}
 	if !isRefreshableFileSource(kind) {
-		return Source{}, nil, false, fmt.Errorf("source %s kind %q is not refreshable", existing.ID, kind)
+		return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, fmt.Errorf("source %s kind %q is not refreshable", existing.ID, kind)
 	}
-	hash, err := fileSHA256(absPath)
+	// Record the version selected for this refresh before any parser gets to
+	// create its private snapshot. A refresh that sees a different snapshot
+	// later must fail rather than silently replacing indexed version A with a
+	// version B that arrived mid-operation.
+	refreshHash, err := boundedDocumentSHA256(absPath)
 	if err != nil {
-		return Source{}, nil, false, err
+		return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, err
 	}
 	now := time.Now().UTC()
 	source := existing
 	source.Kind = kind
 	source.URI = absPath
 	source.FetchedAt = now
-	source.ContentHash = hash
+	// The content hash is assigned only after parsing establishes its owned
+	// snapshot. Hashing the live path here would let a Markdown/text refresh
+	// report bytes from a later replacement while its nodes came from an earlier
+	// private copy (or vice versa).
+	source.ContentHash = ""
 	source.Status = StatusParsed
 	source.ErrorMessage = ""
 	source.UpdatedAt = now
@@ -597,18 +778,56 @@ func buildFileRefreshSourceAndNodes(existing Source) (Source, []DocumentNode, bo
 		source.SourceTrust = 0.9
 	}
 
-	nodes, parseErr := ParseDocumentNodes(source, absPath, kind)
+	fileRefreshBeforeParse(existing)
+	parsed, parseErr := parseDocumentNodesForOfficeReadImportWithOfficeReadConfig(source, absPath, kind, config)
+	if parsed == nil {
+		if errors.Is(parseErr, agent.ErrOfficeReadSourceChanged) {
+			// A refresh must not replace already indexed content with a failure
+			// record when the user-controlled path changed while its snapshot was
+			// being established. Callers surface the stable retryable error and
+			// leave the prior Source/nodes intact.
+			return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, agent.ErrOfficeReadSourceChanged
+		}
+		persistedParseErr := sanitizeKnowledgeParseError(kind, parseErr)
+		source.Status = StatusFailed
+		source.ErrorMessage = persistedParseErr.Error()
+		return source, nil, agent.OfficeReadRichContent{}, false, false, nil, nil
+	}
+	nodes, richContent, richContentAvailable := parsed.nodes, parsed.content, parsed.richEnabled
+	if parsed.contentHash != "" {
+		source.ContentHash = parsed.contentHash
+	}
+	if source.ContentHash != refreshHash {
+		parsed.close()
+		return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, agent.ErrOfficeReadSourceChanged
+	}
+	if strings.TrimSpace(source.ContentHash) == "" {
+		parsed.close()
+		return Source{}, nil, agent.OfficeReadRichContent{}, false, false, nil, agent.ErrOfficeReadExtractionFailed
+	}
 	if parseErr != nil && IsUnsupportedParserError(parseErr) {
+		parsed.close()
 		source.Status = StatusPending
-		source.ErrorMessage = parseErr.Error()
-		return source, nil, false, nil
+		source.ErrorMessage = sanitizeKnowledgeParseError(kind, parseErr).Error()
+		return source, nil, agent.OfficeReadRichContent{}, false, false, nil, nil
 	}
 	if parseErr != nil {
+		if kind == SourceKindPDF {
+			// A scanned PDF commonly has no native text. Retain the verified
+			// snapshot and let the caller run its OCR merge against these exact
+			// bytes; returning a hard parse error here would discard the snapshot
+			// and make OCR reopen the mutable source path.
+			source.Status = StatusFailed
+			source.ErrorMessage = parseErr.Error()
+			return source, nodes, richContent, richContentAvailable, false, parsed.input, nil
+		}
+		parsed.close()
+		persistedParseErr := sanitizeKnowledgeParseError(kind, parseErr)
 		source.Status = StatusFailed
-		source.ErrorMessage = parseErr.Error()
-		return source, nil, false, nil
+		source.ErrorMessage = persistedParseErr.Error()
+		return source, nil, agent.OfficeReadRichContent{}, false, false, nil, nil
 	}
-	return source, nodes, true, nil
+	return source, nodes, richContent, richContentAvailable, true, parsed.input, nil
 }
 
 func compareSourceNodes(oldNodes, newNodes []DocumentNode, sampleLimit int) (int, int, int, []SourceChangeSample) {
@@ -693,6 +912,18 @@ func truncateChangeSnippet(text string) string {
 }
 
 func (s *SQLiteStore) replaceSourceDerivedRows(ctx context.Context, source Source, nodes []DocumentNode, distill bool, reason string) (Source, error) {
+	return s.replaceSourceDerivedRowsWithSpreadsheet(ctx, source, nodes, distill, reason, "")
+}
+
+// replaceSourceDerivedRowsWithSpreadsheet replaces one source's derived rows
+// atomically. spreadsheetPath is an already-owned parser pathname (normally a
+// private Office or CSV snapshot); callers must keep it valid until this function returns.
+// An empty pathname preserves the normal document/URL replacement behavior.
+func (s *SQLiteStore) replaceSourceDerivedRowsWithSpreadsheet(ctx context.Context, source Source, nodes []DocumentNode, distill bool, reason, spreadsheetPath string) (Source, error) {
+	oldAssetIDs, err := s.imageAssetIDsForSources(ctx, []string{source.ID})
+	if err != nil {
+		return Source{}, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Source{}, err
@@ -709,6 +940,14 @@ func (s *SQLiteStore) replaceSourceDerivedRows(ctx context.Context, source Sourc
 			return Source{}, err
 		}
 	}
+	if spreadsheetPath != "" {
+		if !isSpreadsheetKind(source.Kind) {
+			return Source{}, fmt.Errorf("private spreadsheet path provided for incompatible source %s", source.ID)
+		}
+		if _, err := importSpreadsheetSourceV2(ctx, tx, source, spreadsheetPath, source.Kind); err != nil {
+			return Source{}, sanitizeKnowledgeParseError(source.Kind, err)
+		}
+	}
 	if distill && len(nodes) > 0 {
 		nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, nodes, DistillModeAuto)
 		if err != nil {
@@ -722,6 +961,11 @@ func (s *SQLiteStore) replaceSourceDerivedRows(ctx context.Context, source Sourc
 	if err := tx.Commit(); err != nil {
 		return Source{}, err
 	}
+	// Asset writes precede the DB transaction so that image descriptions and
+	// thumbnails can run without holding SQLite locks. After a successful
+	// replacement, reclaim only the old IDs that are no longer referenced.
+	// This preserves assets whose deterministic IDs remained unchanged.
+	s.deleteSupersededImageAssets(ctx, source.ID, oldAssetIDs[source.ID])
 	_ = s.BackfillNodeEmbeddingsForSources(ctx, []string{source.ID})
 	sources := []Source{source}
 	if err := s.hydrateSourceCounts(ctx, sources); err != nil {
@@ -732,7 +976,7 @@ func (s *SQLiteStore) replaceSourceDerivedRows(ctx context.Context, source Sourc
 
 func isRefreshableFileSource(kind string) bool {
 	switch kind {
-	case SourceKindMarkdown, SourceKindText, SourceKindDOCX, SourceKindPDF, SourceKindXLSX, SourceKindCSV, SourceKindDOC, SourceKindXLS:
+	case SourceKindMarkdown, SourceKindText, SourceKindDOCX, SourceKindPDF, SourceKindPPT, SourceKindPPTX, SourceKindXLSX, SourceKindCSV, SourceKindDOC, SourceKindXLS:
 		return true
 	default:
 		return false

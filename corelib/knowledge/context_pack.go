@@ -89,9 +89,13 @@ func (s *SQLiteStore) ContextPack(ctx context.Context, opts ContextPackOptions) 
 			Citation:   result.Citation,
 			Score:      result.Score,
 		}
+		if result.NodeType == NodeTypeImage || result.Source.Kind == SourceKindImage {
+			item.Citation = FormatImageCitationLabel(result)
+		}
 		pack.Items = append(pack.Items, item)
 		pack.CharacterCount += len([]rune(text))
 		citation := citationFromResult(result)
+		citation = ProjectImageCitationForTool(citation, result)
 		key := citationKey(citation)
 		if _, ok := seenCitations[key]; !ok {
 			seenCitations[key] = struct{}{}
@@ -277,6 +281,17 @@ func (s *SQLiteStore) enrichContextPackNodes(ctx context.Context, results []Sear
 }
 
 func contextPackTitle(result SearchResult) string {
+	if result.NodeType == NodeTypeImage || result.Source.Kind == SourceKindImage {
+		for _, candidate := range []string{result.CardTitle, result.NodeTitle, result.Source.Title, result.Source.RelativePath} {
+			if candidate = SafeImageDisplayText(candidate); candidate != "" {
+				return candidate
+			}
+		}
+		if sourceID := strings.TrimSpace(result.Source.ID); sourceID != "" {
+			return sourceID
+		}
+		return "knowledge image"
+	}
 	if result.ResultType == "table_row" {
 		parts := nonEmptyStrings(result.Source.Title, result.SheetName)
 		if result.RowIndex > 0 {

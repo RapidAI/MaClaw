@@ -19,6 +19,7 @@ import { usePastedImageAttachments } from "./usePastedImageAttachments";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
+import { classifyDisplayAttachmentType, isBinaryDocumentAttachment } from "./attachmentClassification";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { getWailsAppModule as loadWailsAppModule, type WailsAppModule } from "../../utils/wailsAppModule";
 
@@ -1552,7 +1553,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         const input = document.createElement("input");
         input.type = "file";
         input.multiple = true;
-        input.accept = ".txt,.md,.csv,.json,.xml,.yaml,.yml,.log,.go,.py,.js,.ts,.html,.css,.png,.jpg,.jpeg,.gif,.webp,.bmp,.pdf,.docx";
+        input.accept = ".txt,.md,.csv,.json,.xml,.yaml,.yml,.log,.go,.py,.js,.ts,.html,.css,.png,.jpg,.jpeg,.gif,.webp,.bmp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx";
         input.onchange = () => {
             if (input.files) {
                 setPendingAttachments((prev) => [
@@ -2408,7 +2409,8 @@ function attachmentKindLabel(filename: string | null | undefined, type?: "text" 
 }
 
 function isImageAttachment(attachment: VEMessageAttachment): boolean {
-    return attachment.type === "image" || String(attachment.mimeType || "").toLowerCase().startsWith("image/") || classifyAttachmentType(attachment.filename) === "image";
+    return !isBinaryDocumentAttachment(attachment.filename, attachment.mimeType) &&
+        (attachment.type === "image" || String(attachment.mimeType || "").toLowerCase().startsWith("image/") || classifyAttachmentType(attachment.filename) === "image");
 }
 
 function safeAttachmentFileURL(value: string | undefined): string {
@@ -2435,11 +2437,7 @@ function normalizeVEMessageAttachments(raw: unknown): VEMessageAttachment[] {
         const filename = attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || attachmentStringField(rec.name) || "attachment";
         const mimeType = attachmentStringField(rec.mimeType) || attachmentStringField(rec.mime_type) || attachmentStringField(rec.MimeType) || undefined;
         const rawType = attachmentStringField(rec.type) || classifyAttachmentType(filename);
-        const type = rawType === "image" || (mimeType || "").toLowerCase().startsWith("image/")
-            ? "image"
-            : rawType === "text"
-            ? "text"
-            : "file";
+        const type = classifyDisplayAttachmentType(filename, mimeType, rawType);
         const sizeRaw = rec.sizeBytes ?? rec.size_bytes ?? rec.SizeBytes;
         const sizeBytes = typeof sizeRaw === "number" ? sizeRaw : Number(sizeRaw || 0);
         out.push({
@@ -2539,19 +2537,23 @@ function normalizeVEHistoryAttachments(message: VEHistoryMessage): VEMessageAtta
     const attachments = normalizeVEMessageAttachments(message.attachments || message.Attachments);
     for (const att of [...historyAttachmentList(message.text_attachments), ...historyAttachmentList(message.textAttachments), ...historyAttachmentList(message.TextAttachments)]) {
         const rec = att as Record<string, unknown>;
+        const filename = attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || "text";
+        const mimeType = attachmentStringField(rec.mime_type) || attachmentStringField(rec.mimeType) || attachmentStringField(rec.MimeType) || undefined;
         attachments.push({
-            type: "text",
-            filename: attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || "text",
-            mimeType: attachmentStringField(rec.mime_type) || attachmentStringField(rec.mimeType) || attachmentStringField(rec.MimeType) || undefined,
+            type: classifyDisplayAttachmentType(filename, mimeType, "text"),
+            filename,
+            mimeType,
             localPath: attachmentStringField(rec.local_path) || attachmentStringField(rec.localPath) || attachmentStringField(rec.LocalPath) || undefined,
         });
     }
     for (const att of [...historyAttachmentList(message.image_attachments), ...historyAttachmentList(message.imageAttachments), ...historyAttachmentList(message.ImageAttachments)]) {
         const rec = att as Record<string, unknown>;
+        const filename = attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || "image";
+        const mimeType = attachmentStringField(rec.mime_type) || attachmentStringField(rec.mimeType) || attachmentStringField(rec.MimeType) || undefined;
         attachments.push({
-            type: "image",
-            filename: attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || "image",
-            mimeType: attachmentStringField(rec.mime_type) || attachmentStringField(rec.mimeType) || attachmentStringField(rec.MimeType) || undefined,
+            type: classifyDisplayAttachmentType(filename, mimeType, "image"),
+            filename,
+            mimeType,
             fileUrl: attachmentStringField(rec.file_url) || attachmentStringField(rec.fileUrl) || attachmentStringField(rec.FileURL) || undefined,
             localPath: attachmentStringField(rec.local_path) || attachmentStringField(rec.localPath) || attachmentStringField(rec.LocalPath) || undefined,
         });
@@ -2560,10 +2562,12 @@ function normalizeVEHistoryAttachments(message: VEHistoryMessage): VEMessageAtta
         const rec = att as Record<string, unknown>;
         const sizeRaw = rec.size_bytes ?? rec.sizeBytes ?? rec.SizeBytes;
         const sizeBytes = typeof sizeRaw === "number" ? sizeRaw : Number(sizeRaw || 0);
+        const filename = attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || "file";
+        const mimeType = attachmentStringField(rec.mime_type) || attachmentStringField(rec.mimeType) || attachmentStringField(rec.MimeType) || undefined;
         attachments.push({
-            type: "file",
-            filename: attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || "file",
-            mimeType: attachmentStringField(rec.mime_type) || attachmentStringField(rec.mimeType) || attachmentStringField(rec.MimeType) || undefined,
+            type: classifyDisplayAttachmentType(filename, mimeType, "file"),
+            filename,
+            mimeType,
             fileUrl: attachmentStringField(rec.file_url) || attachmentStringField(rec.fileUrl) || attachmentStringField(rec.FileURL) || undefined,
             localPath: attachmentStringField(rec.local_path) || attachmentStringField(rec.localPath) || attachmentStringField(rec.LocalPath) || undefined,
             sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : undefined,
@@ -2629,4 +2633,4 @@ function formatFileSize(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export { formatError, classifyAttachmentType, fileNameFromPath, formatFileSize, createSessionWithTimeout, classifySessionInitError, classifySendError };
+export { formatError, classifyAttachmentType, fileNameFromPath, formatFileSize, createSessionWithTimeout, classifySessionInitError, classifySendError, isBinaryDocumentAttachment, isImageAttachment, normalizeVEMessageAttachments };

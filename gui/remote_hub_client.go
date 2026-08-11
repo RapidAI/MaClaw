@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -143,15 +144,20 @@ type hubDeviceSpeechTurn struct {
 }
 
 type HardwareDeviceBinding struct {
-	ClientID        string    `json:"clientId"`
-	ClientName      string    `json:"clientName,omitempty"`
-	ProtocolVersion string    `json:"protocolVersion,omitempty"`
-	PairedAt        time.Time `json:"pairedAt,omitempty"`
-	LastSeenAt      time.Time `json:"lastSeenAt,omitempty"`
-	Online          bool      `json:"online"`
-	LastAckStatus   string    `json:"lastAckStatus,omitempty"`
-	Volume          *int      `json:"volume,omitempty"`
-	PetSkin         string    `json:"petSkin,omitempty"`
+	ClientID           string    `json:"clientId"`
+	ClientName         string    `json:"clientName,omitempty"`
+	ProtocolVersion    string    `json:"protocolVersion,omitempty"`
+	PairedAt           time.Time `json:"pairedAt,omitempty"`
+	LastSeenAt         time.Time `json:"lastSeenAt,omitempty"`
+	Online             bool      `json:"online"`
+	LastAckStatus      string    `json:"lastAckStatus,omitempty"`
+	Volume             *int      `json:"volume,omitempty"`
+	Brightness         *int      `json:"brightness,omitempty"`
+	ScreenSleepSeconds *int      `json:"screenSleepSeconds,omitempty"`
+	PetSkin            string    `json:"petSkin,omitempty"`
+	AssistantMode      string    `json:"assistantMode,omitempty"`
+	ExpertID           string    `json:"expertId,omitempty"`
+	TTSVoiceID         string    `json:"ttsVoiceId,omitempty"`
 }
 
 type hardwareDeviceListResult struct {
@@ -479,8 +485,10 @@ func (c *RemoteHubClient) syncIMGatewayClaims() {
 			log.Printf("[hub-client] re-sent weixin gateway claim on connect")
 		}
 	}
-	// Lansenger
-	if !cfg.IsLansengerLocalMode() && c.app.lansengerGateway != nil && normalizeGatewayConnectionStatus(c.app.lansengerGateway.Status()).IsConnected() {
+	// Lansenger profile bots are intentionally local-only: the existing Hub
+	// gateway protocol has no bot-profile discriminator. Only the legacy
+	// singleton can safely use Hub routing.
+	if c.app.lansengerGateways == nil && !cfg.IsLansengerLocalMode() && c.app.lansengerGateway != nil && normalizeGatewayConnectionStatus(c.app.lansengerGateway.Status()).IsConnected() {
 		if err := c.SendIMGatewayClaim(imGatewayPlatformLansenger); err == nil {
 			log.Printf("[hub-client] re-sent lansenger gateway claim on connect")
 		}
@@ -1796,6 +1804,13 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 		c.setLastError(fmt.Sprintf("im.user_message parse error: %s", err.Error()))
 		return
 	}
+	if normalizeIMGatewayPlatformKind(payload.Platform) == imGatewayPlatformThirdParty {
+		if err := c.resolveHubThirdPartyMediaReferences(&payload); err != nil {
+			c.setLastError(fmt.Sprintf("im.user_message third-party media resolve error: %s", err.Error()))
+			_ = c.sendIMAgentResponse(msg.RequestID, &IMAgentResponse{Error: err.Error()})
+			return
+		}
+	}
 	c.rememberHubThirdPartyClientCapabilities(payload)
 	// Preserve the Hub transport family before audit normalization expands it to
 	// a device-qualified platform name ("thirdparty:<client>"). Runtime
@@ -1934,6 +1949,9 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 			}
 		}
 
+		if isThirdPartyHardware && payload.ClientToolContext != nil {
+			payload.AssistantBinding = c.app.hardwareAssistantBinding(payload.ClientToolContext.ClientID)
+		}
 		resp := handler.HandleIMMessageWithProgress(payload, onProgress)
 		if isThirdPartyHardware && !c.isActiveHardwareAgentHandler(payload.ClientToolContext.ClientID, handler) {
 			// The binding was removed while the Agent was running. Do not relay the
@@ -2071,8 +2089,13 @@ func (c *RemoteHubClient) streamHubDeviceSpeech(ctx context.Context, turnKey, cl
 		}
 		c.hubSpeechMu.Unlock()
 	}()
+	synth, releaseSynth, available := c.app.hardwareSpeechSynthesizer(clientID)
+	if !available {
+		return
+	}
+	defer releaseSynth()
 	started := time.Now()
-	ok := streamPreparedDeviceVoicePayload(c.app.ttsManager, parts, thirdPartyPlatform(clientID), func(part IMVoicePart, index, total int) bool {
+	ok := streamPreparedDeviceVoicePayload(synth, parts, thirdPartyPlatform(clientID), func(part IMVoicePart, index, total int) bool {
 		if ctx.Err() != nil {
 			return false
 		}
@@ -2107,6 +2130,46 @@ func (c *RemoteHubClient) sendDeviceSpeechEnd(clientID, conversationID, replyTo 
 		"reply_type": "speech_end", "type": "speech_end", "replyTo": replyTo, "replyToMessageId": replyTo,
 		"extra": map[string]any{"speech_parts_expected": expected, "speech_parts_sent": sent},
 	})
+}
+
+// resolveHubThirdPartyMediaReferences materializes opaque media IDs only after
+// Hub has routed the message back to this owning GUI. IDs are never valid on a
+// different machine and are checked against the local uploaded-media registry;
+// this prevents Hub relay from becoming a cross-device file reader.
+func (c *RemoteHubClient) resolveHubThirdPartyMediaReferences(message *IMUserMessage) error {
+	if c == nil || c.app == nil || c.app.thirdPartyGateway == nil || message == nil {
+		return fmt.Errorf("third-party media resolver is unavailable")
+	}
+	for i := range message.Attachments {
+		attachment := &message.Attachments[i]
+		id := strings.TrimSpace(attachment.SourceMediaID)
+		if id == "" {
+			continue
+		}
+		if strings.TrimSpace(attachment.Data) != "" {
+			return fmt.Errorf("attachment %d contains both inline data and a media reference", i+1)
+		}
+		if message.ClientToolContext == nil || strings.TrimSpace(message.ClientToolContext.ClientID) == "" {
+			return fmt.Errorf("attachment %d media reference is missing client context", i+1)
+		}
+		media, ok := c.app.thirdPartyGateway.mediaObject(id)
+		if !ok {
+			return fmt.Errorf("attachment %d media is unavailable", i+1)
+		}
+		if normalizeThirdPartyID(media.ClientID) != normalizeThirdPartyID(message.ClientToolContext.ClientID) {
+			return fmt.Errorf("attachment %d media does not belong to this client", i+1)
+		}
+		if int64(len(media.Data)) > coreim.ThirdPartyMediaMaxBytesFor(media.FileName, media.MimeType) {
+			return fmt.Errorf("attachment %d exceeds %d bytes", i+1, coreim.ThirdPartyMediaMaxBytesFor(media.FileName, media.MimeType))
+		}
+		attachment.Type = media.Type
+		attachment.FileName = media.FileName
+		attachment.MimeType = media.MimeType
+		attachment.Size = int64(len(media.Data))
+		attachment.Data = base64.StdEncoding.EncodeToString(media.Data)
+		attachment.SourceMediaID = ""
+	}
+	return nil
 }
 
 // rememberHubThirdPartyClientCapabilities bridges the direct-Hub hardware
@@ -2344,6 +2407,10 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			Extra:        reply.Extra,
 		})
 	case imGatewayPlatformLansenger:
+		if c.app.lansengerGateways != nil {
+			c.app.log("[hub-client] im.gateway_reply: refusing ambiguous reply while Lansenger profiles are active")
+			return
+		}
 		if c.app.lansengerGateway == nil {
 			c.app.log("[hub-client] im.gateway_reply: lansengerGateway is nil, ignoring")
 			return
@@ -2717,17 +2784,42 @@ func (c *RemoteHubClient) SendIMGatewayMessage(platform imGatewayPlatformKind, d
 }
 
 func (c *RemoteHubClient) SendDeviceGatewayPairing(pairCode string) error {
+	pairCode = strings.TrimSpace(pairCode)
+	if len(pairCode) != 6 || strings.Trim(pairCode, "0123456789") != "" {
+		return fmt.Errorf("a six-digit pairing code is required")
+	}
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
 		return err
 	}
+	// A successful WebSocket write only means the bytes left the desktop. Wait
+	// for Hub to register the code before showing it to the user; otherwise a
+	// rejected registration would leave a convincing but unusable pairing code
+	// on screen.
+	requestID := "device-pairing-" + randomHexID(12)
+	waiter := make(chan error, 1)
+	c.requestWaiters.Store(requestID, waiter)
+	defer c.requestWaiters.Delete(requestID)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("Hub not connected")
 	}
 	profile := c.app.devicePetProfileForConfig(cfg)
-	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_pairing", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"pairCode": pairCode, "petSkin": profile["skin"], "motionEnabled": profile["motionEnabled"], "petAsset": profile["asset"]}})
+	err = c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_pairing", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"pairCode": pairCode, "petSkin": profile["skin"], "motionEnabled": profile["motionEnabled"], "petAsset": profile["asset"]}})
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-waiter:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for Hub pairing confirmation")
+	}
 }
 
 func (c *RemoteHubClient) ListHardwareDeviceBindings() (HardwareDeviceBindings, error) {
@@ -2955,14 +3047,18 @@ func (c *RemoteHubClient) SendDeviceGatewayHardwareConfig(extra map[string]any) 
 }
 
 // SendDeviceGatewayHardwareConfigForClient sends a settings-only command to
-// one owned ESP32. Per-device volume controls must never use the wildcard
-// broadcast path.
+// one owned ESP32. Per-device controls must never use the wildcard broadcast
+// path. The request is acknowledged by Hub after ownership and level
+// validation, so the caller can safely roll back an optimistic UI update.
 func (c *RemoteHubClient) SendDeviceGatewayHardwareConfigForClient(clientID string, extra map[string]any) error {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		return fmt.Errorf("hardware client ID is required")
 	}
-	requestID := "device-volume-" + randomHexID(12)
+	if !validDeviceGatewayHardwareConfig(extra) {
+		return fmt.Errorf("hardware config requires volume, brightness, or a supported screen sleep timeout")
+	}
+	requestID := "device-config-" + randomHexID(12)
 	waiter := make(chan error, 1)
 	c.requestWaiters.Store(requestID, waiter)
 	defer c.requestWaiters.Delete(requestID)
@@ -2985,8 +3081,85 @@ func (c *RemoteHubClient) SendDeviceGatewayHardwareConfigForClient(clientID stri
 	case err := <-waiter:
 		return err
 	case <-timer.C:
-		return fmt.Errorf("timed out waiting for Hub hardware volume confirmation")
+		return fmt.Errorf("timed out waiting for Hub hardware configuration confirmation")
 	}
+}
+
+func validDeviceGatewayHardwareConfig(extra map[string]any) bool {
+	if len(extra) == 0 {
+		return false
+	}
+	found := false
+	for key, value := range extra {
+		if key != "volume" && key != "brightness" && key != "screenSleepSeconds" {
+			return false
+		}
+		if key == "screenSleepSeconds" {
+			if !validDeviceGatewayScreenSleepTimeout(value) {
+				return false
+			}
+			found = true
+			continue
+		}
+		level, ok := deviceGatewayHardwareLevel(value)
+		if !ok {
+			return false
+		}
+		if level < 0 || level > 100 {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+func validDeviceGatewayScreenSleepTimeout(value any) bool {
+	var timeout int64
+	switch v := value.(type) {
+	case int:
+		timeout = int64(v)
+	case int8:
+		timeout = int64(v)
+	case int16:
+		timeout = int64(v)
+	case int32:
+		timeout = int64(v)
+	case int64:
+		timeout = v
+	case float64:
+		if v != float64(int64(v)) {
+			return false
+		}
+		timeout = int64(v)
+	default:
+		return false
+	}
+	switch timeout {
+	case 0, 60, 180, 300, 600, 1800, 3600, 7200, 10800, 14400, 18000:
+		return true
+	default:
+		return false
+	}
+}
+
+func deviceGatewayHardwareLevel(value any) (int64, bool) {
+	switch level := value.(type) {
+	case int:
+		return int64(level), true
+	case int8:
+		return int64(level), true
+	case int16:
+		return int64(level), true
+	case int32:
+		return int64(level), true
+	case int64:
+		return level, true
+	case float64:
+		if level == float64(int64(level)) {
+			return int64(level), true
+		}
+	}
+	return 0, false
 }
 
 // SendDeviceGatewayHardwareEnabled publishes the durable master switch used by
@@ -3171,7 +3344,27 @@ func (c *RemoteHubClient) syncDeviceGatewayVolume() {
 	}
 }
 
+// syncDeviceGatewayBrightness restores the latest local backlight setting
+// after a Hub reconnect, mirroring syncDeviceGatewayVolume.
+func (c *RemoteHubClient) syncDeviceGatewayBrightness() {
+	if err := c.app.SyncHardwareBrightness(); err != nil {
+		log.Printf("[device-brightness] reconnect sync failed: %v", err)
+	}
+}
+
 func (c *RemoteHubClient) syncDeviceGatewayHardwareState() {
+	// Keep reconnect reconciliation ordered with an interactive enable/disable.
+	// Without this shared lock, a reconnect could load "enabled", then race a
+	// successful user disable and publish its stale enabled state to Hub last.
+	// SetHardwareEnabled and every user-facing hardware mutation use the same
+	// lock, so read the snapshot only after acquiring it and hold it through the
+	// control-plane confirmation.
+	if c.app == nil {
+		return
+	}
+	c.app.imGatewaySyncMu.Lock()
+	defer c.app.imGatewaySyncMu.Unlock()
+
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
 		log.Printf("[device-hardware] load reconnect state failed: %v", err)
@@ -3189,6 +3382,7 @@ func (c *RemoteHubClient) syncDeviceGatewayHardwareState() {
 	}
 	c.syncDeviceGatewayWelcome()
 	c.syncDeviceGatewayVolume()
+	c.syncDeviceGatewayBrightness()
 }
 
 // SendDeviceGatewayAmbient publishes a GUI-resolved weather snapshot to all

@@ -67,6 +67,128 @@ func TestExecuteAgentLoopToolCallRejectsNonObjectJSONBeforeRegistry(t *testing.T
 	}
 }
 
+func TestExecuteAgentLoopToolCallRejectsComputerUseForCurrentLocalFileWork(t *testing.T) {
+	called := false
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name: "computer_observe",
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "desktop observed"
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+	ctx := NewLoopContext("local-file-execution", 1, nil)
+	ctx.ComputerUseBlockedForLocalFileWork = true
+	recorded := false
+	result := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		Context:  ctx,
+		UserText: "请读取附件",
+		ToolCall: llm.ToolCall{ID: "call_computer", Function: llm.ToolCallFunction{
+			Name:      "computer_observe",
+			Arguments: `{}`,
+		}},
+		RecordToolCall: func(id, name, args string) {
+			recorded = id == "call_computer" && name == "computer_observe" && args == "{}"
+		},
+	})
+	if !recorded {
+		t.Fatal("policy-rejected Computer Use call must still be recorded for trajectory pairing")
+	}
+	if called {
+		t.Fatal("Computer Use handler must not run for local-file work")
+	}
+	if result.FailureKind != toolFailurePolicyRejected || !strings.Contains(result.Text, "local attachment") {
+		t.Fatalf("result = %+v, want local attachment policy rejection", result)
+	}
+}
+
+func TestExecuteAgentLoopToolCallRejectsLegacyGUIForCurrentLocalFileWork(t *testing.T) {
+	called := false
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name: "gui_click",
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "desktop clicked"
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+	ctx := NewLoopContext("local-file-legacy-gui", 1, nil)
+	ctx.ComputerUseBlockedForLocalFileWork = true
+	result := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		Context:  ctx,
+		UserText: "请读取附件",
+		ToolCall: llm.ToolCall{ID: "call_gui", Function: llm.ToolCallFunction{
+			Name:      "gui_click",
+			Arguments: `{}`,
+		}},
+	})
+	if called {
+		t.Fatal("legacy GUI handler must not run for local-file work")
+	}
+	if result.FailureKind != toolFailurePolicyRejected || !strings.Contains(result.Text, "local attachment") {
+		t.Fatalf("result = %+v, want local attachment policy rejection", result)
+	}
+}
+
+func TestExecuteToolDetailedWithRuntimeStateRejectsComputerUseForLocalFileWork(t *testing.T) {
+	called := false
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name: "computer_click",
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "desktop clicked"
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	const owner = "desktop-user:local-file-direct"
+	h := &IMMessageHandler{registry: registry}
+	ctx := NewLoopContext("local-file-direct", 1, nil)
+	ctx.ComputerUseBlockedForLocalFileWork = true
+	h.setSessionLoopCtx(owner, ctx)
+
+	result := h.executeToolDetailedWithRuntimeState(owner, true, "desktop", "computer_click", `{}`, "", nil)
+	if called {
+		t.Fatal("direct runtime execution must not invoke Computer Use handler for local-file work")
+	}
+	if result.FailureKind != toolFailurePolicyRejected || !strings.Contains(result.Text, "local attachment") {
+		t.Fatalf("result = %+v, want local attachment policy rejection", result)
+	}
+}
+
+func TestDirectComputerUseExecutionHonorsAttachmentMarkerAndExplicitOverride(t *testing.T) {
+	called := 0
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name: "computer_click",
+		Handler: func(args map[string]interface{}) string {
+			called++
+			return "desktop clicked"
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+	attachmentText := "请处理附件\n[附件: report.docx → 已保存到 C:\\tmp\\report.docx]"
+
+	blocked := h.executeToolDetailedWithUserText("computer_click", `{}`, attachmentText, nil)
+	if called != 0 || blocked.FailureKind != toolFailurePolicyRejected || !strings.Contains(blocked.Text, "local attachment") {
+		t.Fatalf("attachment direct execution = %+v calls=%d, want policy rejection without handler", blocked, called)
+	}
+
+	allowed := h.executeToolDetailedWithUserText("computer_click", `{}`, "@computer "+attachmentText, nil)
+	if called != 1 || allowed.Outcome != toolOutcomeSucceeded || allowed.Text != "desktop clicked" {
+		t.Fatalf("explicit Computer Use override = %+v calls=%d, want handler success", allowed, called)
+	}
+}
+
 type imToolExecutionContextKey string
 
 func TestExecuteToolDetailedInvokesContextHandler(t *testing.T) {

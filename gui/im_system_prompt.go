@@ -24,6 +24,15 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 
 func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history []agent.ConversationEntry, loopCtx *LoopContext, workflowAgentLoop bool, phasePromptDirect string, askUserContext, pendingUserReplyContext, capabilityGapContext string) string {
 	promptBuildStart := time.Now()
+	// File descriptions (and any host-extracted document text) are attached to
+	// the user content later in buildAgentLoopConversationStart. Keep the
+	// control-plane prompt focused on the user's request, otherwise attachment
+	// marker text can re-open Computer Use even after the final tool filter
+	// removed it.
+	promptMessage := agent.CompactQueryForEmbedding(computerUseRoutingText(msg.Text, msg.Attachments))
+	if strings.TrimSpace(promptMessage) == "" {
+		promptMessage = msg.Text
+	}
 	profile := ExecutionProfile{}
 	if loopCtx != nil {
 		profile = loopCtx.Runtime.Execution
@@ -34,17 +43,19 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 
 	var systemPrompt string
 	if profile.IsLight() {
-		systemPrompt = buildLightIMSystemPrompt(msg, profile)
+		promptMsg := msg
+		promptMsg.Text = promptMessage
+		systemPrompt = buildLightIMSystemPrompt(promptMsg, profile)
 	} else if h.memoryStore != nil {
-		systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0, loopCtx)
+		systemPrompt = h.buildSystemPromptWithMemory(promptMessage, len(history) == 0, loopCtx)
 	} else {
-		systemPrompt = h.buildSystemPromptBaseWithExperienceContext(false, lifecycle.EventContext{}, loopCtx, msg.Text)
+		systemPrompt = h.buildSystemPromptBaseWithExperienceContext(false, lifecycle.EventContext{}, loopCtx, promptMessage)
 	}
 	basePromptElapsed := time.Since(promptBuildStart)
 
 	resumeStart := time.Now()
 	if !profile.IsLight() {
-		systemPrompt += h.buildResumeTraceContextWithLang(msg.UserID, msg.Text, msg.Lang)
+		systemPrompt += h.buildResumeTraceContextWithLang(msg.UserID, promptMessage, msg.Lang)
 	}
 	resumeElapsed := time.Since(resumeStart)
 
@@ -94,6 +105,9 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	if clientToolContext := buildClientToolPrompt(msg.ClientTools, loopCtx); clientToolContext != "" {
 		systemPrompt += "\n\n" + clientToolContext
 	}
+	if bindingPrompt := buildAssistantBindingPrompt(msg.AssistantBinding); bindingPrompt != "" {
+		systemPrompt += "\n\n" + bindingPrompt
+	}
 
 	// During V2 workflow agent loops, skip the desktop/IM workflow doc delivery
 	// overrides. The phase prompt already contains precise output instructions
@@ -117,6 +131,39 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	}
 	imPerfLog("system_prompt", promptBuildStart, imRequestID(msg), msg.UserID, "base_prompt", basePromptElapsed, "resume_trace", resumeElapsed, "prompt_len", len(systemPrompt), "history_len", len(history), "workflow", workflowAgentLoop, "prompt_profile", profile.PromptProfile)
 	return systemPrompt
+}
+
+func buildAssistantBindingPrompt(binding *agent.AssistantBinding) string {
+	if binding == nil || strings.TrimSpace(binding.BotProfileID) == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[机器人绑定运行上下文]\n")
+	b.WriteString("- bot_profile_id: ")
+	b.WriteString(strings.TrimSpace(binding.BotProfileID))
+	b.WriteByte('\n')
+	if mode := strings.TrimSpace(binding.Mode); mode != "" {
+		b.WriteString("- 助手模式: ")
+		b.WriteString(mode)
+		b.WriteByte('\n')
+	}
+	if dir := strings.TrimSpace(binding.WorkingDirectory); dir != "" {
+		b.WriteString("- 工作目录: ")
+		b.WriteString(dir)
+		b.WriteByte('\n')
+	}
+	if len(binding.DocumentDirectories) > 0 {
+		b.WriteString("- 文档检索目录: ")
+		b.WriteString(strings.Join(binding.DocumentDirectories, ", "))
+		b.WriteByte('\n')
+	}
+	if prompt := strings.TrimSpace(binding.InitialPrompt); prompt != "" {
+		b.WriteString("- 管理员补充要求: ")
+		b.WriteString(prompt)
+		b.WriteByte('\n')
+	}
+	b.WriteString("仅在已授权的工作目录、文档目录和知识库范围内检索或读取；不得声称读取了未实际检索到的资料。")
+	return b.String()
 }
 
 func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) string {
@@ -156,6 +203,10 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) strin
 	}
 	if clientToolContext := buildClientToolPrompt(msg.ClientTools, nil); clientToolContext != "" {
 		b.WriteString(clientToolContext)
+		b.WriteByte('\n')
+	}
+	if bindingPrompt := buildAssistantBindingPrompt(msg.AssistantBinding); bindingPrompt != "" {
+		b.WriteString(bindingPrompt)
 		b.WriteByte('\n')
 	}
 	return b.String()

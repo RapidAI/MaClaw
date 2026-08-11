@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	corelib "github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
@@ -16,17 +17,19 @@ import (
 type mgmtFakeKnowledgeStore struct {
 	noOpKnowledgeStore
 
-	lastListOpts   knowledge.ListSourcesOptions
-	lastLabelReq   knowledge.SourceLabelUpdateRequest
-	deletedIDs     []string
-	enabledIDs     []string
-	disabledIDs    []string
-	refreshedIDs   []string
-	previewedIDs   []string
-	savedURLReqs   []knowledge.URLSaveRequest
-	sources        map[string]knowledge.Source
-	batches        []knowledge.ImportBatch
-	listSourcesErr error
+	lastListOpts    knowledge.ListSourcesOptions
+	lastLabelReq    knowledge.SourceLabelUpdateRequest
+	deletedIDs      []string
+	enabledIDs      []string
+	disabledIDs     []string
+	refreshedIDs    []string
+	previewedIDs    []string
+	refreshPolicies []*agent.OfficeReadConfig
+	previewPolicies []*agent.OfficeReadConfig
+	savedURLReqs    []knowledge.URLSaveRequest
+	sources         map[string]knowledge.Source
+	batches         []knowledge.ImportBatch
+	listSourcesErr  error
 }
 
 func (f *mgmtFakeKnowledgeStore) ListSources(_ context.Context, opts knowledge.ListSourcesOptions) ([]knowledge.Source, error) {
@@ -91,6 +94,18 @@ func (f *mgmtFakeKnowledgeStore) RefreshSource(_ context.Context, id string) (kn
 
 func (f *mgmtFakeKnowledgeStore) PreviewSourceRefresh(_ context.Context, id string) (knowledge.SourceChangePreview, error) {
 	f.previewedIDs = append(f.previewedIDs, id)
+	return knowledge.SourceChangePreview{SourceID: id, Refreshable: true}, nil
+}
+
+func (f *mgmtFakeKnowledgeStore) RefreshSourceWithOfficeReadConfig(_ context.Context, id string, policy *agent.OfficeReadConfig) (knowledge.Source, error) {
+	f.refreshedIDs = append(f.refreshedIDs, id)
+	f.refreshPolicies = append(f.refreshPolicies, policy)
+	return f.sources[id], nil
+}
+
+func (f *mgmtFakeKnowledgeStore) PreviewSourceRefreshWithOfficeReadConfig(_ context.Context, id string, policy *agent.OfficeReadConfig) (knowledge.SourceChangePreview, error) {
+	f.previewedIDs = append(f.previewedIDs, id)
+	f.previewPolicies = append(f.previewPolicies, policy)
 	return knowledge.SourceChangePreview{SourceID: id, Refreshable: true}, nil
 }
 
@@ -196,6 +211,28 @@ func TestKnowledgeRefreshSourceDryRunDefaultsTrue(t *testing.T) {
 	_ = cb.executeKnowledgeRefreshSource(map[string]interface{}{"source_id": "s1", "dry_run": false})
 	if len(store.refreshedIDs) != 1 {
 		t.Fatalf("dry_run=false should refresh, refreshed=%v", store.refreshedIDs)
+	}
+}
+
+func TestKnowledgeRefreshSourceUsesRequestScopedOfficeReadPolicy(t *testing.T) {
+	store := &mgmtFakeKnowledgeStore{sources: map[string]knowledge.Source{"s1": ownSource("s1")}}
+	cb := newMgmtCallbacks(store)
+	emitMarkdown := true
+	cb.appCfg = corelib.AppConfig{
+		OfficeReadEngine:       "officeread",
+		OfficeReadFormats:      []string{"docx"},
+		OfficeReadEmitMarkdown: &emitMarkdown,
+	}
+
+	_ = cb.executeKnowledgeRefreshSource(map[string]interface{}{"source_id": "s1"})
+	_ = cb.executeKnowledgeRefreshSource(map[string]interface{}{"source_id": "s1", "dry_run": false})
+	if len(store.previewPolicies) != 1 || len(store.refreshPolicies) != 1 {
+		t.Fatalf("scoped calls preview=%d refresh=%d", len(store.previewPolicies), len(store.refreshPolicies))
+	}
+	for _, policy := range []*agent.OfficeReadConfig{store.previewPolicies[0], store.refreshPolicies[0]} {
+		if policy == nil || policy.Engine != "officeread" || !strings.EqualFold(policy.Formats[0], "docx") || policy.EmitMarkdown == nil || !*policy.EmitMarkdown {
+			t.Fatalf("OfficeRead refresh policy = %#v", policy)
+		}
 	}
 }
 

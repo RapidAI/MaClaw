@@ -85,6 +85,27 @@ func (c *TargetListCache) Invalidate(channel string) {
 	delete(c.entries, DefaultDeliveryChannel(channel))
 }
 
+// InvalidatePrefix drops cache slots with a canonical-key prefix. It is used
+// for scoped catalogs such as "lansenger:<bot-profile-id>" where one bot's
+// group directory must never be returned for another bot.
+func (c *TargetListCache) InvalidatePrefix(prefix string) {
+	if c == nil {
+		return
+	}
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if prefix == "" {
+		c.Invalidate("")
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range c.entries {
+		if strings.HasPrefix(strings.ToLower(key), prefix) {
+			delete(c.entries, key)
+		}
+	}
+}
+
 // GetOrLoad returns cached refs or calls load, then caches the full unfiltered list.
 // Callers should apply FilterTargetRefs for query after GetOrLoad.
 func (c *TargetListCache) GetOrLoad(channel string, load func() ([]TargetRef, error)) ([]TargetRef, error) {

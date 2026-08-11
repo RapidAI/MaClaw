@@ -10,12 +10,20 @@
  */
 /** Tab type discriminator */
 export type AITabType = "local" | "ve" | "group" | "project" | "expert";
+/**
+ * The persisted execution scope for profile-scoped model controls. This is
+ * intentionally task metadata, never inferred from prompt content or visible
+ * UI. `none` means an older/ambiguous task and disables quick writes.
+ */
+export type AIExecutionProfile = "assistant" | "coding" | "none";
 /** A single tab in the AI Assistant Panel */
 export interface AITab {
     /** Unique tab identifier. "local" for the fixed AI assistant tab. */
     id: string;
     /** Tab type: local AI assistant, VE conversation, or group chat */
     type: AITabType;
+    /** Profile whose new requests this task is allowed to create. */
+    executionProfile?: AIExecutionProfile;
     /** Primary conversation title. For VE/group tabs this remains the primary VE name or history topic. */
     title: string;
     /** Explicit group topic/name, separate from participant names. */
@@ -119,6 +127,7 @@ export const LOCAL_TAB: AITab = {
     id: "local",
     type: "local",
     title: "AI \u52a9\u624b",
+    executionProfile: "assistant",
     closable: false,
 };
 /** Create initial tab state with only the local tab (cloned so mutations cannot corrupt LOCAL_TAB). */

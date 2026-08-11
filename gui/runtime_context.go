@@ -120,7 +120,7 @@ func runtimeSourceFromIMMessage(msg IMUserMessage) RuntimeSourceRef {
 	}
 	channel := "im"
 	switch {
-	case msg.IsBackground || strings.EqualFold(strings.TrimSpace(msg.UserID), "scheduled_task"):
+	case msg.IsBackground || isScheduledTaskConversationOwner(msg.UserID):
 		channel = "system"
 		if provider == "local" || provider == "desktop" {
 			provider = "scheduler"
@@ -138,13 +138,23 @@ func runtimeSourceFromIMMessage(msg IMUserMessage) RuntimeSourceRef {
 }
 
 func runtimeActorFromIMMessage(msg IMUserMessage) RuntimeActorRef {
-	if msg.IsBackground || strings.EqualFold(strings.TrimSpace(msg.UserID), "scheduled_task") {
+	if msg.IsBackground || isScheduledTaskConversationOwner(msg.UserID) {
 		return RuntimeActorRef{ActorID: "system", ActorType: "system"}
 	}
 	if strings.HasPrefix(strings.TrimSpace(msg.UserID), "ve-group-executor:") {
 		return RuntimeActorRef{ActorID: "digital-employee", ActorType: "digital_employee"}
 	}
 	return RuntimeActorRef{ActorID: "main-ai", ActorType: "main_ai"}
+}
+
+// isScheduledTaskConversationOwner accepts the historical desktop owner and
+// the profile/task-scoped owner used by multi-bot scheduled execution. Runtime
+// classification must stay aligned with scheduledTaskConversationOwner: a
+// profile task is still a system/background request even though its isolated
+// owner no longer equals the legacy literal.
+func isScheduledTaskConversationOwner(ownerID string) bool {
+	ownerID = strings.TrimSpace(ownerID)
+	return ownerID == "scheduled_task" || strings.HasPrefix(ownerID, "lansenger-scheduled:")
 }
 
 func runtimeSessionKey(source RuntimeSourceRef, conversationID, actorID string) string {

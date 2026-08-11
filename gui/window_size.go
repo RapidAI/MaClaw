@@ -8,6 +8,37 @@ func envCheckWindowSize() (width, height int) {
 	return 520, 360
 }
 
+// normalizeScreenSizeForWindowDPI converts physical display pixels to the
+// 96-DPI logical units accepted by Wails' WindowSetSize API. Windows Wails
+// processes are DPI-aware, so GetSystemMetrics returns physical dimensions;
+// Wails subsequently scales window dimensions up to the current window DPI.
+// Passing the physical metrics through unchanged would therefore scale a
+// 1920x1080 display at 125% twice and can push a frameless window outside its
+// visible work area.
+func normalizeScreenSizeForWindowDPI(width, height, dpi int) (int, int) {
+	if width <= 0 || height <= 0 {
+		return 0, 0
+	}
+	if dpi <= 0 {
+		dpi = 96
+	}
+	return scaleToDefaultWindowDPI(width, dpi), scaleToDefaultWindowDPI(height, dpi)
+}
+
+// scaleToDefaultWindowDPI intentionally matches Wails' ScaleToDefaultDPI:
+// both use truncation rather than rounding. Using a different rounding rule
+// can make an adaptive size exceed Wails' reconstructed physical client size
+// by one pixel at fractional DPI, precisely the edge we are protecting.
+func scaleToDefaultWindowDPI(pixels, dpi int) int {
+	if pixels <= 0 {
+		return 0
+	}
+	if dpi <= 0 {
+		dpi = 96
+	}
+	return pixels * 96 / dpi
+}
+
 // adaptiveWindowSize selects the best window dimensions based on the primary
 // screen resolution. Handles:
 //   - Landscape vs portrait orientation (portrait uses narrower, taller window)
@@ -22,6 +53,29 @@ func envCheckWindowSize() (width, height int) {
 // Falls back to 1360×850 if screen detection fails.
 func adaptiveWindowSize() (width, height int) {
 	sw, sh := getPrimaryScreenSize()
+	return adaptiveWindowSizeForScreen(sw, sh)
+}
+
+// adaptiveWindowSizeForScreen selects a window size for a known full display
+// size. It applies a conservative taskbar reserve because raw screen metrics
+// include the system work-area exclusion.
+func adaptiveWindowSizeForScreen(sw, sh int) (width, height int) {
+	return adaptiveWindowSizeForAvailableArea(sw, sh, taskbarReserveLandscape, taskbarReservePortrait)
+}
+
+// adaptiveWindowSizeForWorkArea selects a size from an OS-reported work area
+// such as Windows MONITORINFO.rcWork. Unlike raw screen dimensions, this has
+// already excluded the taskbar, so it must not reserve taskbar space again.
+func adaptiveWindowSizeForWorkArea(sw, sh int) (width, height int) {
+	return adaptiveWindowSizeForAvailableArea(sw, sh, 0, 0)
+}
+
+const (
+	taskbarReserveLandscape = 80
+	taskbarReservePortrait  = 120
+)
+
+func adaptiveWindowSizeForAvailableArea(sw, sh, landscapeReserve, portraitReserve int) (width, height int) {
 
 	// Detection failed — safe default for 1080p+
 	if sw <= 0 || sh <= 0 {
@@ -31,13 +85,17 @@ func adaptiveWindowSize() (width, height int) {
 	portrait := sh > sw
 
 	if portrait {
-		return adaptivePortrait(sw, sh)
+		return adaptivePortraitWithReserve(sw, sh, portraitReserve)
 	}
-	return adaptiveLandscape(sw, sh)
+	return adaptiveLandscapeWithReserve(sw, sh, landscapeReserve)
 }
 
 // adaptiveLandscape handles normal wide screens (16:9, 16:10, 21:9).
 func adaptiveLandscape(sw, sh int) (int, int) {
+	return adaptiveLandscapeWithReserve(sw, sh, taskbarReserveLandscape)
+}
+
+func adaptiveLandscapeWithReserve(sw, sh, taskbarReserve int) (int, int) {
 	type preset struct {
 		minScreenWidth int
 		winWidth       int
@@ -63,17 +121,21 @@ func adaptiveLandscape(sw, sh int) (int, int) {
 
 	for _, p := range presets {
 		if sw >= p.minScreenWidth {
-			return clampToScreen(p.winWidth, p.winHeight, sw, sh, false)
+			return clampToScreenWithReserve(p.winWidth, p.winHeight, sw, sh, taskbarReserve)
 		}
 	}
 
 	// Small screen fallback (< 1440 wide)
-	return clampToScreen(1120, 700, sw, sh, false)
+	return clampToScreenWithReserve(1120, 700, sw, sh, taskbarReserve)
 }
 
 // adaptivePortrait handles rotated/vertical monitors.
 // Uses narrower, taller window proportions — better for reading chat history.
 func adaptivePortrait(sw, sh int) (int, int) {
+	return adaptivePortraitWithReserve(sw, sh, taskbarReservePortrait)
+}
+
+func adaptivePortraitWithReserve(sw, sh, taskbarReserve int) (int, int) {
 	type preset struct {
 		minScreenWidth int // Note: in portrait, sw is the shorter dimension
 		winWidth       int
@@ -90,12 +152,12 @@ func adaptivePortrait(sw, sh int) (int, int) {
 
 	for _, p := range presets {
 		if sw >= p.minScreenWidth {
-			return clampToScreen(p.winWidth, p.winHeight, sw, sh, true)
+			return clampToScreenWithReserve(p.winWidth, p.winHeight, sw, sh, taskbarReserve)
 		}
 	}
 
 	// Very narrow portrait fallback
-	return clampToScreen(800, 1000, sw, sh, true)
+	return clampToScreenWithReserve(800, 1000, sw, sh, taskbarReserve)
 }
 
 // clampToScreen ensures the window fits within usable screen area.
@@ -107,9 +169,16 @@ func adaptivePortrait(sw, sh int) (int, int) {
 // Guard thresholds (640×480) prevent shrinking to unusable sizes on misconfigured
 // screens that report tiny logical resolutions.
 func clampToScreen(w, h, sw, sh int, portrait bool) (int, int) {
-	taskbarReserve := 80
+	reserve := taskbarReserveLandscape
 	if portrait {
-		taskbarReserve = 120
+		reserve = taskbarReservePortrait
+	}
+	return clampToScreenWithReserve(w, h, sw, sh, reserve)
+}
+
+func clampToScreenWithReserve(w, h, sw, sh, taskbarReserve int) (int, int) {
+	if taskbarReserve < 0 {
+		taskbarReserve = 0
 	}
 
 	maxW := sw * 90 / 100

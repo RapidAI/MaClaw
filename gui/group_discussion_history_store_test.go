@@ -380,6 +380,39 @@ func TestGroupDiscussionHistoryStoreMaterializesInlineTextAttachments(t *testing
 	}
 }
 
+func TestGroupDiscussionHistoryStoreNormalizesInlineBinaryDocumentSuffix(t *testing.T) {
+	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("NewGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "attachments")
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ID: "disc-office-text", LocalRelation: "owned_ve_invited", Status: "open"},
+		Messages: []a2a.Message{{
+			ID: "msg-1", FromID: "ve-1", Kind: a2a.MessageStatement,
+			TextAttachments: []a2a.TextAttachment{{
+				Filename: "report.png",
+				MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+				Content:  base64.RawURLEncoding.EncodeToString([]byte("not-a-parser-input")),
+			}},
+		}},
+	}
+	if err := store.CacheDetail(ctx, detail, func(string) string { return root }); err != nil {
+		t.Fatalf("CacheDetail: %v", err)
+	}
+	cached, ok, err := store.CachedDetail(ctx, "disc-office-text")
+	if err != nil || !ok {
+		t.Fatalf("CachedDetail ok=%v err=%v", ok, err)
+	}
+	localPath := cached.Messages[0].TextAttachments[0].LocalPath
+	if !strings.HasSuffix(localPath, ".docx") {
+		t.Fatalf("materialized Office path = %q, want .docx suffix", localPath)
+	}
+}
+
 func TestGroupDiscussionHistoryStoreEnrichesCachedAttachmentPaths(t *testing.T) {
 	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {

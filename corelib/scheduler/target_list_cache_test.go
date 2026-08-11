@@ -47,6 +47,24 @@ func TestTargetListCacheGetOrLoad(t *testing.T) {
 	}
 }
 
+func TestTargetListCacheInvalidatePrefixKeepsOtherProfiles(t *testing.T) {
+	t.Parallel()
+	c := NewTargetListCache(time.Minute)
+	c.Put("lansenger:support", []TargetRef{{ID: "support-group"}})
+	c.Put("lansenger:sales", []TargetRef{{ID: "sales-group"}})
+	c.Put("weixin", []TargetRef{{ID: "owner"}})
+	c.InvalidatePrefix("lansenger:support")
+	if _, ok := c.Get("lansenger:support"); ok {
+		t.Fatal("support cache entry survived invalidation")
+	}
+	if refs, ok := c.Get("lansenger:sales"); !ok || len(refs) != 1 || refs[0].ID != "sales-group" {
+		t.Fatalf("sales cache = %#v ok=%v", refs, ok)
+	}
+	if refs, ok := c.Get("weixin"); !ok || len(refs) != 1 || refs[0].ID != "owner" {
+		t.Fatalf("weixin cache = %#v ok=%v", refs, ok)
+	}
+}
+
 func TestTargetListCacheAliasesShareSlot(t *testing.T) {
 	t.Parallel()
 	c := NewTargetListCache(time.Minute)

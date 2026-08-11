@@ -147,18 +147,17 @@ func (a *App) PlatformTransparencyFlags() (webviewTransparent, windowTranslucent
 }
 
 // GetFramelessTopInset returns the number of pixels that DWM's invisible
-// border may reserve at the top of a frameless window on Windows 10.
+// border may reserve at the top of a frameless window on Windows.
 //
-// On some Windows 10 builds (notably Enterprise/LTSC), even with
-// DisableFramelessWindowDecorations = true, DWM still reserves the
-// non-client frame area at the top, offsetting the webview content
-// downward. The frontend reserves that space so the custom title bar stays
-// within the usable client area.
+// On some Windows 10 builds (notably Enterprise/LTSC), and on recent Windows
+// 11 builds with native rounded frameless windows, DWM can still reserve the
+// non-client frame area at the top. That offsets the WebView content downward
+// and crops the custom title bar. The frontend reserves the same CSS-pixel
+// inset so the title bar stays within the usable client area.
 //
-// The DWM non-client top inset for a captionless window is
-// SM_CYFRAME + SM_CXPADDEDBORDER (typically 7–8 px at 100 % DPI).
-// On unaffected Win10 systems this adds a subtle top gap; on affected
-// ones it compensates for the DWM offset.  On Windows 11 it returns 0.
+// The live client origin is measured first. All Windows versions fall back to
+// SM_CYFRAME + SM_CXPADDEDBORDER when WebView2's client origin cannot expose
+// DWM's invisible frame (typically 7–8 px at 100 % DPI).
 //
 // The value is derived from the current window DPI. It must not be cached:
 // moving a per-monitor-DPI-aware window between displays changes the physical
@@ -172,6 +171,8 @@ var (
 	procGetDpiForWindowInset        = framelessInsetUser32.NewProc("GetDpiForWindow")
 	procGetSystemMetricsForDpiInset = framelessInsetUser32.NewProc("GetSystemMetricsForDpi")
 	procGetSystemMetricsInset       = framelessInsetUser32.NewProc("GetSystemMetrics")
+	procGetWindowRectInset          = framelessInsetUser32.NewProc("GetWindowRect")
+	procClientToScreenInset         = framelessInsetUser32.NewProc("ClientToScreen")
 )
 
 const (
@@ -180,16 +181,26 @@ const (
 	defaultWindowsDPI     = 96
 )
 
-func framelessTopInsetForWindow(hwnd uintptr) int {
-	if isWindows11() {
-		return 0
-	}
+type framelessInsetRect struct {
+	Left, Top, Right, Bottom int32
+}
 
+type framelessInsetPoint struct {
+	X, Y int32
+}
+
+func framelessTopInsetForWindow(hwnd uintptr) int {
 	dpi := uint32(defaultWindowsDPI)
 	if hwnd != 0 && procGetDpiForWindowInset.Find() == nil {
 		if currentDPI, _, _ := procGetDpiForWindowInset.Call(hwnd); currentDPI != 0 {
 			dpi = uint32(currentDPI)
 		}
+	}
+	// The live client origin is more useful than system metrics and remains
+	// available even on older Windows builds that lack GetSystemMetricsForDpi.
+	clientInset := framelessClientTopInset(hwnd)
+	if clientInset > 0 {
+		return normalizeFramelessTopInset(clientInset, int(dpi))
 	}
 
 	var cyFrame, cxPadded uintptr
@@ -202,10 +213,45 @@ func framelessTopInsetForWindow(hwnd uintptr) int {
 		cyFrame, _, _ = procGetSystemMetricsInset.Call(uintptr(smCYFrameInset))
 		cxPadded, _, _ = procGetSystemMetricsInset.Call(uintptr(smCXPaddedBorderInset))
 	} else {
-		return 0
+		return resolveFramelessTopInset(0, 0, int(dpi))
 	}
 
-	return normalizeFramelessTopInset(int(cyFrame)+int(cxPadded), int(dpi))
+	return resolveFramelessTopInset(clientInset, int(cyFrame)+int(cxPadded), int(dpi))
+}
+
+// resolveFramelessTopInset centralizes the platform policy so it can be
+// regression-tested without a live HWND. A positive client origin is the
+// authoritative source. Otherwise use the system metric: both Windows 10 and
+// Windows 11 can report a zero client origin while DWM still offsets the
+// WebView surface.
+func resolveFramelessTopInset(clientInset int, metricInset int, dpi int) int {
+	if clientInset > 0 {
+		return normalizeFramelessTopInset(clientInset, dpi)
+	}
+	return normalizeFramelessTopInset(metricInset, dpi)
+}
+
+// framelessClientTopInset measures the actual non-client space above the
+// WebView host rather than assuming the system frame metrics apply. It returns
+// zero when the window cannot be measured or when its client area begins at
+// the outer window edge.
+func framelessClientTopInset(hwnd uintptr) int {
+	if hwnd == 0 || procGetWindowRectInset.Find() != nil || procClientToScreenInset.Find() != nil {
+		return 0
+	}
+	var window framelessInsetRect
+	if ok, _, _ := procGetWindowRectInset.Call(hwnd, uintptr(unsafe.Pointer(&window))); ok == 0 {
+		return 0
+	}
+	clientOrigin := framelessInsetPoint{}
+	if ok, _, _ := procClientToScreenInset.Call(hwnd, uintptr(unsafe.Pointer(&clientOrigin))); ok == 0 {
+		return 0
+	}
+	inset := int(clientOrigin.Y - window.Top)
+	if inset < 0 || inset > 32 {
+		return 0
+	}
+	return inset
 }
 
 // normalizeFramelessTopInset converts a physical non-client metric to CSS
@@ -229,10 +275,23 @@ func (a *App) platformStartup() {
 }
 
 func (a *App) platformShutdown() {
+	a.powerStateMutex.Lock()
+	defer a.powerStateMutex.Unlock()
+	// The workstation Power Request is process-scoped and keeps the machine
+	// awake independently of SetThreadExecutionState. Release it here as a
+	// defensive cleanup even if shutdown exits before App.shutdown's earlier
+	// workstation-mode cleanup point.
+	a.releaseWorkstationPowerRequest()
 	a.allowSystemSleep()
 }
 
 func (a *App) setPowerOptimizationEnabled(enabled bool) {
+	a.powerStateMutex.Lock()
+	defer a.powerStateMutex.Unlock()
+	a.setPowerOptimizationEnabledLocked(enabled)
+}
+
+func (a *App) setPowerOptimizationEnabledLocked(enabled bool) {
 	if enabled {
 		a.preventSystemSleep()
 		return
@@ -241,18 +300,20 @@ func (a *App) setPowerOptimizationEnabled(enabled bool) {
 }
 
 func (a *App) preventSystemSleep() {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	setThreadExecutionState := kernel32.NewProc("SetThreadExecutionState")
 	// ES_DISPLAY_REQUIRED keeps the display on, preventing DWM from suspending
 	// desktop composition. Without it, screenshots return black after the
 	// display auto-off timeout, even though the system stays awake.
-	setThreadExecutionState.Call(uintptr(esContinuous | esSystemRequired | esDisplayRequired))
+	setPowerPolicyExecutionState(esContinuous | esSystemRequired | esDisplayRequired)
 }
 
 func (a *App) allowSystemSleep() {
+	setPowerPolicyExecutionState(esContinuous)
+}
+
+var setPowerPolicyExecutionState = func(flags uintptr) {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	setThreadExecutionState := kernel32.NewProc("SetThreadExecutionState")
-	setThreadExecutionState.Call(uintptr(esContinuous))
+	setThreadExecutionState.Call(uintptr(flags))
 }
 
 func (a *App) platformInitConsole() {

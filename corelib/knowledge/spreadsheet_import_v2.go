@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	excelread "github.com/RapidAI/CodeClaw/corelib/excel"
 )
 
@@ -65,6 +66,10 @@ type spreadsheetPreparedCell struct {
 	ftsObject       string // segmentTextForFTS(cleanFactPart(normalizedValue))
 }
 
+// spreadsheetImportSnapshot is a narrow test seam for the direct structured
+// importer. Production always uses the private snapshot helper below.
+var spreadsheetImportSnapshot = snapshotSpreadsheetImportInput
+
 func importSpreadsheetSourceV2(ctx context.Context, tx *sql.Tx, source Source, filePath string, kind string) (Source, error) {
 	return importSpreadsheetSourceV2WithProgress(ctx, tx, source, filePath, kind, nil)
 }
@@ -73,26 +78,45 @@ func importSpreadsheetSourceV2WithProgress(ctx context.Context, tx *sql.Tx, sour
 	if !isSpreadsheetKind(kind) {
 		return source, nil
 	}
+	// Direct callers (schema repair and focused maintenance paths) do not
+	// necessarily come through the import-owned snapshot used by the normal
+	// pipeline. Bind every invocation to a private verified copy; otherwise the
+	// preflight below can approve version A while ReadAllSheets reopens a
+	// replacement at the same pathname. An import-owned snapshot simply gains a
+	// short-lived child copy, keeping the direct API safe without expanding its
+	// caller contract.
+	var inputPath string
+	var cleanup func()
+	var snapshotErr error
+	inputPath, cleanup, snapshotErr = spreadsheetImportSnapshot(filePath, kind)
+	if snapshotErr != nil {
+		return source, sanitizeOfficeReadKnowledgeError(snapshotErr)
+	}
+	defer cleanup()
+	// This importer is also called by schema migration and other direct paths
+	// that do not first create document nodes. Reapply the shared input boundary
+	// before it opens and retains every sheet, so those paths cannot bypass the
+	// directory scanner or ParseDocumentNodes.
+	if err := preflightKnowledgeParserInput(inputPath, kind); err != nil {
+		return source, err
+	}
 	if err := insertKBSource(ctx, tx, source); err != nil {
 		return source, err
 	}
-	sheets, err := excelread.ListSheets(filePath)
+	results, err := excelread.ReadAllSheets(inputPath)
 	if err != nil {
 		return source, err
 	}
 
-	// Read all sheets into memory once (avoids double-read for pre-count + processing)
+	// Workbook data is loaded through one workbook handle. This avoids opening
+	// and reparsing the same XLSX container once per sheet during import.
 	type sheetData struct {
 		result    *excelread.ReadResult
 		headerRow int
 	}
-	sheetResults := make([]sheetData, 0, len(sheets))
+	sheetResults := make([]sheetData, 0, len(results))
 	totalDataRows := 0
-	for _, sheetName := range sheets {
-		result, err := excelread.ReadFile(filePath, excelread.ReadOptions{SheetName: sheetName})
-		if err != nil {
-			return source, err
-		}
+	for _, result := range results {
 		if result == nil || len(result.Rows) == 0 {
 			continue
 		}
@@ -413,6 +437,13 @@ func importSpreadsheetSourceV2WithProgress(ctx context.Context, tx *sql.Tx, sour
 	source.NodeCount = rowCount
 	_ = tableCount
 	return source, nil
+}
+
+func snapshotSpreadsheetImportInput(filePath, kind string) (snapshot string, cleanup func(), err error) {
+	if strings.EqualFold(kind, SourceKindCSV) {
+		return agent.SnapshotCSVInput(filePath)
+	}
+	return agent.SnapshotOfficeReadInput(filePath, kind)
 }
 
 func insertKBSource(ctx context.Context, tx *sql.Tx, source Source) error {

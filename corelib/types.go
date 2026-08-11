@@ -879,6 +879,9 @@ func IsLearnedSource(source string) bool {
 
 // MaclawLLMProvider 描述一个 MaClaw LLM 提供商配置。
 type MaclawLLMProvider struct {
+	// ID is a stable opaque provider identifier. Name remains a user-editable
+	// label kept for legacy APIs and display.
+	ID              string   `json:"id,omitempty"`
 	Name            string   `json:"name"`
 	URL             string   `json:"url"`
 	Key             string   `json:"key"`
@@ -931,17 +934,23 @@ func (p MaclawLLMProvider) CodexSubscriptionOAuthToken() string {
 
 // MaclawLLMConfig 是 MaClaw 桌面 Agent 的 LLM 配置。
 type MaclawLLMConfig struct {
-	URL                      string `json:"url"`
-	Key                      string `json:"key"`
-	Model                    string `json:"model"`
-	Protocol                 string `json:"protocol,omitempty"`
-	ContextLength            int    `json:"context_length,omitempty"`
-	TimeoutSec               int    `json:"timeout_sec,omitempty"`
-	MaxOutputTokens          int    `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
-	SupportsVision           bool   `json:"supports_vision"`
-	AgentType                string `json:"agent_type,omitempty"`    // "openclaw" (default) or "claude" → controls User-Agent header
-	WireAPI                  string `json:"wire_api,omitempty"`      // "chat" or "responses"; empty defaults to "chat"
-	ProviderName             string `json:"provider_name,omitempty"` // human-readable provider name (e.g. "智谱编程")
+	URL             string `json:"url"`
+	Key             string `json:"key"`
+	Model           string `json:"model"`
+	Protocol        string `json:"protocol,omitempty"`
+	ContextLength   int    `json:"context_length,omitempty"`
+	TimeoutSec      int    `json:"timeout_sec,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
+	SupportsVision  bool   `json:"supports_vision"`
+	AgentType       string `json:"agent_type,omitempty"`    // "openclaw" (default) or "claude" → controls User-Agent header
+	WireAPI         string `json:"wire_api,omitempty"`      // "chat" or "responses"; empty defaults to "chat"
+	ProviderName    string `json:"provider_name,omitempty"` // human-readable provider name (e.g. "智谱编程")
+	ProviderID      string `json:"provider_id,omitempty"`   // stable shared-provider identity for usage attribution
+	// Profile identifies the configured execution profile that produced this
+	// snapshot (assistant or coding). RouteSource is filled by a later routing
+	// layer when it replaces the profile's base model.
+	Profile                  string `json:"profile,omitempty"`
+	RouteSource              string `json:"route_source,omitempty"`
 	AuthType                 string `json:"auth_type,omitempty"`
 	MaclawAgentMaxIterations int    `json:"maclaw_agent_max_iterations,omitempty"`
 
@@ -1322,6 +1331,13 @@ func (c MaclawLLMConfig) EffectiveContextTokens() int {
 
 // TokenUsageStat 记录某个 LLM 服务商的累计 token 用量。
 type TokenUsageStat struct {
+	// Attribution is present only in LLMProfileTokenUsage. Provider-only legacy
+	// records deliberately leave these fields blank rather than guessing.
+	Profile                  string  `json:"profile,omitempty"`
+	ProviderID               string  `json:"provider_id,omitempty"`
+	ProviderDisplayName      string  `json:"provider_display_name,omitempty"`
+	FinalModel               string  `json:"final_model,omitempty"`
+	RouteSource              string  `json:"route_source,omitempty"`
 	InputTokens              int64   `json:"input_tokens"`
 	OutputTokens             int64   `json:"output_tokens"`
 	TotalTokens              int64   `json:"total_tokens"`

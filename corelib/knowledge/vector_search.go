@@ -948,7 +948,7 @@ func extractQueryTermsForSnippet(query string) []string {
 // searchNodesByEmbedding performs vector similarity search on document_nodes.
 // This is the root-cause fix for distillation loss: it searches the ORIGINAL
 // document text embeddings, not the distilled card claims.
-func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []float32, modelID string, generation uint64, opts SearchOptions) ([]SearchResult, error) {
+func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []float32, modelID string, generation uint64, opts SearchOptions, nodeTypes ...string) ([]SearchResult, error) {
 	if !validEmbeddingVector(queryVec, 0) {
 		return nil, nil
 	}
@@ -960,6 +960,19 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 
 	where := []string{"n.embedding IS NOT NULL", "LENGTH(n.embedding) > 0"}
 	args := make([]interface{}, 0)
+	if len(nodeTypes) > 0 {
+		normalized := normalizeSearchStrings(nodeTypes)
+		if len(normalized) == 1 {
+			where = append(where, "n.type = ?")
+			args = append(args, normalized[0])
+		} else if len(normalized) > 1 {
+			placeholders := strings.TrimRight(strings.Repeat("?,", len(normalized)), ",")
+			where = append(where, "n.type IN ("+placeholders+")")
+			for _, nodeType := range normalized {
+				args = append(args, nodeType)
+			}
+		}
+	}
 	where, args = appendSearchFilters(where, args, "s", opts)
 	if modelID != "" {
 		where = append(where, `EXISTS (SELECT 1 FROM knowledge_embedding_metadata em WHERE em.entity_type = 'node' AND em.entity_id = n.id AND em.model_id = ? AND em.dimension = ?)`)

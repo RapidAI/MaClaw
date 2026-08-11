@@ -443,9 +443,13 @@ func TestNewSQLiteStoreMigratesLegacySpreadsheetSource(t *testing.T) {
 		t.Fatalf("create legacy tables: %v", err)
 	}
 	now := time.Now().UTC()
+	csvHash, err := fileSHA256(csvPath)
+	if err != nil {
+		t.Fatalf("hash legacy csv: %v", err)
+	}
 	_, err = legacyDB.Exec(insertSourceSQL,
 		"src_legacy_csv", SourceKindCSV, csvPath, "", "Legacy CSV", "", "",
-		formatTime(now), formatTime(now), "hash_legacy_csv", "owner_1", "tenant_1",
+		formatTime(now), formatTime(now), csvHash, "owner_1", "tenant_1",
 		"", "", 0.9, "", "", StatusParsed, "", formatTime(now), formatTime(now),
 	)
 	if err != nil {
@@ -475,6 +479,130 @@ func TestNewSQLiteStoreMigratesLegacySpreadsheetSource(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Source.ID != "src_legacy_csv" {
 		t.Fatalf("unexpected migrated csv search results: %#v", results)
+	}
+}
+
+func TestNewSQLiteStoreDoesNotReindexReplacedLegacySpreadsheetSource(t *testing.T) {
+	dir := t.TempDir()
+	csvPath := filepath.Join(dir, "legacy-replaced.csv")
+	writeTestFile(t, csvPath, "name,plan\nAlice,scanned legacy value\n")
+	originalHash, err := fileSHA256(csvPath)
+	if err != nil {
+		t.Fatalf("hash legacy CSV: %v", err)
+	}
+	// Simulate the normal v1 lifetime: nodes and content_hash describe the
+	// original import, while the user-controlled pathname is later replaced
+	// before the database is opened for the v2 migration.
+	writeTestFile(t, csvPath, "name,plan\nAlice,replacement must not index\n")
+	dbPath := filepath.Join(dir, "knowledge.db")
+	legacyDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if err := applyPragmas(legacyDB); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := createTables(legacyDB); err != nil {
+		t.Fatalf("create legacy tables: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := legacyDB.Exec(insertSourceSQL,
+		"src_legacy_replaced_csv", SourceKindCSV, csvPath, "", "Legacy replaced CSV", "", "",
+		formatTime(now), formatTime(now), originalHash, "owner_1", "tenant_1",
+		"", "", 0.9, "", "", StatusParsed, "", formatTime(now), formatTime(now),
+	); err != nil {
+		t.Fatalf("insert legacy CSV: %v", err)
+	}
+	tx, err := legacyDB.Begin()
+	if err != nil {
+		t.Fatalf("begin legacy tx: %v", err)
+	}
+	if err := insertDocumentNode(t.Context(), tx, DocumentNode{
+		ID:        "node_legacy_replaced_csv",
+		SourceID:  "src_legacy_replaced_csv",
+		Type:      "sheet",
+		Title:     "Sheet1 rows 2-2",
+		Text:      "name: Alice | plan: scanned legacy value",
+		SheetName: "Sheet1",
+		RowRange:  "2:2",
+		Offset:    2,
+	}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("insert legacy node: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit legacy node: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	assertCount(t, store.db, "kb_tables", 1)
+	assertCount(t, store.db, "kb_rows", 1)
+	var rowText, schemaJSON string
+	if err := store.db.QueryRow(`SELECT row_text FROM kb_rows WHERE source_id = 'src_legacy_replaced_csv'`).Scan(&rowText); err != nil {
+		t.Fatalf("read migrated row: %v", err)
+	}
+	if err := store.db.QueryRow(`SELECT schema_json FROM kb_tables WHERE source_id = 'src_legacy_replaced_csv'`).Scan(&schemaJSON); err != nil {
+		t.Fatalf("read migrated schema: %v", err)
+	}
+	if !strings.Contains(rowText, "scanned legacy value") || strings.Contains(rowText, "replacement must not index") || !strings.Contains(schemaJSON, `"migration_degraded":true`) {
+		t.Fatalf("replaced v1 CSV must migrate degraded legacy content only: row=%q schema=%q", rowText, schemaJSON)
+	}
+}
+
+func TestNewSQLiteStoreMigratesLegacyXLSXFromVerifiedSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	xlsxPath := filepath.Join(dir, "legacy-verified.xlsx")
+	writeOfficeReadXLSX(t, xlsxPath, "name", "plan", "Alice", "verified legacy workbook")
+	xlsxHash, err := fileSHA256(xlsxPath)
+	if err != nil {
+		t.Fatalf("hash legacy XLSX: %v", err)
+	}
+	dbPath := filepath.Join(dir, "knowledge.db")
+	legacyDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if err := applyPragmas(legacyDB); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := createTables(legacyDB); err != nil {
+		t.Fatalf("create legacy tables: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := legacyDB.Exec(insertSourceSQL,
+		"src_legacy_verified_xlsx", SourceKindXLSX, xlsxPath, "", "Legacy verified XLSX", "", "",
+		formatTime(now), formatTime(now), xlsxHash, "owner_1", "tenant_1",
+		"", "", 0.9, "", "", StatusParsed, "", formatTime(now), formatTime(now),
+	); err != nil {
+		t.Fatalf("insert legacy XLSX: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	assertCount(t, store.db, "kb_tables", 1)
+	assertCount(t, store.db, "kb_rows", 1)
+	var rowText, schemaJSON string
+	if err := store.db.QueryRow(`SELECT row_text FROM kb_rows WHERE source_id = 'src_legacy_verified_xlsx'`).Scan(&rowText); err != nil {
+		t.Fatalf("read migrated XLSX row: %v", err)
+	}
+	if err := store.db.QueryRow(`SELECT schema_json FROM kb_tables WHERE source_id = 'src_legacy_verified_xlsx'`).Scan(&schemaJSON); err != nil {
+		t.Fatalf("read migrated XLSX schema: %v", err)
+	}
+	if !strings.Contains(rowText, "verified legacy workbook") || strings.Contains(schemaJSON, `"migration_degraded":true`) {
+		t.Fatalf("verified v1 XLSX must use precise snapshot reindex: row=%q schema=%q", rowText, schemaJSON)
 	}
 }
 

@@ -78,27 +78,34 @@ func TestThirdPartyVoicePairExchangeUsesSingleUsePairing(t *testing.T) {
 	}
 }
 
-func TestHardwareEnabledRefusesLocalModeAndGatewayStop(t *testing.T) {
+func TestHardwareDoesNotConstrainIMGatewayControls(t *testing.T) {
 	localMode := false
 	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{
 		HardwareEnabled:            true,
 		ThirdPartyGatewayEnabled:   true,
-		ThirdPartyGatewayToken:     "hardware-token",
+		ThirdPartyGatewayToken:     "im-token",
 		ThirdPartyGatewayLocalMode: &localMode,
 	}}
 	app.thirdPartyGateway = newThirdPartyGatewayManager(app)
 	app.thirdPartyGateway.status = gatewayConnectionStatusConnected
 
-	if err := app.SetThirdPartyGatewayLocalMode(true); err == nil || !strings.Contains(err.Error(), "disable hardware") {
-		t.Fatalf("switching an enabled hardware gateway to local mode = %v, want hardware guard", err)
+	if err := app.SetThirdPartyGatewayLocalMode(true); err != nil {
+		t.Fatalf("changing the IM gateway mode must not be blocked by hardware: %v", err)
 	}
-	if app.GetThirdPartyGatewayLocalMode() {
-		t.Fatal("hardware guard still changed the persisted gateway mode")
+	if !app.GetThirdPartyGatewayLocalMode() {
+		t.Fatal("IM gateway mode did not change")
 	}
 
 	app.StopThirdPartyGateway()
-	if status := app.GetThirdPartyGatewayStatus(); status != gatewayConnectionStatusConnected.String() {
-		t.Fatalf("gateway status after guarded stop = %q, want %q", status, gatewayConnectionStatusConnected)
+	if status := app.GetThirdPartyGatewayStatus(); status != gatewayConnectionStatusDisconnected.String() {
+		t.Fatalf("IM gateway stop was blocked by hardware: status=%q", status)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HardwareEnabled {
+		t.Fatalf("IM gateway controls modified hardware transport: %#v", cfg)
 	}
 }
 
@@ -142,14 +149,14 @@ func TestHardwareEnableRequiresConnectedHub(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Hub is not connected") {
 		t.Fatalf("enabling hardware without Hub = status %q, err %v; want connected-Hub guard", status, err)
 	}
-	if status != gatewayConnectionStatusConnected.String() {
-		t.Fatalf("gateway status after rejected enable = %q, want %q", status, gatewayConnectionStatusConnected)
+	if status != gatewayConnectionStatusDisconnected.String() {
+		t.Fatalf("hardware must not start the IM gateway: status=%q, want %q", status, gatewayConnectionStatusDisconnected)
 	}
 	cfg, loadErr := app.LoadConfig()
 	if loadErr != nil {
 		t.Fatalf("LoadConfig after rejected enable: %v", loadErr)
 	}
 	if cfg.HardwareEnabled || cfg.ThirdPartyGatewayEnabled || !cfg.IsThirdPartyGatewayLocalMode() || cfg.ThirdPartyGatewayToken != "" {
-		t.Fatalf("rejected hardware enable did not restore its transport settings: %#v", cfg)
+		t.Fatalf("rejected hardware enable mutated IM or hardware transport settings: %#v", cfg)
 	}
 }

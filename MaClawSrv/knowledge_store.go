@@ -24,16 +24,38 @@ var embeddingModelDefaultURL = embedding.DefaultModelDownloadURL
 // knowledgeStoreManager manages the process-level knowledge store instance.
 // Shared by all HTTP handlers and the agent executor.
 type knowledgeStoreManager struct {
-	store    *knowledge.SQLiteStore
-	access   *knowledgeAccessService
-	agent    *multiKnowledgeStore
-	embedder embedding.Embedder
-	mu       sync.RWMutex
-	dbPath   string
-	dataRoot string
-	closed   bool
-	done     chan struct{}  // closed on Close(), signals background goroutines to stop
-	wg       sync.WaitGroup // tracks background goroutines (download, backfill)
+	store          *knowledge.SQLiteStore
+	access         *knowledgeAccessService
+	agent          *multiKnowledgeStore
+	embedder       embedding.Embedder
+	imageDescriber knowledge.ImageDescriber
+	mu             sync.RWMutex
+	dbPath         string
+	dataRoot       string
+	closed         bool
+	done           chan struct{}  // closed on Close(), signals background goroutines to stop
+	wg             sync.WaitGroup // tracks background goroutines (download, backfill)
+}
+
+// ConfigureImageDescriber installs the process-safe dynamic image describer.
+// It must be called after HTTPServer has access to the per-user config service.
+func (m *knowledgeStoreManager) ConfigureImageDescriber(describer knowledge.ImageDescriber) {
+	if m == nil || describer == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.closed || m.store == nil {
+		m.mu.Unlock()
+		describer.Close()
+		return
+	}
+	old := m.imageDescriber
+	m.imageDescriber = describer
+	m.store.SetImageDescriber(describer)
+	m.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
 }
 
 // newKnowledgeStoreManager initializes the knowledge store.
@@ -46,6 +68,14 @@ func newKnowledgeStoreManager(dataRoot string) (*knowledgeStoreManager, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Keep image assets beside the server data root so standalone and embedded
+	// document images remain available to authenticated knowledge consumers.
+	assets, err := knowledge.NewImageAssetManager(dataRoot)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	store.SetImageAssetManager(assets)
 
 	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json")))
 	mgr := &knowledgeStoreManager{
@@ -421,6 +451,9 @@ func (m *knowledgeStoreManager) Close() {
 	defer m.mu.Unlock()
 	if m.store != nil {
 		_ = m.store.Close()
+	}
+	if m.imageDescriber != nil {
+		m.imageDescriber.Close()
 	}
 	if m.embedder != nil {
 		m.embedder.Close()

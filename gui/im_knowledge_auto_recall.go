@@ -119,13 +119,9 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		if r.Score < minScore {
 			break
 		}
-		source := r.Source.Title
-		if source == "" {
-			source = r.Source.RelativePath
-		}
-		if source == "" {
-			source = r.Source.URI
-		}
+		// Keep auto-recalled image provenance display-safe. Imported image URIs
+		// may contain host filesystem paths and this text enters the LLM prompt.
+		source := knowledge.FormatSourceLabel(r)
 		text := knowledgeAutoRecallSnippet(r)
 		if text == "" {
 			continue

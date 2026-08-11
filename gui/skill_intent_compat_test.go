@@ -112,6 +112,19 @@ func TestExtractSkillCapabilities(t *testing.T) {
 	}
 }
 
+func TestExtractTaskAndSkillDomainRecognizeAllOfficeFormats(t *testing.T) {
+	for _, format := range []string{"doc", "docx", "xls", "xlsx", "ppt", "pptx"} {
+		t.Run(format, func(t *testing.T) {
+			if got := extractTaskDomain("open the report." + format); got != skillDomainDocument {
+				t.Fatalf("extractTaskDomain(%q) = %q, want document", format, got)
+			}
+			if got := extractSkillDomain("parse and summarize " + format + " files"); got != skillDomainDocument {
+				t.Fatalf("extractSkillDomain(%q) = %q, want document", format, got)
+			}
+		})
+	}
+}
+
 func TestIsIntentCompatibleWithSkill(t *testing.T) {
 	tests := []struct {
 		name      string

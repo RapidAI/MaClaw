@@ -42,6 +42,13 @@ func FindMatches(obs *ObserveResult, query string, limit int) []MarkedElement {
 		if len(out) >= limit {
 			return out
 		}
+		// Zero-size bbox means the recognizer could not locate the text
+		// (typical for vision-LLM OCR). Such a line would synthesize a
+		// "clickable" element at (0,0) — a real misclick risk — so it only
+		// contributes to the OCR text excerpt, never to clickable matches.
+		if line.BBox[2] <= 0 || line.BBox[3] <= 0 {
+			continue
+		}
 		text := strings.TrimSpace(line.Text)
 		if text == "" || !strings.Contains(normalizeFindQuery(text), q) {
 			continue

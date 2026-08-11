@@ -32,6 +32,18 @@ var SupportedTTSVoiceIDs = []string{"zm_yunxi", "zm_yunyang", "zf_xiaoxiao", "zf
 // RequiredTTSVoiceIDs is the complete voice pack needed by the application.
 var RequiredTTSVoiceIDs = append([]string{}, SupportedTTSVoiceIDs...)
 
+// IsSupportedTTSVoiceID reports whether voiceID belongs to the bundled Kokoro
+// voice pack. Keep callers on this shared check so feature-specific voice
+// pickers do not drift from the installed pack.
+func IsSupportedTTSVoiceID(voiceID string) bool {
+	for _, supportedVoiceID := range SupportedTTSVoiceIDs {
+		if voiceID == supportedVoiceID {
+			return true
+		}
+	}
+	return false
+}
+
 // Manager provides lazy-loaded, auto-unloading TTS.
 // Call SynthesizeText; model loads on first use, unloads after idle.
 type Manager struct {

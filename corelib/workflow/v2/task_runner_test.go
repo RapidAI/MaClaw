@@ -50,6 +50,35 @@ func TestTaskRunner_WaveSizePropagated(t *testing.T) {
 	}
 }
 
+func TestTaskRunner_ParallelWaveAdmissionCanFailClosedToSerial(t *testing.T) {
+	var concurrent int32
+	var maxConcurrent int32
+	sub := func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult {
+		n := atomic.AddInt32(&concurrent, 1)
+		for {
+			current := atomic.LoadInt32(&maxConcurrent)
+			if n <= current || atomic.CompareAndSwapInt32(&maxConcurrent, current, n) {
+				break
+			}
+		}
+		time.Sleep(15 * time.Millisecond)
+		atomic.AddInt32(&concurrent, -1)
+		return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskPassed}
+	}
+	tasks := []*TaskItem{{Index: 1, Title: "A"}, {Index: 2, Title: "B"}}
+	runner := NewTaskRunner(TaskRunnerConfig{
+		MaxParallel:        2,
+		CanRunParallelWave: func([]*TaskItem) bool { return false },
+	}, sub)
+	results := runner.RunAll(context.Background(), tasks, nil, nil)
+	if len(results) != 2 || results[0].Status != TaskPassed || results[1].Status != TaskPassed {
+		t.Fatalf("results=%+v", results)
+	}
+	if got := atomic.LoadInt32(&maxConcurrent); got != 1 {
+		t.Fatalf("max concurrent=%d, want serial fallback", got)
+	}
+}
+
 func TestTaskRunner_AllPass(t *testing.T) {
 	tasks := []*TaskItem{
 		{Index: 1, Title: "Init"},
@@ -98,7 +127,7 @@ func TestTaskRunner_Retry(t *testing.T) {
 	}
 
 	tasks := []*TaskItem{{Index: 1, Title: "Flaky"}}
-	config := TaskRunnerConfig{ProjectPath: "d:\\test", MaxRetries: 3}
+	config := TaskRunnerConfig{ProjectPath: "d:\\test", MaxRetries: 3, AllowAutomaticRetries: true}
 	runner := NewTaskRunner(config, subAgent)
 
 	results := runner.RunAll(context.Background(), tasks, nil, nil)
@@ -107,6 +136,34 @@ func TestTaskRunner_Retry(t *testing.T) {
 	}
 	if attempts != 3 {
 		t.Errorf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestTaskRunner_DefaultDoesNotReplayFailedCodingTask(t *testing.T) {
+	attempts := 0
+	runner := NewTaskRunner(TaskRunnerConfig{ProjectPath: t.TempDir(), MaxRetries: 3}, func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult {
+		attempts++
+		return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskFailed, Error: "provider timeout after write may have started"}
+	})
+	results := runner.RunAll(context.Background(), []*TaskItem{{Index: 1, Title: "write"}}, nil, nil)
+	if results[0].Status != TaskFailed || attempts != 1 {
+		t.Fatalf("status=%s attempts=%d, want failed after one attempt", results[0].Status, attempts)
+	}
+}
+
+func TestTaskRunner_TDDSkippedRedPhaseDoesNotStartGreenPhase(t *testing.T) {
+	calls := 0
+	runner := NewTaskRunner(TaskRunnerConfig{ProjectPath: t.TempDir(), TDDMode: true}, func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult {
+		calls++
+		return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskSkipped, Error: "waiting_child"}
+	})
+
+	results := runner.RunAll(context.Background(), []*TaskItem{{Index: 1, Title: "write"}}, nil, nil)
+	if len(results) != 1 || results[0].Status != TaskSkipped {
+		t.Fatalf("results=%+v, want skipped red-phase handoff", results)
+	}
+	if calls != 1 {
+		t.Fatalf("subagent calls=%d, want only the red phase; green phase must not start", calls)
 	}
 }
 

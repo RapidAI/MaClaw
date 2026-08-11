@@ -55,12 +55,35 @@ func (a *App) scheduleTargetCatalogRegistry() *scheduler.TargetCatalogRegistry {
 }
 
 func (a *App) listLansengerDeliveryTargets(_ context.Context, query string) ([]scheduler.TargetRef, error) {
+	return a.listLansengerDeliveryTargetsForBot(query, "")
+}
+
+func lansengerDeliveryTargetCacheKey(profileID string) string {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return scheduler.DeliveryChannelLansenger
+	}
+	return scheduler.DeliveryChannelLansenger + ":" + profileID
+}
+
+// listLansengerDeliveryTargetsForBot exposes only groups visible to the
+// selected bot. An empty profile retains the legacy/default catalog.
+func (a *App) listLansengerDeliveryTargetsForBot(query, profileID string) ([]scheduler.TargetRef, error) {
 	if a == nil {
 		return nil, fmt.Errorf("app unavailable")
 	}
 	a.ensureScheduleTargetCatalogs()
+	profileID = strings.TrimSpace(profileID)
 	load := func() ([]scheduler.TargetRef, error) {
-		res, err := a.ListLansengerGroups()
+		var (
+			res *LansengerGroupListResult
+			err error
+		)
+		if profileID == "" {
+			res, err = a.ListLansengerGroups()
+		} else {
+			res, err = a.ListLansengerGroupsForBot(profileID)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -81,8 +104,9 @@ func (a *App) listLansengerDeliveryTargets(_ context.Context, query string) ([]s
 	}
 	var refs []scheduler.TargetRef
 	var err error
+	cacheKey := lansengerDeliveryTargetCacheKey(profileID)
 	if a.scheduleTargetListCache != nil {
-		refs, err = a.scheduleTargetListCache.GetOrLoad(scheduler.DeliveryChannelLansenger, load)
+		refs, err = a.scheduleTargetListCache.GetOrLoad(cacheKey, load)
 	} else {
 		refs, err = load()
 	}
@@ -157,8 +181,30 @@ func (a *App) listQQDeliveryTargets(_ context.Context, query string) ([]schedule
 
 // resolveScheduleDelivery fills platform ids for name-only delivery targets via the channel catalog.
 func (a *App) resolveScheduleDelivery(d *scheduler.TaskDelivery) error {
+	return a.resolveScheduleDeliveryForBot(d, "")
+}
+
+func (a *App) resolveScheduleDeliveryForBot(d *scheduler.TaskDelivery, runtimeProfileID string) error {
 	if d == nil || !d.Enabled {
 		return nil
+	}
+	runtimeProfileID = strings.TrimSpace(runtimeProfileID)
+	if d.Channel == scheduler.DeliveryChannelLansenger {
+		if runtimeProfileID != "" {
+			// The runtime profile is authoritative even if a stale delivery object
+			// happened to carry another value.
+			d.BotProfileID = runtimeProfileID
+		}
+		if d.NeedsGroupNameResolution() {
+			refs, err := a.listLansengerDeliveryTargetsForBot("", d.BotProfileID)
+			if err != nil {
+				return err
+			}
+			if err := scheduler.ResolveDeliveryGroupNames(d, scheduler.TargetRefsToGroupRefs(refs, scheduler.DeliveryKindGroup)); err != nil {
+				return err
+			}
+		}
+		return d.EnsureResolved()
 	}
 	reg := a.scheduleTargetCatalogRegistry()
 	if reg == nil {
@@ -169,11 +215,22 @@ func (a *App) resolveScheduleDelivery(d *scheduler.TaskDelivery) error {
 
 // listScheduleDeliveryTargets is the generic tool-facing list for any registered channel.
 func (a *App) listScheduleDeliveryTargets(channel, query string) (string, error) {
+	return a.listScheduleDeliveryTargetsForBot(channel, query, "")
+}
+
+func (a *App) listScheduleDeliveryTargetsForBot(channel, query, profileID string) (string, error) {
+	ch := scheduler.DefaultDeliveryChannel(channel)
+	if ch == scheduler.DeliveryChannelLansenger && strings.TrimSpace(profileID) != "" {
+		refs, err := a.listLansengerDeliveryTargetsForBot(query, profileID)
+		if err != nil {
+			return "", err
+		}
+		return scheduler.FormatTargetList(ch, refs, query), nil
+	}
 	reg := a.scheduleTargetCatalogRegistry()
 	if reg == nil {
 		return "", fmt.Errorf("delivery target catalog unavailable")
 	}
-	ch := scheduler.DefaultDeliveryChannel(channel)
 	refs, err := reg.ListTargets(context.Background(), ch, query)
 	if err != nil {
 		return "", err
@@ -185,6 +242,10 @@ func (a *App) listScheduleDeliveryTargets(channel, query string) (string, error)
 func (a *App) invalidateScheduleTargetListCache(channel string) {
 	if a == nil || a.scheduleTargetListCache == nil {
 		return
+	}
+	channel = scheduler.DefaultDeliveryChannel(channel)
+	if channel == scheduler.DeliveryChannelLansenger {
+		a.scheduleTargetListCache.InvalidatePrefix(channel + ":")
 	}
 	a.scheduleTargetListCache.Invalidate(channel)
 }

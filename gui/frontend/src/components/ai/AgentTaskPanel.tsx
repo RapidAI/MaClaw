@@ -1856,7 +1856,7 @@ function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectio
             <div style={{ flex: 1, minWidth: 0 }}>
                 {status === "idle" && (
                     <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.5 }}>
-                        上传简历/CV自动填充表单（支持 PDF、Word、Markdown）
+                        上传简历/CV 自动填充表单（支持 PDF、Word、PowerPoint、Excel、Markdown、TXT）
                     </div>
                 )}
                 {status === "parsing" && (

@@ -248,6 +248,25 @@ func TestIsWithinAllowedDirs_NonExistentPathWithinAllowed(t *testing.T) {
 	}
 }
 
+func TestIsWithinAllowedDirs_RejectsMissingLeafUnderEscapingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	allowedDir := t.TempDir()
+	outsideDir := t.TempDir()
+	linkDir := filepath.Join(allowedDir, "escape")
+	if err := os.Symlink(outsideDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, err := IsWithinAllowedDirs(filepath.Join(linkDir, "new-file.txt"), []string{allowedDir})
+	if err == nil {
+		t.Fatal("expected missing leaf under escaping symlink to be rejected")
+	}
+	if !strings.Contains(err.Error(), "文件不在允许访问的目录中") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestIsWithinAllowedDirs_PathOutsideAllowed(t *testing.T) {
 	allowedDir := t.TempDir()
 	outsideDir := t.TempDir()

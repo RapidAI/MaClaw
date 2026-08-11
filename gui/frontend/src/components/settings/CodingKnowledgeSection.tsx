@@ -1,5 +1,5 @@
 import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect, useId, useRef, useState } from 'react';
-import { CodingKnowledgeCapacity, CodingKnowledgeConfirm, CodingKnowledgeDelete, CodingKnowledgeEvict, CodingKnowledgeExportToFile, CodingKnowledgeGet, CodingKnowledgeGraduateToSteering, CodingKnowledgeImportFromFile, CodingKnowledgeList, CodingKnowledgeResetFile, CodingKnowledgeSearch, CodingKnowledgeStats, CodingKnowledgeUpdate, SelectCodingKnowledgeExportPath, SelectCodingKnowledgeImportFile } from '../../../wailsjs/go/main/App';
+import { CodingKnowledgeCapacity, CodingKnowledgeConfirm, CodingKnowledgeCreateRevisionCandidate, CodingKnowledgeDelete, CodingKnowledgeEvict, CodingKnowledgeExportToFile, CodingKnowledgeGet, CodingKnowledgeGraduateToSteering, CodingKnowledgeImportFromFile, CodingKnowledgeLifecycle, CodingKnowledgeList, CodingKnowledgeMarkConflict, CodingKnowledgeResetFile, CodingKnowledgeSearch, CodingKnowledgeStats, CodingKnowledgeUpdate, SelectCodingKnowledgeExportPath, SelectCodingKnowledgeImportFile } from '../../../wailsjs/go/main/App';
 import { corelib, knowledge } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { useDialog } from '../CustomDialog';
@@ -71,7 +71,7 @@ function toDraft(raw: any): ExperienceDraft {
 }
 
 export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: Props) {
-    const { showConfirm } = useDialog();
+    const { showConfirm, showPrompt } = useDialog();
     const [stats, setStats] = useState<any>(null);
     const [capacity, setCapacity] = useState<any>(null);
     const [experiences, setExperiences] = useState<any[]>([]);
@@ -81,6 +81,8 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
     const [editorOpen, setEditorOpen] = useState(false);
     const [editorSaving, setEditorSaving] = useState(false);
     const [draft, setDraft] = useState<ExperienceDraft | null>(null);
+    const [auditExperience, setAuditExperience] = useState<any | null>(null);
+    const [auditEvents, setAuditEvents] = useState<knowledge.CodingExperienceLifecycleEvent[]>([]);
     const [actionMessage, setActionMessage] = useState('');
     const mountedRef = useRef(true);
     const uid = useId();
@@ -88,6 +90,8 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
     const saveStrategy = cfgVal(config, 'coding_knowledge_save_strategy', 'on_retry_success');
     const maxTotal = cfgVal(config, 'coding_knowledge_max_total', 1000);
     const maxPerProject = cfgVal(config, 'coding_knowledge_max_per_project', 200);
+	const maxReviewedPerProject = cfgVal(config, 'coding_knowledge_max_reviewed_per_project', 100);
+	const maxReviewedTokensPerProject = cfgVal(config, 'coding_knowledge_max_reviewed_tokens_per_project', 30000);
     const patch = (p: Record<string, any>) => saveConfigPatch(config, setConfig, p, versionRef);
     const debouncedSearch = useDebouncedValue(searchQuery, 350);
 
@@ -149,6 +153,44 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             void loadStats();
             void loadExperiences();
         } catch (err) { console.error('confirm experience:', err); }
+    };
+
+    const handleMarkConflict = async (id: string) => {
+        const reason = await showPrompt(
+            textForLang(lang, 'Why should this experience be retired? This reason is retained in its limited audit history.', '请说明为何要退役该经验。此原因会保留在其有限审计历史中。', '請說明為何要退役該經驗。此原因會保留在其有限稽核歷史中。'),
+            textForLang(lang, 'Mark conflict', '标记冲突', '標記衝突'),
+            { placeholder: textForLang(lang, 'Conflict reason', '冲突原因', '衝突原因') },
+        );
+        if (!reason?.trim()) return;
+        try {
+            await CodingKnowledgeMarkConflict(id, '', reason.trim());
+            setActionMessage(textForLang(lang, 'Experience retired as conflicted.', '经验已因冲突退役。', '經驗已因衝突退役。'));
+            void loadStats();
+            void loadExperiences();
+        } catch (err) { console.error('mark experience conflict:', err); }
+    };
+
+    const handleCreateRevision = async (id: string) => {
+        const reason = await showPrompt(
+            textForLang(lang, 'Why is a revised candidate needed? The retired experience will remain unchanged.', '请说明为什么需要修订候选项。已退役经验将保持不变。', '請說明為什麼需要修訂候選項。已退役經驗將保持不變。'),
+            textForLang(lang, 'Create revision', '创建修订', '建立修訂'),
+            { placeholder: textForLang(lang, 'Revision reason', '修订原因', '修訂原因') },
+        );
+        if (!reason?.trim()) return;
+        try {
+            const candidate = await CodingKnowledgeCreateRevisionCandidate(id, reason.trim());
+            setActionMessage(textForLang(lang, `Created revision candidate: ${candidate.title || candidate.id}.`, `已创建修订候选项：${candidate.title || candidate.id}。`, `已建立修訂候選項：${candidate.title || candidate.id}。`));
+            void loadStats();
+            void loadExperiences();
+        } catch (err) { console.error('create experience revision:', err); }
+    };
+
+    const openAudit = async (exp: any) => {
+        try {
+            const events = await CodingKnowledgeLifecycle(exp.id);
+            setAuditExperience(exp);
+            setAuditEvents(events || []);
+        } catch (err) { console.error('load experience lifecycle:', err); }
     };
 
     const handleReset = async () => {
@@ -266,7 +308,7 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                     <label className="prog-tools__kb-config-label" htmlFor={`${uid}-auto-save`}>{textForLang(lang, 'Auto-save', '自动沉淀', '自動沉澱')}</label>
                     <select id={`${uid}-auto-save`} className="prog-tools__select" value={autoSaveMode} onChange={(e) => patch({ coding_knowledge_auto_save_mode: e.target.value })}>
                         <option value="observe">{textForLang(lang, 'Observe (candidate)', '观察（候选）', '觀察（候選）')}</option>
-                        <option value="auto">{textForLang(lang, 'Auto (active)', '自动（生效）', '自動（生效）')}</option>
+                        <option value="auto">{textForLang(lang, 'Auto (review required)', '自动（需审核）', '自動（需審核）')}</option>
                         <option value="off">{textForLang(lang, 'Off', '关闭', '關閉')}</option>
                     </select>
                 </div>
@@ -300,6 +342,29 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                         onChange={(e) => patch({ coding_knowledge_max_per_project: Number(e.target.value) || 0 })}
                     />
                 </div>
+				<div className="prog-tools__kb-config-item">
+					<label className="prog-tools__kb-config-label" htmlFor={`${uid}-max-reviewed-project`}>{textForLang(lang, 'Reviewed / project', '每项目已审核上限', '每專案已審核上限')}</label>
+					<input
+						id={`${uid}-max-reviewed-project`}
+						type="number"
+						min="1"
+						className="prog-tools__select"
+						value={maxReviewedPerProject}
+						onChange={(e) => patch({ coding_knowledge_max_reviewed_per_project: Number(e.target.value) || 0 })}
+					/>
+				</div>
+				<div className="prog-tools__kb-config-item">
+					<label className="prog-tools__kb-config-label" htmlFor={`${uid}-max-reviewed-tokens`}>{textForLang(lang, 'Reviewed tokens / project', '每项目已审核 token 上限', '每專案已審核 token 上限')}</label>
+					<input
+						id={`${uid}-max-reviewed-tokens`}
+						type="number"
+						min="1"
+						step="100"
+						className="prog-tools__select"
+						value={maxReviewedTokensPerProject}
+						onChange={(e) => patch({ coding_knowledge_max_reviewed_tokens_per_project: Number(e.target.value) || 0 })}
+					/>
+				</div>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleExport()}>{textForLang(lang, 'Export', '导出', '匯出')}</button>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleImport()}>{textForLang(lang, 'Import', '导入', '匯入')}</button>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleEvict()}>{textForLang(lang, 'Run eviction', '执行淘汰', '執行淘汰')}</button>
@@ -356,6 +421,7 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                             </div>
                             <div className="prog-tools__kb-item-actions">
                                 <button type="button" className="prog-tools__kb-btn" onClick={() => void openEditor(exp.id)}>{textForLang(lang, 'Edit', '编辑', '編輯')}</button>
+                                <button type="button" className="prog-tools__kb-btn" onClick={() => void openAudit(exp)}>{textForLang(lang, 'Audit', '审计', '稽核')}</button>
                                 {exp.status === 'candidate' && (
                                     <button type="button" className="prog-tools__kb-btn prog-tools__kb-btn--confirm" onClick={() => void handleConfirm(exp.id)}>
                                         {textForLang(lang, 'Confirm', '确认', '確認')}
@@ -364,6 +430,16 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                                 {exp.status === 'verified' && (
                                     <button type="button" className="prog-tools__kb-btn" onClick={() => void handleGraduate(exp.id)}>
                                         {textForLang(lang, 'Graduate', '毕业', '畢業')}
+                                    </button>
+                                )}
+                                {exp.status !== 'deprecated' && (
+                                    <button type="button" className="prog-tools__kb-btn" onClick={() => void handleMarkConflict(exp.id)}>
+                                        {textForLang(lang, 'Mark conflict', '标记冲突', '標記衝突')}
+                                    </button>
+                                )}
+                                {exp.status === 'deprecated' && (
+                                    <button type="button" className="prog-tools__kb-btn prog-tools__kb-btn--confirm" onClick={() => void handleCreateRevision(exp.id)}>
+                                        {textForLang(lang, 'Create revision', '创建修订', '建立修訂')}
                                     </button>
                                 )}
                                 <button type="button" className="prog-tools__kb-btn prog-tools__kb-btn--delete" onClick={() => void handleDelete(exp.id)}>
@@ -392,6 +468,34 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                         </button>
                         <button type="button" className="prog-tools__kb-btn prog-tools__kb-btn--confirm" onClick={() => void handleSaveDraft()} disabled={editorSaving}>
                             {textForLang(lang, 'Save', '保存', '保存')}
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {auditExperience && (
+                <div className="prog-tools__kb-editor" role="dialog" aria-label={textForLang(lang, 'Experience audit', '经验审计', '經驗稽核')}>
+                    <h4>{textForLang(lang, 'Experience audit', '经验审计', '經驗稽核')}</h4>
+                    <p>{auditExperience.title}</p>
+                    <p>{textForLang(lang, 'Origin', '来源', '來源')}: {auditExperience.created_by || textForLang(lang, 'legacy', '旧记录', '舊記錄')}</p>
+                    <p>{textForLang(lang, 'Last reviewed', '最近审核', '最近審核')}: {auditExperience.last_reviewed_at ? new Date(auditExperience.last_reviewed_at).toLocaleString() : textForLang(lang, 'Not reviewed', '未审核', '未審核')}</p>
+                    {auditEvents.length === 0 ? (
+                        <p>{textForLang(lang, 'No lifecycle events recorded.', '尚无生命周期记录。', '尚無生命週期記錄。')}</p>
+                    ) : (
+                        <ul>
+                            {auditEvents.map((event, index) => (
+                                <li key={`${event.occurred_at || 'event'}-${index}`}>
+                                    <strong>{event.action}</strong>
+                                    {event.reason ? ` — ${event.reason}` : ''}
+                                    {event.related_id ? ` (${event.related_id})` : ''}
+                                    {event.occurred_at ? ` · ${new Date(event.occurred_at).toLocaleString()}` : ''}
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                    <div className="prog-tools__kb-editor-actions">
+                        <button type="button" className="prog-tools__kb-btn" onClick={() => { setAuditExperience(null); setAuditEvents([]); }}>
+                            {textForLang(lang, 'Close', '关闭', '關閉')}
                         </button>
                     </div>
                 </div>

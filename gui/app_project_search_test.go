@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -45,18 +46,19 @@ func TestProjectIndexChangeTriggersDebouncedMemoryPipeline(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.memoryPipelineDebounce = 10 * time.Millisecond
 	app.ensureMemoryStore()
-	if app.memPipeline == nil {
+	if app.currentMemoryPipeline() == nil {
 		t.Fatal("memory pipeline was not initialized")
 	}
-	app.memPipeline.Stop()
-	app.memPipeline = memory.NewMaintenance(app.memoryStore, nil, nil).Pipeline()
-	app.memPipeline.Start()
+	app.stopAndClearMemoryPipeline()
+	pipeline := memory.NewMaintenance(app.memoryStore, nil, nil).Pipeline()
+	app.setMemoryPipeline(pipeline)
+	pipeline.Start()
 
-	_, lastRun, _ := app.memPipeline.Status()
+	_, lastRun, _ := pipeline.Status()
 	if lastRun.IsZero() {
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
-			_, lastRun, _ = app.memPipeline.Status()
+			_, lastRun, _ = pipeline.Status()
 			if !lastRun.IsZero() {
 				break
 			}
@@ -91,7 +93,7 @@ func TestProjectIndexChangeTriggersDebouncedMemoryPipeline(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		_, nextRun, _ := app.memPipeline.Status()
+		_, nextRun, _ := pipeline.Status()
 		if nextRun.After(lastRun) {
 			return
 		}
@@ -107,16 +109,17 @@ func TestTriggerMemoryPipelineWaitsForGlobalQuietPeriod(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.memoryPipelineDebounce = 1 * time.Millisecond
 	app.ensureMemoryStore()
-	if app.memPipeline == nil {
+	if app.currentMemoryPipeline() == nil {
 		t.Fatal("memory pipeline was not initialized")
 	}
-	app.memPipeline.Stop()
-	app.memPipeline = memory.NewMaintenance(app.memoryStore, nil, nil).Pipeline()
+	app.stopAndClearMemoryPipeline()
+	pipeline := memory.NewMaintenance(app.memoryStore, nil, nil).Pipeline()
+	app.setMemoryPipeline(pipeline)
 
 	setOwnerQuietPeriodForTest("test-global", time.Now())
 	app.triggerMemoryPipelineSoon(1 * time.Millisecond)
 	time.Sleep(30 * time.Millisecond)
-	_, lastRun, _ := app.memPipeline.Status()
+	_, lastRun, _ := pipeline.Status()
 	if !lastRun.IsZero() {
 		t.Fatal("memory pipeline ran during foreground quiet period")
 	}
@@ -125,7 +128,7 @@ func TestTriggerMemoryPipelineWaitsForGlobalQuietPeriod(t *testing.T) {
 	app.triggerMemoryPipelineSoon(1 * time.Millisecond)
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		_, lastRun, _ = app.memPipeline.Status()
+		_, lastRun, _ = pipeline.Status()
 		if !lastRun.IsZero() {
 			return
 		}
@@ -141,11 +144,12 @@ func TestTriggerMemoryPipelineDefersWhilePreviousRunActive(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.memoryPipelineDebounce = 1 * time.Millisecond
 	app.ensureMemoryStore()
-	if app.memPipeline == nil {
+	if app.currentMemoryPipeline() == nil {
 		t.Fatal("memory pipeline was not initialized")
 	}
-	app.memPipeline.Stop()
-	app.memPipeline = memory.NewMaintenance(app.memoryStore, nil, nil).Pipeline()
+	app.stopAndClearMemoryPipeline()
+	pipeline := memory.NewMaintenance(app.memoryStore, nil, nil).Pipeline()
+	app.setMemoryPipeline(pipeline)
 
 	app.memoryPipelineScheduleMu.Lock()
 	app.memoryPipelineScheduleSeq = 11
@@ -164,7 +168,7 @@ func TestTriggerMemoryPipelineDefersWhilePreviousRunActive(t *testing.T) {
 	if !active {
 		t.Fatal("deferred active run marker was cleared too early")
 	}
-	_, lastRun, _ := app.memPipeline.Status()
+	_, lastRun, _ := pipeline.Status()
 	if !lastRun.IsZero() {
 		t.Fatal("memory pipeline started a second run while previous run was active")
 	}
@@ -176,7 +180,7 @@ func TestMemoryPipelinePanicRecoversAndReschedules(t *testing.T) {
 
 	app := newProjectSearchTestApp(t)
 	app.memoryPipelineDebounce = 1 * time.Millisecond
-	app.memPipeline = memory.NewPipeline(nil, nil, nil, nil, nil)
+	app.setMemoryPipeline(memory.NewPipeline(nil, nil, nil, nil, nil))
 	app.memoryPipelineScheduleMu.Lock()
 	app.memoryPipelineScheduleSeq = 21
 	app.memoryPipelineScheduleMu.Unlock()
@@ -813,6 +817,78 @@ func TestDeleteTaskClearsRemoteTaskState(t *testing.T) {
 	}
 }
 
+func TestDeleteTaskClearsExpertSessionState(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	rec := app.CreateExpertTask("code-reviewer", "Code Reviewer")
+	if rec.ProjectPath == "" {
+		t.Fatal("CreateExpertTask failed")
+	}
+	if got := app.expertIDForTaskPath(rec.ProjectPath); got != "code-reviewer" {
+		t.Fatalf("expertIDForTaskPath = %q, want code-reviewer", got)
+	}
+
+	mem := agent.NewConversationMemory()
+	t.Cleanup(mem.Stop)
+	app.imHandler = &IMMessageHandler{memory: mem}
+	// Pre-wire a hub client holding the same handler so DeleteTask's
+	// cancelProjectTaskLoop does not rebuild the full production handler
+	// (which requires GUI tool infrastructure unavailable in tests).
+	app.ensureRemoteInfra()
+	hub := NewRemoteHubClient(app, app.remoteSessions)
+	hub.imHandler = app.imHandler
+	app.remoteSessions.SetHubClient(hub)
+	expertOwner := expertSessionUserID("code-reviewer")
+	expertWorkDir := filepath.Join(t.TempDir(), "expert-workdir")
+	if err := os.MkdirAll(expertWorkDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll expert workdir: %v", err)
+	}
+	app.assistantSessionWorkingDirs.Store(expertOwner, expertWorkDir)
+	app.tabWorkingDirOverrides.Store(expertTabSessionID("code-reviewer"), expertWorkDir)
+	mem.Save(expertOwner, []agent.ConversationEntry{{Role: "user", Content: "审查这个 PR 的改动"}})
+	mem.UpsertUnfinishedSlot(expertOwner, &agent.UnfinishedTaskSlot{
+		SlotID:   "expert-slot-1",
+		UserID:   expertOwner,
+		Status:   agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask: "审查这个 PR 的改动",
+		Source:   agent.UnfinishedTaskSlotSourceAppExit,
+	})
+	if err := app.ensureProjectTabSessionPersist().SaveSession(&TabSessionData{
+		TabID:        expertTabSessionID("code-reviewer"),
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed expert tab session: %v", err)
+	}
+
+	if err := app.DeleteTask(rec.ProjectPath); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	if entries := mem.Load(expertOwner); len(entries) != 0 {
+		t.Fatalf("expert conversation memory survives DeleteTask: %d entries", len(entries))
+	}
+	if slot := mem.GetUnfinishedSlot(expertOwner); slot != nil {
+		t.Fatalf("expert unfinished slot survives DeleteTask: %#v", slot)
+	}
+	if session, err := app.ensureProjectTabSessionPersist().LoadSession(expertTabSessionID("code-reviewer")); err != nil {
+		t.Fatal(err)
+	} else if session != nil {
+		t.Fatalf("expert tab session file remains: %+v", session)
+	}
+	if _, ok := app.assistantSessionWorkingDirs.Load(expertOwner); ok {
+		t.Fatal("expert runtime working-directory override survives DeleteTask")
+	}
+	if _, ok := app.tabWorkingDirOverrides.Load(expertTabSessionID("code-reviewer")); ok {
+		t.Fatal("expert tab working-directory override survives DeleteTask")
+	}
+
+	// Recreating the expert after deletion must start a genuinely fresh task.
+	fresh := app.CreateExpertTask("code-reviewer", "Code Reviewer")
+	if fresh.ProjectPath == "" {
+		t.Fatal("expert recreate failed after delete")
+	}
+}
+
 func TestCreateRemoteCodingTaskReusesCanonicalPOSIXWorkDir(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	first := app.CreateRemoteCodingTask("first", "10.0.0.12", "deploy", "/srv/app", 22)
@@ -1030,6 +1106,118 @@ func TestCreateExpertTaskRejectsInvalidExpertID(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	if created := app.CreateExpertTask("invalid expert id", "Expert"); created.ProjectPath != "" {
 		t.Fatalf("CreateExpertTask invalid id = %#v, want zero result", created)
+	}
+}
+
+func TestAssistantTabWorkingDirectoriesAreIsolatedAndRestore(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	mainDir := filepath.Join(t.TempDir(), "main")
+	updatedMainDir := filepath.Join(t.TempDir(), "main-updated")
+	firstDir := filepath.Join(t.TempDir(), "first")
+	secondDir := filepath.Join(t.TempDir(), "second")
+	for _, dir := range []string{mainDir, updatedMainDir, firstDir, secondDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", dir, err)
+		}
+	}
+	if err := app.SetTabWorkingDir("", mainDir); err != nil {
+		t.Fatalf("SetTabWorkingDir main: %v", err)
+	}
+
+	firstTask := app.CreateRecentTask("first tab")
+	secondTask := app.CreateRecentTask("second tab")
+	firstTab, secondTab := "proj-first-dir", "proj-second-dir"
+	_ = app.CreateProjectTabSession(firstTab, firstTask.ProjectPath)
+	_ = app.CreateProjectTabSession(secondTab, secondTask.ProjectPath)
+
+	if got := app.GetTabWorkingDir(firstTab)["path"]; got != filepath.Clean(mainDir) {
+		t.Fatalf("unset first tab dir = %q, want inherited main dir %q", got, mainDir)
+	}
+	if err := app.SetTabWorkingDir(firstTab, firstDir); err != nil {
+		t.Fatalf("SetTabWorkingDir first: %v", err)
+	}
+	// An unset tab must track later main-tab changes rather than retaining a
+	// snapshot of the directory that was active when it was created.
+	if err := app.SetTabWorkingDir("", updatedMainDir); err != nil {
+		t.Fatalf("SetTabWorkingDir updated main: %v", err)
+	}
+	if got := app.GetTabWorkingDir(secondTab)["path"]; got != filepath.Clean(updatedMainDir) {
+		t.Fatalf("unset second tab dir after main change = %q, want inherited main dir %q", got, updatedMainDir)
+	}
+	if got := app.GetTabWorkingDir(firstTab)["path"]; got != filepath.Clean(firstDir) {
+		t.Fatalf("private first tab dir after main change = %q, want %q", got, firstDir)
+	}
+	if err := app.SetTabWorkingDir(secondTab, secondDir); err != nil {
+		t.Fatalf("SetTabWorkingDir second: %v", err)
+	}
+	if got := app.EffectiveWorkingDirForOwner(projectSessionOwnerID(firstTask.ProjectPath)); got != filepath.Clean(firstDir) {
+		t.Fatalf("first owner dir = %q, want %q", got, firstDir)
+	}
+	if got := app.EffectiveWorkingDirForOwner(projectSessionOwnerID(secondTask.ProjectPath)); got != filepath.Clean(secondDir) {
+		t.Fatalf("second owner dir = %q, want %q", got, secondDir)
+	}
+	if got := app.EffectiveDesktopWorkingDir(); got != filepath.Clean(updatedMainDir) {
+		t.Fatalf("main dir changed by a child tab: got %q, want %q", got, updatedMainDir)
+	}
+	// Closing clears runtime caches, while reopening must restore the tab-owned
+	// durable override rather than falling back to the task path or main tab.
+	app.CloseProjectTabSession(firstTab)
+	if _, ok := app.assistantSessionWorkingDirs.Load(projectSessionOwnerID(firstTask.ProjectPath)); ok {
+		t.Fatal("closed tab left its runtime working-directory override behind")
+	}
+	if err := app.SetTabWorkingDir(firstTab, secondDir); err == nil {
+		t.Fatal("closed tab accepted a working-directory update")
+	}
+	_ = app.CreateProjectTabSession(firstTab, firstTask.ProjectPath)
+	if got := app.GetTabWorkingDir(firstTab)["path"]; got != filepath.Clean(firstDir) {
+		t.Fatalf("reopened first tab dir = %q, want restored private dir %q", got, firstDir)
+	}
+
+	// Simulate restart: the durable tab session restores the first override.
+	restored := newProjectSearchTestApp(t)
+	restored.testHomeDir = app.testHomeDir
+	restored.projectTabSessionPersist = app.projectTabSessionPersist
+	if got := restored.GetTabWorkingDir(firstTab)["path"]; got != filepath.Clean(firstDir) {
+		t.Fatalf("restored first tab dir = %q, want %q", got, firstDir)
+	}
+	if _, ok := restored.tabProjectPaths.Load(firstTab); !ok {
+		t.Fatal("restored project tab path was not hydrated from its session")
+	}
+}
+
+func TestExpertTabWorkingDirectoryIsPrivateAndFallsBackToMain(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	mainDir := filepath.Join(t.TempDir(), "main")
+	expertDir := filepath.Join(t.TempDir(), "expert")
+	for _, dir := range []string{mainDir, expertDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", dir, err)
+		}
+	}
+	if err := app.SetTabWorkingDir("", mainDir); err != nil {
+		t.Fatalf("SetTabWorkingDir main: %v", err)
+	}
+	if got := app.GetTabWorkingDir("expert-code-reviewer")["path"]; got != filepath.Clean(mainDir) {
+		t.Fatalf("unset expert dir = %q, want inherited main dir %q", got, mainDir)
+	}
+	if err := app.SetTabWorkingDir("expert-code-reviewer", expertDir); err != nil {
+		t.Fatalf("SetTabWorkingDir expert: %v", err)
+	}
+	if got := app.EffectiveWorkingDirForOwner(expertSessionUserID("code-reviewer")); got != filepath.Clean(expertDir) {
+		t.Fatalf("expert dir = %q, want %q", got, expertDir)
+	}
+	if got := app.EffectiveDesktopWorkingDir(); got != filepath.Clean(mainDir) {
+		t.Fatalf("main dir changed by expert: got %q, want %q", got, mainDir)
+	}
+	app.CloseAssistantTabSession("expert-code-reviewer")
+	if _, ok := app.assistantSessionWorkingDirs.Load(expertSessionUserID("code-reviewer")); ok {
+		t.Fatal("closed expert tab left its runtime working-directory override behind")
+	}
+	if got := app.EffectiveWorkingDirForOwner(expertSessionUserID("code-reviewer")); got != filepath.Clean(mainDir) {
+		t.Fatalf("closed expert dir = %q, want inherited main dir %q", got, mainDir)
+	}
+	if got := app.GetTabWorkingDir("expert-code-reviewer")["path"]; got != filepath.Clean(expertDir) {
+		t.Fatalf("reopened expert dir = %q, want restored private dir %q", got, expertDir)
 	}
 }
 

@@ -18,6 +18,7 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import { TTSLevelBars } from "./TTSLevelBars";
 import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
+import type { AIExecutionProfile } from "./AITabTypes";
 
 type Props = {
     lang: string;
@@ -35,9 +36,19 @@ type Props = {
     currentModel?: string;
     modelOptions?: string[];
     modelsLoading?: boolean;
-    onSwitchProvider?: (providerName: string) => void;
+    /** Stable provider id (legacy callers may supply a display name as fallback). */
+    onSwitchProvider?: (providerID: string) => void;
     onSwitchModel?: (modelId: string) => void;
     onOpenModelMenu?: () => void;
+    /** Discards an uncommitted provider choice when this picker is dismissed. */
+    onDismissModelMenu?: () => void;
+    activeProfile?: AIExecutionProfile;
+    codingInheritsAssistant?: boolean;
+    /** A provider is staged until the user chooses its model. */
+    providerSelectionPending?: boolean;
+    /** An atomic profile update is in flight; keep the picker non-interactive. */
+    profileSavePending?: boolean;
+    onOpenLLMSettings?: () => void;
     onLanguageChange?: (lang: string) => void;
     /** Shell status cluster (inline AppStatusMessageBar); right side of this row. */
     statusSlot?: ReactNode;
@@ -57,7 +68,7 @@ function langShortLabel(lang: string): string {
     return "中";
 }
 
-export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, workflowEnabled, onToggleWorkflow, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onLanguageChange, statusSlot }: Props) {
+export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, workflowEnabled, onToggleWorkflow, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeProfile = "assistant", codingInheritsAssistant = false, providerSelectionPending = false, profileSavePending = false, onOpenLLMSettings, onLanguageChange, statusSlot }: Props) {
     const tr = useCallback(
         (en: string, zh: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant),
         [lang]
@@ -171,51 +182,73 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         }),
         [providers, modelList, currentModel, modelsLoading, onSwitchModel],
     );
-    const hasModelMenu = !!(onSwitchProvider || onSwitchModel)
+    const isReadOnlyFollowingCoding = activeProfile === "coding" && codingInheritsAssistant;
+    const hasModelMenu = activeProfile !== "none" && (isReadOnlyFollowingCoding || !!(onSwitchProvider || onSwitchModel))
         && (providers.length > 0 || modelList.length > 0 || !!String(currentModel || "").trim());
-    const modelChipLabel = String(currentModel || "").trim() || currentProvider?.name || tr("Model", "模型", "模型");
+    // A following coding profile cannot be edited from this shortcut, but the
+    // chip must still disclose the model that will actually be used. Otherwise
+    // users have to leave their task just to answer "what model am I on?".
+    const normalModelChipLabel = isReadOnlyFollowingCoding
+        ? `${tr("Coding · Follows assistant", "编程 · 跟随助手", "編程 · 跟隨助手")}${String(currentModel || "").trim() ? ` · ${String(currentModel).trim()}` : ""}`
+        : `${activeProfile === "coding" ? tr("Coding", "编程", "編程") : tr("Assistant", "助手", "助手")} · ${String(currentModel || "").trim() || currentProvider?.name || tr("Model", "模型", "模型")}`;
+
+    const modelChipLabel = providerSelectionPending && !isReadOnlyFollowingCoding
+        ? `${activeProfile === "coding" ? tr("Coding", "编程", "編程") : tr("Assistant", "助手", "助手")} · ${currentProvider?.name || tr("Provider", "服务商", "服務商")} · ${tr("choose model", "选择模型", "選擇模型")}`
+        : normalModelChipLabel;
 
     const closeModelMenu = useCallback(() => {
         setMenuOpen(false);
+        if (!profileSavePending) onDismissModelMenu?.();
         // Return focus to the chip after dismiss (Escape / outside click / selection).
         modelChipRef.current?.focus();
-    }, []);
+    }, [onDismissModelMenu, profileSavePending]);
 
-    // Drop a stale open state when the picker itself disappears (e.g. LLM went offline).
+    // The bar remains mounted while a System page is shown and its picker is
+    // portaled to document.body. If navigation or an LLM-state refresh removes
+    // the picker, discard a staged provider too: otherwise it could silently
+    // become the starting point for a later, unrelated switch.
     useEffect(() => {
-        if (!hasModelMenu && menuOpen) setMenuOpen(false);
-    }, [hasModelMenu, menuOpen]);
-
-    // The bar remains mounted while a System page is shown. Its model menu is
-    // portaled to document.body, so explicitly dismiss it on navigation.
-    useEffect(() => {
-        if (!active) setMenuOpen(false);
-    }, [active]);
+        if (menuOpen && (!active || !hasModelMenu)) {
+            setMenuOpen(false);
+            if (!profileSavePending) onDismissModelMenu?.();
+        }
+    }, [active, hasModelMenu, menuOpen, onDismissModelMenu, profileSavePending]);
 
     // Outside-click / Escape / listbox focus live in AssistantQuickModelMenuPopover.
 
     const openModelMenu = useCallback(() => {
+        if (profileSavePending) return;
+        if (isReadOnlyFollowingCoding) {
+            onOpenLLMSettings?.();
+            return;
+        }
         // Side effect stays out of the state updater (StrictMode double-invokes updaters).
         if (menuOpen) {
             setMenuOpen(false);
+            onDismissModelMenu?.();
             return;
         }
         setMenuOpen(true);
         // Refresh catalog; parent falls back to configured model if fetch fails.
         onOpenModelMenu?.();
-    }, [menuOpen, onOpenModelMenu]);
+    }, [isReadOnlyFollowingCoding, menuOpen, onDismissModelMenu, onOpenLLMSettings, onOpenModelMenu, profileSavePending]);
 
     const handleSelectProvider = useCallback((name: string) => {
-        closeModelMenu();
+        if (profileSavePending) return;
+        // Provider selection only stages the target. Keep the picker open so
+        // the next click can choose its model and commit the two together.
+        // This avoids a misleading transient state where the provider appears
+        // switched while the profile still runs with its previous assignment.
         onSwitchProvider?.(name);
-    }, [closeModelMenu, onSwitchProvider]);
+    }, [onSwitchProvider, profileSavePending]);
 
     const handleSelectModel = useCallback((modelId: string) => {
+        if (profileSavePending) return;
         const next = String(modelId || "").trim();
         closeModelMenu();
         if (!next || modelIdsEqual(next, currentModel)) return;
         onSwitchModel?.(next);
-    }, [closeModelMenu, currentModel, onSwitchModel]);
+    }, [closeModelMenu, currentModel, onSwitchModel, profileSavePending]);
 
     const chipStyle = useCallback((active: boolean): CSSProperties => ({
         display: "inline-flex",
@@ -262,11 +295,14 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
                         ref={setModelChipRef}
                         data-testid="qs-model-chip"
                         onClick={openModelMenu}
-                        aria-expanded={menuOpen}
-                        aria-haspopup="listbox"
+                        disabled={profileSavePending}
+                        aria-expanded={isReadOnlyFollowingCoding ? undefined : menuOpen}
+                        aria-haspopup={isReadOnlyFollowingCoding ? undefined : "listbox"}
                         style={modelChipStyle}
                         // Accessible name comes from visible model label (do not override with a generic aria-label).
-                        title={tr("Switch model or provider", "切换模型或服务商", "切換模型或服務商")}
+                        title={isReadOnlyFollowingCoding
+                            ? tr("View coding model settings", "查看编程模型设置", "檢視編程模型設定")
+                            : tr("Switch model or provider", "切换模型或服务商", "切換模型或服務商")}
                     >
                         <span style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{modelChipLabel}</span>
                         <svg
@@ -280,7 +316,7 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
                             <path d="M1 3l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
                     </button>
-                    <AssistantQuickModelMenuPopover
+                    {!isReadOnlyFollowingCoding && <AssistantQuickModelMenuPopover
                         open={menuOpen}
                         anchorEl={modelChipEl}
                         theme={t}
@@ -301,6 +337,7 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
                         onSelectModel={handleSelectModel}
                         onClose={closeModelMenu}
                     />
+                    }
                 </div>
             )}
             <button type="button" data-testid="qs-workflow-toggle" role="switch" aria-checked={!!workflowEnabled} onClick={onToggleWorkflow} style={chipStyle(!!workflowEnabled)} title={workflowEnabled ? tr("Automatic task routing ON - click to disable", "自动决策已开启，点击关闭", "自動決策已開啟，點擊關閉") : tr("Automatic task routing OFF - click to enable", "自动决策已关闭，点击开启", "自動決策已關閉，點擊開啟")} aria-label={workflowEnabled ? tr("Automatic task routing ON - click to disable", "自动决策已开启，点击关闭", "自動決策已開啟，點擊關閉") : tr("Automatic task routing OFF - click to enable", "自动决策已关闭，点击开启", "自動決策已關閉，點擊開啟")}>

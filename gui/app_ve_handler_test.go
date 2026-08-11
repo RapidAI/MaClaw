@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"pgregory.net/rapid"
@@ -97,6 +98,38 @@ func TestVEAgentCallbacksLLMRequestContextCarriesOwnerTrace(t *testing.T) {
 	}
 	if trace.Caller != "ve-agent-loop" || trace.OwnerID != "digital-employee:session-1" || trace.RequestID != "msg-1" || trace.LoopID != "ve-agent:session-1" || trace.Iteration != 3 {
 		t.Fatalf("unexpected trace: %+v", trace)
+	}
+}
+
+func TestVEKnowledgePromptAdvertisesImageSearchAndDisplay(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+			app.memoryStore = nil
+		}
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+			app.enterpriseClient = nil
+		}
+	})
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatalf("openKnowledgeStore: %v", err)
+	}
+	ctx := context.Background()
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage, URI: "file://diagram.png", Title: "Diagram", Status: knowledge.StatusParsed}); err != nil {
+		_ = store.Close()
+		t.Fatalf("SaveSource: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	prompt := (&veAgentCallbacks{app: app}).BuildSystemPrompt("show the saved diagram", true)
+	for _, want := range []string{"knowledge_image_search", "[KB_IMAGE:...] marker", "copy that exact marker"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("VE knowledge prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 

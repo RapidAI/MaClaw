@@ -19,13 +19,14 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
 const (
-	platformHubLLMProviderName   = "hub-llm"
-	platformHubLLMModel          = "auto"
+	platformHubLLMProviderName = "hub-llm"
+	platformHubLLMModel        = "auto"
 	// platformDefaultLLMServiceGroupID is the Hub reserved free group used by
 	// all server-side MaClawSrv agents when no explicit business group is set.
 	platformDefaultLLMServiceGroupID = "system-free"
@@ -556,8 +557,13 @@ func (s *HTTPServer) enrichPlatformMessageContentWithAttachments(r *http.Request
 	b.WriteString(strings.TrimSpace(content))
 	b.WriteString("\n\n[Hub attachments received]\n")
 	for _, att := range attachments.Text {
-		name := safePlatformAttachmentFilename(att.Filename)
-		line := fmt.Sprintf("- text: %s", firstPlatformNonEmpty(name, "attachment.txt"))
+		name := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
+		name = safePlatformAttachmentFilename(name)
+		kind := "text"
+		if agent.IsBinaryDocumentAttachment(att.Filename, att.MimeType) {
+			kind = "file"
+		}
+		line := fmt.Sprintf("- %s: %s", kind, firstPlatformNonEmpty(name, "attachment.txt"))
 		if localPath, err := materializePlatformTextAttachment(binding.Instance.Workspace, in.HubDiscussionID, att); err == nil && localPath != "" {
 			line += fmt.Sprintf("; local_path=%s", localPath)
 		} else if err != nil {
@@ -642,15 +648,16 @@ func materializePlatformTextAttachment(workspace, discussionID string, att platf
 	if workspace == "" || strings.TrimSpace(att.Content) == "" {
 		return "", nil
 	}
-	name := safePlatformAttachmentFilename(att.Filename)
+	name := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
+	name = safePlatformAttachmentFilename(name)
 	if name == "" {
 		name = "attachment.txt"
 	}
-	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(att.Content))
+	data, err := decodePlatformTextAttachment(att.Content)
 	if err != nil {
 		return "", fmt.Errorf("invalid inline text attachment")
 	}
-	if int64(len(data)) > platformAttachmentMaxBytes {
+	if int64(len(data)) > platformAttachmentMaxBytesFor(att.Filename, att.MimeType) {
 		return "", fmt.Errorf("attachment too large")
 	}
 	dir := filepath.Join(workspace, ".hub-attachments", safePlatformAttachmentFilename(discussionID))
@@ -664,10 +671,39 @@ func materializePlatformTextAttachment(workspace, discussionID string, att platf
 	return path, nil
 }
 
+// platformAttachmentMaxBytesFor keeps downloaded and inline Hub documents on
+// the same source-size boundary enforced by the shared read_document path.
+// Other file attachments retain the product's broader relay limit. MIME and
+// filename here determine only the staging limit; the actual PDF/Office
+// parser still validates content signatures and containers before extraction.
+func platformAttachmentMaxBytesFor(fileName, mimeType string) int64 {
+	if agent.IsBinaryDocumentAttachment(fileName, mimeType) {
+		return agent.MaxOfficeReadFileBytes
+	}
+	return platformAttachmentMaxBytes
+}
+
+func decodePlatformTextAttachment(content string) ([]byte, error) {
+	content = strings.TrimSpace(content)
+	var lastErr error
+	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		data, err := encoding.DecodeString(content)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 func (s *HTTPServer) platformFileAttachmentLine(r *http.Request, binding platformRuntimeBinding, discussionID, kind string, att platformFileAttachment) string {
-	name := safePlatformAttachmentFilename(att.Filename)
+	name := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
+	name = safePlatformAttachmentFilename(name)
 	if name == "" {
 		name = "attachment"
+	}
+	if agent.IsBinaryDocumentAttachment(att.Filename, att.MimeType) {
+		kind = "file"
 	}
 	parts := []string{fmt.Sprintf("- %s: %s", kind, name)}
 	if att.MimeType != "" {
@@ -721,7 +757,8 @@ func (s *HTTPServer) downloadPlatformFileAttachment(r *http.Request, binding pla
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", fmt.Errorf("download failed HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	name := safePlatformAttachmentFilename(att.Filename)
+	name := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
+	name = safePlatformAttachmentFilename(name)
 	if name == "" {
 		name = "attachment"
 	}
@@ -739,7 +776,8 @@ func (s *HTTPServer) downloadPlatformFileAttachment(r *http.Request, binding pla
 	}
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
-	size, copyErr := io.Copy(tmp, io.LimitReader(resp.Body, platformAttachmentMaxBytes+1))
+	maxBytes := platformAttachmentMaxBytesFor(att.Filename, att.MimeType)
+	size, copyErr := io.Copy(tmp, io.LimitReader(resp.Body, maxBytes+1))
 	closeErr := tmp.Close()
 	if copyErr != nil {
 		return "", copyErr
@@ -747,7 +785,7 @@ func (s *HTTPServer) downloadPlatformFileAttachment(r *http.Request, binding pla
 	if closeErr != nil {
 		return "", closeErr
 	}
-	if size > platformAttachmentMaxBytes {
+	if size > maxBytes {
 		return "", fmt.Errorf("attachment too large")
 	}
 	if err := os.Rename(tmpPath, path); err != nil {

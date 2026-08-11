@@ -22,6 +22,7 @@ import { addParticipantIdentityKeys, participantIdentityKeys, participantIdentit
 import { veStatusEventInfo } from "./veStatusEvent";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { classifyDisplayAttachmentType } from "./attachmentClassification";
 
 // --- Types ---
 
@@ -44,6 +45,8 @@ export interface GroupMessage {
 export interface GroupMessageAttachment {
     type: "text" | "image" | "file";
     filename: string;
+    /** Untrusted remote metadata; document MIME always overrides image display. */
+    mimeType?: string;
     fileUrl?: string;
     localPath?: string;
     sizeBytes?: number;
@@ -536,7 +539,9 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
             {/* Attachments */}
             {hasAttachments && (
                 <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: isUser ? 0 : 4, paddingRight: isUser ? 4 : 0, justifyContent: horizontalAlign, maxWidth: "82%" }}>
-                    {message.attachments?.map((att, idx) => (
+                    {message.attachments?.map((att, idx) => {
+                        const displayType = classifyDisplayAttachmentType(att.filename, att.mimeType, att.type);
+                        return (
                         <div
                             key={idx}
                             data-testid={`group-msg-att-${message.id}-${idx}`}
@@ -553,10 +558,11 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                                 minWidth: 0,
                             }}
                         >
-                            <span style={{ flexShrink: 0 }}>{att.type === "image" ? "IMG" : att.type === "text" ? "TXT" : "FILE"}</span>
+                            <span style={{ flexShrink: 0 }}>{displayType === "image" ? "IMG" : displayType === "text" ? "TXT" : "FILE"}</span>
                             {att.fileUrl || att.localPath ? <button type="button" onClick={() => onDownloadAttachment?.(att, message)} title={att.localPath || att.fileUrl} style={{ border: 0, padding: 0, minWidth: 0, maxWidth: "100%", flex: "1 1 auto", display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: theme.text, cursor: "pointer", font: "inherit" }}><span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "underline" }}>{att.filename}</span><span style={{ color: theme.textMuted, fontSize: 10, flexShrink: 0 }}>{att.localPath ? "OPEN" : "GET"}</span></button> : <span style={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.filename}</span>}
                         </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
         </div>

@@ -252,6 +252,7 @@ func codingSubAgentSoftwareSkillMarkers() []string {
 func codingSubAgentDocumentSkillMarkers() []string {
 	return []string{
 		"ppt", "pptx", "powerpoint", "presentation", "slide", "slides", "deck",
+		"doc", "docx", "xls", "xlsx", "excel", "spreadsheet",
 		"pdf", "word", "docx", "document", "contract", "文档", "合同", "演示", "幻灯片", "简报",
 	}
 }
@@ -259,6 +260,7 @@ func codingSubAgentDocumentSkillMarkers() []string {
 func codingSubAgentDocumentIntentMarkers() []string {
 	return []string{
 		"ppt", "pptx", "powerpoint", "presentation", "slide", "slides", "deck",
+		"doc", "docx", "xls", "xlsx", "excel", "spreadsheet",
 		"pdf", "word", "docx", "document", "contract", "文档", "合同", "演示", "幻灯片", "简报",
 		"报告", "说明书", "开发文档", "设计文档",
 	}

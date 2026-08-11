@@ -48,6 +48,12 @@ typedef struct {
 
 static const char *TAG = "sleep_schedule";
 static SemaphoreHandle_t s_lock;
+/* The public schedule APIs can be entered by Gateway/UI/clock tasks while a
+ * startup rollback begins.  Keep their mutex as a static lifecycle shell so
+ * an already-waiting caller never obtains a freed FreeRTOS object. */
+static StaticSemaphore_t s_lock_storage;
+static SemaphoreHandle_t s_deinit_lock;
+static StaticSemaphore_t s_deinit_lock_storage;
 static TaskHandle_t s_task;
 static SemaphoreHandle_t s_stopped;
 static wake_deadline_handle_t s_deadline = WAKE_DEADLINE_HANDLE_INVALID;
@@ -59,8 +65,36 @@ static sleep_schedule_store_t s_store;
 static sleep_schedule_store_t s_store_rollback;
 static volatile bool s_initialized;
 static volatile bool s_stop_requested;
+static uint32_t s_tool_admissions;
 static bool s_manual_wake_pending;
 static portMUX_TYPE s_pending_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/* The public stop is one lifecycle transaction; none of its admission lock,
+ * worker join, borrower drain or final slot cleanup may restart the caller's
+ * timeout budget. */
+static TickType_t stop_timeout_ticks(uint32_t timeout_ms) {
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    return ticks == 0 ? 1 : ticks;
+}
+
+static TickType_t stop_remaining_ticks(TickType_t started, TickType_t budget) {
+    const TickType_t elapsed = xTaskGetTickCount() - started;
+    return elapsed >= budget ? 0 : budget - elapsed;
+}
+
+static bool admit_tool(void) {
+    taskENTER_CRITICAL(&s_pending_lock);
+    const bool admitted = s_initialized && !s_stop_requested;
+    if (admitted) ++s_tool_admissions;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    return admitted;
+}
+
+static void release_tool(void) {
+    taskENTER_CRITICAL(&s_pending_lock);
+    if (s_tool_admissions) --s_tool_admissions;
+    taskEXIT_CRITICAL(&s_pending_lock);
+}
 
 /* This service runs its initialization from app_main().  Keep the persisted
  * object in static storage: a full store includes the bounded replay journal
@@ -212,16 +246,37 @@ static void apply_evaluation(const schedule_evaluation_t *evaluation) {
 
 static void deadline_callback(void *arg) {
     (void)arg;
-    if (s_task && !s_stop_requested) xTaskNotifyGive(s_task);
+    /* The shared dispatcher can select this callback while rollback is
+     * closing the schedule service.  Sample the notification target under
+     * the same admission shell used by manual-wake and wall-clock callers;
+     * schedule_task clears s_task under that shell before handing completion
+     * to deinit. */
+    taskENTER_CRITICAL(&s_pending_lock);
+    TaskHandle_t task = s_initialized && !s_stop_requested ? s_task : NULL;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (task) xTaskNotifyGive(task);
 }
 
 static void schedule_task(void *arg) {
     (void)arg;
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (s_stop_requested) break;
+        taskENTER_CRITICAL(&s_pending_lock);
+        const bool stopping = s_stop_requested;
+        taskEXIT_CRITICAL(&s_pending_lock);
+        if (stopping) break;
         int64_t now = 0;
         if (!trusted_now(&now) || xSemaphoreTake(s_lock, pdMS_TO_TICKS(3000)) != pdTRUE) continue;
+        /* Stop may have won while this task waited for a concurrent tool
+         * mutation.  Do not perform a late Persistence write or re-arm the
+         * shared deadline after that admission boundary has closed. */
+        taskENTER_CRITICAL(&s_pending_lock);
+        const bool ready = s_initialized && !s_stop_requested;
+        taskEXIT_CRITICAL(&s_pending_lock);
+        if (!ready) {
+            xSemaphoreGive(s_lock);
+            break;
+        }
         taskENTER_CRITICAL(&s_pending_lock);
         bool manual_wake = s_manual_wake_pending;
         s_manual_wake_pending = false;
@@ -247,7 +302,11 @@ static void schedule_task(void *arg) {
         xSemaphoreGive(s_lock);
         apply_evaluation(&evaluation);
     }
+    /* Publish final task state before the completion handoff; deinit may
+     * reclaim the binary semaphore immediately after this give. */
+    taskENTER_CRITICAL(&s_pending_lock);
     s_task = NULL;
+    taskEXIT_CRITICAL(&s_pending_lock);
     if (s_stopped) xSemaphoreGive(s_stopped);
     vTaskDelete(NULL);
 }
@@ -435,13 +494,31 @@ static esp_err_t save_replay_locked(const char *key, esp_err_t status,
 
 esp_err_t sleep_schedule_service_init(void) {
     if (!persistence_service_is_initialized()) return ESP_ERR_INVALID_STATE;
-    if (s_initialized) return ESP_OK;
-    s_lock = xSemaphoreCreateMutex();
-    if (!s_lock) return ESP_ERR_NO_MEM;
+    taskENTER_CRITICAL(&s_pending_lock);
+    const bool already_initialized = s_initialized;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (already_initialized) return ESP_OK;
+    if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_storage);
+    if (!s_deinit_lock) s_deinit_lock = xSemaphoreCreateMutexStatic(&s_deinit_lock_storage);
+    if (!s_lock || !s_deinit_lock) return ESP_ERR_NO_MEM;
+    if (xSemaphoreTake(s_deinit_lock, pdMS_TO_TICKS(3000)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    taskENTER_CRITICAL(&s_pending_lock);
+    const bool initialized_while_waiting = s_initialized;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (initialized_while_waiting) {
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_OK;
+    }
+    taskENTER_CRITICAL(&s_pending_lock);
+    const bool closing_or_live = s_stop_requested || s_task || s_stopped;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (closing_or_live) {
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     s_stopped = xSemaphoreCreateBinary();
     if (!s_stopped) {
-        vSemaphoreDelete(s_lock);
-        s_lock = NULL;
+        xSemaphoreGive(s_deinit_lock);
         return ESP_ERR_NO_MEM;
     }
     reset_store();
@@ -463,22 +540,26 @@ esp_err_t sleep_schedule_service_init(void) {
     esp_err_t deadline_err = wake_deadline_service_register(deadline_callback, NULL, &s_deadline);
     if (deadline_err != ESP_OK) {
         vSemaphoreDelete(s_stopped);
-        vSemaphoreDelete(s_lock);
         s_stopped = NULL;
-        s_lock = NULL;
+        xSemaphoreGive(s_deinit_lock);
         return deadline_err;
     }
     if (xTaskCreate(schedule_task, "maclaw_schedule", 4096, NULL, 5, &s_task) != pdPASS) {
         wake_deadline_service_cancel(s_deadline);
-        wake_deadline_service_unregister(s_deadline);
+        /* No worker was created, but use the bounded client hand-off rather
+         * than the legacy convenience wrapper so init rollback cannot add an
+         * unaccounted blocking wait to its lifecycle transaction. */
+        (void)wake_deadline_service_unregister_with_timeout(s_deadline, 1000);
         s_deadline = WAKE_DEADLINE_HANDLE_INVALID;
         vSemaphoreDelete(s_stopped);
-        vSemaphoreDelete(s_lock);
         s_stopped = NULL;
-        s_lock = NULL;
+        xSemaphoreGive(s_deinit_lock);
         return ESP_ERR_NO_MEM;
     }
+    taskENTER_CRITICAL(&s_pending_lock);
     s_initialized = true;
+    s_stop_requested = false;
+    taskEXIT_CRITICAL(&s_pending_lock);
     int64_t now = 0;
     if (trusted_now(&now) && xSemaphoreTake(s_lock, pdMS_TO_TICKS(3000)) == pdTRUE) {
         schedule_evaluation_t evaluation = evaluate_locked(now);
@@ -488,32 +569,100 @@ esp_err_t sleep_schedule_service_init(void) {
          * a persisted rest window happens to be active at boot.  The next
          * ambient transition is shortened through the shared UI seam instead. */
     }
+    xSemaphoreGive(s_deinit_lock);
     ESP_LOGI(TAG, "service ready: enabled=%s", s_store.schedule.enabled ? "yes" : "no");
     return ESP_OK;
 }
 
 esp_err_t sleep_schedule_service_deinit(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    if (!s_initialized) return ESP_OK;
-    if (s_task && xTaskGetCurrentTaskHandle() == s_task) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    if (!s_lock || !s_deinit_lock) return ESP_OK;
+    taskENTER_CRITICAL(&s_pending_lock);
+    const bool caller_is_worker = s_task && xTaskGetCurrentTaskHandle() == s_task;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (caller_is_worker) return ESP_ERR_INVALID_STATE;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = stop_timeout_ticks(timeout_ms);
+    if (xSemaphoreTake(s_deinit_lock, budget) != pdTRUE) return ESP_ERR_TIMEOUT;
+    TickType_t remaining = stop_remaining_ticks(started, budget);
+    if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_ERR_TIMEOUT;
+    }
+    taskENTER_CRITICAL(&s_pending_lock);
+    const bool already_stopped = !s_initialized && !s_stop_requested;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (already_stopped) {
+        xSemaphoreGive(s_lock);
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_OK;
+    }
+    taskENTER_CRITICAL(&s_pending_lock);
     s_stop_requested = true;
+    s_initialized = false;
     if (s_deadline) wake_deadline_service_cancel(s_deadline);
     TaskHandle_t task = s_task;
+    taskEXIT_CRITICAL(&s_pending_lock);
     xSemaphoreGive(s_lock);
     if (task) {
         xTaskNotifyGive(task);
-        if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return ESP_ERR_TIMEOUT;
+        remaining = stop_remaining_ticks(started, budget);
+        if (remaining == 0 || xSemaphoreTake(s_stopped, remaining) != pdTRUE) {
+            xSemaphoreGive(s_deinit_lock);
+            return ESP_ERR_TIMEOUT;
+        }
+    } else if (s_stopped) {
+        /* Complete a prior bounded stop that observed the worker exit after
+         * its waiter timed out, instead of silently returning with a stale
+         * completion object. */
+        remaining = stop_remaining_ticks(started, budget);
+        if (remaining == 0 || xSemaphoreTake(s_stopped, remaining) != pdTRUE) {
+            xSemaphoreGive(s_deinit_lock);
+            return ESP_ERR_TIMEOUT;
+        }
     }
-    if (s_deadline) wake_deadline_service_unregister(s_deadline);
-    vSemaphoreDelete(s_stopped);
-    vSemaphoreDelete(s_lock);
-    s_stopped = NULL;
-    s_lock = NULL;
+    for (;;) {
+        taskENTER_CRITICAL(&s_pending_lock);
+        const uint32_t admissions = s_tool_admissions;
+        taskEXIT_CRITICAL(&s_pending_lock);
+        if (admissions == 0) break;
+        if (stop_remaining_ticks(started, budget) == 0) {
+            xSemaphoreGive(s_deinit_lock);
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    /* Waiters which sampled the former ready state re-check the closed
+     * boundary under this permanent mutex before they touch the deadline or
+     * store.  The mutex itself intentionally survives deinit. */
+    remaining = stop_remaining_ticks(started, budget);
+    if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_deadline) {
+        /* The common dispatcher runs callback code outside its lock.  Wait for
+         * a copied callback before releasing schedule-owned state, sharing
+         * this service's single shutdown deadline.  deadline_callback only
+         * reads the task handle and never takes s_lock. */
+        remaining = stop_remaining_ticks(started, budget);
+        const uint32_t remaining_ms = (uint32_t)pdTICKS_TO_MS(remaining);
+        if (remaining == 0 || remaining_ms == 0 ||
+            wake_deadline_service_unregister_with_timeout(s_deadline, remaining_ms) != ESP_OK) {
+            xSemaphoreGive(s_lock);
+            xSemaphoreGive(s_deinit_lock);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
     s_deadline = WAKE_DEADLINE_HANDLE_INVALID;
-    s_initialized = false;
-    s_stop_requested = false;
     s_manual_wake_pending = false;
+    taskENTER_CRITICAL(&s_pending_lock);
+    s_stop_requested = false;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    xSemaphoreGive(s_lock);
+    vSemaphoreDelete(s_stopped);
+    s_stopped = NULL;
+    xSemaphoreGive(s_deinit_lock);
     ESP_LOGI(TAG, "service stopped");
     return ESP_OK;
 }
@@ -521,9 +670,16 @@ esp_err_t sleep_schedule_service_deinit(uint32_t timeout_ms) {
 void sleep_schedule_service_get_status(sleep_schedule_status_t *out_status) {
     if (!out_status) return;
     memset(out_status, 0, sizeof(*out_status));
-    if (!s_initialized || !s_lock) return;
+    if (!s_lock) return;
     int64_t now = 0;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    taskENTER_CRITICAL(&s_pending_lock);
+    const bool ready = s_initialized && !s_stop_requested;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (!ready) {
+        xSemaphoreGive(s_lock);
+        return;
+    }
     schedule_evaluation_t evaluation = trusted_now(&now) ? evaluate_locked(now)
                                                           : (schedule_evaluation_t){0};
     out_status->initialized = true;
@@ -538,9 +694,16 @@ void sleep_schedule_service_get_status(sleep_schedule_status_t *out_status) {
 }
 
 uint32_t sleep_schedule_service_adjust_display_off_delay(uint32_t ambient_delay_ms) {
-    if (!ambient_delay_ms || !s_initialized || !s_lock) return ambient_delay_ms;
+    if (!ambient_delay_ms || !s_lock) return ambient_delay_ms;
     int64_t now = 0;
     if (!trusted_now(&now) || xSemaphoreTake(s_lock, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return ambient_delay_ms;
+    }
+    taskENTER_CRITICAL(&s_pending_lock);
+    const bool ready = s_initialized && !s_stop_requested;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (!ready) {
+        xSemaphoreGive(s_lock);
         return ambient_delay_ms;
     }
     schedule_evaluation_t evaluation = evaluate_locked(now);
@@ -549,43 +712,64 @@ uint32_t sleep_schedule_service_adjust_display_off_delay(uint32_t ambient_delay_
 }
 
 void sleep_schedule_service_note_manual_wake(void) {
-    if (!s_initialized || !s_task) return;
     /* This is called from the App Interaction Task.  NVS commits may disable
      * cache and must not run on that task's PSRAM stack, so hand the durable
      * override write to the service's internal-stack worker. */
     taskENTER_CRITICAL(&s_pending_lock);
+    if (!s_initialized || s_stop_requested || !s_task) {
+        taskEXIT_CRITICAL(&s_pending_lock);
+        return;
+    }
+    TaskHandle_t task = s_task;
     s_manual_wake_pending = true;
     taskEXIT_CRITICAL(&s_pending_lock);
-    xTaskNotifyGive(s_task);
+    xTaskNotifyGive(task);
 }
 
 void sleep_schedule_service_on_wall_clock_updated(void) {
-    if (s_task) xTaskNotifyGive(s_task);
+    taskENTER_CRITICAL(&s_pending_lock);
+    TaskHandle_t task = s_initialized && !s_stop_requested ? s_task : NULL;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (task) xTaskNotifyGive(task);
 }
 
 esp_err_t sleep_schedule_service_execute_tool(const char *name, cJSON *arguments,
                                               const char *idempotency_key,
                                               cJSON **out_result, char *error,
                                               size_t error_size) {
-    if (!name || !out_result || !cJSON_IsObject(arguments) || !s_initialized) return ESP_ERR_INVALID_ARG;
+    if (!name || !out_result || !cJSON_IsObject(arguments) || !admit_tool()) return ESP_ERR_INVALID_STATE;
     *out_result = NULL;
     const bool mutation = !strcmp(name, "sleep_schedule_set") ||
                           !strcmp(name, "sleep_schedule_disable");
     if (mutation && !valid_idempotency_key(idempotency_key)) {
         snprintf(error, error_size, "idempotencyKey must be 1..63 ASCII characters");
+        release_tool();
         return ESP_ERR_INVALID_ARG;
     }
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(3000)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        release_tool();
+        return ESP_ERR_TIMEOUT;
+    }
+    taskENTER_CRITICAL(&s_pending_lock);
+    const bool ready = s_initialized && !s_stop_requested;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    if (!ready) {
+        xSemaphoreGive(s_lock);
+        release_tool();
+        return ESP_ERR_INVALID_STATE;
+    }
     if (mutation) {
         esp_err_t replay = return_replay_locked(idempotency_key, out_result, error, error_size);
         if (replay != ESP_ERR_NOT_FOUND) {
             xSemaphoreGive(s_lock);
+            release_tool();
             return replay;
         }
     }
     cJSON *result = cJSON_CreateObject();
     if (!result) {
         xSemaphoreGive(s_lock);
+        release_tool();
         return ESP_ERR_NO_MEM;
     }
     esp_err_t status = ESP_OK;
@@ -615,7 +799,10 @@ esp_err_t sleep_schedule_service_execute_tool(const char *name, cJSON *arguments
                 snprintf(error, error_size, "cannot persist sleep schedule");
             } else {
                 arm_next_timer_locked(current, &evaluation);
-                xTaskNotifyGive(s_task);
+                taskENTER_CRITICAL(&s_pending_lock);
+                TaskHandle_t task = s_initialized && !s_stop_requested ? s_task : NULL;
+                taskEXIT_CRITICAL(&s_pending_lock);
+                if (task) xTaskNotifyGive(task);
             }
         }
     } else if (!strcmp(name, "sleep_schedule_disable")) {
@@ -633,13 +820,17 @@ esp_err_t sleep_schedule_service_execute_tool(const char *name, cJSON *arguments
             snprintf(error, error_size, "cannot persist disabled sleep schedule");
         } else {
             wake_deadline_service_cancel(s_deadline);
-            xTaskNotifyGive(s_task);
+            taskENTER_CRITICAL(&s_pending_lock);
+            TaskHandle_t task = s_initialized && !s_stop_requested ? s_task : NULL;
+            taskEXIT_CRITICAL(&s_pending_lock);
+            if (task) xTaskNotifyGive(task);
         }
     } else {
         status = ESP_ERR_NOT_SUPPORTED;
         snprintf(error, error_size, "unsupported client tool: %s", name);
     }
     xSemaphoreGive(s_lock);
+    release_tool();
     if (status != ESP_OK) {
         cJSON_Delete(result);
         return status;

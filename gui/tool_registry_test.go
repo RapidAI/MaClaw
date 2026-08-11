@@ -182,6 +182,20 @@ func TestRegisterBuiltinToolsExposeWorkflowDocMetadata(t *testing.T) {
 	}
 }
 
+func TestOfficeToolDescriptionPreservesFailClosedErrorClasses(t *testing.T) {
+	r := NewToolRegistry()
+	registerBuiltinTools(r, &IMMessageHandler{})
+	office, ok := r.Get("office")
+	if !ok || office == nil {
+		t.Fatal("office tool not registered")
+	}
+	for _, want := range []string{"error_class=encrypted", "error_class=malformed", "error_class=source_changed", "error_class=input_too_large", "error_class=output_too_large", "不得用其他解析器绕过"} {
+		if !strings.Contains(office.Description, want) {
+			t.Fatalf("office tool description missing %q:\n%s", want, office.Description)
+		}
+	}
+}
+
 func TestRegisterBuiltinToolsManageSkillMaintenancePlanSchema(t *testing.T) {
 	r := NewToolRegistry()
 	registerBuiltinTools(r, &IMMessageHandler{})

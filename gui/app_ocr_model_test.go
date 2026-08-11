@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -43,13 +45,12 @@ func withOCRTestModelsDir(t *testing.T) string {
 	return filepath.Join(base, "models")
 }
 
-// withOCRModelURLs overrides the default HuggingFace URL resolvers.
-func withOCRModelURLs(t *testing.T, detURL, recURL string) {
+// withOCRModelsZipURL overrides the default GitHub release zip URL.
+func withOCRModelsZipURL(t *testing.T, url string) {
 	t.Helper()
-	prevDet, prevRec := ocrDetModelURL, ocrRecModelURL
-	ocrDetModelURL = func(string) string { return detURL }
-	ocrRecModelURL = func(string) string { return recURL }
-	t.Cleanup(func() { ocrDetModelURL, ocrRecModelURL = prevDet, prevRec })
+	prev := ocrModelsZipURL
+	ocrModelsZipURL = url
+	t.Cleanup(func() { ocrModelsZipURL = prev })
 }
 
 // isolateSharedOCRProvider replaces the process-wide provider singleton with
@@ -71,12 +72,79 @@ func newOCRTestApp(cfg corelib.AppConfig) *App {
 	return &App{configCacheValid: true, configCache: cfg}
 }
 
-// ocrModelServer serves the fake det/rec payloads at /det and /rec.
+// ocrModelServer serves the fake zip payload through a mock HTTP server.
 func ocrModelServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request)) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(handler))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// buildOCRModelsZip packs the 6 expected tier det/rec .onnx entries (with
+// fake payloads) plus a non-.onnx entry that extraction must skip.
+func buildOCRModelsZip(t *testing.T, payloadFor func(name string) []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range expectedOCRModelFilenames() {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(payloadFor(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Non-model entries shipped in the real bundle must be skipped.
+	for _, name := range []string{"dict_ppocrv6_tiny.txt", "rec_inference.yml"} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("ignored " + name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// validOCRModelsZip returns a zip whose 6 .onnx entries all pass
+// ocr.ModelFileStatus.
+func validOCRModelsZip(t *testing.T) []byte {
+	t.Helper()
+	return buildOCRModelsZip(t, func(name string) []byte { return fakeONNXPayload(name) })
+}
+
+// serveOCRZip answers every request with the given zip bytes.
+func serveOCRZip(t *testing.T, payload []byte) *httptest.Server {
+	t.Helper()
+	return ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	})
+}
+
+// assertOCRModelsExtracted fails unless all 6 tier files exist and validate.
+func assertOCRModelsExtracted(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range expectedOCRModelFilenames() {
+		if _, ok := ocr.ModelFileStatus(filepath.Join(dir, name)); !ok {
+			t.Fatalf("%s missing/invalid after download", name)
+		}
+	}
+}
+
+// assertNoONNXFiles fails when any .onnx file is left in dir.
+func assertNoONNXFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".onnx") {
+			t.Fatalf("partial model file left behind: %s", e.Name())
+		}
+	}
 }
 
 func TestCheckOCRModel(t *testing.T) {
@@ -123,67 +191,46 @@ func TestDownloadOCRModelHappyPath(t *testing.T) {
 	dir := withOCRTestModelsDir(t)
 	isolateSharedOCRProvider(t)
 
-	srv := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/det":
-			_, _ = w.Write(fakeONNXPayload("det"))
-		case "/rec":
-			_, _ = w.Write(fakeONNXPayload("rec"))
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	withOCRModelURLs(t, srv.URL+"/det", srv.URL+"/rec")
+	srv := serveOCRZip(t, validOCRModelsZip(t))
+	withOCRModelsZipURL(t, srv.URL+"/"+ocr.ModelsZipFilename)
 
 	app := newOCRTestApp(corelib.AppConfig{OCREnabled: true})
 	if err := app.DownloadOCRModel(); err != nil {
 		t.Fatalf("DownloadOCRModel: %v", err)
 	}
-	for _, name := range []string{ocr.DetModelFilename("small"), ocr.RecModelFilename("small")} {
-		if _, ok := ocr.ModelFileStatus(filepath.Join(dir, name)); !ok {
-			t.Fatalf("%s missing/invalid after download", name)
-		}
+	// All tiers are extracted so tier switching is instant.
+	assertOCRModelsExtracted(t, dir)
+	// The zip is a transport artifact and must be gone after extraction.
+	if _, err := os.Stat(filepath.Join(dir, ocr.ModelsZipFilename)); !os.IsNotExist(err) {
+		t.Fatalf("models zip not deleted after extraction (stat err = %v)", err)
 	}
 	if got := app.CheckOCRModel(); got["exists"] != true {
 		t.Fatalf("CheckOCRModel after download = %#v", got)
 	}
 }
 
-func TestDownloadOCRModelHubFallbackAfterHuggingFaceFailures(t *testing.T) {
+func TestDownloadOCRModelHubFallbackAfterGitHubFailures(t *testing.T) {
 	withOCRTestHome(t)
 	dir := withOCRTestModelsDir(t)
 	isolateSharedOCRProvider(t)
 
-	var hfHits atomic.Int32
-	hf := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
-		hfHits.Add(1)
+	var ghHits atomic.Int32
+	gh := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
+		ghHits.Add(1)
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
-	hub := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch filepath.Base(r.URL.Path) {
-		case ocr.DetModelFilename("small"):
-			_, _ = w.Write(fakeONNXPayload("det"))
-		case ocr.RecModelFilename("small"):
-			_, _ = w.Write(fakeONNXPayload("rec"))
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	withOCRModelURLs(t, hf.URL+"/det", hf.URL+"/rec")
+	hub := serveOCRZip(t, validOCRModelsZip(t))
+	withOCRModelsZipURL(t, gh.URL+"/"+ocr.ModelsZipFilename)
 
 	app := newOCRTestApp(corelib.AppConfig{OCREnabled: true, RemoteHubURL: hub.URL + "/"})
 	if err := app.DownloadOCRModel(); err != nil {
 		t.Fatalf("DownloadOCRModel with hub fallback: %v", err)
 	}
-	// 3 silent HF retries per file before falling back to the hub.
-	if got := hfHits.Load(); got != 6 {
-		t.Fatalf("HuggingFace attempts = %d, want 6 (3 per file)", got)
+	// 3 silent GitHub retries for the single zip before falling back to the hub.
+	if got := ghHits.Load(); got != 3 {
+		t.Fatalf("GitHub attempts = %d, want 3", got)
 	}
-	for _, name := range []string{ocr.DetModelFilename("small"), ocr.RecModelFilename("small")} {
-		if _, ok := ocr.ModelFileStatus(filepath.Join(dir, name)); !ok {
-			t.Fatalf("%s missing/invalid after hub fallback", name)
-		}
-	}
+	assertOCRModelsExtracted(t, dir)
 }
 
 func TestDownloadOCRModelBothSourcesFailLeavesNoFiles(t *testing.T) {
@@ -191,25 +238,20 @@ func TestDownloadOCRModelBothSourcesFailLeavesNoFiles(t *testing.T) {
 	dir := withOCRTestModelsDir(t)
 	isolateSharedOCRProvider(t)
 
-	hf := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
+	gh := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
 	hub := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
-	withOCRModelURLs(t, hf.URL+"/det", hf.URL+"/rec")
+	withOCRModelsZipURL(t, gh.URL+"/"+ocr.ModelsZipFilename)
 
 	app := newOCRTestApp(corelib.AppConfig{OCREnabled: true, RemoteHubURL: hub.URL})
 	err := app.DownloadOCRModel()
 	if err == nil {
 		t.Fatal("DownloadOCRModel succeeded with both sources failing")
 	}
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".onnx") {
-			t.Fatalf("partial model file left behind: %s", e.Name())
-		}
-	}
+	assertNoONNXFiles(t, dir)
 }
 
 func TestDownloadOCRModelNoHubConfigured(t *testing.T) {
@@ -217,37 +259,57 @@ func TestDownloadOCRModelNoHubConfigured(t *testing.T) {
 	withOCRTestModelsDir(t)
 	isolateSharedOCRProvider(t)
 
-	hf := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
+	gh := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
-	withOCRModelURLs(t, hf.URL+"/det", hf.URL+"/rec")
+	withOCRModelsZipURL(t, gh.URL+"/"+ocr.ModelsZipFilename)
 
 	app := newOCRTestApp(corelib.AppConfig{OCREnabled: true})
 	if err := app.DownloadOCRModel(); err == nil {
-		t.Fatal("DownloadOCRModel succeeded with HF down and no hub URL")
+		t.Fatal("DownloadOCRModel succeeded with GitHub down and no hub URL")
 	}
 }
 
-func TestDownloadOCRModelCorruptPayloadRejectedAndDeleted(t *testing.T) {
+func TestDownloadOCRModelCorruptZipLeavesNoFiles(t *testing.T) {
 	withOCRTestHome(t)
 	dir := withOCRTestModelsDir(t)
 	isolateSharedOCRProvider(t)
 
-	// Server answers 200 with an HTML error page — must fail ModelFileStatus.
+	// Server answers 200 with an HTML error page — not a valid zip.
 	srv := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("<html><body>502 Bad Gateway</body></html>"))
 	})
-	withOCRModelURLs(t, srv.URL+"/det", srv.URL+"/rec")
+	withOCRModelsZipURL(t, srv.URL+"/"+ocr.ModelsZipFilename)
+
+	app := newOCRTestApp(corelib.AppConfig{OCREnabled: true})
+	err := app.DownloadOCRModel()
+	if err == nil || !strings.Contains(err.Error(), "open OCR models zip") {
+		t.Fatalf("DownloadOCRModel error = %v, want zip open failure", err)
+	}
+	assertNoONNXFiles(t, dir)
+	// The corrupt zip must be deleted so the next attempt re-downloads.
+	if _, statErr := os.Stat(filepath.Join(dir, ocr.ModelsZipFilename)); !os.IsNotExist(statErr) {
+		t.Fatalf("corrupt zip not deleted (stat err = %v)", statErr)
+	}
+}
+
+func TestDownloadOCRModelInvalidPayloadInZipRejectedAndDeleted(t *testing.T) {
+	withOCRTestHome(t)
+	dir := withOCRTestModelsDir(t)
+	isolateSharedOCRProvider(t)
+
+	// A well-formed zip whose .onnx payloads fail ModelFileStatus (e.g. HTML).
+	srv := serveOCRZip(t, buildOCRModelsZip(t, func(name string) []byte {
+		return []byte("<html>not an onnx</html>")
+	}))
+	withOCRModelsZipURL(t, srv.URL+"/"+ocr.ModelsZipFilename)
 
 	app := newOCRTestApp(corelib.AppConfig{OCREnabled: true})
 	err := app.DownloadOCRModel()
 	if err == nil || !strings.Contains(err.Error(), "failed validation") {
 		t.Fatalf("DownloadOCRModel error = %v, want validation failure", err)
 	}
-	detPath := filepath.Join(dir, ocr.DetModelFilename("small"))
-	if _, statErr := os.Stat(detPath); !os.IsNotExist(statErr) {
-		t.Fatalf("corrupt det file not deleted (stat err = %v)", statErr)
-	}
+	assertNoONNXFiles(t, dir)
 }
 
 func TestDownloadOCRModelConcurrentCallersDeduped(t *testing.T) {
@@ -257,16 +319,13 @@ func TestDownloadOCRModelConcurrentCallersDeduped(t *testing.T) {
 
 	release := make(chan struct{})
 	var hits atomic.Int32
+	payload := validOCRModelsZip(t)
 	srv := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		<-release // hold the first download so other callers overlap it
-		if r.URL.Path == "/det" {
-			_, _ = w.Write(fakeONNXPayload("det"))
-		} else {
-			_, _ = w.Write(fakeONNXPayload("rec"))
-		}
+		_, _ = w.Write(payload)
 	})
-	withOCRModelURLs(t, srv.URL+"/det", srv.URL+"/rec")
+	withOCRModelsZipURL(t, srv.URL+"/"+ocr.ModelsZipFilename)
 
 	app := newOCRTestApp(corelib.AppConfig{OCREnabled: true})
 	const callers = 4
@@ -274,7 +333,7 @@ func TestDownloadOCRModelConcurrentCallersDeduped(t *testing.T) {
 	for i := 0; i < callers; i++ {
 		go func() { errs <- app.DownloadOCRModel() }()
 	}
-	// Wait for the winning caller's first request to arrive, give the losers a
+	// Wait for the winning caller's request to arrive, give the losers a
 	// moment to bounce off TryLock, then unblock the download.
 	for hits.Load() == 0 {
 		time.Sleep(5 * time.Millisecond)
@@ -286,9 +345,9 @@ func TestDownloadOCRModelConcurrentCallersDeduped(t *testing.T) {
 			t.Fatalf("concurrent DownloadOCRModel: %v", err)
 		}
 	}
-	// Exactly one caller did the work: 1 det + 1 rec request, no duplicates.
-	if got := hits.Load(); got != 2 {
-		t.Fatalf("server hits = %d, want 2 (dedup via TryLock failed)", got)
+	// Exactly one caller did the work: 1 zip request, no duplicates.
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("server hits = %d, want 1 (dedup via TryLock failed)", got)
 	}
 }
 
@@ -298,11 +357,12 @@ func TestDownloadOCRModelReturnsNilWhenLockHeld(t *testing.T) {
 	isolateSharedOCRProvider(t)
 
 	var hits atomic.Int32
+	payload := validOCRModelsZip(t)
 	srv := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		_, _ = w.Write(fakeONNXPayload("x"))
+		_, _ = w.Write(payload)
 	})
-	withOCRModelURLs(t, srv.URL+"/det", srv.URL+"/rec")
+	withOCRModelsZipURL(t, srv.URL+"/"+ocr.ModelsZipFilename)
 
 	ocrDownloadMu.Lock()
 	defer ocrDownloadMu.Unlock()
@@ -319,6 +379,69 @@ func TestDownloadOCRModelReturnsNilWhenLockHeld(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("server hit %d times while lock was held", hits.Load())
+	}
+}
+
+func TestExtractOCRModelsZipRejectsZipSlip(t *testing.T) {
+	dir := t.TempDir()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("../evil.onnx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(fakeONNXPayload("evil")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	zipPath := filepath.Join(dir, ocr.ModelsZipFilename)
+	if err := os.WriteFile(zipPath, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	extractDir := filepath.Join(dir, "models")
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err = extractOCRModelsZip(zipPath, extractDir)
+	if err == nil || !strings.Contains(err.Error(), "unsafe path") {
+		t.Fatalf("extractOCRModelsZip error = %v, want zip-slip rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "evil.onnx")); !os.IsNotExist(statErr) {
+		t.Fatalf("zip-slip file escaped the models dir (stat err = %v)", statErr)
+	}
+}
+
+// TestExtractOCRModelsZipRealBundle runs the extractor against the real
+// release zip when it is available locally (end-to-end sanity check).
+func TestExtractOCRModelsZipRealBundle(t *testing.T) {
+	zipPath := os.Getenv("OCR_MODELS_ZIP_PATH")
+	if zipPath == "" {
+		zipPath = filepath.Join("..", ".tmp", "ocr-models", "ocr-models.zip")
+	}
+	if _, err := os.Stat(zipPath); err != nil {
+		t.Skipf("real OCR models zip not available at %s", zipPath)
+	}
+
+	dir := t.TempDir()
+	if err := extractOCRModelsZip(zipPath, dir); err != nil {
+		t.Fatalf("extractOCRModelsZip(real bundle): %v", err)
+	}
+	for _, name := range expectedOCRModelFilenames() {
+		size, ok := ocr.ModelFileStatus(filepath.Join(dir, name))
+		if !ok {
+			t.Fatalf("real bundle: %s missing/invalid after extraction", name)
+		}
+		if size < 1<<20 {
+			t.Fatalf("real bundle: %s suspiciously small (%d bytes)", name, size)
+		}
+	}
+	// Non-.onnx bundle entries must not be extracted.
+	if _, err := os.Stat(filepath.Join(dir, "dict_ppocrv6_tiny.txt")); !os.IsNotExist(err) {
+		t.Fatalf("non-onnx bundle entry was extracted (stat err = %v)", err)
 	}
 }
 
@@ -369,4 +492,151 @@ func TestOCRDownloadEmitsNoEventWithoutWailsContext(t *testing.T) {
 	app := &App{}
 	app.emitOCRProgress(50, 1, 2, "")
 	app.emitOCRProgress(0, 0, 0, fmt.Sprintf("err"))
+}
+
+func TestSetOCREnabledPersists(t *testing.T) {
+	withOCRTestHome(t)
+	dir := withOCRTestModelsDir(t)
+	isolateSharedOCRProvider(t)
+	// Seed valid fake models so enabling does not kick a background download.
+	tier := corelib.DefaultOCRModelTier
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{ocr.DetModelFilename(tier), ocr.RecModelFilename(tier)} {
+		if err := os.WriteFile(filepath.Join(dir, name), fakeONNXPayload(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app := &App{}
+	if err := app.SetOCREnabled(false); err != nil {
+		t.Fatalf("SetOCREnabled(false) error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OCREnabled {
+		t.Fatal("ocr_enabled=false not persisted")
+	}
+	if err := app.SetOCREnabled(true); err != nil {
+		t.Fatalf("SetOCREnabled(true) error = %v", err)
+	}
+	cfg, err = app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.OCREnabled {
+		t.Fatal("ocr_enabled=true not persisted")
+	}
+}
+
+func TestPatchConfigFieldsOCRKeys(t *testing.T) {
+	withOCRTestHome(t)
+	app := &App{}
+	cfg, err := app.PatchConfigFields(map[string]interface{}{
+		"ocr_enabled":    false,
+		"ocr_model_tier": "medium",
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields ocr keys error = %v", err)
+	}
+	if cfg.OCREnabled {
+		t.Fatal("ocr_enabled=false not applied")
+	}
+	if cfg.OCRModelTier != "medium" {
+		t.Fatalf("ocr_model_tier = %q, want medium", cfg.OCRModelTier)
+	}
+	cfg, err = app.PatchConfigFields(map[string]interface{}{"ocr_model_tier": "huge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OCRModelTier != corelib.DefaultOCRModelTier {
+		t.Fatalf("junk tier normalized to %q, want %q", cfg.OCRModelTier, corelib.DefaultOCRModelTier)
+	}
+}
+
+func TestSetOCRModelTierPersistsAndNormalizes(t *testing.T) {
+	withOCRTestHome(t)
+	withOCRTestModelsDir(t)
+	isolateSharedOCRProvider(t)
+
+	// OCR disabled: no background download is kicked on tier switch.
+	app := &App{}
+	if _, err := app.PatchConfigFields(map[string]interface{}{"ocr_enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.SetOCRModelTier("medium"); err != nil {
+		t.Fatalf("SetOCRModelTier(medium) error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OCRModelTier != "medium" {
+		t.Fatalf("ocr_model_tier = %q, want medium", cfg.OCRModelTier)
+	}
+
+	if err := app.SetOCRModelTier("huge"); err != nil {
+		t.Fatalf("SetOCRModelTier(huge) error = %v", err)
+	}
+	cfg, err = app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OCRModelTier != corelib.DefaultOCRModelTier {
+		t.Fatalf("junk tier persisted as %q, want normalized %q", cfg.OCRModelTier, corelib.DefaultOCRModelTier)
+	}
+}
+
+// TestSetOCRModelTierInstantAfterZipExtraction verifies the zip flow's key
+// property: because one download extracts every tier, switching tiers
+// afterwards finds the files already present and kicks no new download.
+func TestSetOCRModelTierInstantAfterZipExtraction(t *testing.T) {
+	withOCRTestHome(t)
+	dir := withOCRTestModelsDir(t)
+	isolateSharedOCRProvider(t)
+
+	var hits atomic.Int32
+	srv := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(validOCRModelsZip(t))
+	})
+	withOCRModelsZipURL(t, srv.URL+"/"+ocr.ModelsZipFilename)
+
+	// Fresh test home: defaults have ocr_enabled=true and the default tier
+	// (small). Download once — the zip extracts all tiers.
+	app := &App{}
+	if err := app.DownloadOCRModel(); err != nil {
+		t.Fatalf("DownloadOCRModel: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("server hits = %d, want 1", got)
+	}
+
+	if err := app.SetOCRModelTier("tiny"); err != nil {
+		t.Fatalf("SetOCRModelTier(tiny) error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OCRModelTier != "tiny" {
+		t.Fatalf("ocr_model_tier = %q, want tiny", cfg.OCRModelTier)
+	}
+	// The tiny tier's files were extracted by the same zip download.
+	_, detOK := ocr.ModelFileStatus(filepath.Join(dir, ocr.DetModelFilename("tiny")))
+	_, recOK := ocr.ModelFileStatus(filepath.Join(dir, ocr.RecModelFilename("tiny")))
+	if !detOK || !recOK {
+		t.Fatal("tiny tier files missing after zip extraction")
+	}
+	if got := app.CheckOCRModel(); got["exists"] != true || got["tier"] != "tiny" {
+		t.Fatalf("CheckOCRModel after tier switch = %#v", got)
+	}
+	// Give any (unexpectedly) kicked background download a moment to run.
+	time.Sleep(200 * time.Millisecond)
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("tier switch kicked a new download: server hits = %d, want 1", got)
+	}
 }

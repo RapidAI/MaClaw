@@ -37,16 +37,32 @@ func TestSavePastedFileSanitizesNameAndWritesData(t *testing.T) {
 }
 
 func TestSavePastedFileUsesMimeFallbackExtension(t *testing.T) {
-	app := &App{}
-	encoded := base64.StdEncoding.EncodeToString([]byte("pdf-ish"))
-	path, err := app.SavePastedFile(encoded, "clipboard", "application/pdf")
-	if err != nil {
-		t.Fatalf("SavePastedFile returned error: %v", err)
-	}
-	defer os.Remove(path)
+	for _, tt := range []struct {
+		name string
+		mime string
+		want string
+	}{
+		{name: "pdf", mime: "application/pdf", want: ".pdf"},
+		{name: "legacy word", mime: "application/msword", want: ".doc"},
+		{name: "modern word", mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", want: ".docx"},
+		{name: "legacy excel", mime: "application/vnd.ms-excel", want: ".xls"},
+		{name: "modern excel", mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", want: ".xlsx"},
+		{name: "legacy powerpoint", mime: "application/vnd.ms-powerpoint", want: ".ppt"},
+		{name: "modern powerpoint", mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation", want: ".pptx"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := &App{}
+			encoded := base64.StdEncoding.EncodeToString([]byte("office-ish"))
+			path, err := app.SavePastedFile(encoded, "clipboard", tt.mime)
+			if err != nil {
+				t.Fatalf("SavePastedFile returned error: %v", err)
+			}
+			defer os.Remove(path)
 
-	if !strings.HasSuffix(filepath.Base(path), ".pdf") {
-		t.Fatalf("expected .pdf fallback extension, got %q", filepath.Base(path))
+			if !strings.HasSuffix(filepath.Base(path), tt.want) {
+				t.Fatalf("mime %q expected %s fallback extension, got %q", tt.mime, tt.want, filepath.Base(path))
+			}
+		})
 	}
 }
 

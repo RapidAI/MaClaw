@@ -11,10 +11,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/ocr"
 )
 
-// TestModelDownloadHandlerServesOCRArtifacts requests each of the 6 PP-OCRv6
-// ONNX filenames (det+rec for tiny/small/medium) through the handler's path
-// validation and extension allowlist.
-func TestModelDownloadHandlerServesOCRArtifacts(t *testing.T) {
+// TestModelDownloadHandlerServesOCRModelsZip requests the OCR models bundle
+// through the handler's path validation and extension allowlist.
+func TestModelDownloadHandlerServesOCRModelsZip(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "configs")
 	modelsDir := filepath.Join(root, "data", "models")
@@ -25,36 +24,31 @@ func TestModelDownloadHandlerServesOCRArtifacts(t *testing.T) {
 		t.Fatalf("mkdir models dir: %v", err)
 	}
 
-	names := defaultHubOCRModelFiles()
-	if len(names) != 6 {
-		t.Fatalf("defaultHubOCRModelFiles = %v, want 6 entries", names)
+	name := ocr.ModelsZipFilename
+	if !strings.HasSuffix(name, ".zip") {
+		t.Fatalf("OCR hub model %q is not a .zip file", name)
+	}
+	if !isAllowedModelFilename(name) {
+		t.Fatalf("OCR hub model %q rejected by isAllowedModelFilename", name)
+	}
+	if err := os.WriteFile(filepath.Join(modelsDir, name), []byte("zip:"+name), 0644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
 	}
 	h := ModelDownloadHandler(filepath.Join(configDir, "config.yaml"))
-	for _, name := range names {
-		if !strings.HasSuffix(name, ".onnx") {
-			t.Fatalf("OCR hub model %q is not an .onnx file", name)
-		}
-		if !isAllowedModelFilename(name) {
-			t.Fatalf("OCR hub model %q rejected by isAllowedModelFilename", name)
-		}
-		if err := os.WriteFile(filepath.Join(modelsDir, name), []byte("onnx:"+name), 0644); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/models/"+name, nil)
-		req.SetPathValue("filename", name)
-		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("%s status=%d body=%s", name, rr.Code, rr.Body.String())
-		}
-		if got := rr.Body.String(); got != "onnx:"+name {
-			t.Fatalf("%s body=%q", name, got)
-		}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/models/"+name, nil)
+	req.SetPathValue("filename", name)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("%s status=%d body=%s", name, rr.Code, rr.Body.String())
+	}
+	if got := rr.Body.String(); got != "zip:"+name {
+		t.Fatalf("%s body=%q", name, got)
 	}
 }
 
 // TestModelDownloadHandlerRejectsOCRTraversal makes sure ../ traversal against
-// OCR model names is still rejected even though .onnx is allowlisted.
+// OCR model names is still rejected even though .zip/.onnx are allowlisted.
 func TestModelDownloadHandlerRejectsOCRTraversal(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "configs")
@@ -68,12 +62,12 @@ func TestModelDownloadHandlerRejectsOCRTraversal(t *testing.T) {
 		filename string
 		wantCode int
 	}{
-		{"dotdot prefix", "../ppocrv6_small_det.onnx", http.StatusBadRequest},
-		{"nested dotdot", "nested/../../ppocrv6_small_rec.onnx", http.StatusBadRequest},
-		{"backslash", `..\ppocrv6_small_det.onnx`, http.StatusBadRequest},
-		{"subdir", "subdir/ppocrv6_small_det.onnx", http.StatusBadRequest},
-		{"double extension trick", "ppocrv6_small_det.onnx.txt", http.StatusForbidden},
-		{"no extension", "ppocrv6_small_det", http.StatusForbidden},
+		{"dotdot prefix", "../ocr-models.zip", http.StatusBadRequest},
+		{"nested dotdot", "nested/../../ocr-models.zip", http.StatusBadRequest},
+		{"backslash", `..\ocr-models.zip`, http.StatusBadRequest},
+		{"subdir", "subdir/ocr-models.zip", http.StatusBadRequest},
+		{"double extension trick", "ocr-models.zip.txt", http.StatusForbidden},
+		{"no extension", "ocr-models", http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/models/"+tc.filename, nil)
@@ -88,7 +82,7 @@ func TestModelDownloadHandlerRejectsOCRTraversal(t *testing.T) {
 }
 
 // TestDefaultHubModelFilesIncludesOCRModels confirms the default prefetch list
-// carries all 6 OCR artifacts and that they survive expected-files filtering.
+// carries the OCR models zip and that it survives expected-files filtering.
 func TestDefaultHubModelFilesIncludesOCRModels(t *testing.T) {
 	t.Setenv("HUB_MODEL_FILES", "")
 	expected := modelDownloadExpectedFiles()
@@ -96,11 +90,7 @@ func TestDefaultHubModelFilesIncludesOCRModels(t *testing.T) {
 	for _, name := range expected {
 		set[name] = true
 	}
-	for _, tier := range []string{"tiny", "small", "medium"} {
-		for _, name := range []string{ocr.DetModelFilename(tier), ocr.RecModelFilename(tier)} {
-			if !set[name] {
-				t.Fatalf("default hub model files missing %s", name)
-			}
-		}
+	if !set[ocr.ModelsZipFilename] {
+		t.Fatalf("default hub model files missing %s (have %v)", ocr.ModelsZipFilename, expected)
 	}
 }

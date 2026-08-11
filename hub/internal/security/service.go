@@ -708,6 +708,15 @@ func (s *SecurityService) GetUserGroupID(ctx context.Context, email string) (str
 	return s.store.GetUserGroup(ctx, email)
 }
 
+// GetGroupByID returns a security group by id within the tenant from context.
+// Used by digital asset ACL ancestor walks.
+func (s *SecurityService) GetGroupByID(ctx context.Context, id string) (*SecurityGroup, error) {
+	if s == nil || s.store == nil {
+		return nil, nil
+	}
+	return s.store.GetGroupByID(ctx, id)
+}
+
 func (s *SecurityService) resolveUserPolicyGroup(ctx context.Context, email string) (string, error) {
 	groupID, err := s.store.GetUserGroup(ctx, email)
 	if err != nil {

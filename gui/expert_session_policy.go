@@ -7,6 +7,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -24,6 +27,12 @@ const expertSessionUserIDPrefix = desktopUserID + ":expert:"
 // expertSessionUserID builds the session userID for an expert tab.
 func expertSessionUserID(expertID string) string {
 	return expertSessionUserIDPrefix + strings.TrimSpace(expertID)
+}
+
+// expertTabSessionID mirrors the frontend expertTabId() (expertTypes.ts):
+// expert tab session files (tab_<id>.json) are keyed by this id.
+func expertTabSessionID(expertID string) string {
+	return "expert-" + strings.TrimSpace(expertID)
 }
 
 // expertIDFromUserID extracts the expert id from an expert session userID;
@@ -45,7 +54,97 @@ type expertDefCacheEntry struct {
 	expiresAt time.Time
 }
 
-var expertDefCache sync.Map // userID -> expertDefCacheEntry
+var expertDefCache sync.Map           // userID -> expertDefCacheEntry
+var assistantBindingByUserID sync.Map // scoped userID -> *assistantBindingTurnScope
+
+// assistantBindingTurnScope holds immutable, turn-local binding policy. In
+// particular, ExpertDef is resolved before the loop starts. If an administrator
+// deletes that expert during a running turn, the rest of the turn retains the
+// same restrictive tool/skill policy instead of becoming an unrestricted
+// general session after cache invalidation.
+type assistantBindingTurnScope struct {
+	binding   agent.AssistantBinding
+	expertDef *ExpertDefinition
+}
+
+// cloneAssistantBinding makes transport-owned binding metadata safe to carry
+// into an asynchronous follow-up. The policy must never borrow mutable slices
+// from the inbound message or allow a synthetic command to mutate its parent.
+func cloneAssistantBinding(binding *agent.AssistantBinding) *agent.AssistantBinding {
+	if binding == nil {
+		return nil
+	}
+	clone := *binding
+	clone.DocumentDirectories = append([]string(nil), binding.DocumentDirectories...)
+	clone.AllowedDirectories = append([]string(nil), binding.AllowedDirectories...)
+	return &clone
+}
+
+// prepareAssistantBindingTurn validates and snapshots a binding without making
+// it visible to policy lookups yet. Normal IM turns acquire their per-session
+// serialization lock later in the entry path; publishing earlier would let a
+// queued same-session turn temporarily replace the active turn's policy.
+func prepareAssistantBindingTurn(msg IMUserMessage) (*assistantBindingTurnScope, string) {
+	if msg.AssistantBinding == nil || strings.TrimSpace(msg.UserID) == "" {
+		return nil, ""
+	}
+	binding := *cloneAssistantBinding(msg.AssistantBinding)
+	scope := assistantBindingTurnScope{binding: binding}
+	if strings.EqualFold(strings.TrimSpace(binding.Mode), corelib.LansengerAssistantModeExpert) {
+		expertID := strings.TrimSpace(binding.ExpertID)
+		if expertID == "" {
+			return nil, unavailableAssistantBindingExpertMessage
+		}
+		scope.expertDef = loadExpertDefByID(expertID)
+		if scope.expertDef == nil {
+			return nil, unavailableAssistantBindingExpertMessage
+		}
+	}
+	return &scope, ""
+}
+
+func activateAssistantBindingForTurn(userID string, scope *assistantBindingTurnScope) func() {
+	userID = strings.TrimSpace(userID)
+	if scope == nil || userID == "" {
+		return func() {}
+	}
+	// Store the scope pointer rather than the value: a binding contains directory
+	// slices and is therefore not comparable. Pointer identity also ensures a
+	// stale cleanup can never remove a newer turn's scope.
+	assistantBindingByUserID.Store(userID, scope)
+	return func() { assistantBindingByUserID.CompareAndDelete(userID, scope) }
+}
+
+// bindAssistantForTurn is retained for direct callers and tests. The normal
+// IM entry path uses prepare + activate after acquiring session serialization.
+func bindAssistantForTurn(msg IMUserMessage) (func(), string) {
+	scope, errText := prepareAssistantBindingTurn(msg)
+	if errText != "" {
+		return func() {}, errText
+	}
+	return activateAssistantBindingForTurn(msg.UserID, scope), ""
+}
+
+func assistantBindingForUserID(userID string) *agent.AssistantBinding {
+	if value, ok := assistantBindingByUserID.Load(strings.TrimSpace(userID)); ok {
+		if scope, ok := value.(*assistantBindingTurnScope); ok && scope != nil {
+			binding := scope.binding
+			return &binding
+		}
+	}
+	return nil
+}
+
+func assistantBindingExpertDefForUserID(userID string) *ExpertDefinition {
+	if value, ok := assistantBindingByUserID.Load(strings.TrimSpace(userID)); ok {
+		if scope, ok := value.(*assistantBindingTurnScope); ok && scope != nil {
+			return scope.expertDef
+		}
+	}
+	return nil
+}
+
+const unavailableAssistantBindingExpertMessage = "绑定的 AI 专家已不可用，请在蓝信机器人设置中重新选择。"
 
 // expertDefForUserID resolves the effective expert definition for a session
 // userID (user override copy first, then builtin). Returns nil for non-expert
@@ -53,22 +152,43 @@ var expertDefCache sync.Map // userID -> expertDefCacheEntry
 func expertDefForUserID(userID string) *ExpertDefinition {
 	id := expertIDFromUserID(userID)
 	if id == "" {
+		if binding := assistantBindingForUserID(userID); binding != nil && strings.EqualFold(binding.Mode, corelib.LansengerAssistantModeExpert) {
+			// Binding turns use the definition snapshotted at admission. This is
+			// deliberate: it retains restrictions through a concurrent delete.
+			return assistantBindingExpertDefForUserID(userID)
+		}
+	}
+	if id == "" {
 		return nil
 	}
+	cacheKey := userID + "\x00" + id
 	now := time.Now()
-	if v, ok := expertDefCache.Load(userID); ok {
+	if v, ok := expertDefCache.Load(cacheKey); ok {
 		if entry, ok := v.(expertDefCacheEntry); ok && now.Before(entry.expiresAt) {
 			return entry.def
 		}
 	}
 	def := loadExpertDefByID(id)
-	expertDefCache.Store(userID, expertDefCacheEntry{def: def, expiresAt: now.Add(expertDefCacheTTL)})
+	expertDefCache.Store(cacheKey, expertDefCacheEntry{def: def, expiresAt: now.Add(expertDefCacheTTL)})
 	return def
 }
 
-// invalidateExpertDefCache drops the cached definition for one expert id.
+// invalidateExpertDefCache drops every cached definition for one expert id.
+// Cache keys are scoped by session userID so one expert can be used by several
+// independent bot profiles. Deleting only the desktop session key would leave
+// those profile caches live until their TTL expires.
 func invalidateExpertDefCache(expertID string) {
-	expertDefCache.Delete(expertSessionUserID(expertID))
+	expertID = strings.TrimSpace(expertID)
+	if expertID == "" {
+		return
+	}
+	suffix := "\x00" + expertID
+	expertDefCache.Range(func(key, _ interface{}) bool {
+		if cacheKey, ok := key.(string); ok && strings.HasSuffix(cacheKey, suffix) {
+			expertDefCache.Delete(key)
+		}
+		return true
+	})
 }
 
 // loadExpertDefByID reads the store, falling back to the builtin definition.

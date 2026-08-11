@@ -288,6 +288,96 @@ func TestSharedAgentLoopCallbacks_RouteTurn(t *testing.T) {
 	}
 }
 
+func TestSharedAgentLoopCallbacks_UpgradeLightPromptKeepsCurrentAttachmentOutOfComputerUse(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	defs := []map[string]interface{}{
+		toolDef("read_file", "read local file", nil, nil),
+		toolDef("computer_observe", "observe desktop", nil, nil),
+		toolDef("computer_click", "click desktop", nil, nil),
+		toolDef("gui_click", "legacy click", nil, nil),
+	}
+	h := &IMMessageHandler{toolDefGen: NewToolDefinitionGenerator(nil, defs)}
+	ctx := NewLoopContext("shared-attachment-upgrade", 3, nil)
+	ctx.Runtime.Execution = ExecutionProfile{
+		Layer:         string(executionLayerLight),
+		PromptProfile: "light",
+	}
+	// Simulate a desktop task immediately followed by an uploaded attachment.
+	// The raw text has no staged attachment marker yet, so the callback field is
+	// the signal that must survive the profile upgrade.
+	markComputerUseSessionActive()
+	cb := &sharedAgentLoopCallbacks{
+		handler:          h,
+		loopCtx:          ctx,
+		userID:           "desktop-user:attachment-upgrade",
+		userText:         "请阅读这个压缩包",
+		hasLocalFileWork: true,
+	}
+	if !cb.UpgradeLightPromptToFull("need local file reader") {
+		t.Fatal("light profile should upgrade to full")
+	}
+	names := toolNameSetForWorkflowFilterTest(cb.tools)
+	if names["computer_observe"] || names["computer_click"] {
+		t.Fatalf("attachment upgrade must not reintroduce Computer Use: %#v", names)
+	}
+	if !names["read_file"] || names["gui_click"] {
+		t.Fatalf("attachment upgrade must preserve file tools but remove legacy desktop tools: %#v", names)
+	}
+	if computerUseSessionActive() {
+		t.Fatal("attachment upgrade should clear the stale Computer Use session")
+	}
+}
+
+func TestLocalFileWorkFenceSurvivesToolRecoveryAndAugmentation(t *testing.T) {
+	defs := []map[string]interface{}{
+		toolDef("read_file", "read local file", nil, nil),
+		toolDef("computer_observe", "observe desktop", nil, nil),
+		toolDef("computer_click", "click desktop", nil, nil),
+	}
+	h := &IMMessageHandler{toolDefGen: NewToolDefinitionGenerator(nil, defs)}
+	ctx := NewLoopContext("local-file-recovery", 3, nil)
+	ctx.ComputerUseBlockedForLocalFileWork = true
+
+	restored, _, _ := h.restoreToolsAfterSkillRecover("desktop-user:local-file-recovery", ctx, h.getTools(), agentLoopPhase{})
+	restoredNames := toolNameSetForWorkflowFilterTest(restored)
+	if restoredNames["computer_observe"] || restoredNames["computer_click"] || !restoredNames["read_file"] {
+		t.Fatalf("recovery bypassed local-file Computer Use fence: %#v", restoredNames)
+	}
+
+	augmented, _ := h.finalizeInjectionAugmentedTools(ctx, "desktop-user:local-file-recovery", h.getTools())
+	augmentedNames := toolNameSetForWorkflowFilterTest(augmented)
+	if augmentedNames["computer_observe"] || augmentedNames["computer_click"] || !augmentedNames["read_file"] {
+		t.Fatalf("augmentation bypassed local-file Computer Use fence: %#v", augmentedNames)
+	}
+}
+
+func TestSharedAgentLoopCallbacks_RejectsStaleComputerUseCallForLocalFileWork(t *testing.T) {
+	called := false
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name: "computer_click",
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "desktop clicked"
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	ctx := NewLoopContext("shared-local-file-execution", 1, nil)
+	ctx.ComputerUseBlockedForLocalFileWork = true
+	cb := &sharedAgentLoopCallbacks{
+		handler:  &IMMessageHandler{registry: registry},
+		loopCtx:  ctx,
+		userText: "请阅读附件",
+	}
+	if got := cb.ExecuteTool("computer_click", `{}`); !strings.Contains(got, "local attachment") {
+		t.Fatalf("shared stale Computer Use call = %q, want local attachment rejection", got)
+	}
+	if called {
+		t.Fatal("shared callback must not invoke Computer Use handler for local-file work")
+	}
+}
+
 func TestSharedAgentLoopCallbacks_TransformConversationInjectsLiveSteer(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := "desktop-user:shared-steer"

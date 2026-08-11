@@ -328,7 +328,7 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	userID = strings.TrimSpace(userID)
 
 	// Computer Use playbook for text-only models (OmniParser local vision).
-	if section := computerUsePlaybookSection(h.shouldActivateComputerUse(msg)); section != "" {
+	if section := computerUsePlaybookSection(h.shouldActivateComputerUse(agent.CompactQueryForEmbedding(msg))); section != "" {
 		b.WriteString(section)
 	}
 
@@ -346,21 +346,23 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	memoryElapsed := time.Since(epilogueStart)
 
 	// Knowledge base auto-recall (multi-turn query when history is available).
-	// A Lansenger group may only receive explicitly authorised sources.
+	// A Lansenger group may only receive explicitly authorised personal sources;
+	// enterprise digital assets remain available when ACL-synced to this client.
 	knowledgeStart := time.Now()
 	knowledgeElapsed := time.Duration(0)
+	prior := agent.PriorUserMessagesFromHistory(history, agent.KnowledgeAutoRecallPriorUserTurns)
 	if loopCtx == nil || loopCtx.LansengerGroupPermissions == nil {
-		prior := agent.PriorUserMessagesFromHistory(history, agent.KnowledgeAutoRecallPriorUserTurns)
 		h.appendKnowledgeAutoRecall(b, msg, prior)
-		knowledgeElapsed = time.Since(knowledgeStart)
 	} else if loopCtx.LansengerGroupPermissions.allowsKnowledge() {
-		prior := agent.PriorUserMessagesFromHistory(history, agent.KnowledgeAutoRecallPriorUserTurns)
 		if h.appendKnowledgeAutoRecall(b, msg, prior, loopCtx.LansengerGroupPermissions.KnowledgeSourceIDs) {
 			loopCtx.LansengerGroupPermissions.markKnowledgeAutoRecallEvidence()
 		}
-		knowledgeElapsed = time.Since(knowledgeStart)
 		b.WriteString(lansengerGroupKnowledgePriorityPrompt())
 	}
+	if h.app != nil {
+		h.app.AppendEnterpriseKnowledgeAutoRecall(b, msg, prior)
+	}
+	knowledgeElapsed = time.Since(knowledgeStart)
 
 	// Knowledge skill section
 	h.appendKnowledgeSkillSection(b, msg)

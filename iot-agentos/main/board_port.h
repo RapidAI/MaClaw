@@ -4,7 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
-#include "qrcode.h"
 #include "device_api.h"
 
 // This is the only board-specific contract in the starter.  Implement the
@@ -59,6 +58,11 @@ bool board_port_enter_display_off(void);
  * panel to present an urgent scene without changing Power Service policy. */
 bool board_port_display_is_off(void);
 
+// Applies a normalized 0..100 display-brightness level received from MaClaw.
+// 0 drives the backlight fully off while the system keeps running; the level
+// outlives display-off transactions and is re-applied by every wake path.
+esp_err_t board_port_set_display_brightness(unsigned percent);
+
 esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg);
 /* Stops only the board-owned input scanner task.  It does not deinitialize
  * display/audio buses or make the boot-lifetime adapter restartable.  Input
@@ -96,6 +100,11 @@ esp_err_t board_port_prepare_cellular_transport(void);
  * retry/backoff and gateway semantics remain above the Device API boundary. */
 esp_err_t board_port_start_cellular_transport(uint32_t timeout_ms);
 bool board_port_is_cellular_transport_ready(void);
+/* Closes cellular transport admission and joins only adapter-owned recovery
+ * coordination. It is intentionally narrower than a full modem/UART or
+ * Connectivity-Service shutdown; callers must preserve active borrowers when
+ * this reports a timeout. */
+esp_err_t board_port_quiesce_cellular_transport(uint32_t timeout_ms);
 esp_err_t board_port_cellular_http_request(
     const device_connectivity_http_request_t *request);
 esp_err_t board_port_cellular_http_stream_request(
@@ -104,6 +113,10 @@ esp_err_t board_port_cellular_http_stream_request(
  * transport, if one exists. Wi-Fi foreground requests remain owned by the
  * shared HTTP client; profiles without cellular hardware return false. */
 bool board_port_cancel_cellular_foreground_request(void);
+/* Cancels all currently active cellular requests registered by the specified
+ * logical worker.  `owner` is opaque above the board port and never aliases a
+ * modem/UART object. */
+bool board_port_cancel_cellular_requests_for_owner(const void *owner);
 // Re-presents the board-specific boot artwork and keeps it in the foreground
 // until another explicit surface (ready, setup, error, etc.) replaces it.
 void board_port_show_startup_screen(void);
@@ -133,11 +146,23 @@ void board_port_set_pet_profile(const char *skin, bool motion_enabled);
 // Passing no frames clears the remote asset and restores the native skin.
 esp_err_t board_port_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
                                    size_t width, size_t height, uint32_t frame_ms);
-// Returns the maximum additional external-memory copy created by this display
-// port while replacing a remote pet asset. The caller owns neither memory nor
-// display state; this is only an admission-planning query.
+// Same install, but each source frame is released (and its array entry
+// NULLed) as soon as its scaled copy exists.  Bounds the install peak at
+// copies-plus-one-source instead of sources-plus-copies.
+esp_err_t board_port_set_pet_asset_consuming(uint8_t **frames, size_t frame_count,
+                                             size_t width, size_t height, uint32_t frame_ms);
+// Returns the external-memory plan for replacing a remote pet asset. Total
+// bytes and the largest one-shot allocation are deliberately distinct: a
+// renderer can retain N frames while allocating only one frame at a time.
 bool board_port_get_pet_asset_install_budget(size_t source_width, size_t source_height,
-                                             size_t frame_count, size_t *out_external_bytes);
+                                             size_t frame_count, size_t *out_total_external_bytes,
+                                             size_t *out_max_external_allocation_bytes,
+                                             size_t *out_max_frame_count);
+// Whether this board can safely run best-effort SPIFFS mutations while its
+// normal display/audio workload is live. This is deliberately narrower than
+// persistent-storage support: foreground recording persistence remains a
+// product requirement even on adapters that decline decorative pet caching.
+bool board_port_allows_optional_flash_work(void);
 // Shows the dedicated dynamic meeting-recording surface. Call every second
 // with the elapsed duration while recording; passing active=false restores the
 // selected pet screen.
@@ -172,13 +197,11 @@ bool board_port_get_response_page(unsigned *page);
 // Restores a zero-based text-reply page after board_port_show_response(). The
 // renderer clamps out-of-range values to the final available page.
 bool board_port_restore_response_page(unsigned page);
-// Adds/refreshes compact 24x24 glyphs supplied by the Hub. The RAM cache is
-// bounded and uses least-recently-used replacement, so arbitrary UTF-8 text
-// can render without embedding a full Chinese font in the firmware.
-int board_port_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]);
-// Draws a scannable QR code on the full display while the provisioning access
-// point is active. It stays on screen until another display operation occurs.
-void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid);
+  // Adds/refreshes compact 24x24 glyphs supplied by the Hub. The RAM cache is
+  // bounded and uses least-recently-used replacement, so arbitrary UTF-8 text
+  // can render without embedding a full Chinese font in the firmware. This is
+  // a synchronous copy contract: implementations must not retain `bitmap`.
+  int board_port_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]);
 // Renders an owned QR module matrix. This is the replay-safe form used by the
 // shared UI coordinator when an alarm temporarily preempts the setup scene.
 void board_port_show_qrcode_matrix(const uint8_t *modules, size_t module_count,
@@ -223,13 +246,16 @@ void board_port_set_alarm_scheduled(bool scheduled);
 void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_text,
                                  const char *label, unsigned attempt, unsigned max_attempts);
 
-// Must return a complete PCM WAV buffer allocated with heap_caps_malloc or
-// malloc. Caller owns it and releases it with free(). A 16 kHz/16-bit/mono
-// WAV is the hardware-to-MaClawSrv media contract; the server transcribes it
+// Must return a complete PCM WAV buffer through the selected profile Audio HAL.
+// Caller owns the opaque payload and releases it with board_port_release_captured_wav().
+// A 16 kHz/16-bit/mono WAV is the hardware-to-MaClawSrv media contract; the server transcribes it
 // before handing the resulting command to the agent. A capture that reaches
 // the pre-speech timeout returns ESP_ERR_NOT_FOUND and no WAV, so callers must
 // not submit silence as a command.
 esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len);
+// Releases a successful board_port_capture_wav() payload through the selected
+// profile Audio HAL. It is safe with NULL and does not affect I2S sessions.
+void board_port_release_captured_wav(uint8_t *wav);
 // Ends an active one-shot command capture at the next audio frame boundary.
 // If speech has already started, capture_wav returns the accumulated WAV;
 // otherwise it returns ESP_ERR_NOT_FOUND. Safe to call from the input task.
@@ -249,6 +275,10 @@ esp_err_t board_port_start_wake_word(board_port_wake_word_cb_t on_wake, void *ar
 // Stops the recognizer and releases its model/audio buffers so a provisioning
 // portal can run even on the smallest supported ESP32-S3 memory variant.
 esp_err_t board_port_stop_wake_word(void);
+/* Same cooperative recognizer/handoff stop with an explicit caller deadline.
+ * It is for lifecycle composition roots; normal interaction code uses the
+ * compatibility no-argument stop above. */
+esp_err_t board_port_stop_wake_word_with_timeout(uint32_t timeout_ms);
 // Temporarily gives exclusive microphone ownership to interaction/meeting
 // capture, then resumes offline recognition when released.
 void board_port_pause_wake_word(bool paused);

@@ -10,7 +10,9 @@ package main
 // Current limitations vs GUI:
 // - No doc preview panel (TUI is text-only; documents are shown inline)
 // - No SteeringWorkflowDetector (steering rules still work via agent loop)
-// - No SubAgent (TUI uses direct mode via agent.RunLoop)
+// - No isolated GUI-style SubAgent UI. Explicit coding implementation phases
+//   use a serial host adapter backed by corelib/codingruntime; other phases
+//   continue to use the direct agent.RunLoop path.
 //
 // These can be added incrementally without changing the architecture.
 

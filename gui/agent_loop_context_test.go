@@ -145,12 +145,14 @@ func TestProperty5_TimeoutExpiry(t *testing.T) {
 func TestLoopContext_ConcurrentAccess(t *testing.T) {
 	ctx := NewLoopContext("concurrent", 100, nil)
 	var wg sync.WaitGroup
-	rng := rand.New(rand.NewSource(42))
 
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			// math/rand.Rand is not safe for concurrent use. Keep a deterministic
+			// generator per worker so this test exercises LoopContext, not rand.
+			rng := rand.New(rand.NewSource(int64(42 + id)))
 			for j := 0; j < 100; j++ {
 				ctx.SetMaxIterations(rng.Intn(200))
 				_ = ctx.MaxIterations()

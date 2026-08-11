@@ -11,7 +11,7 @@ import (
 
 // veRemoteToolDefinitions returns the tool definitions available to VE sessions.
 // These are safe, read-only tools that don't modify the filesystem or execute commands.
-// Knowledge base tools (knowledge_search, knowledge_context_pack) are included because
+// Knowledge base tools (knowledge_search, knowledge_image_search, knowledge_context_pack) are included because
 // they only query the local SQLite FTS index — purely read-only, no LLM calls, no network.
 func veRemoteToolDefinitions(hasKnowledge bool) []map[string]interface{} {
 	tools := []map[string]interface{}{
@@ -81,6 +81,72 @@ func veRemoteToolDefinitions(hasKnowledge bool) []map[string]interface{} {
 			map[string]interface{}{
 				"type": "function",
 				"function": map[string]interface{}{
+					"name":        "knowledge_image_search",
+					"description": "检索本地知识库中已导入的图片。可按 OCR 文字、视觉描述、文件名和文档上下文查找图片；用户要求查看、展示或比较图片时使用。结果包含安全的图片展示标记。",
+					"parameters": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"query": map[string]interface{}{
+								"type":        "string",
+								"description": "图片 OCR、描述或上下文的搜索关键词",
+							},
+							"search_scope": map[string]interface{}{
+								"type":        "string",
+								"description": "Optional scope: all, project, or personal.",
+							},
+							"project_path": map[string]interface{}{
+								"type":        "string",
+								"description": "Optional explicit project path when searching project-scoped knowledge.",
+							},
+							"topic_hint": map[string]interface{}{
+								"type":        "string",
+								"description": "Optional topic hint for local result re-ranking.",
+							},
+							"context_terms": map[string]interface{}{
+								"type":        "array",
+								"items":       map[string]interface{}{"type": "string"},
+								"description": "Optional conversation or project terms for local re-ranking.",
+							},
+							"source_kinds": map[string]interface{}{
+								"type":        "array",
+								"items":       map[string]interface{}{"type": "string"},
+								"description": "Optional source kind filter; image evidence is always enforced.",
+							},
+							"source_ids": map[string]interface{}{
+								"type":        "array",
+								"items":       map[string]interface{}{"type": "string"},
+								"description": "Optional exact source IDs to search within.",
+							},
+							"ids": map[string]interface{}{
+								"type":        "array",
+								"items":       map[string]interface{}{"type": "string"},
+								"description": "Alias for source_ids.",
+							},
+							"labels": map[string]interface{}{
+								"type":        "array",
+								"items":       map[string]interface{}{"type": "string"},
+								"description": "Optional source labels or collections.",
+							},
+							"domain": map[string]interface{}{
+								"type":        "string",
+								"description": "Optional URL source domain filter.",
+							},
+							"limit": map[string]interface{}{
+								"type":        "integer",
+								"description": "最大图片结果数，默认 8，最大 50",
+							},
+							"include_disabled": map[string]interface{}{
+								"type":        "boolean",
+								"description": "Optionally include disabled local sources.",
+							},
+						},
+						"required": []string{"query"},
+					},
+				},
+			},
+			map[string]interface{}{
+				"type": "function",
+				"function": map[string]interface{}{
 					"name":        "knowledge_context_pack",
 					"description": "构建知识库上下文包。当需要综合多个知识来源回答复杂问题时使用。返回带引用的排名结果，适合需要多源综合的问题。基于本地 SQLite 全文搜索，不调用 LLM。",
 					"parameters": map[string]interface{}{
@@ -124,6 +190,8 @@ func executeVERemoteTool(app *App, name, argsJSON string) string {
 		return veToolListDirectory(args)
 	case "knowledge_search":
 		return veToolKnowledgeSearch(app, args)
+	case "knowledge_image_search":
+		return veToolKnowledgeImageSearch(app, args)
 	case "knowledge_context_pack":
 		return veToolKnowledgeContextPack(app, args)
 	default:
@@ -293,6 +361,42 @@ func veToolKnowledgeSearch(app *App, args map[string]interface{}) string {
 		"query": query,
 		"limit": float64(limit),
 	})
+}
+
+// veToolKnowledgeImageSearch executes the same display-safe, text-to-image
+// retrieval route as the GUI Agent. It remains read-only and does not grant VE
+// any local file-path access.
+func veToolKnowledgeImageSearch(app *App, args map[string]interface{}) string {
+	if app == nil {
+		return "[error] 知识库不可用"
+	}
+	query, _ := args["query"].(string)
+	if strings.TrimSpace(query) == "" {
+		return "[error] query 参数不能为空"
+	}
+	limit := 8
+	if value, ok := args["limit"].(float64); ok && value > 0 {
+		limit = int(value)
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	forwarded := map[string]interface{}{
+		"query": query,
+		"limit": float64(limit),
+	}
+	// Keep VE's image search aligned with the GUI Agent's read-only filtering
+	// contract. Explicitly copying this small allowlist avoids turning the VE
+	// wrapper into a pass-through for future write/path-related arguments.
+	for _, key := range []string{
+		"search_scope", "project_path", "topic_hint", "context_terms",
+		"source_kinds", "source_ids", "ids", "labels", "domain", "include_disabled",
+	} {
+		if value, ok := args[key]; ok {
+			forwarded[key] = value
+		}
+	}
+	return app.toolKnowledgeImageSearch(forwarded)
 }
 
 // veToolKnowledgeContextPack builds a knowledge context pack via the App's knowledge store.

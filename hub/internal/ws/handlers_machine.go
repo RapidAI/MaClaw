@@ -1597,10 +1597,10 @@ func (g *Gateway) handleIMGatewayMessage(ctx *ConnContext, msg Envelope) error {
 
 func (g *Gateway) handleDeviceGatewayPairing(ctx *ConnContext, msg Envelope) error {
 	if ctx.Role != "machine" {
-		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "FORBIDDEN", "Machine role required")
 	}
 	if g.DeviceGateway == nil {
-		return writeWSError(ctx.Conn, "UNAVAILABLE", "device gateway is not enabled")
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "device gateway is not enabled")
 	}
 	var payload struct {
 		PairCode string `json:"pairCode"`
@@ -1612,22 +1612,36 @@ func (g *Gateway) handleDeviceGatewayPairing(ctx *ConnContext, msg Envelope) err
 		PetAsset      map[string]any `json:"petAsset"`
 	}
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "invalid pairing payload")
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "invalid pairing payload")
 	}
 	pairCode := strings.TrimSpace(payload.PairCode)
 	if pairCode == "" {
 		pairCode = strings.TrimSpace(payload.Code)
 	}
+	if len(pairCode) != 6 || strings.Trim(pairCode, "0123456789") != "" {
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_PAIRING_CODE", "a six-digit pairing code is required")
+	}
 	if profiler, ok := g.DeviceGateway.(interface {
 		RegisterPairingWithPetProfileAsset(string, string, string, string, string, bool, map[string]any) error
 	}); ok {
 		if err := profiler.RegisterPairingWithPetProfileAsset(ctx.MachineID, ctx.TenantID, ctx.UserID, pairCode, payload.PetSkin, payload.MotionEnabled, payload.PetAsset); err != nil {
-			return writeWSError(ctx.Conn, "INVALID_MESSAGE", err.Error())
+			return writeWSRequestError(ctx.Conn, msg.RequestID, deviceGatewayPairingErrorCode(err), err.Error())
 		}
 	} else if err := g.DeviceGateway.RegisterPairing(ctx.MachineID, ctx.TenantID, ctx.UserID, pairCode); err != nil {
-		return writeWSError(ctx.Conn, "INVALID_MESSAGE", err.Error())
+		return writeWSRequestError(ctx.Conn, msg.RequestID, deviceGatewayPairingErrorCode(err), err.Error())
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
+}
+
+func deviceGatewayPairingErrorCode(err error) string {
+	var coded interface{ PairingErrorCode() string }
+	if errors.As(err, &coded) {
+		switch coded.PairingErrorCode() {
+		case "PAIRING_CODE_COLLISION", "HARDWARE_DISABLED":
+			return coded.PairingErrorCode()
+		}
+	}
+	return "INVALID_PAIRING_CODE"
 }
 
 func (g *Gateway) handleDeviceGatewayDevicesList(ctx *ConnContext, msg Envelope) error {
@@ -1677,9 +1691,17 @@ func (g *Gateway) handleDeviceGatewayDeviceDelete(ctx *ConnContext, msg Envelope
 		return writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "hardware device registry is unavailable")
 	}
 	if err := deleter.DeleteMachineDevice(ctx.MachineID, payload.ClientID); err != nil {
-		return writeWSRequestError(ctx.Conn, msg.RequestID, "DEVICE_DELETE_FAILED", err.Error())
+		return writeWSRequestError(ctx.Conn, msg.RequestID, deviceGatewayDeleteErrorCode(err), err.Error())
 	}
 	return writeAckPayload(ctx.Conn, msg.RequestID, map[string]any{"ok": true, "clientId": strings.TrimSpace(payload.ClientID)})
+}
+
+func deviceGatewayDeleteErrorCode(err error) string {
+	var coded interface{ HardwareErrorCode() string }
+	if errors.As(err, &coded) && coded.HardwareErrorCode() == "HARDWARE_NOT_OWNED" {
+		return "HARDWARE_NOT_OWNED"
+	}
+	return "DEVICE_DELETE_FAILED"
 }
 
 func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool, error) {
@@ -1775,25 +1797,74 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool
 	}
 	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "hardware_config") {
 		extra, _ := payload.Reply["extra"].(map[string]any)
+		_, hasVolume := extra["volume"]
+		_, hasBrightness := extra["brightness"]
+		_, hasScreenSleepTimeout := extra["screenSleepSeconds"]
+		if !hasVolume && !hasBrightness && !hasScreenSleepTimeout {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "hardware config requires volume, brightness, or screen sleep timeout")
+		}
+		for key := range extra {
+			if key != "volume" && key != "brightness" && key != "screenSleepSeconds" {
+				return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "hardware config contains an unsupported setting")
+			}
+		}
 		if payload.ClientID == "*" {
-			if updater, ok := g.DeviceGateway.(interface {
-				UpdateMachineVolume(string, any) error
-			}); ok {
-				if err := updater.UpdateMachineVolume(ctx.MachineID, extra["volume"]); err != nil {
-					return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+			if hasVolume {
+				if updater, ok := g.DeviceGateway.(interface {
+					UpdateMachineVolume(string, any) error
+				}); ok {
+					if err := updater.UpdateMachineVolume(ctx.MachineID, extra["volume"]); err != nil {
+						return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+					}
 				}
 			}
-		} else if updater, ok := g.DeviceGateway.(interface {
-			UpdateMachineDeviceVolume(string, string, any) error
-		}); ok {
-			if err := updater.UpdateMachineDeviceVolume(ctx.MachineID, payload.ClientID, extra["volume"]); err != nil {
-				return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+			if hasBrightness {
+				if updater, ok := g.DeviceGateway.(interface {
+					UpdateMachineBrightness(string, any) error
+				}); ok {
+					if err := updater.UpdateMachineBrightness(ctx.MachineID, extra["brightness"]); err != nil {
+						return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+					}
+				}
 			}
-			// The per-device updater validates ownership, persists the setting and
-			// queues it for a live compatible device. Do not route a second time:
-			// an offline binding is still a successful durable update and receives
-			// its level during the next handshake.
-			return false, nil
+			if hasScreenSleepTimeout {
+				return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "screen sleep timeout must target one hardware device")
+			}
+		} else {
+			if hasVolume {
+				if updater, ok := g.DeviceGateway.(interface {
+					UpdateMachineDeviceVolume(string, string, any) error
+				}); ok {
+					if err := updater.UpdateMachineDeviceVolume(ctx.MachineID, payload.ClientID, extra["volume"]); err != nil {
+						return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+					}
+				}
+			}
+			if hasBrightness {
+				if updater, ok := g.DeviceGateway.(interface {
+					UpdateMachineDeviceBrightness(string, string, any) error
+				}); ok {
+					if err := updater.UpdateMachineDeviceBrightness(ctx.MachineID, payload.ClientID, extra["brightness"]); err != nil {
+						return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+					}
+				}
+			}
+			if hasScreenSleepTimeout {
+				if updater, ok := g.DeviceGateway.(interface {
+					UpdateMachineDeviceScreenSleepTimeout(string, string, any) error
+				}); ok {
+					if err := updater.UpdateMachineDeviceScreenSleepTimeout(ctx.MachineID, payload.ClientID, extra["screenSleepSeconds"]); err != nil {
+						return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+					}
+				}
+			}
+			if hasVolume || hasBrightness || hasScreenSleepTimeout {
+				// The per-device updaters validate ownership, persist the setting
+				// and queue it for a live compatible device. Do not route a
+				// second time: an offline binding is still a successful durable
+				// update and receives its level during the next handshake.
+				return false, nil
+			}
 		}
 	}
 	extra, _ := payload.Reply["extra"].(map[string]any)
@@ -1824,6 +1895,18 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool
 		return false, nil
 	}
 	if relay, ok := g.DeviceGateway.(interface {
+		EnqueueMachineClientReplyResult(string, string, string, map[string]any) MachineClientReplyResult
+	}); ok {
+		if replyType, ok := payload.Reply["reply_type"].(string); ok && strings.TrimSpace(replyType) != "" {
+			payload.Reply["type"] = replyType
+		}
+		result := relay.EnqueueMachineClientReplyResult(ctx.MachineID, payload.ClientID, payload.ConversationID, payload.Reply)
+		if result.Queued == 0 {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, machineClientReplyErrorCode(result), machineClientReplyErrorMessage(result))
+		}
+		return false, nil
+	}
+	if relay, ok := g.DeviceGateway.(interface {
 		EnqueueMachineClientReplyCount(string, string, string, map[string]any) int
 	}); ok {
 		if replyType, ok := payload.Reply["reply_type"].(string); ok && strings.TrimSpace(replyType) != "" {
@@ -1835,6 +1918,44 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool
 		return false, nil
 	}
 	return true, writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "hardware reply routing is unavailable")
+}
+
+// MachineClientReplyResult is the selected-client routing result shared by
+// the websocket transport and its hardware gateway implementation. Keeping
+// this interface-shaped value here avoids a package import cycle: device
+// runtime code already depends on ws.
+type MachineClientReplyResult struct {
+	Queued int
+	Reason string
+}
+
+// machineClientReplyErrorCode maps the device gateway's selected-client
+// result to its stable WebSocket request error. The fallback Count-only
+// interface remains for test and extension compatibility.
+func machineClientReplyErrorCode(r MachineClientReplyResult) string {
+	switch r.Reason {
+	case "HARDWARE_DISABLED", "HARDWARE_OFFLINE", "HARDWARE_UNSUPPORTED", "HARDWARE_STALE_REPLY", "HARDWARE_NOT_OWNED":
+		return r.Reason
+	default:
+		return "HARDWARE_UNAVAILABLE"
+	}
+}
+
+func machineClientReplyErrorMessage(r MachineClientReplyResult) string {
+	switch machineClientReplyErrorCode(r) {
+	case "HARDWARE_DISABLED":
+		return "hardware is disabled for this machine"
+	case "HARDWARE_OFFLINE":
+		return "hardware is offline; wait for it to reconnect before remote playback"
+	case "HARDWARE_UNSUPPORTED":
+		return "hardware cannot play this audio with its current capabilities"
+	case "HARDWARE_STALE_REPLY":
+		return "hardware session changed; retry after the device reconnects"
+	case "HARDWARE_NOT_OWNED":
+		return "hardware client is not bound to this machine"
+	default:
+		return "hardware cannot accept the reply right now"
+	}
 }
 
 func (g *Gateway) cleanupConnection(ctx *ConnContext) {

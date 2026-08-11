@@ -269,11 +269,16 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 	}
 	observed := flash.ParseFlashID(flashRun.Output)
 	required := verified.Manifest.Chip.FlashBytes
-	if j.request.ExpectedFlashBytes > required {
-		required = j.request.ExpectedFlashBytes
+	// Capacity is an identity boundary for the official catalog, not merely a
+	// minimum storage budget. In particular, a 32 MiB Waveshare package must
+	// never be written to a larger, differently provisioned ESP32-S3 device.
+	// The selected profile and manifest have already been bound above; keep the
+	// independently observed ROM value exact here at the write boundary.
+	if j.request.ExpectedFlashBytes > 0 && j.request.ExpectedFlashBytes != required {
+		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("selected profile flash capacity %d does not match signed package capacity %d", j.request.ExpectedFlashBytes, required))
 	}
-	if observed.SizeBytes <= 0 || observed.SizeBytes < required {
-		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("flash capacity %d is below required %d", observed.SizeBytes, required))
+	if observed.SizeBytes <= 0 || observed.SizeBytes != required {
+		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("flash capacity %d does not exactly match required %d", observed.SizeBytes, required))
 	}
 	var currentLayout partition.Table
 	var currentApp flash.ESPAppDescription
@@ -728,8 +733,8 @@ func validateCurrentLayoutForMode(mode, currentFingerprint, expectedFingerprint 
 // validateWritePlan is the last pure-data boundary before a device write. It
 // repeats the per-file checks done by archive verification after extraction,
 // this time against the *observed* device capacity. In particular, a validly
-// signed full image for a 16 MiB profile must not be handed to esptool when a
-// smaller or otherwise incompatible flash chip is connected.
+// signed full image must not be handed to esptool when a smaller or otherwise
+// incompatible flash chip is connected.
 func validateWritePlan(images []flash.WriteImage, flashBytes uint64) error {
 	if flashBytes == 0 || len(images) == 0 || len(images) > 16 {
 		return errors.New("invalid write plan or observed flash capacity")

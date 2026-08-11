@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/lansengergroupsummary"
 )
@@ -193,6 +194,31 @@ func TestRecordGroupMessageBuffersText(t *testing.T) {
 	msgs, _, _ = svc.store.LoadNew("g1")
 	if len(msgs) != 1 {
 		t.Fatalf("p2p should not append, got %d", len(msgs))
+	}
+}
+
+func TestLansengerGroupSummaryIsScopedByBotProfile(t *testing.T) {
+	app := &App{}
+	first := newLansengerGatewayManagerForProfile(app, corelib.LansengerBotProfile{ID: "support"})
+	second := newLansengerGatewayManagerForProfile(app, corelib.LansengerBotProfile{ID: "sales"})
+	if first.groupSummaryScopeID("group-1") == second.groupSummaryScopeID("group-1") {
+		t.Fatal("different bot profiles shared a group-summary storage key")
+	}
+	if got := newLansengerGatewayManager(app).groupSummaryScopeID("group-1"); got != "group-1" {
+		t.Fatalf("legacy summary key = %q, want historical raw group ID", got)
+	}
+
+	svc := first.groupSummaryService()
+	svc.store = lansengergroupsummary.NewStore(t.TempDir())
+	msg := lansenger.IncomingMessage{ChatType: "group", GroupID: "group-1", FromUserID: "u1", Text: "support only", MessageID: "m1"}
+	first.recordGroupMessage(msg)
+	msgs, _, err := svc.store.LoadNew(first.groupSummaryScopeID(msg.GroupID))
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("first profile summary = %#v err=%v", msgs, err)
+	}
+	msgs, _, err = svc.store.LoadNew(second.groupSummaryScopeID(msg.GroupID))
+	if err != nil || len(msgs) != 0 {
+		t.Fatalf("second profile leaked first summary = %#v err=%v", msgs, err)
 	}
 }
 

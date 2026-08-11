@@ -2310,7 +2310,7 @@ func TestRegisterHubKeepsExistingUserLinksOnReRegister(t *testing.T) {
 		t.Fatalf("seed user link: %v", err)
 	}
 
-	if _, err := svc.RegisterHub(ctx, RegisterHubRequest{InstallationID: hub.InstallationID, OwnerEmail: "owner@example.com", Name: "Hub", BaseURL: "https://hub.example.com"}); err != nil {
+	if _, err := svc.RegisterHub(ctx, RegisterHubRequest{InstallationID: hub.InstallationID, OwnerEmail: "owner@example.com", RecoverySecret: "old-secret", Name: "Hub", BaseURL: "https://hub.example.com"}); err != nil {
 		t.Fatalf("RegisterHub: %v", err)
 	}
 	items, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
@@ -2326,6 +2326,72 @@ func TestRegisterHubKeepsExistingUserLinksOnReRegister(t *testing.T) {
 	}
 	if ownerLink == nil || ownerLink.HubID != hub.ID {
 		t.Fatalf("expected owner link for hub, got %+v", ownerLink)
+	}
+}
+
+func TestRegisterHubReinstallKeepsConfirmedHubRecoverable(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+
+	initial, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		InstallationID: "inst_esp32_recovery", OwnerEmail: "owner@example.com", Name: "Recovery Hub", BaseURL: "https://hub.example.com",
+	})
+	if err != nil {
+		t.Fatalf("initial RegisterHub: %v", err)
+	}
+	if err := svc.ConfirmRegistration(ctx, tokenFromURL(mailer.lastConfirmURL)); err != nil {
+		t.Fatalf("ConfirmRegistration: %v", err)
+	}
+	if err := svc.SaveDeviceCredentialBackup(ctx, initial.HubID, initial.HubSecret, `{"tokens":{"device-token":{"ClientID":"esp32","MachineID":"machine"}}}`); err != nil {
+		t.Fatalf("SaveDeviceCredentialBackup: %v", err)
+	}
+	if err := svc.SaveDeviceCredentialBackup(ctx, initial.HubID, initial.HubSecret, strings.Repeat("x", deviceCredentialBackupSnapshotMaxBytes+1)); err == nil || !strings.Contains(err.Error(), "snapshot exceeds") {
+		t.Fatalf("oversized SaveDeviceCredentialBackup error=%v, want size limit", err)
+	}
+
+	reinstalled, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		InstallationID: "inst_esp32_recovery", OwnerEmail: "owner@example.com", RecoverySecret: initial.HubSecret, Name: "Recovery Hub", BaseURL: "https://hub.example.com",
+	})
+	if err != nil {
+		t.Fatalf("reinstall RegisterHub: %v", err)
+	}
+	if reinstalled.HubID != initial.HubID || reinstalled.PendingConfirmation {
+		t.Fatalf("reinstall result = %+v, want same confirmed hub", reinstalled)
+	}
+	snapshot, found, err := svc.LoadDeviceCredentialBackup(ctx, reinstalled.HubID, reinstalled.HubSecret)
+	if err != nil || !found || !strings.Contains(snapshot, "device-token") {
+		t.Fatalf("LoadDeviceCredentialBackup() = (%q, %v, %v)", snapshot, found, err)
+	}
+}
+
+func TestRegisterHubReinstallRejectsMissingOrIncorrectRecoverySecret(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	initial, err := svc.RegisterHub(ctx, RegisterHubRequest{InstallationID: "inst_secret_guard", OwnerEmail: "owner@example.com", Name: "Recovery Hub", BaseURL: "https://hub.example.com"})
+	if err != nil {
+		t.Fatalf("initial RegisterHub: %v", err)
+	}
+	if err := svc.ConfirmRegistration(ctx, tokenFromURL(mailer.lastConfirmURL)); err != nil {
+		t.Fatalf("ConfirmRegistration: %v", err)
+	}
+	if _, err := svc.RegisterHub(ctx, RegisterHubRequest{InstallationID: "inst_secret_guard", OwnerEmail: "owner@example.com", Name: "Impostor Hub", BaseURL: "https://attacker.example.com"}); !errors.Is(err, ErrHubUnauthorized) {
+		t.Fatalf("missing recovery secret error = %v, want ErrHubUnauthorized", err)
+	}
+	if _, err := svc.RegisterHub(ctx, RegisterHubRequest{InstallationID: "inst_secret_guard", OwnerEmail: "owner@example.com", RecoverySecret: "wrong-secret", Name: "Impostor Hub", BaseURL: "https://attacker.example.com"}); !errors.Is(err, ErrHubUnauthorized) {
+		t.Fatalf("wrong recovery secret error = %v, want ErrHubUnauthorized", err)
+	}
+	stored, err := st.Hubs.GetByID(ctx, initial.HubID)
+	if err != nil || stored == nil {
+		t.Fatalf("GetByID() = (%+v, %v)", stored, err)
+	}
+	if stored.BaseURL != "https://hub.example.com" || stored.HubSecretHash != hashToken(initial.HubSecret) {
+		t.Fatalf("unauthorized re-registration altered hub: %+v", stored)
 	}
 }
 func TestRegisterAndHeartbeatHub(t *testing.T) {
@@ -3275,6 +3341,7 @@ func TestDisabledHubCannotReregister(t *testing.T) {
 	_, err = hubService.RegisterHub(ctx, RegisterHubRequest{
 		InstallationID: "inst_disabled_again",
 		OwnerEmail:     "owner@example.com",
+		RecoverySecret: result.HubSecret,
 		Name:           "Disable Again",
 		BaseURL:        "https://disabled.example.com",
 		Host:           "disabled.example.com",
@@ -3354,6 +3421,7 @@ func TestRegisterHubReusesExistingInstallationID(t *testing.T) {
 	second, err := hubService.RegisterHub(ctx, RegisterHubRequest{
 		InstallationID: "inst_same_machine",
 		OwnerEmail:     "owner@example.com",
+		RecoverySecret: first.HubSecret,
 		Name:           "Renamed Hub",
 		BaseURL:        "https://second.example.com",
 		Host:           "second.example.com",
@@ -3398,7 +3466,7 @@ func TestRegisterHubReRegisterPreservesPublicSignupWhenOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first RegisterHub: %v", err)
 	}
-	if _, err := hubService.RegisterHub(ctx, RegisterHubRequest{InstallationID: "inst_public_reregister", OwnerEmail: "owner@example.com", Name: "Public Hub Renamed", BaseURL: "https://public-renamed.example.com", Visibility: "shared", EnrollmentMode: "approval"}); err != nil {
+	if _, err := hubService.RegisterHub(ctx, RegisterHubRequest{InstallationID: "inst_public_reregister", OwnerEmail: "owner@example.com", RecoverySecret: first.HubSecret, Name: "Public Hub Renamed", BaseURL: "https://public-renamed.example.com", Visibility: "shared", EnrollmentMode: "approval"}); err != nil {
 		t.Fatalf("second RegisterHub: %v", err)
 	}
 	hub, err := st.Hubs.GetByID(ctx, first.HubID)
@@ -3431,6 +3499,7 @@ func TestRegisterHubReusesExistingEndpointWithoutInstallationID(t *testing.T) {
 
 	second, err := hubService.RegisterHub(ctx, RegisterHubRequest{
 		OwnerEmail:     "owner@example.com",
+		RecoverySecret: first.HubSecret,
 		Name:           "Renamed Hub",
 		BaseURL:        "http://41.10.1.7:9399",
 		Host:           "41.10.1.7",
@@ -3477,6 +3546,7 @@ func TestRegisterHubEndpointDedupesCaseVariants(t *testing.T) {
 	}
 	second, err := hubService.RegisterHub(ctx, RegisterHubRequest{
 		OwnerEmail:     "owner@example.com",
+		RecoverySecret: first.HubSecret,
 		Name:           "Renamed Hub",
 		BaseURL:        "http://hub.example.com:9399",
 		Host:           "hub.example.com",
@@ -3509,12 +3579,20 @@ func TestRegisterHubEndpointDedupesConcurrentRequests(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, attempts)
 	ids := make(chan string, attempts)
-	for i := 0; i < attempts; i++ {
+	initial, err := hubService.RegisterHub(ctx, RegisterHubRequest{
+		OwnerEmail: "owner@example.com", Name: "Hub 00", BaseURL: "http://41.10.1.7:9399", Host: "41.10.1.7", Port: 9399, Visibility: "private", EnrollmentMode: "open",
+	})
+	if err != nil {
+		t.Fatalf("initial RegisterHub: %v", err)
+	}
+	ids <- initial.HubID
+	for i := 1; i < attempts; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			result, err := hubService.RegisterHub(ctx, RegisterHubRequest{
 				OwnerEmail:     "owner@example.com",
+				RecoverySecret: initial.HubSecret,
 				Name:           fmt.Sprintf("Hub %02d", i),
 				BaseURL:        "http://41.10.1.7:9399",
 				Host:           "41.10.1.7",
@@ -3577,15 +3655,10 @@ func TestRegisterHubEndpointConflictRetriesAsReregistration(t *testing.T) {
 	hubService := NewService(repo, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
-	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{
-		OwnerEmail:     "owner@example.com",
-		Name:           "Recovered Hub",
-		BaseURL:        "http://41.10.1.7:9399",
-		Host:           "41.10.1.7",
-		Port:           9399,
-		Visibility:     "private",
-		EnrollmentMode: "open",
-	})
+	if err := st.Hubs.Create(ctx, &store.HubInstance{ID: "hub_competing_endpoint", OwnerEmail: "owner@example.com", Name: "Competing Hub", BaseURL: "http://41.10.1.7:9399", Host: "41.10.1.7", Port: 9399, Status: "pending_confirmation", HubSecretHash: hashToken("existing-secret"), CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatalf("seed competing hub: %v", err)
+	}
+	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{OwnerEmail: "owner@example.com", RecoverySecret: "existing-secret", Name: "Recovered Hub", BaseURL: "http://41.10.1.7:9399", Host: "41.10.1.7", Port: 9399, Visibility: "private", EnrollmentMode: "open"})
 	if err != nil {
 		t.Fatalf("RegisterHub: %v", err)
 	}
@@ -3640,6 +3713,7 @@ func TestRegisterHubKeepsRecentConfirmationLinksValid(t *testing.T) {
 	second, err := hubService.RegisterHub(ctx, RegisterHubRequest{
 		InstallationID: "inst_retry_confirmation",
 		OwnerEmail:     "owner@example.com",
+		RecoverySecret: first.HubSecret,
 		Name:           "Retry Hub",
 		BaseURL:        "https://retry.example.com",
 		Host:           "retry.example.com",

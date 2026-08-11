@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -22,6 +23,8 @@ func TestParseCodingExecRetryCommand(t *testing.T) {
 		{"继续编码", codingExecRetryActionResume},
 		{"繼續執行", codingExecRetryActionResume},
 		{"continue coding", codingExecRetryActionResume},
+		{"review child results", codingExecRetryActionReviewChildren},
+		{"审阅子任务结果", codingExecRetryActionReviewChildren},
 		{"随便聊聊", ""},
 		{"继续", ""}, // too generic — not claimed (workflow confirm)
 		// Long chat mentioning retry/fail must not be claimed.
@@ -32,6 +35,34 @@ func TestParseCodingExecRetryCommand(t *testing.T) {
 			t.Fatalf("parseCodingExecRetryCommand(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
+}
+
+func TestChildHandoffTaskItemsFromResultsRequiresExplicitRuntimeMarker(t *testing.T) {
+	tasks := []*v2.TaskItem{{Index: 1, Title: "handoff"}, {Index: 2, Title: "ordinary skip"}}
+	results := []v2.TaskRunResult{
+		{TaskIndex: 1, Status: v2.TaskSkipped, RuntimeTaskID: "runtime-parent", RuntimeHandoff: true},
+		{TaskIndex: 2, Status: v2.TaskSkipped, RuntimeTaskID: "unrelated", Error: "dependency not met"},
+	}
+	got := childHandoffTaskItemsFromResults(tasks, results)
+	if len(got) != 1 || got[0].Index != 1 {
+		t.Fatalf("child handoff tasks = %#v", got)
+	}
+}
+
+func TestCodingExecResumeActionsOffersExplicitChildReview(t *testing.T) {
+	previous, _ := agentViewCurrentLang.Load().(string)
+	t.Cleanup(func() { setAgentViewLang(previous) })
+	setAgentViewLang("en")
+	actions := codingExecResumeActions(codingExecCheckpoint{
+		Tasks:   []*v2.TaskItem{{Index: 1, Title: "handoff"}},
+		Results: []v2.TaskRunResult{{TaskIndex: 1, Status: v2.TaskSkipped, RuntimeTaskID: "runtime-parent", RuntimeHandoff: true}},
+	})
+	for _, action := range actions {
+		if action.Command == "review child results" {
+			return
+		}
+	}
+	t.Fatalf("child review action missing: %#v", actions)
 }
 
 func TestCodingExecTextFollowsUILanguage(t *testing.T) {
@@ -127,6 +158,126 @@ func TestPersistCodingExecCheckpointAtomicRename(t *testing.T) {
 	}
 }
 
+func TestRepairCompletedCodingWorkflowProjectionDoesNotReplayExecutor(t *testing.T) {
+	dir := t.TempDir()
+	userID := projectSessionOwnerID(dir)
+	wf := buildWorkflowV2State(v2.NewMemoryStore())
+	state := &v2.WorkflowState{
+		ID: "wf-completed-ledger", UserID: userID, Type: "coding", ProjectPath: dir,
+		Status: v2.StatusActive,
+		Phases: []v2.Phase{{ID: v2.PhaseCodingImplementation, ToolPolicy: v2.ToolPolicyFull, Status: v2.PhaseExecuting}},
+	}
+	if err := wf.store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	cp := codingExecCheckpoint{
+		UserID: userID, WorkflowID: state.ID, WorkflowPhaseID: v2.PhaseCodingImplementation, ProjectPath: dir, ProjectionPending: true, UpdatedAt: time.Now(),
+		Tasks:   []*v2.TaskItem{{Index: 1, Title: "already completed"}},
+		Results: []v2.TaskRunResult{{TaskIndex: 1, Title: "already completed", Status: v2.TaskPassed, RuntimeTaskID: "opaque-runtime-task"}},
+	}
+	persistCodingExecCheckpointToDisk(userID, cp)
+	app := &App{testHomeDir: t.TempDir()}
+	ledger := app.ensureCodingRuntimeStore()
+	if ledger == nil {
+		t.Fatal("ledger unavailable")
+	}
+	ledgerTask, err := ledger.CreateTask(codingruntime.Task{TaskID: "opaque-runtime-task", WorkflowID: state.ID, PhaseID: v2.PhaseCodingImplementation, ProjectRef: dir, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := ledger.StartAttempt(ledgerTask.TaskID, "test-owner", time.Minute, codingruntime.PolicySnapshot{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test-owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	app.repairCompletedCodingWorkflowProjections(wf)
+	app.closeCodingRuntimeStore()
+	updated, err := wf.store.Load(userID)
+	if err != nil || updated == nil || updated.Phases[0].Status != v2.PhaseCompleted || !strings.Contains(updated.Phases[0].Output, "通过: 1") {
+		t.Fatalf("completed projection was not repaired: state=%#v err=%v", updated, err)
+	}
+	if _, err := os.Stat(codingExecCheckpointFilePath(userID, dir)); !os.IsNotExist(err) {
+		t.Fatalf("completed projection marker remains: %v", err)
+	}
+}
+
+func TestRepairCompletedCodingWorkflowProjectionFailsClosedWithoutCompletedLedger(t *testing.T) {
+	dir := t.TempDir()
+	userID := projectSessionOwnerID(dir)
+	wf := buildWorkflowV2State(v2.NewMemoryStore())
+	state := &v2.WorkflowState{
+		ID: "wf-incomplete-ledger", UserID: userID, Type: "coding", ProjectPath: dir,
+		Status: v2.StatusActive,
+		Phases: []v2.Phase{{ID: v2.PhaseCodingImplementation, ToolPolicy: v2.ToolPolicyFull, Status: v2.PhaseExecuting}},
+	}
+	if err := wf.store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	cp := codingExecCheckpoint{
+		UserID: userID, WorkflowID: state.ID, WorkflowPhaseID: v2.PhaseCodingImplementation, ProjectPath: dir, ProjectionPending: true, UpdatedAt: time.Now(),
+		Tasks:   []*v2.TaskItem{{Index: 1, Title: "unproven completion"}},
+		Results: []v2.TaskRunResult{{TaskIndex: 1, Title: "unproven completion", Status: v2.TaskPassed, RuntimeTaskID: "missing-runtime-task"}},
+	}
+	persistCodingExecCheckpointToDisk(userID, cp)
+	app := &App{testHomeDir: t.TempDir()}
+	app.repairCompletedCodingWorkflowProjections(wf)
+	app.closeCodingRuntimeStore()
+	updated, err := wf.store.Load(userID)
+	if err != nil || updated == nil || updated.Phases[0].Status != v2.PhaseExecuting || updated.Phases[0].Output != "" {
+		t.Fatalf("unproven ledger result advanced workflow: state=%#v err=%v", updated, err)
+	}
+	if _, err := os.Stat(codingExecCheckpointFilePath(userID, dir)); err != nil {
+		t.Fatalf("unproven projection marker was removed: %v", err)
+	}
+}
+
+func TestRepairCompletedCodingWorkflowProjectionFailsClosedOnBindingMismatch(t *testing.T) {
+	dir := t.TempDir()
+	userID := projectSessionOwnerID(dir)
+	wf := buildWorkflowV2State(v2.NewMemoryStore())
+	state := &v2.WorkflowState{
+		ID: "wf-binding", UserID: userID, Type: "coding", ProjectPath: dir, Status: v2.StatusActive,
+		Phases: []v2.Phase{{ID: v2.PhaseCodingImplementation, ToolPolicy: v2.ToolPolicyFull, Status: v2.PhaseExecuting}},
+	}
+	if err := wf.store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	cp := codingExecCheckpoint{
+		UserID: userID, WorkflowID: state.ID, WorkflowPhaseID: v2.PhaseCodingImplementation, ProjectPath: dir, ProjectionPending: true, UpdatedAt: time.Now(),
+		Tasks: []*v2.TaskItem{{Index: 1, Title: "wrong binding"}}, Results: []v2.TaskRunResult{{TaskIndex: 1, Title: "wrong binding", Status: v2.TaskPassed, RuntimeTaskID: "wrong-binding-task"}},
+	}
+	persistCodingExecCheckpointToDisk(userID, cp)
+	app := &App{testHomeDir: t.TempDir()}
+	ledger := app.ensureCodingRuntimeStore()
+	if ledger == nil {
+		t.Fatal("ledger unavailable")
+	}
+	// A terminal task for another phase must never be projected into the
+	// active implementation phase during crash recovery.
+	task, err := ledger.CreateTask(codingruntime.Task{TaskID: "wrong-binding-task", WorkflowID: state.ID, PhaseID: "review", ProjectRef: dir, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := ledger.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: dir, Mode: "local"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.FinishAttempt(attempt.AttemptID, "owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	app.repairCompletedCodingWorkflowProjections(wf)
+	app.closeCodingRuntimeStore()
+	updated, err := wf.store.Load(userID)
+	if err != nil || updated == nil || updated.Phases[0].Status != v2.PhaseExecuting || updated.Phases[0].Output != "" {
+		t.Fatalf("mismatched runtime task advanced workflow: state=%#v err=%v", updated, err)
+	}
+	if _, err := os.Stat(codingExecCheckpointFilePath(userID, dir)); err != nil {
+		t.Fatalf("mismatched projection marker was removed: %v", err)
+	}
+}
+
 func TestFailedSubsetRerunDoesNotKeepDependsOn(t *testing.T) {
 	tasks := []*v2.TaskItem{
 		{Index: 1, Title: "A"},
@@ -206,6 +357,12 @@ func TestBuildCodingRemoteTaskPromptIncludesContext(t *testing.T) {
 	}
 	if mapRemoteCodingSubAgentStatus("cancelled") != v2.TaskSkipped {
 		t.Fatal("cancelled should map to skipped")
+	}
+	if mapRemoteCodingSubAgentStatus("waiting_child") != v2.TaskSkipped {
+		t.Fatal("waiting_child should not be projected as a failed or completed task")
+	}
+	if got := mapLocalCodingSubAgentStatusForRetry(TaskExecWaitingChild); got != v2.TaskSkipped {
+		t.Fatalf("local waiting_child = %q, want skipped", got)
 	}
 	if mapRemoteCodingSubAgentStatus("boom") != v2.TaskFailed {
 		t.Fatal("unknown should map to failed")

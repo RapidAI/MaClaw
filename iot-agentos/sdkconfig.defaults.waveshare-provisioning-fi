@@ -1,0 +1,5 @@
+# Dedicated non-release configuration used only for provisioning fail-closed
+# HIL. It is intentionally not included by any normal profile build command.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_PROVISIONING_FAILURE_TASK_CREATE=y
+CONFIG_MACLAW_PROVISIONING_TEST_FORCE_PORTAL=y

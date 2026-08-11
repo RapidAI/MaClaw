@@ -73,6 +73,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	identityService := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, invitationService, cfg.Identity.EnrollmentMode, cfg.Identity.AllowSelfEnroll, mailer, cfg.Server.PublicBaseURL)
 	identityService.SetTenantRepository(st.Tenants)
 	centerService := center.NewService(cfg, st.System)
+	centerService.SetConfigPath(configPath)
 	failureRecorder := diagnostics.NewFailureEventRecorder(st.FailureLogs)
 	centerService.SetFailureEventRecorder(failureRecorder)
 	invitationService.SetCenterSyncer(centerService)
@@ -294,6 +295,42 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	gateway.RegisterIMGatewayPlugin(lansengerPlugin)
 	gateway.RegisterIMGatewayPlugin(thirdPartyPlugin)
 	deviceGateway := im.NewPersistentDeviceGateway(thirdPartyPlugin, st.System)
+	// Hardware bearer credentials are owned by a GUI machine identity. Keep the
+	// minimal tenant/user/machine records in the same recovery snapshot so a Hub
+	// SQLite reinstall does not force the already-installed GUI to re-enroll
+	// before it can control its recovered hardware.
+	deviceGateway.SetCredentialIdentityRepositories(st.Tenants, st.Users, st.Machines)
+	credentialRestorer := sqlite.NewDeviceCredentialIdentityRestorer(provider)
+	deviceGateway.SetCredentialIdentityRestorer(credentialRestorer)
+	deviceGateway.SetCredentialSnapshotRestorer(credentialRestorer)
+	deviceGateway.SetCredentialBackup(centerService.BackupDeviceCredentials)
+	centerService.SetDeviceCredentialRecovery(func(ctx context.Context) {
+		recoveryResolved, err := deviceGateway.RestoreMissingCredentialsResult(ctx, centerService.RestoreDeviceCredentials)
+		if err != nil {
+			// Recovery is best-effort. A first install has no snapshot and an
+			// unavailable Hub Center must never block the local Hub from starting.
+			log.Printf("[bootstrap] hardware credential recovery unavailable: %v", err)
+		}
+		if !recoveryResolved {
+			// The local store is empty because this may be a reinstall. Never
+			// overwrite the remote binding backup with that empty state after a
+			// transient Hub Center error.
+			return
+		}
+		// A successful (re-)registration also publishes the current local
+		// snapshot. This seeds existing deployments when they upgrade, while a
+		// freshly reinstalled Hub first restores the snapshot above and then
+		// writes it back under its renewed Hub credential.
+		if snapshot, err := deviceGateway.ExportPersistedCredentials(); err != nil {
+			log.Printf("[bootstrap] hardware credential backup snapshot failed: %v", err)
+		} else if err := centerService.BackupDeviceCredentials(ctx, snapshot); err != nil {
+			log.Printf("[bootstrap] hardware credential backup unavailable: %v", err)
+		}
+	})
+	// StartBackgroundSync can complete an automatic registration before the
+	// device gateway is constructed. Run recovery once after wiring the hook so
+	// a freshly reinstalled Hub cannot miss its only startup restore attempt.
+	centerService.RecoverDeviceCredentialsNow(context.Background())
 	deviceGateway.SetMachineMessageSender(deviceService)
 	deviceGateway.SetVoicePairTranscriber(httpapi.TranscribeHardwarePairingWAV)
 	httpapi.SetHardwareMeetingResultNotifier(deviceGateway)

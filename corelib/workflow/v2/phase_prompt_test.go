@@ -74,6 +74,47 @@ func TestBuildPhasePrompt_InjectsDocParsingGuidance(t *testing.T) {
 	}
 }
 
+func TestDocumentParsingGuidancePreservesOfficeFailClosedClasses(t *testing.T) {
+	for _, want := range []string{
+		"error_class=encrypted", "error_class=malformed", "error_class=source_changed",
+		"error_class=input_too_large", "error_class=output_too_large", "不支持提供密码后解密或读取",
+	} {
+		if !strings.Contains(documentParsingGuidance, want) {
+			t.Fatalf("document parsing guidance missing %q", want)
+		}
+	}
+}
+
+func TestDocumentParsingGuidanceDeclaresAllSixOfficeFormats(t *testing.T) {
+	for _, want := range []string{
+		".docx（新）、.doc（旧 Word 97-2003）",
+		".xlsx/.csv（新）、.xls（旧）",
+		".pptx（新）、.ppt（旧 PowerPoint 97-2003）",
+		".doc/.xls/.ppt：这些受支持旧格式先走 office",
+	} {
+		if !strings.Contains(documentParsingGuidance, want) {
+			t.Fatalf("document parsing guidance missing six-format contract %q", want)
+		}
+	}
+	if strings.Contains(documentParsingGuidance, "扩展名不在上面列表（如 .ppt") {
+		t.Fatal("legacy PPT must not be described as unsupported")
+	}
+}
+
+func TestUSPTODisclosureParsingGuidancePreservesOfficeFailClosedClasses(t *testing.T) {
+	prompt := phaseInstruction(WorkflowUSPatentApplication, "us_disclosure_analysis")
+	for _, want := range []string{
+		"encrypted, malformed, source_changed, input_too_large, or output_too_large",
+		"do NOT retry the same file through craft_tool, Skill, bash, PowerShell COM, LibreOffice, or another parser",
+		"do not accept passwords and password decryption is unsupported",
+		"Only for an ordinary office failure or an unsupported format",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("USPTO disclosure parsing guidance missing %q", want)
+		}
+	}
+}
+
 func TestBuildPhasePrompt_SkipsGuidanceWhenNoFilePath(t *testing.T) {
 	state := &WorkflowState{
 		Type:    "due_diligence",
@@ -394,6 +435,16 @@ func TestBuildPhasePrompt_InjectsGuidanceForTechParsing(t *testing.T) {
 	// Also check the phase-specific instruction is present.
 	if !strings.Contains(prompt, "技术方案详解") {
 		t.Error("expected tech_parsing phase instruction to be present")
+	}
+	for _, want := range []string{
+		"严格遵循其 error_class",
+		"encrypted、malformed、source_changed、input_too_large 或 output_too_large",
+		"禁止对同一文件自行用 bash/Python 或其他解析器绕过",
+		"只有普通 office 失败或不支持格式",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("tech_parsing guidance missing %q:\n%s", want, prompt)
+		}
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -31,6 +32,7 @@ type codingWorkbenchWorktree struct {
 	StepIndex   int
 	Label       string
 	created     bool
+	committed   bool
 }
 
 var codingWorkbenchWorktreeMu sync.Mutex
@@ -252,34 +254,38 @@ func createCodingWorkbenchWorktree(projectPath string, stepIndex int, label stri
 }
 
 // mergeBack commits worktree changes (if any) and integrates into the main tree.
-// Prefers cherry-pick when main is clean; otherwise copies changed files (main
-// pure-coding worktrees are often dirty with uncommitted prior steps).
-func (w *codingWorkbenchWorktree) mergeBack(mainProjectPath string) (merged bool, summary string, err error) {
+// It requires a clean primary checkout and uses a controlled cherry-pick so Git
+// remains the only conflict-resolution authority.
+func (w *codingWorkbenchWorktree) mergeBack(mainProjectPath string, declaredWrites ...[]string) (merged bool, summary string, err error) {
 	if w == nil || !w.created {
 		return false, "", nil
 	}
 	codingWorkbenchWorktreeMu.Lock()
 	defer codingWorkbenchWorktreeMu.Unlock()
 
-	// Stage + commit in worktree if dirty.
+	// Stage + commit in worktree if dirty. Retain an already committed rejected
+	// worktree so it can be explicitly inspected or retried later.
 	status, stErr := remote.RunGitOutput(w.Path, "status", "--porcelain")
 	if stErr != nil {
 		return false, "", fmt.Errorf("worktree status: %w", stErr)
 	}
-	if strings.TrimSpace(status) == "" {
+	if strings.TrimSpace(status) == "" && !w.committed {
 		return false, "worktree clean (no file changes to merge)", nil
 	}
-	_ = remote.RunGit(w.Path, "add", "-A")
-	msg := fmt.Sprintf("coding workbench T%d: %s", w.StepIndex, strings.TrimSpace(w.Label))
-	if strings.TrimSpace(w.Label) == "" {
-		msg = fmt.Sprintf("coding workbench T%d", w.StepIndex)
-	}
-	if err := remote.RunGit(w.Path, "commit", "-m", msg, "--no-verify"); err != nil {
-		status2, _ := remote.RunGitOutput(w.Path, "status", "--porcelain")
-		if strings.TrimSpace(status2) == "" {
-			return false, "worktree changes not commit-able (ignored?)", nil
+	if !w.committed {
+		_ = remote.RunGit(w.Path, "add", "-A")
+		msg := fmt.Sprintf("coding workbench T%d: %s", w.StepIndex, strings.TrimSpace(w.Label))
+		if strings.TrimSpace(w.Label) == "" {
+			msg = fmt.Sprintf("coding workbench T%d", w.StepIndex)
 		}
-		return false, "", fmt.Errorf("worktree commit: %w", err)
+		if err := remote.RunGit(w.Path, "commit", "-m", msg, "--no-verify"); err != nil {
+			status2, _ := remote.RunGitOutput(w.Path, "status", "--porcelain")
+			if strings.TrimSpace(status2) == "" {
+				return false, "worktree changes not commit-able (ignored?)", nil
+			}
+			return false, "", fmt.Errorf("worktree commit: %w", err)
+		}
+		w.committed = true
 	}
 	hash, _ := remote.RunGitOutput(w.Path, "rev-parse", "--short", "HEAD")
 	hash = strings.TrimSpace(hash)
@@ -307,48 +313,62 @@ func (w *codingWorkbenchWorktree) mergeBack(mainProjectPath string) (merged bool
 	if len(changed) == 0 {
 		return false, "worktree commit had no file list", nil
 	}
+	if len(declaredWrites) > 0 {
+		if err := validateCodingWorkbenchChangedFiles(w.GitRoot, changed, declaredWrites[0]); err != nil {
+			return false, "", err
+		}
+	}
 
 	mainStatus, _ := remote.RunGitOutput(mainRoot, "status", "--porcelain")
 	mainClean := strings.TrimSpace(mainStatus) == ""
-	if mainClean {
-		if err := remote.RunGit(mainRoot, "cherry-pick", "--allow-empty", w.Branch); err != nil {
-			_ = remote.RunGit(mainRoot, "cherry-pick", "--abort")
-			// Fall through to file copy.
-			log.Printf("[coding-worktree] cherry-pick failed, falling back to file copy: %v", err)
-		} else {
-			return true, fmt.Sprintf("merged worktree T%d (%s) via cherry-pick %s (%d files)", w.StepIndex, w.Branch, hash, len(changed)), nil
-		}
+	if !mainClean {
+		return false, "", fmt.Errorf("primary workspace is dirty; refusing worktree merge")
 	}
+	if err := remote.RunGit(mainRoot, "cherry-pick", "--allow-empty", w.Branch); err != nil {
+		_ = remote.RunGit(mainRoot, "cherry-pick", "--abort")
+		return false, "", fmt.Errorf("controlled worktree cherry-pick failed: %w", err)
+	}
+	return true, fmt.Sprintf("merged worktree T%d (%s) via controlled cherry-pick %s (%d files)", w.StepIndex, w.Branch, hash, len(changed)), nil
+}
 
-	// File-copy merge: map paths relative to git root into main checkout.
-	copied := 0
-	for _, rel := range changed {
-		rel = filepath.FromSlash(rel)
-		src := filepath.Join(w.Path, rel)
-		dst := filepath.Join(mainRoot, rel)
-		data, readErr := os.ReadFile(src)
-		if readErr != nil {
-			// Deleted file in worktree — remove on main if present.
-			if os.IsNotExist(readErr) {
-				_ = os.Remove(dst)
-				copied++
-				continue
-			}
-			return false, "", fmt.Errorf("read worktree file %s: %w", rel, readErr)
-		}
-		mode := os.FileMode(0o644)
-		if info, stErr := os.Stat(src); stErr == nil {
-			mode = info.Mode()
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return false, "", err
-		}
-		if err := os.WriteFile(dst, data, mode); err != nil {
-			return false, "", fmt.Errorf("write main file %s: %w", rel, err)
-		}
-		copied++
+// validateCodingWorkbenchChangedFiles binds actual Git output to the write-set
+// frozen in the Runtime Attempt. A worktree that modifies an undeclared path
+// may not enter the primary checkout.
+func validateCodingWorkbenchChangedFiles(projectRoot string, changed, declared []string) error {
+	scope := codingruntime.WriteScope{Mode: "local", ProjectRef: projectRoot}
+	set, err := codingruntime.NormalizeWriteSet(scope, declared)
+	if err != nil || set.Unknown {
+		return fmt.Errorf("worktree changed files cannot be checked against declared write set")
 	}
-	return true, fmt.Sprintf("merged worktree T%d (%s) via file-copy %s (%d files, main dirty=%v)", w.StepIndex, w.Branch, hash, copied, !mainClean), nil
+	for _, path := range changed {
+		candidate, err := codingruntime.NormalizeWriteSet(scope, []string{path})
+		if err != nil || len(candidate.Claims) != 1 {
+			return fmt.Errorf("worktree changed file %q is invalid", path)
+		}
+		allowed := false
+		for _, claim := range set.Claims {
+			if codingWorkbenchWriteClaimContains(claim, candidate.Claims[0]) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("worktree changed undeclared path %q", candidate.Claims[0].Path)
+		}
+	}
+	return nil
+}
+
+func codingWorkbenchWriteClaimContains(declared, changed codingruntime.WriteClaim) bool {
+	if strings.EqualFold(declared.Path, changed.Path) {
+		return true
+	}
+	if !declared.Directory {
+		return false
+	}
+	base := strings.Trim(strings.ReplaceAll(declared.Path, "\\", "/"), "/")
+	path := strings.Trim(strings.ReplaceAll(changed.Path, "\\", "/"), "/")
+	return strings.HasPrefix(strings.ToLower(path), strings.ToLower(base)+"/")
 }
 
 // cleanup removes the worktree and branch. Safe to call multiple times.

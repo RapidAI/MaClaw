@@ -86,6 +86,86 @@ type HubUserLinkSyncRequest struct {
 	ReplaceAll bool   `json:"replace_all,omitempty"`
 }
 
+type deviceCredentialBackupRequest struct {
+	HubSecret         string `json:"hub_secret"`
+	DeviceCredentials string `json:"device_credentials"`
+}
+
+const (
+	// A single GUI can bind five ESP32 devices. When each device uses the
+	// allowed eight-frame pet asset, the durable recovery snapshot is about
+	// 11 MiB before JSON overhead. A JSON string can require an escape byte for
+	// every source byte, so the transport envelope must be larger than the raw
+	// 16 MiB snapshot limit enforced by the service layer.
+	deviceCredentialBackupSnapshotMaxBytes = 16 << 20
+	deviceCredentialBackupBodyLimit        = deviceCredentialBackupSnapshotMaxBytes*2 + 64<<10
+)
+
+func hubCredentialSecret(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(authorization) > len("Bearer ") && strings.EqualFold(authorization[:len("Bearer ")], "Bearer ") {
+		return strings.TrimSpace(authorization[len("Bearer "):])
+	}
+	return ""
+}
+
+func HubDeviceCredentialBackupHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if service == nil {
+			writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "Hub device credential backup is unavailable")
+			return
+		}
+		hubID := strings.TrimSpace(r.PathValue("id"))
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			var req deviceCredentialBackupRequest
+			if err := decodeLimitedJSON(w, r, &req, deviceCredentialBackupBodyLimit); err != nil {
+				writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+				return
+			}
+			secret := hubCredentialSecret(r)
+			// Accept the body field temporarily for compatibility with older Hubs,
+			// but new Hubs send the credential only in Authorization.
+			if secret == "" {
+				secret = req.HubSecret
+			}
+			if err := service.SaveDeviceCredentialBackup(r.Context(), hubID, secret, req.DeviceCredentials); err != nil {
+				if errors.Is(err, hubs.ErrHubUnauthorized) {
+					writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
+					return
+				}
+				writeError(w, http.StatusBadRequest, "DEVICE_CREDENTIAL_BACKUP_FAILED", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		case http.MethodGet:
+			snapshot, found, err := service.LoadDeviceCredentialBackup(r.Context(), hubID, hubCredentialSecret(r))
+			if err != nil {
+				if errors.Is(err, hubs.ErrHubUnauthorized) {
+					writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "DEVICE_CREDENTIAL_RECOVERY_FAILED", err.Error())
+				return
+			}
+			if !found {
+				writeError(w, http.StatusNotFound, "DEVICE_CREDENTIALS_NOT_FOUND", "No device credentials are backed up for this Hub")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"found": true, "device_credentials": snapshot})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET or PUT required")
+		}
+	}
+}
+
 func RegisterHubHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req hubs.RegisterHubRequest
@@ -772,6 +852,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("DELETE /api/admin/blocked-ips/{ip}", RequireAdmin(adminService, RemoveBlockedIPHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/mail/test", RequireAdmin(adminService, AdminSendTestMailHandler(mailer)))
 	mux.HandleFunc("POST /api/hubs/register", RegisterHubHandler(hubService))
+	mux.HandleFunc("GET /api/hubs/{id}/device-credentials", HubDeviceCredentialBackupHandler(hubService))
+	mux.HandleFunc("PUT /api/hubs/{id}/device-credentials", HubDeviceCredentialBackupHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService, haSvc))
 	mux.HandleFunc("POST /api/hubs/{id}/user-links/sync", HubUserLinkSyncHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/user-usage/sync", HubUserUsageSyncHandler(hubService, userUsageRepo))
@@ -1002,6 +1084,9 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("GET /api/v1/expert-market/experts/{id}/download", smHandlers.DownloadExpertMarketListing)
 		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/installations", smHandlers.ReportExpertMarketInstallation)
 		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/withdraw", smHandlers.WithdrawExpertMarketListing)
+		mux.HandleFunc("DELETE /api/v1/expert-market/experts/{id}/private", smHandlers.DeletePrivateExpertMarketListing)
+		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/make-private", smHandlers.MakeExpertMarketListingPrivate)
+		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/publish", smHandlers.PublishExpertMarketListing)
 		mux.HandleFunc("GET /api/v1/admin/expert-market/experts", RequireAdmin(adminService, smHandlers.AdminListExpertMarketListings))
 		mux.HandleFunc("GET /api/v1/admin/expert-market/experts/{id}/events", RequireAdmin(adminService, smHandlers.AdminListExpertMarketEvents))
 		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/approve", RequireAdmin(adminService, smHandlers.AdminApproveExpertMarketListing))

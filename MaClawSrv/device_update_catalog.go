@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
@@ -371,6 +372,36 @@ func (s *HTTPServer) reserveHardwareDeviceForPairing(principal srvThirdPartyPrin
 		return errors.New("device binding store is unavailable")
 	}
 	return s.deviceUpdateBindings.reserve(principal, deviceID)
+}
+
+// unbindHardwareDevice removes the firmware identity binding as part of a
+// hardware unpair.  The device's bearer is currently user scoped, so this
+// durable identity removal plus the agent-binding tombstone is what prevents a
+// stale device from regaining access before it is paired again.
+func (s *HTTPServer) unbindHardwareDevice(p agentservice.Principal, deviceID string) error {
+	if s == nil || s.deviceUpdateBindings == nil {
+		return nil
+	}
+	return s.deviceUpdateBindings.delete(p, deviceID)
+}
+
+func (s *srvDeviceUpdateBindingStore) delete(p agentservice.Principal, deviceID string) error {
+	if s == nil {
+		return errors.New("device binding store is unavailable")
+	}
+	deviceID = strings.TrimSpace(deviceID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding, ok := s.data[deviceID]
+	if !ok || binding.TenantID != p.TenantID || binding.UserID != p.UserID {
+		return nil
+	}
+	delete(s.data, deviceID)
+	if err := s.saveLocked(); err != nil {
+		s.data[deviceID] = binding
+		return err
+	}
+	return nil
 }
 
 func (s *srvDeviceUpdateBindingStore) lookup(principal srvThirdPartyPrincipal, identity coreim.FirmwareIdentity) bool {

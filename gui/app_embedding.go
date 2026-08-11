@@ -839,7 +839,11 @@ func (a *App) wireEmbedderToIMHandlers(emb embedding.Embedder, wireTools bool) {
 	if a.qqBotGateway != nil {
 		wire(a.qqBotGateway.currentLocalHandler())
 	}
-	if a.lansengerGateway != nil {
+	if a.lansengerGateways != nil && !a.lansengerGateways.isEmpty() {
+		for _, handler := range a.lansengerGateways.handlers() {
+			wire(handler)
+		}
+	} else if a.lansengerGateway != nil {
 		wire(a.lansengerGateway.currentLocalHandler())
 	}
 	if a.thirdPartyGateway != nil {

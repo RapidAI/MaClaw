@@ -119,10 +119,10 @@ func (p *lansengerGroupPermissionPolicy) webFallbackBlockReason() string {
 		return "已在已授权知识库中找到相关内容，请基于该内容回复；只有知识库无足够信息时才可使用网络搜索"
 	}
 	if !state.knowledgeSearchAttempted {
-		return "群聊必须先检索已授权知识库。请先调用 knowledge_search；仅在知识库没有相关结果时才可使用网络搜索"
+		return "群聊必须先检索已授权知识库。请先调用 knowledge_search 或 knowledge_image_search；仅在知识库没有相关结果时才可使用网络搜索"
 	}
 	if !state.knowledgeSearchNoResult {
-		return "已授权知识库检索未返回可用的无结果结论，请修正或重试 knowledge_search；不能直接改用网络搜索"
+		return "已授权知识库检索未返回可用的无结果结论，请修正或重试 knowledge_search 或 knowledge_image_search；不能直接改用网络搜索"
 	}
 	return ""
 }
@@ -138,7 +138,7 @@ func (p *lansengerGroupPermissionPolicy) requiresKnowledgeLookup() bool {
 }
 
 // recordKnowledgeSearchResult advances the per-turn fallback state after the
-// scoped knowledge_search handler returns. The built-in handler returns an
+// scoped knowledge_search or knowledge_image_search handler returns. The built-in handler returns an
 // explicit successful JSON object with count and results, so a malformed or
 // incomplete tool response cannot be misread as permission to use the network.
 func (p *lansengerGroupPermissionPolicy) recordKnowledgeSearchResult(result toolExecutionResult) {
@@ -190,7 +190,7 @@ func lansengerGroupKnowledgePriorityPrompt() string {
 	return `
 ## 群聊信息来源优先级
 - 本轮必须按以下顺序作答：已有记忆与会话上下文 → 已授权的本地知识库 → 网络。
-- 当已授权知识库可用时，先使用当前提示中已召回的知识；若仍不足，必须先调用 knowledge_search 检索已授权范围。
+- 当已授权知识库可用时，先使用当前提示中已召回的知识；若仍不足，必须先调用 knowledge_search 检索文字资料，或调用 knowledge_image_search 检索图片。
 - 知识库检索有相关结果时，基于其内容回复，不得改用 web_search 或 web_fetch 补充、替代或臆测。
 - 仅当已授权知识库检索没有相关结果时，网络才是兜底来源。`
 }
@@ -206,7 +206,7 @@ func (p lansengerGroupPermissionPolicy) allowsTool(name string) bool {
 	}
 	if isLansengerKnowledgeTool(name) {
 		switch name {
-		case "knowledge_search", "knowledge_explain", "knowledge_context_pack", "knowledge_search_facets":
+		case "knowledge_search", "knowledge_image_search", "knowledge_explain", "knowledge_context_pack", "knowledge_search_facets":
 			return p.allowsKnowledge()
 		default:
 			// Group permission grants retrieval only. Source maintenance, import,

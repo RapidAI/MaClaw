@@ -22,7 +22,6 @@ func TestMatMulWorkersForSmallWideMatrix(t *testing.T) {
 		t.Fatalf("larger batch workers = %d, want %d", got, base)
 	}
 }
-
 func TestElemMul_AllowsOutAliasA(t *testing.T) {
 	a := []float32{2, 3, 4}
 	b := []float32{10, 20, 30}

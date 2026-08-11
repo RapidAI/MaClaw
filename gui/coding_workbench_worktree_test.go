@@ -110,11 +110,18 @@ func TestCreateAndMergeCodingWorkbenchWorktree(t *testing.T) {
 	}
 
 	merged, sum, err := wt.mergeBack(root)
+	if err == nil || merged || sum != "" {
+		t.Fatalf("dirty primary merge = merged:%v summary:%q err:%v", merged, sum, err)
+	}
+	if err := os.Remove(filepath.Join(root, "notes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	merged, sum, err = wt.mergeBack(root)
 	if err != nil {
-		t.Fatalf("merge: %v", err)
+		t.Fatalf("controlled merge: %v", err)
 	}
 	if !merged {
-		t.Fatalf("expected merged, sum=%q", sum)
+		t.Fatalf("expected controlled merge, sum=%q", sum)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "main.go"))
 	if err != nil {
@@ -123,8 +130,50 @@ func TestCreateAndMergeCodingWorkbenchWorktree(t *testing.T) {
 	if !strings.Contains(string(data), "feature") {
 		t.Fatalf("main.go not updated: %s", data)
 	}
-	if !strings.Contains(sum, "file-copy") && !strings.Contains(sum, "cherry-pick") {
+	if !strings.Contains(sum, "cherry-pick") {
 		t.Fatalf("sum=%q", sum)
+	}
+}
+
+func TestCodingWorkbenchWorktreeRejectsUndeclaredChangedFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "test")
+	for _, name := range []string{"declared.go", "undeclared.go"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("add", ".")
+	run("commit", "-m", "init")
+	wt, err := createCodingWorkbenchWorktree(root, 2, "write-set-check")
+	if err != nil || wt == nil {
+		t.Fatalf("worktree=%+v err=%v", wt, err)
+	}
+	defer wt.cleanup(false)
+	if err := os.WriteFile(filepath.Join(wt.ProjectPath, "undeclared.go"), []byte("package main\nfunc unexpected() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	merged, _, err := wt.mergeBack(root, []string{"declared.go"})
+	if err == nil || merged || !strings.Contains(err.Error(), "undeclared") {
+		t.Fatalf("undeclared merge = merged:%v err:%v", merged, err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "undeclared.go"))
+	if err != nil || strings.Contains(string(data), "unexpected") {
+		t.Fatalf("primary workspace was modified: %q err=%v", data, err)
 	}
 }
 

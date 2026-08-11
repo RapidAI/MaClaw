@@ -102,11 +102,11 @@ func TestOCRRecognizeToolModelMissing(t *testing.T) {
 	isolateSharedOCRProvider(t)
 
 	// Point the kicked-off background download at a dead server so the
-	// goroutine exits quickly instead of hitting the real HuggingFace.
+	// goroutine exits quickly instead of hitting the real GitHub release.
 	hf := ocrModelServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
-	withOCRModelURLs(t, hf.URL+"/det", hf.URL+"/rec")
+	withOCRModelsZipURL(t, hf.URL+"/"+ocr.ModelsZipFilename)
 
 	app := newOCRTestApp(corelib.AppConfig{OCREnabled: true})
 	tool := ocrToolForTest(t, app)

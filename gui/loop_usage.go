@@ -32,4 +32,23 @@ func accumulateLoopResultUsage(app *App, cfg corelib.MaclawLLMConfig, result age
 		return
 	}
 	app.AccumulateLLMTokenUsageWithCache(provider, u.InputTokens, u.OutputTokens, u.CachedTokens, u.CacheWriteTokens)
+	// Preserve the legacy provider aggregate for existing surfaces, while new
+	// requests also receive non-guessing profile/final-model attribution. The
+	// loop's route decision is the source of truth after a coding reasoning or
+	// vision route replaces the base profile model.
+	app.AccumulateLLMProfileTokenUsageWithCache(finalLLMConfigForLoopUsage(cfg, result), u.InputTokens, u.OutputTokens, u.CachedTokens, u.CacheWriteTokens)
+}
+
+func finalLLMConfigForLoopUsage(base corelib.MaclawLLMConfig, result agent.LoopResult) corelib.MaclawLLMConfig {
+	final := base
+	if model := strings.TrimSpace(result.Route.Model); model != "" {
+		final.Model = model
+	}
+	if provider := strings.TrimSpace(result.Route.Provider); provider != "" {
+		final.ProviderName = provider
+	}
+	if source := strings.TrimSpace(result.Route.Source); source != "" {
+		final.RouteSource = source
+	}
+	return final
 }

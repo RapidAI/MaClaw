@@ -48,7 +48,8 @@ export type AssistantQuickModelMenuPopoverProps = {
     modelList: string[];
     currentModel?: string;
     modelsLoading?: boolean;
-    onSelectProvider: (name: string) => void;
+    /** Stable provider id (legacy callers may supply a display name as fallback). */
+    onSelectProvider: (providerID: string) => void;
     onSelectModel: (modelId: string) => void;
     onClose: () => void;
 };
@@ -74,7 +75,7 @@ function buildActions(
 ): MenuAction[] {
     const next: MenuAction[] = [];
     if (showProviders) {
-        for (const p of switchableProviders) next.push({ kind: "provider", id: p.name });
+        for (const p of switchableProviders) next.push({ kind: "provider", id: String(p.id || p.name).trim() });
     }
     if (showModels) {
         for (const m of modelList) next.push({ kind: "model", id: m });
@@ -366,7 +367,7 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                         const focused = index === activeIndex;
                         return (
                             <button
-                                key={p.name}
+                                key={String(p.id || p.name)}
                                 id={`${listId}-opt-${index}`}
                                 type="button"
                                 role="option"
@@ -378,7 +379,7 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                                     skipScrollRef.current = true;
                                     setActive(index);
                                 }}
-                                onClick={() => onSelectProvider(p.name)}
+                                onClick={() => onSelectProvider(String(p.id || p.name).trim())}
                             >
                                 <span aria-hidden="true" style={checkColStyle} />
                                 <span style={labelStyleBase}>{p.name}</span>

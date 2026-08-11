@@ -575,7 +575,7 @@ func TestRegisterComputerUseToolsReusesWarmYOLO(t *testing.T) {
 	globalComputerUse.mu.Unlock()
 
 	reg := NewToolRegistry()
-	registerComputerUseTools(reg)
+	registerComputerUseTools(reg, nil)
 	globalComputerUse.mu.Lock()
 	got := globalComputerUse.yolo
 	globalComputerUse.mu.Unlock()

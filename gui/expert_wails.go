@@ -191,6 +191,9 @@ var expertIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 //
 // Returns the saved definition JSON (with id/timestamps filled in).
 func (a *App) SaveExpert(expertJSON string) (string, error) {
+	// Review metadata is intentionally absent from ExpertDefinition. JSON
+	// decoding into this closed persistence contract drops any accidental UI
+	// fields before the definition reaches disk, Hub sync, or an LLM session.
 	var def ExpertDefinition
 	if err := json.Unmarshal([]byte(expertJSON), &def); err != nil {
 		return "", fmt.Errorf("invalid expert JSON: %w", err)
@@ -203,6 +206,43 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 	if def.ID != "" && !expertIDPattern.MatchString(def.ID) {
 		return "", fmt.Errorf("invalid expert id %q: must match %s", def.ID, expertIDPattern.String())
 	}
+	def.OptimizedFromID = strings.TrimSpace(def.OptimizedFromID)
+	var storedExisting *ExpertDefinition
+	if def.ID != "" {
+		if existing, ok, err := defaultExpertStore.Get(def.ID); err != nil {
+			return "", fmt.Errorf("look up existing expert: %w", err)
+		} else if ok {
+			storedExisting = &existing
+		}
+	}
+	isNewOptimized := def.OptimizedFromID != "" && storedExisting == nil
+	if def.OptimizedFromID != "" {
+		if def.OptimizedFromID == def.ID && def.ID != "" {
+			return "", fmt.Errorf("optimized expert cannot reference itself")
+		}
+		if source := loadExpertDefByID(def.OptimizedFromID); source == nil || source.ID == "" {
+			return "", fmt.Errorf("optimized expert source not found: %s", def.OptimizedFromID)
+		}
+		if isNewOptimized {
+			if existing, found, err := defaultExpertStore.FindOptimizedFor(def.OptimizedFromID); err != nil {
+				return "", fmt.Errorf("look up existing optimized expert: %w", err)
+			} else if found {
+				return "", fmt.Errorf("an optimized expert already exists for %s; edit %s instead", def.OptimizedFromID, existing.ID)
+			}
+		}
+	}
+	// An ordinary edit must not be able to erase or re-parent an optimized
+	// expert's lineage. The UI always sends the lineage explicitly, but this
+	// server-side guard also protects API callers and older clients.
+	if storedExisting != nil {
+		if strings.TrimSpace(storedExisting.OptimizedFromID) != "" {
+			if def.OptimizedFromID != storedExisting.OptimizedFromID {
+				return "", fmt.Errorf("optimized expert lineage cannot be changed")
+			}
+		} else if def.OptimizedFromID != "" {
+			return "", fmt.Errorf("an existing expert cannot be converted into an optimized expert")
+		}
+	}
 	isBuiltinID := builtinExpertByID(def.ID) != nil
 	// RFC3339Nano keeps sub-second precision so rapid successive edits keep a
 	// strict updated_at ordering for LWW merges.
@@ -211,8 +251,8 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 		def.ID = newExpertID()
 		def.CreatedAt = now
 	} else {
-		if existing, ok, err := defaultExpertStore.Get(def.ID); err == nil && ok && existing.CreatedAt != "" {
-			def.CreatedAt = existing.CreatedAt
+		if storedExisting != nil && storedExisting.CreatedAt != "" {
+			def.CreatedAt = storedExisting.CreatedAt
 		}
 		if strings.TrimSpace(def.CreatedAt) == "" {
 			def.CreatedAt = now
@@ -224,7 +264,17 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 	// time by mergeBuiltinExpertList.
 	def.Builtin = false
 	def = normalizeExpertLists(def)
-	if err := defaultExpertStore.Save(def); err != nil {
+	if isNewOptimized {
+		if existingID, err := defaultExpertStore.SaveNewOptimized(def); err != nil {
+			return "", err
+		} else if existingID != "" {
+			return "", fmt.Errorf("an optimized expert already exists for %s; edit %s instead", def.OptimizedFromID, existingID)
+		}
+	} else if storedExisting != nil && strings.TrimSpace(storedExisting.OptimizedFromID) != "" {
+		if err := defaultExpertStore.UpdateOptimized(def); err != nil {
+			return "", err
+		}
+	} else if err := defaultExpertStore.Save(def); err != nil {
 		return "", err
 	}
 	invalidateExpertDefCache(def.ID)

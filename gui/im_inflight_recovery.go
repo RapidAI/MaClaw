@@ -36,6 +36,29 @@ func isInFlightRecoverySlot(slot *agent.UnfinishedTaskSlot) bool {
 	return slot.Source.IsInFlightRecovery()
 }
 
+// applyAppExitAutoResumeDecision binds an app-exit unfinished slot without
+// asking. A graceful-exit snapshot (Source=app_exit) only exists because the
+// app was closed mid-task; when the user opens that restored (or task-list)
+// tab and sends a message, the open itself is the resume intent — showing a
+// "continue previous task?" banner would be redundant, and treating the
+// message as a new task would wipe the saved context the user expects to
+// continue from. Explicit slot actions and background turns are untouched; a
+// genuinely new topic is still handled downstream by the unified task-context
+// classifier.
+func applyAppExitAutoResumeDecision(msg IMUserMessage, trimmed string, slot *agent.UnfinishedTaskSlot, decision explicitTaskSlotDecision) explicitTaskSlotDecision {
+	if slot == nil || !slot.Source.IsAppExit() || !unfinishedSlotNeedsDecision(slot) || msg.IsBackground {
+		return decision
+	}
+	if decision.ResumeSlotID != "" || decision.StartNewTask || decision.DismissSlotID != "" || isSlotActionCommand(trimmed) {
+		return decision
+	}
+	if strings.TrimSpace(trimmed) == "" {
+		return decision
+	}
+	decision.ResumeSlotID = slot.SlotID
+	return decision
+}
+
 func (h *IMMessageHandler) clearInFlightTaskMarker(userID string) {
 	if h == nil || h.memory == nil {
 		return

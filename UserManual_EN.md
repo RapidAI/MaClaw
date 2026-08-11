@@ -157,7 +157,7 @@ MaClaw's unique browser monitoring system provides core support for automated te
 4.  Support scheduled triggers for automatic execution.
 
 ### 6.3 OCR & Verification
-*   Built-in native OCR engine (PP-OCRv6, models auto-downloaded, no Python required) and LLM vision model support for screen text extraction
+*   Built-in native OCR engine (PP-OCRv6, models auto-downloaded, no Python required) and LLM vision model support for screen text extraction. The model tier can be selected directly in the OCR settings panel, or via `ocr_model_tier` in config.json: `tiny` (fastest) / `small` (default) / `medium` (most accurate)
 *   Built-in task verification to confirm automation correctness
 *   Automatic retry strategy on failure
 

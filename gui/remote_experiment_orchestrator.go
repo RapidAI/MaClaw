@@ -54,6 +54,9 @@ type ExperimentRoundResult struct {
 	VerificationResult  string    `json:"verification_result,omitempty"`
 	Status              string    `json:"status"` // "completed", "failed", "timeout"
 	Error               string    `json:"error,omitempty"`
+	// RuntimeTaskID is the opaque execution-ledger reference for this round.
+	// It is used only to bind automatic knowledge to durable evidence.
+	RuntimeTaskID string `json:"runtime_task_id,omitempty"`
 }
 
 // ExperimentOrchestratorState is the full state of the experiment loop.
@@ -311,16 +314,22 @@ func (o *RemoteExperimentOrchestrator) executeOneRound(roundNum int) ExperimentR
 	subResult := o.subAgent.ExecuteTask(taskDesc, taskCtx)
 
 	result.CompletedAt = time.Now()
+	if subResult != nil {
+		result.RuntimeTaskID = subResult.RuntimeTaskID
+	}
 
-	if subResult.Status != "success" {
+	if subResult == nil || subResult.Status != "success" {
 		result.Status = "failed"
+		if subResult == nil {
+			result.Error = "remote coding subagent returned no result"
+			return result
+		}
 		result.Error = subResult.Error
 		if result.Error == "" {
 			result.Error = subResult.Summary
 		}
 		return result
 	}
-
 	o.populateCompletedRoundResult(&result, subResult.Summary)
 
 	return result
@@ -601,7 +610,7 @@ func (o *RemoteExperimentOrchestrator) saveRoundExperience(result ExperimentRoun
 	if !ok {
 		return
 	}
-	_ = o.subAgent.SaveExperience(exp)
+	_ = o.subAgent.SaveRuntimeExperience(exp, result.RuntimeTaskID)
 }
 
 func (o *RemoteExperimentOrchestrator) codingExperienceForRound(result ExperimentRoundResult) (knowledge.CodingExperience, bool) {
@@ -623,16 +632,22 @@ func (o *RemoteExperimentOrchestrator) codingExperienceForRound(result Experimen
 			Title:            fmt.Sprintf("实验改进: %s", result.Modification),
 			Content:          content,
 			TriggerCondition: fmt.Sprintf("优化 %s 指标", params.BaselineMetricName),
-			Scope:            "experiment",
-			Category:         "optimization",
-			Language:         "python",
-			Status:           knowledge.CodingStatusCandidate,
-			Confidence:       0.6,
-			SuccessCount:     1,
-			Labels:           []string{"remote_experiment", "completed"},
+			// CodingKnowledgeStore deliberately accepts only universal, language
+			// and project scopes plus its stable category vocabulary. Experiments
+			// are project-specific decisions, not a separate unvalidated schema:
+			// using the canonical values keeps this Runtime-backed candidate
+			// persistable, searchable, and reviewable instead of silently losing
+			// it at SaveExperience validation.
+			Scope:        knowledge.CodingScopeProject,
+			ProjectPath:  strings.TrimSpace(o.projectDir),
+			Category:     knowledge.CodingCategoryDecision,
+			Language:     "python",
+			Status:       knowledge.CodingStatusCandidate,
+			Confidence:   0.6,
+			SuccessCount: 1,
+			Labels:       []string{"remote_experiment", "completed"},
 		}
 		if result.DeltaFromPaper >= targetDelta {
-			exp.Status = knowledge.CodingStatusActive
 			exp.Confidence = 0.85
 			exp.Labels = append(exp.Labels, "target_reached")
 		}
@@ -646,8 +661,9 @@ func (o *RemoteExperimentOrchestrator) codingExperienceForRound(result Experimen
 			Title:             fmt.Sprintf("实验失败: 第%d轮", result.RoundNumber),
 			Content:           fmt.Sprintf("远程实验第%d轮失败。\n方向/修改: %s\n原因/假设: %s\n错误: %s\n配置: %s", result.RoundNumber, result.Modification, result.Reason, detail, result.Config),
 			TriggerCondition:  fmt.Sprintf("避免 %s 实验失败", params.BaselineMetricName),
-			Scope:             "experiment",
-			Category:          "pitfall",
+			Scope:             knowledge.CodingScopeProject,
+			ProjectPath:       strings.TrimSpace(o.projectDir),
+			Category:          knowledge.CodingCategoryPitfall,
 			Language:          "python",
 			Status:            knowledge.CodingStatusCandidate,
 			Confidence:        0.35,

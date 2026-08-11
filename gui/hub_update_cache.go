@@ -235,16 +235,39 @@ func (a *App) rememberHubCenterSelectionThrottled(base string, discovered []stri
 	if a == nil {
 		return
 	}
+	cache, persister := a.hubCenterSelectionCacheAndPersister()
+	// Delegate to the shared HubCenterSelectionCache from corelib/remote.
+	// This is the single source of truth for write throttling logic.
+	cache.RememberSelectionThrottled(persister, base, discovered)
+}
+
+// hubCenterSelectionCache returns an already configured selection cache. The
+// cache itself synchronizes its contents; this mutex protects the App-level
+// pointer while another path lazily publishes it. A nil cache deliberately
+// remains nil here: callers that used a nil cache to opt out of persistence
+// and retry caching keep their previous behavior.
+func (a *App) hubCenterSelectionCache() *remote.HubCenterSelectionCache {
+	if a == nil {
+		return nil
+	}
+	a.hubCenterCacheMu.Lock()
+	defer a.hubCenterCacheMu.Unlock()
+	return a.hubCenterCache
+}
+
+func (a *App) hubCenterSelectionCacheAndPersister() (*remote.HubCenterSelectionCache, *guiHubCenterPersister) {
+	if a == nil {
+		return nil, nil
+	}
+	a.hubCenterCacheMu.Lock()
+	defer a.hubCenterCacheMu.Unlock()
 	if a.hubCenterCache == nil {
 		a.hubCenterCache = remote.NewHubCenterSelectionCache(60 * time.Second)
 	}
-	// Ensure persister is initialized (lazy init to avoid circular dependency).
 	if a.hubCenterPersister == nil {
 		a.hubCenterPersister = newGUIHubCenterPersister(a)
 	}
-	// Delegate to the shared HubCenterSelectionCache from corelib/remote.
-	// This is the single source of truth for write throttling logic.
-	a.hubCenterCache.RememberSelectionThrottled(a.hubCenterPersister, base, discovered)
+	return a.hubCenterCache, a.hubCenterPersister
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -258,8 +281,9 @@ func (a *App) resolveHubCenterBaseURLCached(ctx context.Context, client *http.Cl
 // resolveHubCenterBaseURLCachedWithIdentity is the shared cache path.
 // When registered/seeds are precomputed by the caller, skips an extra LoadConfig.
 func (a *App) resolveHubCenterBaseURLCachedWithIdentity(ctx context.Context, client *http.Client, registered, seeds []string) (string, []string, error) {
-	if a.hubCenterCache != nil {
-		if base, all := a.hubCenterCache.Get(); base != "" {
+	cache := a.hubCenterSelectionCache()
+	if cache != nil {
+		if base, all := cache.Get(); base != "" {
 			// Align cached entries to enrollment identity so a stale HA peer
 			// (e.g. hubs2) cannot stick after the user registered elsewhere.
 			if registered == nil && seeds == nil {
@@ -268,13 +292,13 @@ func (a *App) resolveHubCenterBaseURLCachedWithIdentity(ctx context.Context, cli
 			if len(registered) > 0 || len(seeds) > 0 {
 				aligned := remote.AlignHubCenterCandidates(registered, seeds, append([]string{base}, all...))
 				if len(aligned) == 0 {
-					a.hubCenterCache.Invalidate()
+					cache.Invalidate()
 				} else {
 					nextBase := remote.PickAlignedHubCenterBase(base, aligned)
 					// Write back only when alignment drops/reorders peers — avoids
 					// resetting cache TTL on every read of an already-clean entry.
 					if nextBase != base || !remote.StringSliceEqual(aligned, all) {
-						a.hubCenterCache.Set(nextBase, aligned)
+						cache.Set(nextBase, aligned)
 					}
 					return nextBase, aligned, nil
 				}
@@ -310,8 +334,8 @@ func (a *App) resolveHubCenterBaseURLCachedWithIdentity(ctx context.Context, cli
 		return "", nil, err
 	}
 
-	if a.hubCenterCache != nil {
-		a.hubCenterCache.Set(base, all)
+	if cache != nil {
+		cache.Set(base, all)
 	}
 	return base, all, nil
 }

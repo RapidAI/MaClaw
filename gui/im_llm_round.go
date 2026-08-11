@@ -195,7 +195,7 @@ func (h *IMMessageHandler) executeAgentLoopLLMRound(opts agentLoopLLMRoundOption
 
 	if resp != nil {
 		usageStartedAt := time.Now()
-		result.Usage = h.recordLLMUsageSnapshot("main_round", resp, result.Conversation)
+		result.Usage = h.recordLLMUsageSnapshot("main_round", opts.Config, resp, result.Conversation)
 		if opts.StreamDone {
 			result.UsageElapsed = time.Since(usageStartedAt)
 			result.UsageDone = true

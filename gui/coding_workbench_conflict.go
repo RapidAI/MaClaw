@@ -540,7 +540,7 @@ func simpleUnifiedSnippet(main, their string, maxLines int) string {
 }
 
 func listRemoteIsolateChangedFiles(h *IMMessageHandler, userID string, c codingWorkbenchConflict) []string {
-	if h == nil {
+	if h == nil || !isManagedRemoteCodingIsolatePath(c.Path) {
 		return nil
 	}
 	mem := h.getStickyCodingWorkbenchMemory(userID)
@@ -731,6 +731,9 @@ func subtractFiles(all, remove []string) []string {
 
 // adoptRemoteCodingConflict merges a remote isolate back to main via SSH.
 func (h *IMMessageHandler) adoptRemoteCodingConflict(userID string, c codingWorkbenchConflict, onlyFiles []string) (string, error) {
+	if !isManagedRemoteCodingIsolatePath(c.Path) {
+		return "", fmt.Errorf("remote conflict path is not a managed coding isolate")
+	}
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	sid := strings.TrimSpace(mem.RemoteSessionID)
 	if sid == "" {
@@ -757,10 +760,11 @@ func (h *IMMessageHandler) adoptRemoteCodingConflict(userID string, c codingWork
 		// Selective remote copy of listed files.
 		var parts []string
 		for _, f := range onlyFiles {
-			f = strings.TrimSpace(strings.TrimPrefix(filepath.ToSlash(f), "./"))
-			if f == "" {
-				continue
+			clean, err := validateRemoteConflictFileWithinFrozenScope(c, f)
+			if err != nil {
+				return "", err
 			}
+			f = clean
 			parts = append(parts, fmt.Sprintf(
 				`mkdir -p %s/$(dirname %s) && cp -a %s/%s %s/%s`,
 				remoteShellQuote(src), remoteShellQuote(f),
@@ -792,6 +796,12 @@ func (h *IMMessageHandler) adoptRemoteCodingConflict(userID string, c codingWork
 			remaining)
 		return fmt.Sprintf("已通过 SSH 部分采纳 %d 个文件，剩余 %d 个。", len(onlyFiles), len(remaining)), nil
 	}
+	// A conflict record has no trustworthy frozen write-set. Its whole-isolate
+	// adoption therefore stays manual; automatic cherry-pick is reserved for a
+	// live isolated task carrying its original declared scope.
+	if strings.Contains(c.Path, "maclaw-wt-") {
+		return "", fmt.Errorf("remote Git worktree conflict requires selecting files for manual adoption")
+	}
 	sum, err := iso.mergeBack(h)
 	if err != nil {
 		return "", err
@@ -799,6 +809,53 @@ func (h *IMMessageHandler) adoptRemoteCodingConflict(userID string, c codingWork
 	_, _ = h.removeStickyCodingConflictOpts(userID, c.ID, fmt.Sprintf("adopt-remote %s all", c.ID))
 	iso.cleanup(h)
 	return "远程冲突已采纳：\n" + sum, nil
+}
+
+// validateRemoteConflictFileWithinFrozenScope is the manual-resolution
+// equivalent of the automatic merge admission gate. A persisted conflict is a
+// review artifact, never a new authority to read from or write to arbitrary
+// paths in the primary remote project.
+func validateRemoteConflictFileWithinFrozenScope(c codingWorkbenchConflict, file string) (string, error) {
+	if !isManagedRemoteCodingIsolatePath(c.Path) {
+		return "", fmt.Errorf("remote conflict path is not a managed coding isolate")
+	}
+	if err := validateRemoteIsolateWriteClaims(c.Files); err != nil {
+		return "", fmt.Errorf("remote conflict has no frozen write scope")
+	}
+	clean, err := normalizeRemoteIsolateRelativeFile(file)
+	if err != nil {
+		return "", fmt.Errorf("invalid remote conflict file %q: %w", file, err)
+	}
+	if !remoteIsolateFileWithinFrozenWriteScope(clean, c.Files) {
+		return "", fmt.Errorf("remote conflict file %q is outside the frozen write scope", clean)
+	}
+	return clean, nil
+}
+
+// remoteConflictExactFilesForBulkResolution permits a whole-conflict action
+// only when every frozen claim is an exact file. Directory claims can cover an
+// unknown set of files, so the user must choose concrete paths one by one.
+func remoteConflictExactFilesForBulkResolution(c codingWorkbenchConflict, onlyFiles []string) ([]string, error) {
+	if len(onlyFiles) > 0 {
+		out := make([]string, 0, len(onlyFiles))
+		seen := make(map[string]struct{}, len(onlyFiles))
+		for _, file := range onlyFiles {
+			clean, err := validateRemoteConflictFileWithinFrozenScope(c, file)
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := seen[clean]; !ok {
+				seen[clean] = struct{}{}
+				out = append(out, clean)
+			}
+		}
+		return out, nil
+	}
+	// A declared write set is an admission boundary, not evidence that every
+	// claimed path actually changed. Bulk resolving it could overwrite an
+	// untouched primary file with a merge-base blob, so remote write actions
+	// always require the reviewer to name concrete files.
+	return nil, fmt.Errorf("remote conflict resolution requires selecting explicit files")
 }
 
 // adoptBaseCodingConflictFiles writes merge-base content onto the main tree for
@@ -879,6 +936,9 @@ func (h *IMMessageHandler) adoptBaseCodingConflictFiles(userID, idOrPath string,
 // adoptBaseRemoteCodingConflictFiles restores merge-base blobs onto the remote
 // main tree via SSH (readRemoteMergeBaseBlob + writeRemoteConflictFile).
 func (h *IMMessageHandler) adoptBaseRemoteCodingConflictFiles(userID string, c codingWorkbenchConflict, onlyFiles []string) (string, error) {
+	if !isManagedRemoteCodingIsolatePath(c.Path) {
+		return "", fmt.Errorf("remote conflict path is not a managed coding isolate")
+	}
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	sid := strings.TrimSpace(mem.RemoteSessionID)
 	if sid == "" {
@@ -888,13 +948,9 @@ func (h *IMMessageHandler) adoptBaseRemoteCodingConflictFiles(userID string, c c
 	if mainDir == "" {
 		return "", fmt.Errorf("remote main dir unknown")
 	}
-	allFiles := c.Files
-	if len(allFiles) == 0 {
-		allFiles = listRemoteIsolateChangedFiles(h, userID, c)
-	}
-	files := allFiles
-	if len(onlyFiles) > 0 {
-		files = filterFilesBySelection(allFiles, onlyFiles)
+	files, err := remoteConflictExactFilesForBulkResolution(c, onlyFiles)
+	if err != nil {
+		return "", err
 	}
 	if len(files) == 0 {
 		return "", fmt.Errorf("no files to restore from merge-base")
@@ -920,7 +976,7 @@ func (h *IMMessageHandler) adoptBaseRemoteCodingConflictFiles(userID string, c c
 	if restored == 0 {
 		return "", fmt.Errorf("no remote merge-base content available for selected files")
 	}
-	remaining := subtractFiles(allFiles, files)
+	remaining := subtractFiles(c.Files, files)
 	msg := fmt.Sprintf("已从远程 merge-base 写回 **%d** 个文件到主树", restored)
 	if len(missing) > 0 {
 		msg += fmt.Sprintf("（%d 个无 base）", len(missing))
@@ -988,14 +1044,15 @@ func (h *IMMessageHandler) writeCodingConflictFileContent(userID, idOrPath, relP
 	if !ok {
 		return "", fmt.Errorf("conflict not found: %s", idOrPath)
 	}
-	relPath = filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(relPath, "./")))
-	if relPath == "" || strings.Contains(relPath, "..") {
-		return "", fmt.Errorf("invalid file path")
-	}
 	if len(content) > codingConflictWriteMaxBytes {
 		return "", fmt.Errorf("content too large (max %d bytes)", codingConflictWriteMaxBytes)
 	}
 	if c.Kind == "remote_isolate" {
+		clean, err := validateRemoteConflictFileWithinFrozenScope(c, relPath)
+		if err != nil {
+			return "", err
+		}
+		relPath = clean
 		mem := h.getStickyCodingWorkbenchMemory(userID)
 		sid := strings.TrimSpace(mem.RemoteSessionID)
 		if sid == "" {
@@ -1010,6 +1067,10 @@ func (h *IMMessageHandler) writeCodingConflictFileContent(userID, idOrPath, relP
 			return "", err
 		}
 		return h.finishConflictFileResolved(userID, c, relPath, "write-remote")
+	}
+	relPath = filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(relPath, "./")))
+	if relPath == "" || strings.Contains(relPath, "..") {
+		return "", fmt.Errorf("invalid file path")
 	}
 	gitRoot := resolveConflictGitRoot(c, userID, h)
 	if gitRoot == "" {
@@ -1409,16 +1470,17 @@ func (h *IMMessageHandler) getCodingConflictFilePreview(userID, idOrPath, relPat
 	if !ok {
 		return codingConflictFilePreview{}, fmt.Errorf("conflict not found: %s", idOrPath)
 	}
-	relPath = filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(relPath, "./")))
-	if relPath == "" || strings.Contains(relPath, "..") {
-		return codingConflictFilePreview{}, fmt.Errorf("invalid path")
-	}
 	if maxBytes <= 0 {
 		maxBytes = codingConflictPreviewMaxBytes
 	}
 	side = strings.ToLower(strings.TrimSpace(side))
 	prev := codingConflictFilePreview{Path: relPath, Side: side}
 	if c.Kind == "remote_isolate" {
+		clean, err := validateRemoteConflictFileWithinFrozenScope(c, relPath)
+		if err != nil {
+			return codingConflictFilePreview{}, err
+		}
+		relPath, prev.Path = clean, clean
 		mem := h.getStickyCodingWorkbenchMemory(userID)
 		sid := strings.TrimSpace(mem.RemoteSessionID)
 		if sid == "" {
@@ -1465,6 +1527,10 @@ func (h *IMMessageHandler) getCodingConflictFilePreview(userID, idOrPath, relPat
 			}
 			return finalizeConflictPreview(prev, body, maxBytes), nil
 		}
+	}
+	relPath = filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(relPath, "./")))
+	if relPath == "" || strings.Contains(relPath, "..") {
+		return codingConflictFilePreview{}, fmt.Errorf("invalid path")
 	}
 	var body string
 	switch side {
@@ -1556,6 +1622,13 @@ func (h *IMMessageHandler) discardCodingWorkbenchConflictOpts(userID, idOrPath, 
 				logLine = fmt.Sprintf("discard %s", c0.ID)
 			}
 		}
+	}
+	// Validate a remote destructive target before removing its record. A sticky
+	// file is durable user data, not authority to recursively delete any remote
+	// directory after a restart or manual edit.
+	current, found := h.findStickyCodingConflict(userID, idOrPath)
+	if found && current.Kind == "remote_isolate" && !isManagedRemoteCodingIsolatePath(current.Path) {
+		return "", fmt.Errorf("refusing to discard unmanaged remote conflict path: %s", current.Path)
 	}
 	// Remove sticky record + audit log in one RMW; filesystem/SSH cleanup after.
 	c, ok := h.removeStickyCodingConflictOpts(userID, idOrPath, logLine)

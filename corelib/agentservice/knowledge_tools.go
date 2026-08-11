@@ -323,6 +323,15 @@ func (c *coreAgentCallbacks) executeKnowledgeRefreshSource(args map[string]inter
 	if _, err := c.knowledgeSourceForWrite(id); err != nil {
 		return fmt.Sprintf("Error: %v", err)
 	}
+	policy := officeReadConfigPtrFromAppConfig(c.appCfg)
+	if scoped, ok := c.knowledgeStore.(officeReadScopedKnowledgeRefresher); ok {
+		if boolArg(args, "dry_run", true) {
+			preview, err := scoped.PreviewSourceRefreshWithOfficeReadConfig(c.parentContext(), id, policy)
+			return knowledgeToolJSONResult(map[string]interface{}{"dry_run": true, "preview": preview}, err)
+		}
+		source, err := scoped.RefreshSourceWithOfficeReadConfig(c.parentContext(), id, policy)
+		return knowledgeToolJSONResult(map[string]interface{}{"dry_run": false, "source": source}, err)
+	}
 	if boolArg(args, "dry_run", true) {
 		preview, err := c.knowledgeStore.PreviewSourceRefresh(c.parentContext(), id)
 		return knowledgeToolJSONResult(map[string]interface{}{"dry_run": true, "preview": preview}, err)
@@ -395,6 +404,7 @@ func (c *coreAgentCallbacks) executeKnowledgeRetryImportBatch(args map[string]in
 		return fmt.Sprintf("Error: %v", err)
 	}
 	req := knowledge.ImportRetryRequest{BatchID: batchID}
+	req.OfficeReadConfig = officeReadConfigPtrFromAppConfig(c.appCfg)
 	result, err := c.knowledgeStore.RetryImportBatch(c.parentContext(), req)
 	return knowledgeToolJSONResult(map[string]interface{}{"result": result}, err)
 }

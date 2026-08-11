@@ -13,15 +13,6 @@ import { SystemDoctorDialog } from './SystemDoctorDialog';
 import { SecurityEventsDialog } from './SecurityEventsDialog';
 import { IconRankBadge } from './ai/WorkbenchIcons';
 
-// Load Monoton font for the stylized "6" in product name
-const monotonLink = document.querySelector('link[href*="Monoton"]');
-if (!monotonLink) {
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = 'https://fonts.googleapis.com/css2?family=Monoton&display=swap';
-    document.head.appendChild(link);
-}
-
 type BrandInfo = {
     id: string;
     displayName: string;
@@ -384,7 +375,7 @@ export function AboutPanel({
             return t("aboutProductName");
         }
         if (brandInfo.id === 'qianxin') {
-            return '\u864e\u722a 6 \u7834\u8327';
+            return '\u864e\u722a 7 \u4e07\u53d8';
         }
         if (brandInfo.id === 'metastaff') {
             return '\u667a\u5458 6 \u7834\u8327';
@@ -394,24 +385,15 @@ export function AboutPanel({
         return [cnName, displayName].filter(Boolean).join(' ') || t("aboutProductName");
     })();
 
-    // Render product name with Monoton-styled "6"
     const renderProductName = () => {
-        const raw = productName;
-        const sixIndex = raw.indexOf('6');
-        if (sixIndex === -1) {
-            return <>{raw}</>;
-        }
+        const versionMatch = productName.match(/7/);
+        if (!versionMatch || versionMatch.index == null) return productName;
+        const versionIndex = versionMatch.index;
         return (
             <>
-                {raw.slice(0, sixIndex)}
-                <span style={{
-                    fontFamily: "'Monoton', cursive",
-                    fontSize: '1.15em',
-                    verticalAlign: 'baseline',
-                    letterSpacing: '-0.02em',
-                    color: 'var(--theme-primary-strong)',
-                }}>6</span>
-                {raw.slice(sixIndex + 1)}
+                {productName.slice(0, versionIndex)}
+                <span className="brand-version-mark" aria-label="7">7</span>
+                {productName.slice(versionIndex + 1)}
             </>
         );
     };

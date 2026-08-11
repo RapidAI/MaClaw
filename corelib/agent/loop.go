@@ -1575,6 +1575,14 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 			if ctx.Err() != nil {
 				return resp, err
 			}
+			// Keep transient failures in the outer retry loop. Besides applying
+			// one consistent retry budget, that loop can interrupt its backoff
+			// when live steering arrives. Falling back immediately to a
+			// non-streaming request here would send the stale conversation before
+			// the host has a chance to inject that steering.
+			if shouldRetrySimpleLLMError(err) {
+				return resp, err
+			}
 			// Once any delta reached the host, retrying the same request as a
 			// non-stream response would append a second copy to the visible turn
 			// and can repeat a provider-side tool decision. Return the terminal

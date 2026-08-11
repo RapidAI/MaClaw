@@ -54,11 +54,66 @@ describe('IMAuditPanel', () => {
 
         await waitFor(() => expect(screen.getByRole('heading', { name: '天气预报' })).toBeTruthy());
 
-        expect(container.querySelector('.im-audit-bubble table')).toBeTruthy();
+        expect(document.body.querySelector('.im-audit-bubble table')).toBeTruthy();
         expect(screen.getByRole('columnheader', { name: '时段' })).toBeTruthy();
         expect(screen.getByText('雷阵雨')).toBeTruthy();
         expect(screen.getByText('注意安全').tagName).toBe('STRONG');
         expect(QueryIMAuditMessagesMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('inherits and live-updates the app theme when rendered in a portal', async () => {
+        const app = document.createElement('div');
+        app.id = 'App';
+        app.dataset.aiTheme = 'dark';
+        app.dataset.aiDarkScheme = 'aurora';
+        document.body.append(app);
+        try {
+            render(<IMAuditPanel platform="lansenger" lang="en" onClose={vi.fn()} />);
+            const overlay = document.body.querySelector<HTMLElement>('.im-audit-overlay');
+            expect(overlay?.dataset.aiTheme).toBe('dark');
+            expect(overlay?.dataset.aiDarkScheme).toBe('aurora');
+
+            app.dataset.aiTheme = 'light';
+            app.dataset.aiDarkScheme = '';
+            app.dataset.aiLightScheme = 'linear';
+            await waitFor(() => {
+                expect(overlay?.dataset.aiTheme).toBe('light');
+                expect(overlay?.dataset.aiDarkScheme).toBeUndefined();
+                expect(overlay?.dataset.aiLightScheme).toBe('linear');
+            });
+        } finally {
+            app.remove();
+        }
+    });
+
+    it('focuses the close action, locks background scroll, and closes via Escape', async () => {
+        const onClose = vi.fn();
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = '';
+        try {
+            render(<IMAuditPanel platform="lansenger" lang="en" onClose={onClose} />);
+            const closeButton = screen.getByRole('button', { name: 'Close' });
+            await waitFor(() => expect(document.activeElement).toBe(closeButton));
+            expect(document.body.style.overflow).toBe('hidden');
+
+            fireEvent.keyDown(window, { key: 'Escape' });
+            expect(onClose).toHaveBeenCalledTimes(1);
+            fireEvent.keyDown(window, { key: 'Escape', isComposing: true });
+            expect(onClose).toHaveBeenCalledTimes(1);
+        } finally {
+            document.body.style.overflow = previousOverflow;
+        }
+    });
+
+    it('keeps Tab navigation inside the chat history panel', async () => {
+        render(<IMAuditPanel platform="lansenger" lang="en" onClose={vi.fn()} />);
+        const panel = document.body.querySelector<HTMLElement>('.im-audit-panel');
+        const closeButton = screen.getByRole('button', { name: 'Close' });
+        const focusable = Array.from(panel?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') || []);
+        closeButton.focus();
+
+        fireEvent.keyDown(closeButton, { key: 'Tab', shiftKey: true });
+        expect(document.activeElement).toBe(focusable.at(-1));
     });
 
     it('renders a persisted file in chat history and reveals its containing folder', async () => {
@@ -221,7 +276,7 @@ describe('IMAuditPanel', () => {
         // The initial page is supplied from the startup query. A deliberate search must still fetch.
         fireEvent.click(search);
         await waitFor(() => expect(QueryIMAuditMessagesMock).toHaveBeenCalledTimes(2));
-        expect(container.querySelector('.im-audit-list')?.getAttribute('aria-busy')).toBe('false');
+        expect(document.body.querySelector('.im-audit-list')?.getAttribute('aria-busy')).toBe('false');
     });
 
     it('does not reuse the startup first page after opening on a later page', async () => {

@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,9 +41,11 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/enterpriseknowledge"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -67,6 +70,15 @@ type App struct {
 	ctx             context.Context
 	CurrentLanguage string
 	watcher         *fsnotify.Watcher
+	// llmProfileHealth holds only non-sensitive, effective-profile probe
+	// results. It is deliberately separate from AppConfig: connection health is
+	// ephemeral and must never be persisted alongside credentials.
+	llmProfileHealthMu sync.Mutex
+	llmProfileHealth   map[string]maclawLLMProfileHealthRecord
+	// llmProfileHealthProbeMu serializes periodic and user-triggered profile
+	// health checks. Probing two providers can take up to the request timeout;
+	// serializing prevents concurrent token refreshes against the same provider.
+	llmProfileHealthProbeMu sync.Mutex
 
 	// configLastInternalWrite records the time of the most recent internal
 	// config file write (SaveConfig/PatchConfigFields/patchConfig). The
@@ -124,12 +136,14 @@ type App struct {
 	toolInstallLocks                   map[string]bool // Track which tools are currently being installed
 	toolLockMutex                      sync.Mutex      // Mutex for toolInstallLocks map
 	remoteSessions                     *RemoteSessionManager
-	remoteActivationBackgroundDisabled bool // test-only: skip post-activation background connect
+	remoteInfraMu                      sync.RWMutex // publishes remote infrastructure pointers after initialization
+	remoteActivationBackgroundDisabled bool         // test-only: skip post-activation background connect
 	browserSessions                    *BrowserAgentManager
 	powerStateMutex                    sync.Mutex
 	powerStateProcess                  *exec.Cmd
 	screenDimCancel                    context.CancelFunc // cancels the screen-dim goroutine
 	workstationCancel                  context.CancelFunc // cancels the workstation-mode anti-lock goroutine
+	workstationPowerRequest            uintptr            // Windows process-level PowerCreateRequest handle
 	mcpRegistry                        *MCPRegistry
 	localMCPManager                    *LocalMCPManager
 	skillExecutor                      *SkillExecutor
@@ -184,6 +198,7 @@ type App struct {
 	lastModelRoute           modelRouteDecision // last turn routing decision (debug/settings)
 	stopHubTicker            chan struct{}      // signals the 24h recommendation refresh goroutine to stop
 	hubUpdCache              *hubUpdateCache
+	hubCenterCacheMu         sync.Mutex                      // guards lazy HubCenter cache/persister initialization
 	hubCenterCache           *remote.HubCenterSelectionCache // shared cache from corelib/remote
 	hubCenterPersister       *guiHubCenterPersister          // persister for HubCenter URL config
 	oauthMu                  sync.Mutex
@@ -199,6 +214,8 @@ type App struct {
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex
+	answerCacheMu                     sync.Mutex
+	answerCache                       *answerCacheStore
 	configManager                     *ConfigManager
 	templateManager                   *remote.SessionTemplateManager
 	contextResolver                   *SessionContextResolver
@@ -216,6 +233,7 @@ type App struct {
 	swarmInitOnce                     sync.Once // per-App; package-level Once would skip init for later test Apps
 	memoryCompressor                  *MemoryCompressor
 	memoryMaintenance                 *memory.Maintenance
+	memoryPipelineMu                  sync.RWMutex // guards memPipeline replacement and use
 	memPipeline                       *memory.Pipeline
 	memoryPipelineDebounce            time.Duration
 	disableBackgroundEmbeddingForTest bool
@@ -263,6 +281,7 @@ type App struct {
 	telegramGateway                   *telegramGatewayManager
 	weixinGateway                     *weixinGatewayManager
 	lansengerGateway                  *lansengerGatewayManager
+	lansengerGateways                 *lansengerGatewayRegistry
 	localStartMenu                    *localStartMenuService
 	localStartMenuMu                  sync.Mutex
 	lansengerWatch                    *lansengerWatchService
@@ -318,10 +337,15 @@ type App struct {
 	steeringStore              *steering.Store                 // declarative rule injection (corelib/steering)
 	codeEventEmitter           *CodeEventEmitter               // emits code file events to frontend for code preview panel
 	codingKnowledgeStore       *knowledge.CodingKnowledgeStore // independent coding experience store (coding_knowledge.db)
-	deepCrawlMu                sync.Mutex                      // guards deepCrawlCancel
-	deepCrawlCancel            context.CancelFunc              // cancels active deep crawl session
-	deepCrawlCtx               context.Context                 // active deep crawl context (used to identify ownership)
-	deepCrawlMode              string                          // active deep crawl owner: crawl or preview
+	codingRuntimeStore         *codingruntime.SQLiteStore      // durable local/remote coding attempt ledger
+	codingRuntimeStoreMu       sync.Mutex
+	enterpriseKnowledgeStore   *knowledge.SQLiteStore         // enterprise digital assets local KB (legacy pointer; prefer enterpriseClient)
+	enterpriseClient           *enterpriseknowledge.Client    // shared enterprise knowledge client
+	enterpriseSync             *enterpriseknowledge.SyncAgent // Hub→local one-way sync for digital assets
+	deepCrawlMu                sync.Mutex                     // guards deepCrawlCancel
+	deepCrawlCancel            context.CancelFunc             // cancels active deep crawl session
+	deepCrawlCtx               context.Context                // active deep crawl context (used to identify ownership)
+	deepCrawlMode              string                         // active deep crawl owner: crawl or preview
 	floatingAssistant          *FloatingAssistantManager
 	floatingAssistantMu        sync.Mutex
 	agentViewEmissionSeq       atomic.Int64
@@ -345,7 +369,13 @@ type App struct {
 	evidenceCollectorMu sync.Once
 
 	// TTS manager (lazy-loaded, auto-unloading).
-	ttsManager *tts.Manager
+	ttsManager   *tts.Manager
+	ttsManagerMu sync.Mutex
+	// hardwareTTSManagers caches non-default device reply voices. Each manager
+	// owns an immutable Kokoro voice, so devices can synthesize concurrently
+	// without ever mutating the desktop-wide TTS manager.
+	hardwareTTSMu       sync.Mutex
+	hardwareTTSManagers map[string]*tts.Manager
 
 	// Project Tab session persistence (disk-backed session read/write + cleanup).
 	projectTabSessionPersist *ProjectTabSessionPersist
@@ -354,12 +384,17 @@ type App struct {
 	// unnecessary disk reads in SendMessageForTab. Populated in CreateProjectTabSession.
 	tabProjectPaths sync.Map
 
-	// tabWorkingDirOverrides caches projectPath -> user-specified working directory.
-	// Written immediately when user clicks the directory switcher (SetTabWorkingDir).
-	// Read by recentTaskExecutionProjectPath() BEFORE checking the persistent
-	// workingDir tag in memory, ensuring the new directory takes effect on the
-	// very next agent loop without waiting for memory flush + index rebuild.
+	// tabWorkingDirOverrides caches tabID -> user-specified working directory.
+	// A working directory is a conversation-tab setting, never a task-path or
+	// desktop-global setting. This keeps tabs that share a task independent.
 	tabWorkingDirOverrides sync.Map
+	// tabWorkingDirMu serializes each durable directory update with its runtime
+	// publication. Without it, two rapid picker completions could persist one
+	// directory while leaving the live owner cache pointed at the other.
+	tabWorkingDirMu sync.Mutex
+	// assistantSessionWorkingDirs bridges a UI tab's private directory to its
+	// runtime session owner, which is the identity used by tools and prompts.
+	assistantSessionWorkingDirs sync.Map
 
 	// ACP conversations need a private owner even when they use one workspace.
 	acpSessionWorkingDirs sync.Map // ACP ownerID -> normalized working directory
@@ -460,7 +495,7 @@ var FlashAndBeep func() = func() {}
 // NewApp creates a new App application struct
 func NewApp() *App {
 	bgCtx := context.Background()
-	return &App{
+	app := &App{
 		ctx:               nil,
 		downloadCancelers: make(map[string]context.CancelFunc),
 		nodeInstallDone:   make(chan bool, 1), // Buffered channel to signal Node.js installation completion
@@ -472,6 +507,50 @@ func NewApp() *App {
 		toolVersionCache:  NewToolVersionCache(),
 		notifCache:        newNotificationCache(),
 	}
+	// The extractor reads this provider on every request, so persisted setting
+	// changes apply immediately. Env variables still override it for emergency
+	// rollback before a GUI configuration can be loaded.
+	agent.SetOfficeReadConfigProvider(func() agent.OfficeReadConfig {
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return agent.OfficeReadConfig{}
+		}
+		return agent.CloneOfficeReadConfig(agent.OfficeReadConfig{
+			Engine:       cfg.OfficeReadEngine,
+			Formats:      cfg.OfficeReadFormats,
+			Fallback:     cfg.OfficeReadFallback,
+			EmitMarkdown: cfg.OfficeReadEmitMarkdown,
+		})
+	})
+	agent.SetOfficeReadObservationHandler(func(observation agent.OfficeReadObservation) {
+		// The adapter deliberately excludes path, body, images and raw parser
+		// errors. Keep the GUI log equally structured so it is useful for the
+		// dual-read rollout without becoming a document-content telemetry sink.
+		log.Printf("[office-read] engine=%s format=%s source_bytes=%d elapsed_ms=%d office_ok=%t office_runes=%d office_tokens=%d legacy_ok=%t legacy_runes=%d legacy_tokens=%d shared_tokens=%d fallback=%t error_class=%s",
+			observation.Engine, observation.Format, observation.SourceBytes, observation.Elapsed.Milliseconds(),
+			observation.OfficeReadOK, observation.OfficeReadSize, observation.OfficeReadTokens, observation.LegacyOK, observation.LegacySize, observation.LegacyTokens, observation.SharedTokens,
+			observation.FallbackUsed, observation.ErrorClass)
+	})
+	agent.SetOfficeReadResourceObserver(func() agent.OfficeReadResourceSnapshot {
+		var stats goruntime.MemStats
+		goruntime.ReadMemStats(&stats)
+		return agent.OfficeReadResourceSnapshot{
+			HeapAllocBytes: stats.HeapAlloc,
+			TotalAlloc:     stats.TotalAlloc,
+			SysBytes:       stats.Sys,
+			NumGC:          stats.NumGC,
+		}
+	}, func(observation agent.OfficeReadResourceObservation) {
+		// Resource telemetry deliberately shares the adapter's privacy boundary:
+		// it contains no source path, document content, image bytes or raw errors.
+		heapDelta := int64(observation.After.HeapAllocBytes) - int64(observation.Before.HeapAllocBytes)
+		totalAllocDelta := int64(observation.After.TotalAlloc) - int64(observation.Before.TotalAlloc)
+		sysDelta := int64(observation.After.SysBytes) - int64(observation.Before.SysBytes)
+		gcDelta := int64(observation.After.NumGC) - int64(observation.Before.NumGC)
+		log.Printf("[office-read-resource] engine=%s format=%s source_bytes=%d elapsed_ms=%d heap_delta_bytes=%d total_alloc_delta_bytes=%d sys_delta_bytes=%d gc_delta=%d",
+			observation.Engine, observation.Format, observation.SourceBytes, observation.Elapsed.Milliseconds(), heapDelta, totalAllocDelta, sysDelta, gcDelta)
+	})
+	return app
 }
 
 func bytesToMiB(v uint64) uint64 {
@@ -503,10 +582,26 @@ func (a *App) ensureRemoteInfra() {
 	}
 	a.remoteInfraOnce.Do(func() {
 		t0 := time.Now()
+		a.remoteInfraMu.Lock()
 		a.initCoreInfra()
 		a.remoteInfraReady.Store(true)
+		a.remoteInfraMu.Unlock()
 		log.Printf("[ensureRemoteInfra] first-time init done in %v", time.Since(t0))
 	})
+}
+
+// remoteSessionManagerIfReady returns the currently published remote-session
+// manager. Callers that do not themselves initialize remote infrastructure must
+// use this accessor so a best-effort background action waits for an in-flight
+// first initialization instead of racing its pointer publication. It also keeps
+// manually seeded managers usable by focused tests before ready is marked.
+func (a *App) remoteSessionManagerIfReady() *RemoteSessionManager {
+	if a == nil {
+		return nil
+	}
+	a.remoteInfraMu.RLock()
+	defer a.remoteInfraMu.RUnlock()
+	return a.remoteSessions
 }
 
 // ---------------------------------------------------------------------------
@@ -731,9 +826,6 @@ func (a *App) initInteractionInfra() {
 // --- Fine-grained ensure helpers for Layer 2 components ---
 
 func (a *App) ensureMemoryStore() {
-	if a.memoryStore != nil {
-		return
-	}
 	a.memoryStoreMu.Lock()
 	if a.memoryStore != nil {
 		a.memoryStoreMu.Unlock()
@@ -784,7 +876,7 @@ func (a *App) ensureMemoryStore() {
 		a.compressorMu.Lock()
 		a.memoryCompressor = compressor
 		a.compressorMu.Unlock()
-		a.memPipeline = maintenance.Pipeline()
+		a.setMemoryPipeline(maintenance.Pipeline())
 		a.triggerMemoryPipelineSoon(a.memoryPipelineStartupDelay())
 		// refreshMemoryEvolutionLLM is deferred until after memoryStoreMu is
 		// released, same as configureMemoryCompressor below: it goes through
@@ -860,7 +952,7 @@ func (a *App) newHardwareMemoryStore(clientID string) (*memory.Store, error) {
 
 func (a *App) ensureMemoryPipeline() {
 	a.ensureInteractionInfra()
-	if a.memPipeline == nil {
+	if a.currentMemoryPipeline() == nil {
 		return
 	}
 	a.triggerMemoryPipelineSoon(a.projectIndexMemoryDebounce())
@@ -881,7 +973,7 @@ func (a *App) memoryPipelineStartupDelay() time.Duration {
 }
 
 func (a *App) triggerMemoryPipelineSoon(delay time.Duration) {
-	if a == nil || a.memPipeline == nil {
+	if a == nil || a.currentMemoryPipeline() == nil {
 		return
 	}
 	if delay < 0 {
@@ -904,7 +996,7 @@ func (a *App) triggerMemoryPipelineSoon(delay time.Duration) {
 }
 
 func (a *App) runMemoryPipelineWhenIdle(seq uint64) {
-	if a == nil || a.memPipeline == nil {
+	if a == nil || a.currentMemoryPipeline() == nil {
 		return
 	}
 	if !a.isCurrentMemoryPipelineSchedule(seq) {
@@ -960,10 +1052,54 @@ func (a *App) runMemoryPipelineWhenIdle(seq uint64) {
 			a.triggerMemoryPipelineSoon(a.projectIndexMemoryDebounce())
 		}
 	}()
-	a.memPipeline.RunOnce(ctx)
+	// Keep the selected pipeline alive for the complete run. A data-directory
+	// reset may replace it concurrently; it waits for this read lock before
+	// stopping the old instance, rather than racing a RunOnce call.
+	a.memoryPipelineMu.RLock()
+	pipeline := a.memPipeline
+	if pipeline != nil {
+		pipeline.RunOnce(ctx)
+	}
+	a.memoryPipelineMu.RUnlock()
+	if pipeline == nil {
+		return
+	}
 	runSucceeded = true
 	if a.isCurrentMemoryPipelineSchedule(seq) {
 		a.triggerMemoryPipelineSoon(6 * time.Hour)
+	}
+}
+
+func (a *App) currentMemoryPipeline() *memory.Pipeline {
+	if a == nil {
+		return nil
+	}
+	a.memoryPipelineMu.RLock()
+	defer a.memoryPipelineMu.RUnlock()
+	return a.memPipeline
+}
+
+func (a *App) setMemoryPipeline(pipeline *memory.Pipeline) {
+	if a == nil {
+		return
+	}
+	a.memoryPipelineMu.Lock()
+	a.memPipeline = pipeline
+	a.memoryPipelineMu.Unlock()
+}
+
+// stopAndClearMemoryPipeline first detaches the pipeline from future scheduled
+// work, then stops it after any in-flight RunOnce has released its read lock.
+func (a *App) stopAndClearMemoryPipeline() {
+	if a == nil {
+		return
+	}
+	a.memoryPipelineMu.Lock()
+	pipeline := a.memPipeline
+	a.memPipeline = nil
+	a.memoryPipelineMu.Unlock()
+	if pipeline != nil {
+		pipeline.Stop()
 	}
 }
 
@@ -1333,8 +1469,8 @@ func (a *App) refreshMemoryEvolutionLLM() {
 	if a.memoryMaintenance == nil {
 		a.memoryMaintenance = memory.NewMaintenance(a.memoryStore, nil, guiMemoryEventEmitter{app: a})
 		a.memoryMaintenance.InstallRuntime()
-		if a.memPipeline == nil {
-			a.memPipeline = a.memoryMaintenance.Pipeline()
+		if a.currentMemoryPipeline() == nil {
+			a.setMemoryPipeline(a.memoryMaintenance.Pipeline())
 		}
 		if compressor := a.memoryMaintenance.Compressor(); compressor != nil {
 			a.configureMemoryCompressor(compressor)
@@ -1785,10 +1921,10 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		}
 		handler.SetBackgroundLoopManager(blm)
 		// Register GUI automation tools with async background replay support.
-		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC)
+		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC, a)
 		// Text-primary Computer Use (OmniParser + OCR SoM for non-vision models).
 		bindComputerUseYOLOGate(a)
-		registerComputerUseTools(handler.registry)
+		registerComputerUseTools(handler.registry, a)
 		// Keep group discussion available after late tool registration rebuilds.
 		registerGroupDiscussionTools(handler.registry, a, handler)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
@@ -2046,10 +2182,10 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		}
 		handler.SetBackgroundLoopManager(blm)
 		// Register GUI automation tools with async background replay support.
-		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC)
+		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC, a)
 		// Text-primary Computer Use (OmniParser + OCR SoM for non-vision models).
 		bindComputerUseYOLOGate(a)
-		registerComputerUseTools(handler.registry)
+		registerComputerUseTools(handler.registry, a)
 		// Keep group discussion available after late tool registration rebuilds.
 		registerGroupDiscussionTools(handler.registry, a, handler)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
@@ -2132,6 +2268,9 @@ func (a *App) startup(ctx context.Context) {
 	startupBegin := time.Now()
 	log.Printf("[startup] begin")
 	a.ctx = ctx
+	// On Windows, set the native HWND icon as early as possible so the taskbar
+	// and window switcher use the same asset as the notification-area icon.
+	setMainWindowIconFromTray()
 	// Initialize agentView sequence with a time-based epoch so post-restart
 	// events are never rejected as stale by a surviving frontend WebView.
 	a.initAgentViewSeqEpoch()
@@ -2195,6 +2334,10 @@ func (a *App) startup(ctx context.Context) {
 			// Background: Hub WebSocket connect + auth + sendHello (network I/O).
 			go a.asyncHubConnect()
 			go a.scheduleVirtualRepositorySync()
+			// Enterprise digital assets: one-way Hub→local sync (staggered).
+			if strings.TrimSpace(config.RemoteViewerToken) != "" {
+				go a.StartEnterpriseDigitalAssetSync()
+			}
 		} else if config.RemoteEmail != "" && config.RemoteHubURL != "" {
 			// No full credentials yet -mark ready immediately, auto-register in background.
 			hubPrepStart := time.Now()
@@ -2400,6 +2543,12 @@ func (a *App) shutdown(ctx context.Context) {
 	a.aiConversationMemory = nil
 	a.conversationMemoryMu.Unlock()
 	if conversationMemory != nil {
+		// Persist unfinished-task slots for sessions with active agent loops
+		// BEFORE the flush below, so a graceful exit leaves a resume entry
+		// point (previously only crashes/max-rounds produced one).
+		if a.imHandler != nil {
+			a.imHandler.snapshotInterruptedSessionsForShutdown()
+		}
 		// Force-flush dirty state to disk BEFORE stopping the persist loop.
 		// When the process is killed by an updater (no graceful shutdown),
 		// the OS-level signal handler may still reach this code path via
@@ -2429,9 +2578,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.memoryMaintenance != nil {
 		a.memoryMaintenance.Stop()
 	} else {
-		if a.memPipeline != nil {
-			a.memPipeline.Stop()
-		}
+		a.stopAndClearMemoryPipeline()
 		a.compressorMu.Lock()
 		memoryCompressor := a.memoryCompressor
 		a.compressorMu.Unlock()
@@ -2450,6 +2597,7 @@ func (a *App) shutdown(ctx context.Context) {
 		}
 	}
 	// Close coding knowledge store.
+	a.closeCodingRuntimeStore()
 	if a.codingKnowledgeStore != nil {
 		_ = a.codingKnowledgeStore.Close()
 		a.codingKnowledgeStore = nil
@@ -2501,18 +2649,29 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.weixinGateway != nil {
 		a.weixinGateway.Stop()
 	}
-	if a.lansengerGateway != nil {
+	if a.lansengerGateways != nil {
+		a.lansengerGateways.stopAll()
+	} else if a.lansengerGateway != nil {
 		a.lansengerGateway.Stop()
 	}
 	if a.thirdPartyGateway != nil {
 		a.thirdPartyGateway.Stop()
 	}
+	ttsSpeakMu.Lock()
+	a.ttsManagerMu.Lock()
+	if a.ttsManager != nil {
+		a.ttsManager.Unload()
+		a.ttsManager = nil
+	}
+	a.ttsManagerMu.Unlock()
+	ttsSpeakMu.Unlock()
+	a.unloadHardwareSpeechSynthesizers()
 	a.platformShutdown()
 }
 
 func (a *App) refreshPowerOptimizationStateFromConfig(config corelib.AppConfig) {
 	enabled := config.PowerOptimization && a.hasActiveRemoteTasks()
-	a.setPowerOptimizationEnabled(enabled)
+	a.reconcilePlatformPowerState(enabled, config.WorkstationMode)
 	// Workstation mode also owns the display-off timer: it prevents sleep/lock
 	// while still allowing the screen to turn off after the configured idle time.
 	a.updateScreenDimTimer(enabled || config.WorkstationMode, config.ScreenDimTimeoutMin)
@@ -2528,10 +2687,11 @@ func (a *App) refreshPowerOptimizationState() {
 }
 
 func (a *App) hasActiveRemoteTasks() bool {
-	if a.remoteSessions == nil {
+	sessions := a.remoteSessionManagerIfReady()
+	if sessions == nil {
 		return false
 	}
-	return a.remoteSessions.HasActiveSessions()
+	return sessions.HasActiveSessions()
 }
 
 func (a *App) resolveProjectProxyURL(config corelib.AppConfig, projectDir string) string {
@@ -3151,10 +3311,16 @@ func (a *App) ResizeWindow(width, height int) {
 }
 
 // GetAdaptiveWindowSize returns the recommended window dimensions for the
-// current screen, matching the logic used at startup. Frontend can call this
-// instead of hardcoding resize dimensions.
+// current display. On Windows, once a main HWND exists, its monitor work area
+// is used so the returned size accounts for that monitor's DPI and taskbar.
+// Frontend can call this instead of hardcoding resize dimensions.
 func (a *App) GetAdaptiveWindowSize() map[string]int {
-	w, h := adaptiveWindowSize()
+	// Startup uses the primary display before an HWND exists. Once the frontend
+	// asks to leave the compact environment-check shell, use the monitor that
+	// currently owns the window instead: Wails scales WindowSetSize with that
+	// window's DPI, so primary-monitor metrics can otherwise overshoot on a
+	// mixed-DPI multi-monitor setup.
+	w, h := adaptiveWindowSizeForCurrentWindow()
 	return map[string]int{"width": w, "height": h}
 }
 
@@ -5180,6 +5346,22 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if err != nil {
 		return config, err
 	}
+	if corelib.ApplyOfficeReadFullScopeMigration(&config) {
+		// Persist this versioned promotion after the config lock is released.
+		// It upgrades only the historical default `.ppt` scope; subsequent
+		// user-selected partial scopes remain valid format-level rollbacks.
+		a.pendingConfigDiskWrite.Store(true)
+	}
+	// The old desktop-only hardware token was never part of Hub's actual
+	// device-authentication protocol. Hub issues and stores per-device
+	// credentials during pairing, so remove this obsolete config residue on the
+	// next safe write rather than retaining a confusing, unused secret.
+	var rawConfig map[string]json.RawMessage
+	if json.Unmarshal(data, &rawConfig) == nil {
+		if _, legacyHardwareToken := rawConfig["hardware_gateway_token"]; legacyHardwareToken {
+			a.pendingConfigDiskWrite.Store(true)
+		}
+	}
 	if changed, err := a.ensureDefaultHardwareWelcome(&config); err != nil {
 		return config, err
 	} else if changed {
@@ -5612,6 +5794,9 @@ func (a *App) applyDataDirFromConfig(config corelib.AppConfig) {
 }
 
 func (a *App) resetPathBoundStateForDataDirChange() {
+	a.answerCacheMu.Lock()
+	a.answerCache = nil
+	a.answerCacheMu.Unlock()
 	a.conversationMemoryMu.Lock()
 	conversationMemory := a.aiConversationMemory
 	a.aiConversationMemory = nil
@@ -5664,10 +5849,7 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		a.memoryMaintenance.Stop()
 		a.memoryMaintenance = nil
 	}
-	if a.memPipeline != nil {
-		a.memPipeline.Stop()
-		a.memPipeline = nil
-	}
+	a.stopAndClearMemoryPipeline()
 	a.stopMemoryPipelineSchedule("data_dir_change")
 	a.compressorMu.Lock()
 	if a.memoryCompressor != nil {
@@ -5910,25 +6092,23 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	incoming.RemoteMachineName = ondisk.RemoteMachineName
 	incoming.SkillMarketSessionToken = ondisk.SkillMarketSessionToken
 
-	// Hardware enablement owns a multi-field transport invariant and must only
-	// change through SetHardwareEnabled. Preserve the complete tuple so an older
-	// full-config form cannot silently re-enable local mode or disable its gateway.
-	if incoming.HardwareEnabled != ondisk.HardwareEnabled ||
-		incoming.ThirdPartyGatewayEnabled != ondisk.ThirdPartyGatewayEnabled ||
-		incoming.ThirdPartyGatewayToken != ondisk.ThirdPartyGatewayToken ||
-		!sameOptionalBool(incoming.ThirdPartyGatewayLocalMode, ondisk.ThirdPartyGatewayLocalMode) {
-		restored = append(restored, "hardware_gateway_transport")
+	// Hardware enablement is system-owned. The IM gateway fields intentionally
+	// do not belong here: an IM token change must never be overwritten because
+	// hardware happens to be enabled.
+	if incoming.HardwareEnabled != ondisk.HardwareEnabled {
+		restored = append(restored, "hardware_transport")
 	}
 	incoming.HardwareEnabled = ondisk.HardwareEnabled
-	incoming.ThirdPartyGatewayEnabled = ondisk.ThirdPartyGatewayEnabled
-	incoming.ThirdPartyGatewayToken = ondisk.ThirdPartyGatewayToken
-	incoming.ThirdPartyGatewayLocalMode = ondisk.ThirdPartyGatewayLocalMode
 
 	// ── Local hardware labels (SetThirdPartyHardwareDeviceAlias) ──
 	// Display labels are saved independently of the full settings form. Keep a
 	// stale form snapshot from erasing a recent rename or restoring a label for
 	// an already-unbound device.
 	incoming.HardwareDeviceAliases = ondisk.HardwareDeviceAliases
+	// Per-device assistant and reply-voice choices are also updated through a
+	// dedicated local endpoint. A stale full settings snapshot must not erase a
+	// recently changed policy or restore one after the device was unbound.
+	incoming.HardwareAgentBindings = ondisk.HardwareAgentBindings
 
 	// ── MaClaw LLM provider state (SaveMaclawLLMProviders, syncHubLLMServiceStatusToConfig) ──
 	if incoming.MaclawLLMCurrentProvider != ondisk.MaclawLLMCurrentProvider {
@@ -5942,6 +6122,13 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	incoming.MaclawLLMTimeoutSec = ondisk.MaclawLLMTimeoutSec
 	incoming.MaclawLLMContextLength = ondisk.MaclawLLMContextLength
 	incoming.MaclawLLMProviders = ondisk.MaclawLLMProviders
+	// Model assignments are backend-owned and revision-protected. Once the
+	// dual-profile contract exists on disk, a stale whole-config form must not
+	// erase it or revive its old assistant-only selection. Initial setup is
+	// still allowed to supply profiles when the on-disk config has none.
+	if ondisk.MaclawLLMProfiles != nil {
+		incoming.MaclawLLMProfiles = ondisk.MaclawLLMProfiles
+	}
 
 	// ── Onboarding (PatchConfigFields from useRemotePanel) ──
 	if incoming.OnboardingDone != ondisk.OnboardingDone {
@@ -5966,6 +6153,9 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 		}
 	}
 	incoming.LLMTokenUsage = ondisk.LLMTokenUsage
+	// Profile-aware usage is likewise backend-owned. It must survive stale
+	// full-config writes independently of the legacy provider aggregate.
+	incoming.LLMProfileTokenUsage = ondisk.LLMProfileTokenUsage
 
 	// ── Working directory (SetTabWorkingDir for local tab) ──
 	// Only PatchConfigFields should modify this. A stale frontend snapshot
@@ -5981,6 +6171,11 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 }
 
 func (a *App) SaveConfig(config corelib.AppConfig) error {
+	// SaveConfig sanitizes nested slices and maps in place. Its value argument
+	// can still share backing storage with a caller's prior LoadConfig result,
+	// so take ownership before acquiring the writer lock. Otherwise concurrent
+	// full saves can mutate a snapshot while another save is serializing it.
+	config = cloneAppConfigForMutation(config)
 	lockStart := time.Now()
 	a.configMu.Lock()
 	lockWait := time.Since(lockStart)
@@ -6063,7 +6258,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	// from the authoritative on-disk config. These fields are only modified
 	// by backend goroutines through PatchConfig (which is atomic under
 	// configMu). The frontend must use PatchConfigFields to modify them.
-	if oldConfigLoaded && strings.TrimSpace(a.testHomeDir) == "" && !userDataMigrationIsConfigRestore(a) {
+	if oldConfigLoaded && !userDataMigrationIsConfigRestore(a) {
 		preserveBackendOwnedFields(&config, &oldConfig)
 	}
 	if a.shouldPreserveHubManagedSecurity(oldConfig) {
@@ -6092,6 +6287,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	hardwareCustomPetsDisabled := oldConfig.HardwareAllowCustomPets && !config.HardwareAllowCustomPets
 	hardwareWelcomeChanged := !oldConfigLoaded || hardwareWelcomeConfigChanged(oldConfig, config)
 	hardwareVolumeChanged := !oldConfigLoaded || hardwareVolumeChanged(oldConfig, config)
+	hardwareBrightnessChanged := !oldConfigLoaded || hardwareBrightnessChanged(oldConfig, config)
 	hubClient := (*RemoteHubClient)(nil)
 	if a.remoteSessions != nil {
 		hubClient = a.remoteSessions.hubClient
@@ -6163,7 +6359,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 		if oldConfigLoaded && oldConfig.RemoteHeartbeatSec != config.RemoteHeartbeatSec {
 			hubClient.InvalidateHeartbeatIntervalCache()
 		}
-		go func(client *RemoteHubClient, cfg corelib.AppConfig, syncPet, syncWelcome, syncVolume bool) {
+		go func(client *RemoteHubClient, cfg corelib.AppConfig, syncPet, syncWelcome, syncVolume, syncBrightness bool) {
 			if client.IsConnected() {
 				if syncPet {
 					if err := client.SendDeviceGatewayPetProfile(cfg); err != nil {
@@ -6180,9 +6376,14 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 						log.Printf("[device-volume] configuration sync failed: %v", err)
 					}
 				}
+				if syncBrightness {
+					if err := a.SyncHardwareBrightness(); err != nil {
+						log.Printf("[device-brightness] configuration sync failed: %v", err)
+					}
+				}
 				client.SyncLaunchProjects()
 			}
-		}(hubClient, config, (devicePetChanged && !config.HardwareAllowCustomPets) || hardwareCustomPetsDisabled, hardwareWelcomeChanged, hardwareVolumeChanged)
+		}(hubClient, config, (devicePetChanged && !config.HardwareAllowCustomPets) || hardwareCustomPetsDisabled, hardwareWelcomeChanged, hardwareVolumeChanged, hardwareBrightnessChanged)
 	}
 	log.Printf("[config] SaveConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
@@ -7233,6 +7434,15 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, fmt.Errorf("hardware_volume must be between 0 and 100")
 			}
 			cfg.HardwareVolume = v
+		case "hardware_brightness":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 || v > 100 {
+				return corelib.AppConfig{}, fmt.Errorf("hardware_brightness must be between 0 and 100")
+			}
+			cfg.HardwareBrightness = v
 		case "hardware_device_aliases":
 			v, err := stringMapField(key, value)
 			if err != nil {
@@ -7496,6 +7706,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.MaclawLLMTimeoutSec = v
 		case "maclaw_llm_current_provider":
+			if cfg.MaclawLLMProfiles != nil {
+				return corelib.AppConfig{}, fmt.Errorf("LLM profiles are enabled; update the assistant profile through model assignments")
+			}
 			v, err := stringField(key, value)
 			if err != nil {
 				return corelib.AppConfig{}, err
@@ -7561,6 +7774,24 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				v = 8192
 			}
 			cfg.CodingCheckpointSidecarMaxMB = v
+		case "coding_knowledge_max_reviewed_per_project":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 1 || v > 5000 {
+				return corelib.AppConfig{}, fmt.Errorf("coding_knowledge_max_reviewed_per_project must be between 1 and 5000")
+			}
+			cfg.CodingKnowledgeMaxReviewedPerProject = v
+		case "coding_knowledge_max_reviewed_tokens_per_project":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 1 || v > 1_000_000 {
+				return corelib.AppConfig{}, fmt.Errorf("coding_knowledge_max_reviewed_tokens_per_project must be between 1 and 1000000")
+			}
+			cfg.CodingKnowledgeMaxReviewedTokensPerProject = v
 		case "gossip_auto_publish":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7670,6 +7901,40 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.VectorSearchEnabled = v
+		case "office_read_engine":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			engine := strings.ToLower(strings.TrimSpace(v))
+			switch engine {
+			case "legacy", "dual", "officeread":
+				cfg.OfficeReadEngine = engine
+			default:
+				return corelib.AppConfig{}, fmt.Errorf("office_read_engine must be legacy, dual, or officeread")
+			}
+		case "office_read_formats":
+			v, err := stringSliceField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			formats, err := normalizeOfficeReadFormats(v)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.OfficeReadFormats = formats
+		case "office_read_fallback":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.OfficeReadFallback = &v
+		case "office_read_emit_markdown":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.OfficeReadEmitMarkdown = &v
 		case "screen_parsing_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7738,6 +8003,18 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ASREnabled = v
+		case "ocr_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.OCREnabled = v
+		case "ocr_model_tier":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.OCRModelTier = corelib.NormalizeOCRModelTier(v)
 		case "diarization_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7977,10 +8254,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			return corelib.AppConfig{}, fmt.Errorf("unsupported config patch field: %s", key)
 		}
 	}
-	if err := validateHardwareGatewayInvariant(cfg); err != nil {
-		return corelib.AppConfig{}, err
-	}
-
 	if a.shouldPreserveHubManagedSecurity(current) {
 		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
 	} else if a.hubSecurityExplicitlyCentralizedFalse() {
@@ -8011,6 +8284,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	hardwareCustomPetsDisabled := current.HardwareAllowCustomPets && !cfg.HardwareAllowCustomPets
 	hardwareWelcomeChanged := hardwareWelcomeConfigChanged(current, cfg)
 	hardwareVolumeChanged := hardwareVolumeChanged(current, cfg)
+	hardwareBrightnessChanged := hardwareBrightnessChanged(current, cfg)
 	// Unified epilogue: publish → unlock → post-unlock drains → persist.
 	// Mark committed before finish so defer does not double-unlock.
 	configTxnCommitted = true
@@ -8157,6 +8431,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 		}()
 	}
+	if hardwareBrightnessChanged {
+		go func() {
+			if err := a.SyncHardwareBrightness(); err != nil {
+				log.Printf("[device-brightness] configuration sync failed: %v", err)
+			}
+		}()
+	}
 	if proxyChanged {
 		a.applyAgentProxy()
 	}
@@ -8166,6 +8447,37 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	}
 	log.Printf("[config] PatchConfigFields:done fields=%d keys=%v", len(patch), configPatchKeys(patch))
 	return cfg, nil
+}
+
+// normalizeOfficeReadFormats keeps the persisted GUI policy canonical and
+// rejects formats the extractor cannot route. A nil/empty list is valid: it
+// restores the default full OfficeRead scope at runtime.
+func normalizeOfficeReadFormats(values []string) ([]string, error) {
+	allowed := map[string]struct{}{
+		"doc": {}, "docx": {}, "xls": {}, "xlsx": {}, "ppt": {}, "pptx": {},
+	}
+	seen := make(map[string]struct{}, len(values))
+	formats := make([]string, 0, len(values))
+	for _, value := range values {
+		format := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), ".")
+		if format == "" {
+			// A non-empty patch with a blank item is malformed rather than an
+			// implicit request to shorten the rollout scope. This matches the
+			// runtime all-or-nothing parser and prevents an external GUI/API
+			// client from accidentally persisting a partially applied policy.
+			return nil, fmt.Errorf("office_read_formats contains an empty format")
+		}
+		if _, ok := allowed[format]; !ok {
+			return nil, fmt.Errorf("office_read_formats contains unsupported format %q", value)
+		}
+		if _, duplicate := seen[format]; duplicate {
+			continue
+		}
+		seen[format] = struct{}{}
+		formats = append(formats, format)
+	}
+	sort.Strings(formats)
+	return formats, nil
 }
 
 // configPatchKeys extracts sorted keys from a patch map for diagnostic logging.

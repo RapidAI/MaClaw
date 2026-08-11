@@ -4,11 +4,80 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
 const scheduledTaskExecutorOwnerID = "system:scheduler:background:scheduled-task-executor"
+
+// scheduledTaskConversationOwner keeps assistant bindings for autonomous work
+// distinct from one another. Assistant bindings are process-local and keyed by
+// IMUserMessage.UserID while a turn is executing; using the historic constant
+// "scheduled_task" for every profile would let two concurrent tasks overwrite
+// each other's expert and filesystem boundary. Legacy desktop tasks retain
+// their existing owner for compatibility, while a profile task is scoped by
+// its immutable bot and scheduler task IDs.
+func scheduledTaskConversationOwner(task *scheduler.ScheduledTask) string {
+	if task == nil {
+		return "scheduled_task"
+	}
+	profileID := task.BotProfileID
+	if profileID == "" && task.Delivery != nil {
+		profileID = task.Delivery.BotProfileID
+	}
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return "scheduled_task"
+	}
+	taskID := strings.TrimSpace(task.ID)
+	if taskID == "" {
+		// A persisted scheduler task always has an ID. Keep even malformed
+		// in-memory tasks isolated from other profiles rather than allowing a
+		// fallback to the shared legacy owner.
+		taskID = "unsaved"
+	}
+	return fmt.Sprintf("lansenger-scheduled:%d:%s:%d:%s", len(profileID), profileID, len(taskID), taskID)
+}
+
+// scheduledTaskHandler selects the agent instance that owns a task. Profile
+// deliveries are created only by that profile's private handler, so executing
+// the task through a desktop/Hub handler would silently lose its expert and
+// filesystem boundary. Missing profile runtime is fail-closed.
+func (a *App) scheduledTaskHandler(task *scheduler.ScheduledTask, fallback *IMMessageHandler) (*IMMessageHandler, *agent.AssistantBinding, error) {
+	profileID := ""
+	if task != nil {
+		profileID = task.BotProfileID
+		// Delivery-level ownership lets tasks created by the first multi-bot
+		// release retain their agent boundary after this task-level field was
+		// introduced.
+		if profileID == "" && task.Delivery != nil {
+			profileID = task.Delivery.BotProfileID
+		}
+	}
+	if profileID == "" {
+		if fallback == nil {
+			return nil, nil, fmt.Errorf("agent handler not initialized — LLM may not be configured")
+		}
+		return fallback, nil, nil
+	}
+	manager, err := a.lansengerGatewayManagerForSend(profileID)
+	if err != nil || manager == nil || manager.profile == nil {
+		if err == nil {
+			err = fmt.Errorf("lansenger bot profile %q is unavailable", profileID)
+		}
+		return nil, nil, err
+	}
+	runtime, err := manager.ensureProfileRuntime()
+	if err != nil || runtime == nil || runtime.handler == nil {
+		if err == nil {
+			err = fmt.Errorf("lansenger bot profile %q runtime is unavailable", profileID)
+		}
+		return nil, nil, err
+	}
+	return runtime.handler, lansengerAssistantBinding(manager.configuredProfile(nil)), nil
+}
 
 // buildLocalScheduledTaskExecutor creates a TaskExecutor that runs scheduled
 // tasks through the local IMMessageHandler without requiring Hub connectivity.
@@ -27,9 +96,9 @@ func (a *App) buildLocalScheduledTaskExecutor() scheduler.TaskExecutor {
 			)
 		}
 
-		handler := a.ensureLocalIMHandler()
-		if handler == nil {
-			return "", fmt.Errorf("agent handler not initialized — LLM may not be configured")
+		handler, binding, err := a.scheduledTaskHandler(task, a.ensureLocalIMHandler())
+		if err != nil {
+			return "", err
 		}
 
 		// Prepend a hint so the agent knows this is an autonomous task.
@@ -40,12 +109,13 @@ func (a *App) buildLocalScheduledTaskExecutor() scheduler.TaskExecutor {
 		}
 
 		resp := handler.HandleIMMessageWithProgressAndStream(IMUserMessage{
-			UserID:        "scheduled_task",
-			Platform:      "scheduler",
-			Text:          actionText,
-			MinIterations: 50,
-			IsBackground:  true,
-			CancelCtx:     ctx,
+			UserID:           scheduledTaskConversationOwner(task),
+			Platform:         "scheduler",
+			Text:             actionText,
+			MinIterations:    50,
+			IsBackground:     true,
+			CancelCtx:        ctx,
+			AssistantBinding: binding,
 		}, onProgress, nil, nil, nil)
 
 		if resp == nil {
@@ -99,14 +169,18 @@ func (a *App) buildHubScheduledTaskExecutor(hubClient *RemoteHubClient) schedule
 
 		actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
 
-		handler := hubClient.ensureIMHandler()
+		handler, binding, err := a.scheduledTaskHandler(task, hubClient.ensureIMHandler())
+		if err != nil {
+			return "", err
+		}
 		resp := handler.HandleIMMessageWithProgressAndStream(IMUserMessage{
-			UserID:        "scheduled_task",
-			Platform:      "scheduler",
-			Text:          actionText,
-			MinIterations: 50,
-			IsBackground:  true,
-			CancelCtx:     ctx,
+			UserID:           scheduledTaskConversationOwner(task),
+			Platform:         "scheduler",
+			Text:             actionText,
+			MinIterations:    50,
+			IsBackground:     true,
+			CancelCtx:        ctx,
+			AssistantBinding: binding,
 		}, onProgress, nil, nil, nil)
 
 		if resp == nil {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/needledata"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -100,6 +103,263 @@ func setActivePhaseByID(t *testing.T, app *TUIApp, phaseID string) *workflow.Wor
 	}
 	t.Fatalf("phase %q not found", phaseID)
 	return nil
+}
+
+func TestTUIWorkflowCodingRuntimeOnlyAdmitsExplicitImplementationPhase(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+
+	state := startTestWorkflow(t, app, string(workflow.WorkflowCoding), "implement a safe runtime")
+	if tuiWorkflowPhaseUsesCodingRuntime(state, state.ActivePhase()) {
+		t.Fatalf("planning phase unexpectedly admitted to coding runtime: %#v", state.ActivePhase())
+	}
+	state = setActivePhaseByID(t, app, workflow.PhaseCodingImplementation)
+	phase := state.ActivePhase()
+	if !tuiWorkflowPhaseUsesCodingRuntime(state, phase) {
+		t.Fatalf("implementation phase was not admitted: %#v", phase)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, task, attempt, err := app.runTUIWorkflowCodingAttempt(ctx, &tuiCallbacks{app: app, cancelCh: make(chan struct{})}, state, phase, "apply the approved plan", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task == nil || attempt == nil || task.TaskID != tuiWorkflowRuntimeTaskID(state.ID, phase.ID) || task.WorkflowID != state.ID || task.PhaseID != phase.ID {
+		t.Fatalf("runtime task is not bound to the active workflow phase: task=%#v attempt=%#v", task, attempt)
+	}
+	if task.Status != codingruntime.TaskInterrupted || attempt.Status != codingruntime.TaskInterrupted || attempt.SideEffectState != codingruntime.SideEffectUncertain {
+		t.Fatalf("cancelled runtime attempt must be uncertain/interrupted: task=%#v attempt=%#v", task, attempt)
+	}
+}
+
+func TestTUIWorkflowCodingRuntimeRejectsConfirmableSubAgentPhase(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+
+	startTestWorkflow(t, app, string(workflow.WorkflowCoding), "implement a safe runtime")
+	state := setActivePhaseByID(t, app, workflow.PhaseCodingImplementation)
+	phase := state.ActivePhase()
+	if phase == nil {
+		t.Fatal("missing implementation phase")
+	}
+	// Simulate a stale/custom persisted phase whose execution metadata is
+	// otherwise valid but which still requires a review confirmation.
+	phase.NeedsConfirm = true
+	if tuiWorkflowPhaseUsesCodingRuntime(state, phase) {
+		t.Fatalf("confirmable subagent phase unexpectedly admitted: %#v", phase)
+	}
+
+	_, task, attempt, err := app.runTUIWorkflowCodingAttempt(context.Background(), &tuiCallbacks{app: app, cancelCh: make(chan struct{})}, state, phase, "must wait for confirmation", nil)
+	if err == nil || task != nil || attempt != nil {
+		t.Fatalf("confirmable phase must fail before creating a runtime attempt: task=%#v attempt=%#v err=%v", task, attempt, err)
+	}
+	if _, getErr := store.GetTask(tuiWorkflowRuntimeTaskID(state.ID, phase.ID)); getErr != codingruntime.ErrNotFound {
+		t.Fatalf("confirmable phase must not create ledger task: %v", getErr)
+	}
+}
+
+func TestTUIWorkflowCodingRuntimeRequiresRecoveryInsteadOfReplayingInterruptedTask(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+	startTestWorkflow(t, app, string(workflow.WorkflowCoding), "implement a safe runtime")
+	state := setActivePhaseByID(t, app, workflow.PhaseCodingImplementation)
+	phase := state.ActivePhase()
+	taskID := tuiWorkflowRuntimeTaskID(state.ID, phase.ID)
+	policy := codingruntime.PolicySnapshot{ProjectRoot: state.ProjectPath, Mode: "local", FinalWorkspaceGateRequired: true}
+	digest, err := codingruntime.PolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Digest = digest
+	if _, err := store.CreateTask(codingruntime.Task{TaskID: taskID, WorkflowID: state.ID, PhaseID: phase.ID, ProjectRef: state.ProjectPath, Mode: "local", PolicyDigest: digest}); err != nil {
+		t.Fatal(err)
+	}
+	started, err := store.StartAttempt(taskID, "old-owner", time.Minute, policy, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(started.AttemptID, "old-owner", codingruntime.FinishInput{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	_, task, attempt, err := app.runTUIWorkflowCodingAttempt(context.Background(), &tuiCallbacks{app: app, cancelCh: make(chan struct{})}, state, phase, "continue implementation", nil)
+	if err != codingruntime.ErrRecoveryRequired || task == nil || task.Status != codingruntime.TaskInterrupted || attempt != nil {
+		t.Fatalf("task=%#v attempt=%#v err=%v", task, attempt, err)
+	}
+	if attempts, err := store.ListAttempts(taskID); err != nil || len(attempts) != 1 {
+		t.Fatalf("interrupted attempt was replayed: attempts=%#v err=%v", attempts, err)
+	}
+}
+
+func TestTUIWorkflowCompletedLedgerTaskProjectsWithoutReplayingExecutor(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+	startTestWorkflow(t, app, string(workflow.WorkflowCoding), "implement a durable runtime")
+	state := setActivePhaseByID(t, app, workflow.PhaseCodingImplementation)
+	phase := state.ActivePhase()
+	policy := codingruntime.PolicySnapshot{ProjectRoot: state.ProjectPath, Mode: "local", FinalWorkspaceGateRequired: true}
+	digest, err := codingruntime.PolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Digest = digest
+	taskID := tuiWorkflowRuntimeTaskID(state.ID, phase.ID)
+	if _, err = store.CreateTask(codingruntime.Task{TaskID: taskID, WorkflowID: state.ID, PhaseID: phase.ID, ProjectRef: state.ProjectPath, Mode: "local", PolicyDigest: digest}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(taskID, "old-owner", time.Minute, policy, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.FinishAttempt(attempt.AttemptID, "old-owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectConfirmed}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	result, task, returnedAttempt, err := app.runTUIWorkflowCodingAttempt(context.Background(), &tuiCallbacks{app: app, cancelCh: make(chan struct{})}, state, phase, "must not run again", nil)
+	if err != nil || task == nil || task.Status != codingruntime.TaskCompleted || returnedAttempt != nil {
+		t.Fatalf("projection result=%#v task=%#v attempt=%#v err=%v", result, task, returnedAttempt, err)
+	}
+	if !strings.Contains(result.Text, taskID) || !strings.Contains(result.Text, "without replaying") {
+		t.Fatalf("projection text=%q", result.Text)
+	}
+	if attempts, err := store.ListAttempts(taskID); err != nil || len(attempts) != 1 {
+		t.Fatalf("completed attempt was replayed: attempts=%#v err=%v", attempts, err)
+	}
+	if err := app.workflowV2.machine.RecordOutput("tui-user", result.Text); err != nil {
+		t.Fatalf("repair workflow projection: %v", err)
+	}
+	updated := app.workflowV2.machine.GetActive("tui-user")
+	if updated == nil || updated.ActivePhase() == nil || updated.ActivePhase().ID == phase.ID {
+		t.Fatalf("workflow did not advance from repaired projection: %#v", updated)
+	}
+}
+
+func TestTUIStartupRepairsCompletedCodingProjectionWithoutExecutorReplay(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+	startTestWorkflow(t, app, string(workflow.WorkflowCoding), "implement a durable runtime")
+	state := setActivePhaseByID(t, app, workflow.PhaseCodingImplementation)
+	phase := state.ActivePhase()
+	if phase == nil {
+		t.Fatal("missing implementation phase")
+	}
+	policy := codingruntime.PolicySnapshot{ProjectRoot: state.ProjectPath, Mode: "local", FinalWorkspaceGateRequired: true}
+	digest, err := codingruntime.PolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Digest = digest
+	taskID := tuiWorkflowRuntimeTaskID(state.ID, phase.ID)
+	if _, err = store.CreateTask(codingruntime.Task{TaskID: taskID, WorkflowID: state.ID, PhaseID: phase.ID, ProjectRef: state.ProjectPath, Mode: "local", PolicyDigest: digest}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(taskID, "old-owner", time.Minute, policy, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.FinishAttempt(attempt.AttemptID, "old-owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectConfirmed}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate startup after Ledger commit but before the host's RecordOutput.
+	app.repairCompletedTUIWorkflowCodingProjections(app.workflowV2)
+	updated := app.workflowV2.machine.GetActive("tui-user")
+	if updated == nil || updated.ActivePhase() == nil || updated.ActivePhase().ID == phase.ID {
+		t.Fatalf("completed projection was not repaired: %#v", updated)
+	}
+	if attempts, err := store.ListAttempts(taskID); err != nil || len(attempts) != 1 {
+		t.Fatalf("projection repair replayed executor: attempts=%#v err=%v", attempts, err)
+	}
+}
+
+func TestTUIWorkflowCodingRecoveryRequiresExplicitConfirmation(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+	dir := initTUIWorkflowGitFixture(t)
+	policy := codingruntime.PolicySnapshot{ProjectRoot: dir, Mode: "local", FinalWorkspaceGateRequired: true}
+	digest, err := codingruntime.PolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Digest = digest
+	task, err := store.CreateTask(codingruntime.Task{TaskID: "recover-me", ProjectRef: dir, Mode: "local", PolicyDigest: digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "old", time.Minute, policy, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.FinishAttempt(attempt.AttemptID, "old", codingruntime.FinishInput{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	plan, summary, err := app.prepareTUIWorkflowCodingRecovery(context.Background(), task.TaskID)
+	if err != nil || plan == nil || summary == "" {
+		t.Fatalf("plan=%#v summary=%q err=%v", plan, summary, err)
+	}
+	if current, err := store.GetTask(task.TaskID); err != nil || current.Status != codingruntime.TaskInterrupted {
+		t.Fatalf("inspection mutated task=%#v err=%v", current, err)
+	}
+	if _, err = app.confirmTUIWorkflowCodingRecovery(context.Background(), task.TaskID, true); err != nil {
+		t.Fatal(err)
+	}
+	if current, err := store.GetTask(task.TaskID); err != nil || current.Status != codingruntime.TaskQueued {
+		t.Fatalf("confirmation did not only queue a new attempt: %#v err=%v", current, err)
+	}
+	if attempts, err := store.ListAttempts(task.TaskID); err != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskInterrupted {
+		t.Fatalf("recovery replayed attempt: %#v err=%v", attempts, err)
+	}
+}
+
+func initTUIWorkflowGitFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	run("init")
+	run("config", "user.email", "test@example.invalid")
+	run("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("baseline"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "file.txt")
+	run("commit", "-m", "baseline")
+	return dir
 }
 
 func TestTUIWorkflowDoesNotStartFromKeywordFallback(t *testing.T) {

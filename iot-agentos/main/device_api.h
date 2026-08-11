@@ -20,6 +20,10 @@ typedef enum {
     DEVICE_STATUS_RESOURCE_EXHAUSTED,
     DEVICE_STATUS_IO_ERROR,
     DEVICE_STATUS_INTERNAL_ERROR,
+    /* A capture/search completed normally but found nothing (e.g. no speech
+     * before the start timeout). Kept distinct from INTERNAL_ERROR so callers
+     * can present a retry hint instead of a hardware-failure message. */
+    DEVICE_STATUS_NOT_FOUND,
 } device_status_t;
 
 /* Shared resource-pressure observation is deliberately a small value type:
@@ -56,13 +60,29 @@ bool device_resource_pressure_allows_optional_work(void);
 bool device_resource_pressure_allows_optional_allocation(
     uint32_t internal_bytes, uint32_t external_bytes, uint32_t storage_bytes);
 
-/* Display adapters expose an upper bound for the transient copy they create
- * while installing an externally supplied pet pack.  It is a capability
- * fact, not a board ID or a renderer implementation detail. */
-bool device_display_get_pet_asset_install_budget(uint32_t source_width,
-                                                 uint32_t source_height,
-                                                 uint32_t frame_count,
-                                                 uint32_t *out_external_bytes);
+/* Display adapters expose their bounded installation memory plan.  Total
+ * retained bytes and the largest one-shot allocation are distinct allocator
+ * facts, so common business code does not need to know renderer geometry. */
+#define DEVICE_DISPLAY_PET_ASSET_INSTALL_BUDGET_ABI_VERSION 2u
+typedef struct {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t total_external_bytes;
+    uint32_t max_external_allocation_bytes;
+    /* Hardware/profile limit for one optional animated pack.  This is a
+     * renderer capability, not a business policy: a constrained display can
+     * request fewer keyframes while presenting the identical selected pet. */
+    uint32_t max_frame_count;
+} device_display_pet_asset_install_budget_t;
+
+bool device_display_get_pet_asset_install_budget(
+    uint32_t source_width, uint32_t source_height, uint32_t frame_count,
+    device_display_pet_asset_install_budget_t *out_budget);
+
+/* Optional flash writes (such as a pet-preview cache) are capability-gated
+ * separately from required durable storage. This keeps decorative work from
+ * destabilizing a board whose flash/PSRAM cache sharing has stricter timing. */
+bool device_storage_allows_optional_flash_work(void);
 
 /*
  * Read-only boot/lifecycle diagnostics.  This is deliberately a small
@@ -225,6 +245,9 @@ device_status_t device_audio_play_wav(const uint8_t *wav, uint32_t wav_len);
  * board's PCM/codec/I2S implementation of this primitive. */
 device_status_t device_audio_play_alarm_burst(void);
 device_status_t device_audio_capture_wav(uint8_t **out_wav, uint32_t *out_len);
+/* On DEVICE_STATUS_OK the caller owns the opaque capture payload and must
+ * release it through device_audio_release_captured_wav(), never free(). */
+void device_audio_release_captured_wav(uint8_t *wav);
 device_status_t device_audio_stream_start(void);
 device_status_t device_audio_stream_read(int16_t *mono, uint32_t capacity,
                                          uint32_t *samples_read, uint16_t *level);
@@ -250,6 +273,9 @@ void device_audio_reset_capture_stop(void);
 typedef void (*device_wake_word_cb_t)(void *context);
 device_status_t device_wake_word_start(device_wake_word_cb_t on_wake, void *context);
 device_status_t device_wake_word_stop(void);
+/* Internal lifecycle callers use the remaining deadline of their composition
+ * root. Regular interaction uses device_wake_word_stop(). */
+device_status_t device_wake_word_stop_with_timeout(uint32_t timeout_ms);
 void device_wake_word_pause(bool paused);
 
 // Absolute time on the device's monotonic millisecond clock.  A value of zero
@@ -341,6 +367,10 @@ bool device_power_wake_display_from_user(void);
 /* Restores a DISPLAY_OFF panel for an approved domain deadline.  This does
  * not impersonate touch/button input and is not a LIGHT/DEEP_SLEEP wake API. */
 bool device_power_wake_display_from_schedule(void);
+/* Restores a DISPLAY_OFF panel for a remote management action such as a
+ * non-zero GUI brightness update.  This is not a physical input wake and
+ * must not start voice capture or alter manual-wake scheduling policy. */
+bool device_power_wake_display_from_remote_control(void);
 
 /* Returns the Power Service's serialized observation of the panel/backlight
  * state and any pending display-off deadline. */
@@ -399,10 +429,33 @@ bool device_connectivity_is_active_cellular(void);
 /* Transport adapters publish readiness after their own bounded start/recovery
  * work. App/domain code queries a single selected-uplink observation; it does
  * not read a Wi-Fi event group or a board-specific modem readiness value. */
+bool device_connectivity_initialize(void);
+/* Stops the hardware-neutral Connectivity Service state.  It neither stops
+ * Wi-Fi/SoftAP/DHCP/DNS nor deinitializes ESP-NETIF, SNTP, or a modem; those
+ * physical resources remain the Connectivity composition root's transaction. */
+device_status_t device_connectivity_deinit(uint32_t timeout_ms);
+/* Wi-Fi driver owners must use one non-zero attempt epoch for every station
+ * configuration/connect sequence, then wait on that exact epoch.  These are
+ * lifecycle/adapter calls, not business connectivity policy. */
+uint32_t device_connectivity_begin_wifi_attempt(const char *network_id);
+bool device_connectivity_wait_wifi_attempt(uint32_t attempt_epoch,
+                                           uint32_t timeout_ms);
+bool device_connectivity_observe_wifi_disconnected(const char *network_id);
+bool device_connectivity_observe_wifi_got_ip(const char *connected_network_id);
 void device_connectivity_set_wifi_ready(bool ready);
 void device_connectivity_set_cellular_ready(bool ready);
 bool device_connectivity_is_active_uplink_ready(void);
 bool device_connectivity_get_snapshot(device_connectivity_snapshot_t *out_snapshot);
+
+/* Logical configuration-session state used by shared application workers.
+ * These calls neither configure nor stop Wi-Fi, SoftAP, DHCP, DNS or HTTP;
+ * their physical lifecycle remains a separate Connectivity/Provisioning
+ * responsibility. `pairing_recovery` means the existing uplink is retained
+ * and the portal is collecting only a replacement Hub pairing code. */
+void device_connectivity_begin_provisioning(bool pairing_recovery);
+void device_connectivity_end_provisioning(void);
+bool device_connectivity_is_provisioning_active(void);
+bool device_connectivity_is_pairing_recovery_provisioning(void);
 
 /* Performs the selected profile's bounded physical preparation for its
  * cellular transport (for example modem guard/power sequencing).  It neither
@@ -415,6 +468,11 @@ device_status_t device_connectivity_prepare_cellular_transport(void);
  * receive the stable Device status/readiness contract. */
 device_status_t device_connectivity_start_cellular_transport(uint32_t timeout_ms);
 bool device_connectivity_is_cellular_transport_ready(void);
+
+/* Stops new cellular transport/start admission and transport-owned recovery
+ * coordination. It does not promise ML307/UART deinitialization or cancellation
+ * of arbitrary in-flight HTTP borrowers. */
+device_status_t device_connectivity_quiesce_cellular_transport(uint32_t timeout_ms);
 
 /* Cellular request parameters are transport-neutral. The caller owns all
  * buffers and keeps them valid until the synchronous call returns; adapters
@@ -437,6 +495,12 @@ typedef struct {
     int *status_code;
     bool *truncated;
     uint32_t timeout_ms;
+    /* Optional logical owner of this synchronous request.  The pointer is
+     * compared only while the caller keeps it alive; it is never retained
+     * after the request returns.  A worker that is being stopped can use the
+     * matching cancellation API to interrupt its own cellular request without
+     * knowing the modem implementation. */
+    const void *cancellation_owner;
     bool foreground;
 } device_connectivity_http_request_t;
 
@@ -457,6 +521,11 @@ device_status_t device_connectivity_cellular_http_stream_request(
  * request. This is intentionally a no-op on Wi-Fi-only profiles and does
  * not cancel the shared Wi-Fi HTTP client. */
 bool device_connectivity_cancel_cellular_foreground_request(void);
+/* Best-effort cancellation for the request currently owned by `owner`.
+ * This is intentionally logical-worker based rather than modem based, so a
+ * meeting/upload, a future provisioning worker, and a foreground command can
+ * share the same HAL contract without exposing cellular handles above it. */
+bool device_connectivity_cancel_cellular_requests_for_owner(const void *owner);
 
 /* Some profiles expose a bounded, pre-input startup selector.  It is a
  * hardware-normalized intent rather than a GPIO gesture; profiles without
@@ -484,6 +553,9 @@ void device_connectivity_adapt_gateway_url(char *gateway_url,
  * call returns.
  */
 void device_display_set_command_lock(bool locked);
+/* Applies a normalized 0..100 display-brightness level received from MaClaw.
+ * 0 turns the backlight off while the system keeps running. */
+device_status_t device_display_set_brightness(uint8_t percent);
 void device_display_show_startup(void);
 void device_display_set_pet_state(const char *state);
 void device_display_set_command_stage(const char *stage);
@@ -493,6 +565,10 @@ device_status_t device_display_set_pet_asset(const uint8_t *const *frames,
                                              uint32_t frame_count,
                                              uint32_t width, uint32_t height,
                                              uint32_t frame_ms);
+device_status_t device_display_set_pet_asset_consuming(uint8_t **frames,
+                                                       uint32_t frame_count,
+                                                       uint32_t width, uint32_t height,
+                                                       uint32_t frame_ms);
 void device_display_set_recording_mode(bool meeting);
 void device_display_set_recording_visual(bool active, bool paused,
                                          uint32_t elapsed_seconds);
@@ -508,6 +584,8 @@ void device_display_show_response_image(const char *title, const char *caption,
 bool device_display_navigate_response(int page_delta);
 bool device_display_get_response_page(uint32_t *out_page);
 bool device_display_restore_response_page(uint32_t page);
+/* Borrowed 72-byte 24x24 bitmap. The synchronous Display Service copies it;
+ * callers may reuse or release the storage after this call returns. */
 int device_display_cache_glyph(uint32_t codepoint,
                                const uint8_t bitmap[72]);
 void device_display_show_qrcode_modules(const uint8_t *modules,
@@ -546,17 +624,20 @@ typedef enum {
 /*
  * Versioned input envelope delivered across the Device API boundary.
  *
- * `sequence` is assigned by the Input Service and is monotonic for the active
- * service generation; it is a diagnostic/correlation value, not a persisted
- * identifier and must not be compared across a stop/start lifecycle.  The
- * timestamp is the local monotonic microsecond clock.  Board adapters never
- * construct this value: they publish only normalized action/source pairs, so
- * touch coordinates, GPIO numbers, debounce state and controller details
- * cannot leak into business policy.
+ * `generation` identifies one Input Service lifetime, while `sequence` is
+ * monotonic only within that lifetime. Together they are a diagnostic and
+ * correlation identity, not a persisted identifier. A caller must not accept
+ * an event from an earlier generation after Input Service has stopped and
+ * restarted. The timestamp is the local monotonic microsecond clock. Board
+ * adapters never construct this value: they publish only normalized
+ * action/source pairs, so touch coordinates, GPIO numbers, debounce state
+ * and controller details cannot leak into business policy.
  */
+#define DEVICE_INPUT_EVENT_ABI_VERSION 2u
 typedef struct {
     uint32_t struct_size;
     uint32_t abi_version;
+    uint32_t generation;
     uint32_t sequence;
     uint64_t timestamp_us;
     device_input_action_t action;

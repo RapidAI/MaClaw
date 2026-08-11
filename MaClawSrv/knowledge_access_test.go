@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -87,6 +88,47 @@ func TestSanitizeKnowledgeSourceForAPIRedactsLocalPathsAndSecrets(t *testing.T) 
 		t.Fatalf("expected benign URL query to remain, got %#v", got)
 	}
 }
+
+func TestSanitizeKnowledgeSourceForAPIRedactsFileURI(t *testing.T) {
+	dataRoot := t.TempDir()
+	localImage := filepath.Join(dataRoot, "imports", "private-diagram.png")
+	got := sanitizeKnowledgeSourceForAPI(dataRoot, knowledge.Source{URI: "file:///" + filepath.ToSlash(localImage)})
+	if strings.Contains(got.URI, dataRoot) || strings.Contains(got.URI, "file://") {
+		t.Fatalf("file URI leaked host path: %#v", got)
+	}
+	if got.URI != filepath.Base(localImage) {
+		t.Fatalf("file URI = %q, want filename %q", got.URI, filepath.Base(localImage))
+	}
+}
+
+func TestSanitizeKnowledgeSourceForAPIProjectsImageSource(t *testing.T) {
+	privatePath := `C:\private\knowledge_assets\private-diagram.png`
+	got := sanitizeKnowledgeSourceForAPI(t.TempDir(), knowledge.Source{
+		ID:           "private-image",
+		Kind:         knowledge.SourceKindImage,
+		URI:          privatePath,
+		CanonicalURI: "file://" + privatePath,
+		Title:        privatePath,
+		ProjectPath:  privatePath,
+		RelativePath: privatePath,
+		ErrorMessage: "import failed at " + privatePath,
+		Labels:       []string{"diagram"},
+		Status:       knowledge.StatusParsed,
+	})
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{privatePath, "file://", "private-diagram.png"} {
+		if strings.Contains(string(body), leaked) {
+			t.Fatalf("image source API response leaked %q: %s", leaked, body)
+		}
+	}
+	if got.ID != "private-image" || got.Kind != knowledge.SourceKindImage || len(got.Labels) != 1 || got.Status != knowledge.StatusParsed {
+		t.Fatalf("image source projection lost safe identity: %#v", got)
+	}
+}
+
 func TestSanitizeKnowledgeSearchResultsForAPIRedactsResultFields(t *testing.T) {
 	dataRoot := t.TempDir()
 	localDoc := filepath.Join(dataRoot, "imports", "secret-search.md")
@@ -112,6 +154,69 @@ func TestSanitizeKnowledgeSearchResultsForAPIRedactsResultFields(t *testing.T) {
 	}
 	if got[0].NodeTitle != filepath.Base(localDoc) || got[0].CardTitle != filepath.Base(localDoc) || got[0].Citation != filepath.Base(localDoc) {
 		t.Fatalf("expected result path fields to use basename, got %#v", got[0])
+	}
+}
+
+func TestSanitizeKnowledgeSearchResultsForAPIDropsUnsafeImageAssetID(t *testing.T) {
+	for _, assetID := range []string{"../private-image", " image-source", "image-source "} {
+		result := knowledge.SearchResult{
+			NodeType: knowledge.NodeTypeImage,
+			Source:   knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage},
+			Media:    &knowledge.SearchResultMedia{AssetID: assetID},
+		}
+		got := sanitizeKnowledgeSearchResultsForAPI(t.TempDir(), []knowledge.SearchResult{result})
+		if len(got) != 1 || got[0].Media != nil {
+			t.Fatalf("unsafe image asset %q was exposed: %#v", assetID, got)
+		}
+	}
+}
+
+func TestSanitizeKnowledgeSearchResultsForAPIDoesNotGuessOrBorrowImageAssetID(t *testing.T) {
+	tests := []struct {
+		name   string
+		result knowledge.SearchResult
+	}{
+		{
+			name: "document image without recorded asset ID",
+			result: knowledge.SearchResult{
+				NodeID:   "embedded-node",
+				NodeType: knowledge.NodeTypeImage,
+				Source:   knowledge.Source{ID: "document-source", Kind: knowledge.SourceKindDOCX},
+			},
+		},
+		{
+			name: "foreign recorded asset ID",
+			result: knowledge.SearchResult{
+				NodeType: knowledge.NodeTypeImage,
+				Source:   knowledge.Source{ID: "document-source", Kind: knowledge.SourceKindDOCX},
+				Media:    &knowledge.SearchResultMedia{AssetID: "other-source_embedded-node"},
+			},
+		},
+		{
+			name: "standalone source cannot borrow embedded asset",
+			result: knowledge.SearchResult{
+				NodeType: knowledge.NodeTypeImage,
+				Source:   knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage},
+				Media:    &knowledge.SearchResultMedia{AssetID: "other-source_embedded-node"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeKnowledgeSearchResultsForAPI(t.TempDir(), []knowledge.SearchResult{tt.result})
+			if len(got) != 1 || got[0].Media != nil {
+				t.Fatalf("unexpected media projection: %#v", got)
+			}
+		})
+	}
+
+	standalone := knowledge.SearchResult{
+		NodeType: knowledge.NodeTypeImage,
+		Source:   knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage},
+	}
+	got := sanitizeKnowledgeSearchResultsForAPI(t.TempDir(), []knowledge.SearchResult{standalone})
+	if len(got) != 1 || got[0].Media == nil || got[0].Media.AssetID != "image-source" {
+		t.Fatalf("standalone image lost its canonical asset: %#v", got)
 	}
 }
 
@@ -745,6 +850,64 @@ func TestMultiKnowledgeStoreContextPackUsesEmbeddedQuery(t *testing.T) {
 	}
 }
 
+func TestMultiKnowledgeStoreContextPackDoesNotExposeSharedImagePaths(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	privatePath := `C:\\private\\knowledge_assets\\shared-gateway.png`
+	if err := store.SaveSource(ctx, knowledge.Source{
+		ID:           "shared-safe-image",
+		Kind:         knowledge.SourceKindImage,
+		URI:          privatePath,
+		CanonicalURI: "file://" + privatePath,
+		RelativePath: privatePath,
+		Title:        privatePath,
+		TenantID:     "tenant-a",
+		OwnerID:      "user-b",
+		Status:       knowledge.StatusParsed,
+	}); err != nil {
+		t.Fatalf("SaveSource: %v", err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{
+		ID:       "shared-safe-image-node",
+		SourceID: "shared-safe-image",
+		Type:     knowledge.NodeTypeImage,
+		Title:    privatePath,
+		Text:     "gateway architecture image evidence",
+	}); err != nil {
+		t.Fatalf("SaveDocumentNode: %v", err)
+	}
+
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b"}}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+	pack, err := newMultiKnowledgeStore(store, access).ContextPack(ctx, knowledge.ContextPackOptions{
+		SearchOptions: knowledge.SearchOptions{Query: "gateway architecture", TenantID: "tenant-a", OwnerID: "user-a", Limit: 5},
+		MaxItems:      1,
+		MaxChars:      1000,
+	})
+	if err != nil {
+		t.Fatalf("ContextPack: %v", err)
+	}
+	if len(pack.Items) != 1 || len(pack.Citations) != 1 {
+		t.Fatalf("context pack = %#v", pack)
+	}
+	item, citation := pack.Items[0], pack.Citations[0]
+	for _, value := range []string{item.Title, item.Citation, citation.Label, citation.SourceTitle, citation.URI, citation.RelativePath} {
+		if strings.Contains(value, privatePath) || strings.Contains(value, "file://") {
+			t.Fatalf("shared image context pack leaked host metadata in %q", value)
+		}
+	}
+	if item.Title != "shared-safe-image" || citation.SourceID != "shared-safe-image" {
+		t.Fatalf("context pack lost safe image identity: item=%#v citation=%#v", item, citation)
+	}
+}
+
 func TestKnowledgeResultKeysDistinguishStructuredRows(t *testing.T) {
 	base := knowledge.SearchResult{
 		Source:     knowledge.Source{ID: "src_csv"},
@@ -995,6 +1158,8 @@ func TestKnowledgeAccessGetMeWithoutAccessServiceFallsBackToSelfScope(t *testing
 		t.Fatalf("IssueToken: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{})
+	defer server.Close()
+	defer func() { _ = svc.Close() }()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/knowledge/access", nil)
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
@@ -1191,6 +1356,8 @@ func TestKnowledgeReadHTTPHandlesMissingStore(t *testing.T) {
 		t.Fatalf("IssueToken: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{})
+	defer server.Close()
+	defer func() { _ = svc.Close() }()
 
 	for _, tc := range []struct {
 		method string
@@ -1200,6 +1367,13 @@ func TestKnowledgeReadHTTPHandlesMissingStore(t *testing.T) {
 	}{
 		{method: http.MethodPost, path: "/api/v1/knowledge/search", body: `{"query":"needle"}`, want: http.StatusServiceUnavailable},
 		{method: http.MethodPost, path: "/api/v1/knowledge/context-pack", body: `{"query":"needle"}`, want: http.StatusServiceUnavailable},
+		{method: http.MethodPost, path: "/api/v1/knowledge/export", body: `{"description":"portable"}`, want: http.StatusServiceUnavailable},
+		{method: http.MethodGet, path: "/api/v1/knowledge/sources/ksrc_missing", want: http.StatusNotFound},
+		{method: http.MethodDelete, path: "/api/v1/knowledge/sources/ksrc_missing", want: http.StatusServiceUnavailable},
+		{method: http.MethodPatch, path: "/api/v1/knowledge/sources/ksrc_missing", body: `{}`, want: http.StatusServiceUnavailable},
+		{method: http.MethodPost, path: "/api/v1/knowledge/sources/ksrc_missing/disable", want: http.StatusServiceUnavailable},
+		{method: http.MethodPost, path: "/api/v1/knowledge/sources/ksrc_missing/enable", want: http.StatusServiceUnavailable},
+		{method: http.MethodPost, path: "/api/v1/knowledge/sources/ksrc_missing/refresh", want: http.StatusServiceUnavailable},
 		{method: http.MethodGet, path: "/api/v1/knowledge/sources/ksrc_missing/thumbnail", want: http.StatusNotFound},
 		{method: http.MethodGet, path: "/api/v1/knowledge/sources/ksrc_missing/image", want: http.StatusNotFound},
 	} {
@@ -1354,17 +1528,20 @@ func TestKnowledgeImageAssetEndpointsEnforceReadAccess(t *testing.T) {
 		t.Fatalf("NewImageAssetManager: %v", err)
 	}
 	sqlStore.SetImageAssetManager(assets)
-	source, err := sqlStore.SaveText(ctx, knowledge.TextSaveRequest{Text: "private image source", Title: "private image", TenantID: tenant.ID, OwnerID: userB.ID})
-	if err != nil {
-		t.Fatalf("SaveText user B: %v", err)
+	source := knowledge.Source{ID: "private-image-source", Kind: knowledge.SourceKindImage, URI: "file://private-image.png", Title: "private image", TenantID: tenant.ID, OwnerID: userB.ID, Status: knowledge.StatusParsed}
+	if err := sqlStore.SaveSource(ctx, source); err != nil {
+		t.Fatalf("SaveSource user B: %v", err)
 	}
 	writeKnowledgeImageAsset(t, assets, source.ID)
 
 	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json")))
 	km := &knowledgeStoreManager{store: sqlStore, access: access, agent: newMultiKnowledgeStore(sqlStore, access)}
 	server := NewHTTPServer(svc, "admin-secret", km)
+	defer server.Close()
 
 	for _, path := range []string{
+		"/api/v1/knowledge/images/" + source.ID + "/thumbnail",
+		"/api/v1/knowledge/images/" + source.ID,
 		"/api/v1/knowledge/sources/" + source.ID + "/thumbnail",
 		"/api/v1/knowledge/sources/" + source.ID + "/image",
 	} {
@@ -1381,6 +1558,8 @@ func TestKnowledgeImageAssetEndpointsEnforceReadAccess(t *testing.T) {
 		t.Fatalf("SetUser: %v", err)
 	}
 	for _, path := range []string{
+		"/api/v1/knowledge/images/" + source.ID + "/thumbnail",
+		"/api/v1/knowledge/images/" + source.ID,
 		"/api/v1/knowledge/sources/" + source.ID + "/thumbnail",
 		"/api/v1/knowledge/sources/" + source.ID + "/image",
 	} {
@@ -1393,6 +1572,208 @@ func TestKnowledgeImageAssetEndpointsEnforceReadAccess(t *testing.T) {
 		}
 		if w.Body.Len() == 0 {
 			t.Fatalf("%s authorized response was empty", path)
+		}
+		if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("%s X-Content-Type-Options = %q, want nosniff", path, got)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "private, max-age=86400" {
+			t.Fatalf("%s Cache-Control = %q, want private cache", path, got)
+		}
+		if got, want := w.Header().Get("Content-Length"), strconv.Itoa(w.Body.Len()); got != want {
+			t.Fatalf("%s Content-Length = %q, want %q", path, got, want)
+		}
+	}
+
+	assetPath := "/api/v1/knowledge/images/" + source.ID + "/thumbnail"
+	headReq := httptest.NewRequest(http.MethodHead, assetPath, nil)
+	headReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	head := httptest.NewRecorder()
+	server.Handler().ServeHTTP(head, headReq)
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Content-Length") == "" {
+		t.Fatalf("image HEAD status=%d bodyLen=%d length=%q", head.Code, head.Body.Len(), head.Header().Get("Content-Length"))
+	}
+	rangeReq := httptest.NewRequest(http.MethodGet, assetPath, nil)
+	rangeReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	rangeReq.Header.Set("Range", "bytes=0-0")
+	rangeResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rangeResponse, rangeReq)
+	if rangeResponse.Code != http.StatusPartialContent || rangeResponse.Body.Len() != 1 || rangeResponse.Header().Get("Content-Range") == "" {
+		t.Fatalf("image range status=%d bodyLen=%d contentRange=%q", rangeResponse.Code, rangeResponse.Body.Len(), rangeResponse.Header().Get("Content-Range"))
+	}
+
+	// A local cache file is not a trust boundary. The display endpoints must
+	// not advertise arbitrary bytes as image/jpeg merely because the filename
+	// matches a generated derivative.
+	if err := os.WriteFile(assets.ThumbPath(source.ID), []byte("not a jpeg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(assets.PreviewPath(source.ID), []byte("not a jpeg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/api/v1/knowledge/images/" + source.ID + "/thumbnail",
+		"/api/v1/knowledge/images/" + source.ID + "/preview",
+		"/api/v1/knowledge/sources/" + source.ID + "/thumbnail",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("corrupt derived %s status = %d body = %s", path, w.Code, w.Body.String())
+		}
+	}
+
+	// The asset cache is local mutable state, not a trust boundary. Neither the
+	// canonical asset routes nor the legacy source-ID aliases may follow a
+	// replaced thumbnail or original into an arbitrary host file.
+	if runtime.GOOS == "windows" {
+		return // File symlink creation commonly requires elevated privileges.
+	}
+	outside := filepath.Join(t.TempDir(), "outside.jpg")
+	if err := os.WriteFile(outside, mustKnowledgePNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(assets.ThumbPath(source.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, assets.ThumbPath(source.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(assets.OriginalPath(source.ID, ".png")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, assets.OriginalPath(source.ID, ".png")); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/api/v1/knowledge/images/" + source.ID + "/thumbnail",
+		"/api/v1/knowledge/images/" + source.ID,
+		"/api/v1/knowledge/sources/" + source.ID + "/thumbnail",
+		"/api/v1/knowledge/sources/" + source.ID + "/image",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("symlinked media %s status = %d body = %s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestKnowledgeImageSourceAliasesRejectNonImageSource(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.Close() }()
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "knowledge-image-alias-key", APISecret: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-image-alias-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := knowledge.NewSQLiteStore(filepath.Join(dataRoot, "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	assets, err := knowledge.NewImageAssetManager(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetImageAssetManager(assets)
+	source, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "ordinary document", Title: "ordinary document", TenantID: tenant.ID, OwnerID: user.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeKnowledgeImageAsset(t, assets, source.ID)
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{store: store, access: newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json"))), agent: newMultiKnowledgeStore(store, nil)})
+	defer server.Close()
+
+	for _, path := range []string{
+		"/api/v1/knowledge/sources/" + source.ID + "/thumbnail",
+		"/api/v1/knowledge/sources/" + source.ID + "/image",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("non-image source asset %s status = %d body = %s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestKnowledgeImageAssetEndpointsRejectNonRasterOriginal(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer func() { _ = svc.Close() }()
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "vector-image-key", APISecret: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "vector-image-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := knowledge.NewSQLiteStore(filepath.Join(dataRoot, "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	assets, err := knowledge.NewImageAssetManager(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetImageAssetManager(assets)
+	source, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "vector", Title: "vector", TenantID: tenant.ID, OwnerID: user.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetDir := assets.AssetDir(source.ID)
+	if err := os.MkdirAll(assetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assetDir, "original.svg"), []byte("<svg/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json")))
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{store: store, access: access, agent: newMultiKnowledgeStore(store, access)})
+	defer server.Close()
+	for _, path := range []string{
+		"/api/v1/knowledge/images/" + source.ID,
+		"/api/v1/knowledge/sources/" + source.ID + "/image",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404", path, w.Code)
 		}
 	}
 }
@@ -1430,6 +1811,7 @@ func TestKnowledgeImportImageRejectsOversizedFile(t *testing.T) {
 	defer sqlStore.Close()
 	km := &knowledgeStoreManager{store: sqlStore, access: newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json"))), agent: newMultiKnowledgeStore(sqlStore, nil)}
 	server := NewHTTPServer(svc, "admin-secret", km)
+	defer server.Close()
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -1456,6 +1838,240 @@ func TestKnowledgeImportImageRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestKnowledgeImportImageReturnsDisplayableAssetContract(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "knowledge-image-contract-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-image-contract-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	sqlStore, err := knowledge.NewSQLiteStore(filepath.Join(dataRoot, "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer sqlStore.Close()
+	assets, err := knowledge.NewImageAssetManager(dataRoot)
+	if err != nil {
+		t.Fatalf("NewImageAssetManager: %v", err)
+	}
+	sqlStore.SetImageAssetManager(assets)
+	km := &knowledgeStoreManager{store: sqlStore, access: newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json"))), agent: newMultiKnowledgeStore(sqlStore, nil)}
+	server := NewHTTPServer(svc, "admin-secret", km)
+	defer server.Close()
+
+	var imageBytes bytes.Buffer
+	if err := png.Encode(&imageBytes, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatalf("Encode fixture: %v", err)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("image", "diagram.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write(imageBytes.Bytes()); err != nil {
+		t.Fatalf("Write image: %v", err)
+	}
+	if err := writer.WriteField("title", "Architecture diagram"); err != nil {
+		t.Fatalf("Write title: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close multipart: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/knowledge/import/image", &body)
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("import status = %d body = %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Status    string                          `json:"status"`
+		SourceIDs []string                        `json:"source_ids"`
+		AssetIDs  []string                        `json:"asset_ids"`
+		Media     []knowledge.SearchResultMedia   `json:"media"`
+		Result    knowledge.DirectoryImportResult `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Status != knowledge.ImportStatusCompleted || len(response.SourceIDs) != 1 || len(response.AssetIDs) != 1 || response.SourceIDs[0] != response.AssetIDs[0] {
+		t.Fatalf("unexpected import contract: %#v", response)
+	}
+	if len(response.Media) != 1 || response.Media[0].AssetID != response.AssetIDs[0] || response.Media[0].ThumbnailURL == "" || response.Media[0].PreviewURL == "" || response.Media[0].OriginalURL == "" {
+		t.Fatalf("missing display media contract: %#v", response.Media)
+	}
+	if len(response.Result.Items) != 1 || response.Result.Items[0].SourceID != response.SourceIDs[0] {
+		t.Fatalf("result item source linkage missing: %#v", response.Result.Items)
+	}
+	thumbnailReq := httptest.NewRequest(http.MethodGet, response.Media[0].ThumbnailURL, nil)
+	thumbnailReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	thumbnail := httptest.NewRecorder()
+	server.Handler().ServeHTTP(thumbnail, thumbnailReq)
+	if thumbnail.Code != http.StatusOK || thumbnail.Body.Len() == 0 {
+		t.Fatalf("thumbnail status = %d bodyLen = %d", thumbnail.Code, thumbnail.Body.Len())
+	}
+}
+
+func TestKnowledgeImageSearchRespectsReadScopesAndReturnsMedia(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: userA.ID, Name: "API", APIKey: "knowledge-image-search-key", APISecret: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-image-search-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := knowledge.NewSQLiteStore(filepath.Join(dataRoot, "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	assets, err := knowledge.NewImageAssetManager(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetImageAssetManager(assets)
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "shared-image", Kind: knowledge.SourceKindImage, URI: "file://shared", Title: "Shared diagram", OwnerID: userB.ID, TenantID: tenant.ID, Status: knowledge.StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	const embeddedAssetID = "shared-image_embedded-gateway-figure"
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "shared-image-node", SourceID: "shared-image", Type: knowledge.NodeTypeImage, Title: "Gateway architecture", Text: "Gateway architecture diagram for production traffic", Metadata: map[string]string{knowledge.MetaImageAssetID: embeddedAssetID}}); err != nil {
+		t.Fatal(err)
+	}
+	writeKnowledgeImageAsset(t, assets, embeddedAssetID)
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json")))
+	km := &knowledgeStoreManager{store: store, access: access, agent: newMultiKnowledgeStore(store, access)}
+	server := NewHTTPServer(svc, "admin-secret", km)
+	defer server.Close()
+	perform := func() *httptest.ResponseRecorder {
+		body := bytes.NewBufferString(`{"query":"gateway architecture"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/knowledge/images/search", body)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		return w
+	}
+	unauthorized := perform()
+	if unauthorized.Code != http.StatusOK || !strings.Contains(unauthorized.Body.String(), `"total":0`) {
+		t.Fatalf("unshared image search = %d %s", unauthorized.Code, unauthorized.Body.String())
+	}
+	if err := access.SetUser(ctx, tenant.ID, userA.ID, &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: tenant.ID, OwnerID: userB.ID, Name: "shared"}}}); err != nil {
+		t.Fatal(err)
+	}
+	shared := perform()
+	if shared.Code != http.StatusOK {
+		t.Fatalf("shared image search = %d %s", shared.Code, shared.Body.String())
+	}
+	var response struct {
+		Mode    string                   `json:"mode"`
+		Ranking string                   `json:"ranking"`
+		Results []knowledge.SearchResult `json:"results"`
+	}
+	if err := json.Unmarshal(shared.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Mode != "text_to_image" || response.Ranking != "hybrid_text_ocr_caption" || len(response.Results) != 1 || response.Results[0].Media == nil || response.Results[0].Media.AssetID != embeddedAssetID || response.Results[0].Media.ThumbnailURL == "" || response.Results[0].Media.PreviewURL == "" || response.Results[0].Media.OriginalURL == "" {
+		t.Fatalf("unexpected image search response: %#v", response)
+	}
+	if strings.Contains(shared.Body.String(), dataRoot) || strings.Contains(shared.Body.String(), "knowledge_assets") {
+		t.Fatalf("image search leaked an asset path: %s", shared.Body.String())
+	}
+	for variant, path := range map[string]string{
+		"thumbnail": response.Results[0].Media.ThumbnailURL,
+		"preview":   response.Results[0].Media.PreviewURL,
+		"original":  response.Results[0].Media.OriginalURL,
+	} {
+		assetReq := httptest.NewRequest(http.MethodGet, path, nil)
+		assetReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		asset := httptest.NewRecorder()
+		server.Handler().ServeHTTP(asset, assetReq)
+		if asset.Code != http.StatusOK || asset.Body.Len() == 0 || asset.Header().Get("Cache-Control") != "private, max-age=86400" {
+			t.Fatalf("shared embedded image %s status=%d bodyLen=%d cache=%q", variant, asset.Code, asset.Body.Len(), asset.Header().Get("Cache-Control"))
+		}
+	}
+}
+
+func TestKnowledgeCapabilitiesDeclareImageSearchModes(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "knowledge-capabilities-key", APISecret: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-capabilities-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := knowledge.NewSQLiteStore(filepath.Join(dataRoot, "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	km := &knowledgeStoreManager{store: store, access: newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json"))), agent: newMultiKnowledgeStore(store, nil)}
+	server := NewHTTPServer(svc, "admin-secret", km)
+	defer server.Close()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/knowledge/capabilities", nil)
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("capabilities status = %d body = %s", w.Code, w.Body.String())
+	}
+	var caps knowledge.KnowledgeCapabilities
+	if err := json.Unmarshal(w.Body.Bytes(), &caps); err != nil {
+		t.Fatal(err)
+	}
+	if !caps.ImageRetrieval.TextToImage || caps.ImageRetrieval.ImageToImage || caps.ImageRetrieval.AgentTool != "knowledge_image_search" {
+		t.Fatalf("unexpected image retrieval capabilities: %#v", caps.ImageRetrieval)
+	}
+}
+
 func writeKnowledgeImageAsset(t *testing.T, assets *knowledge.ImageAssetManager, sourceID string) {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
@@ -1475,6 +2091,17 @@ func writeKnowledgeImageAsset(t *testing.T, assets *knowledge.ImageAssetManager,
 	if _, err := assets.SaveImageFromPath(sourceID, imagePath); err != nil {
 		t.Fatalf("SaveImageFromPath: %v", err)
 	}
+}
+
+func mustKnowledgePNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	var body bytes.Buffer
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("Encode symlink image fixture: %v", err)
+	}
+	return body.Bytes()
 }
 
 func TestAdminKnowledgeAccessUpdateWritesAudit(t *testing.T) {

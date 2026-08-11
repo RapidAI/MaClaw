@@ -1547,7 +1547,7 @@ func extractArtifactPathCandidate(line string) string {
 
 func looksLikeArtifactPath(path string) bool {
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
-	case ".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".tsv", ".md", ".txt", ".json", ".html", ".png", ".jpg", ".jpeg", ".svg", ".drawio", ".xml":
+	case ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".csv", ".tsv", ".md", ".txt", ".json", ".html", ".png", ".jpg", ".jpeg", ".svg", ".drawio", ".xml":
 		return true
 	default:
 		return false
@@ -3052,6 +3052,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 						return
 					}
 					r.executor.app.AccumulateLLMTokenUsageWithCache(providerName, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
+					r.executor.app.AccumulateLLMProfileTokenUsageWithCache(llmCfg, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
 				},
 			}
 		}

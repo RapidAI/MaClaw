@@ -12,11 +12,13 @@
 #include "esp_psram.h"
 #include "hal/usb_serial_jtag_ll.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "app_intent_service.h"
 #include "fall_detection_service.h"
 #include "operation_context.h"
 #include "sleep_schedule_service.h"
+#include "task_registry.h"
 
 #define IDENTITY_PROTOCOL_VERSION 2
 #define IDENTITY_QUERY_PREFIX "CLAWMATE_QUERY "
@@ -32,6 +34,21 @@ static volatile bool s_service_ready;
 // reconfigured; never leave a hidden permanent reader task behind.
 static volatile bool s_query_task_stop_requested;
 static TaskHandle_t s_query_task;
+/* Startup registers the diagnostic owner before the reader can execute.  The
+ * start gate closes the short xTaskCreate()/registry window, and the completion
+ * semaphore gives stop() a real cooperative-join acknowledgement instead of
+ * inferring task death from a periodically-polled handle. */
+static SemaphoreHandle_t s_query_task_start_gate;
+static SemaphoreHandle_t s_query_task_stopped;
+static volatile bool s_query_task_starting;
+
+static TaskHandle_t query_task_handle(void);
+
+static esp_err_t stop_identity_registry_entry(void *context, uint32_t timeout_ms) {
+    TaskHandle_t task = query_task_handle();
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
+    return firmware_identity_stop(timeout_ms);
+}
 
 static TaskHandle_t query_task_handle(void) {
     return __atomic_load_n(&s_query_task, __ATOMIC_ACQUIRE);
@@ -39,6 +56,34 @@ static TaskHandle_t query_task_handle(void) {
 
 static void set_query_task_handle(TaskHandle_t handle) {
     __atomic_store_n(&s_query_task, handle, __ATOMIC_RELEASE);
+}
+
+static bool query_task_is_starting(void) {
+    return __atomic_load_n(&s_query_task_starting, __ATOMIC_ACQUIRE);
+}
+
+static void set_query_task_starting(bool starting) {
+    __atomic_store_n(&s_query_task_starting, starting, __ATOMIC_RELEASE);
+}
+
+static bool query_task_is_active(void) {
+    return query_task_handle() != NULL || query_task_is_starting();
+}
+
+static esp_err_t ensure_query_task_sync_primitives(void) {
+    if (!s_query_task_start_gate) {
+        s_query_task_start_gate = xSemaphoreCreateBinary();
+        if (!s_query_task_start_gate) return ESP_ERR_NO_MEM;
+    }
+    if (!s_query_task_stopped) {
+        s_query_task_stopped = xSemaphoreCreateBinary();
+        if (!s_query_task_stopped) return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+static void signal_query_task_stopped(void) {
+    if (s_query_task_stopped) (void)xSemaphoreGive(s_query_task_stopped);
 }
 
 static bool nonce_is_valid(const char *nonce) {
@@ -327,6 +372,19 @@ static void handle_query_line(char *line) {
 
 static void identity_query_task(void *arg) {
     (void)arg;
+    /* The registry entry is installed before the task is created.  Do not read
+     * USB (or emit a response) until that ownership is visible to lifecycle
+     * rollback. A registration failure instead releases this gate with the
+     * stop request already set, so the worker exits without touching USB. */
+    if (!s_query_task_start_gate ||
+        xSemaphoreTake(s_query_task_start_gate, portMAX_DELAY) != pdTRUE) {
+        TaskHandle_t self = xTaskGetCurrentTaskHandle();
+        if (query_task_handle() == self) set_query_task_handle(NULL);
+        set_query_task_starting(false);
+        signal_query_task_stopped();
+        vTaskDelete(NULL);
+        return;
+    }
     char line[IDENTITY_LINE_CAPACITY];
     size_t used = 0;
     bool discarding = false;
@@ -353,32 +411,91 @@ static void identity_query_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(count > 0 ? 10 : 50));
     }
-    set_query_task_handle(NULL);
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    if (query_task_handle() == self) set_query_task_handle(NULL);
+    set_query_task_starting(false);
+    signal_query_task_stopped();
     vTaskDelete(NULL);
 }
 
 esp_err_t firmware_identity_start(void) {
     // Broadcasts remain diagnostic only. The host accepts only a query-bound,
     // nonce-bearing BOOT_STATUS response as post-flash success evidence.
-    if (query_task_handle()) return ESP_OK;
-    __atomic_store_n(&s_query_task_stop_requested, false, __ATOMIC_RELEASE);
-    emit_event("IDENTITY", NULL);
 #if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+    if (query_task_is_active()) return ESP_OK;
+    esp_err_t sync_err = ensure_query_task_sync_primitives();
+    if (sync_err != ESP_OK) return sync_err;
+    /* A prior generation always consumed its gate before completion. Drain a
+     * stale completion token so this generation's bounded join cannot report
+     * the predecessor's exit. */
+    (void)xSemaphoreTake(s_query_task_stopped, 0);
+    (void)xSemaphoreTake(s_query_task_start_gate, 0);
+    __atomic_store_n(&s_query_task_stop_requested, false, __ATOMIC_RELEASE);
+    set_query_task_starting(true);
+    TaskHandle_t task = NULL;
     BaseType_t created = xTaskCreate(identity_query_task, "firmware_identity", 4096,
-                                     NULL, 1, &s_query_task);
-    if (created != pdPASS) return ESP_ERR_NO_MEM;
+                                     NULL, 1, &task);
+    if (created != pdPASS) {
+        set_query_task_starting(false);
+        return ESP_ERR_NO_MEM;
+    }
+    /* The newborn task is held at its start gate, so publishing its immutable
+     * handle and registering that exact generation cannot race USB reads or
+     * lifecycle rollback.  Context is deliberately the task handle rather
+     * than NULL: an old generation can never unregister a later one. */
+    set_query_task_handle(task);
+    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = TASK_REGISTRY_OWNER_DIAGNOSTICS,
+        .name = "firmware_identity",
+        .context = (void *)task,
+        .stop = stop_identity_registry_entry,
+    });
+    if (registry_err != ESP_OK) {
+        __atomic_store_n(&s_query_task_stop_requested, true, __ATOMIC_RELEASE);
+        set_query_task_starting(false);
+        (void)xSemaphoreGive(s_query_task_start_gate);
+        (void)firmware_identity_stop(500);
+        return registry_err;
+    }
+    set_query_task_starting(false);
+    /* A concurrent lifecycle stop may have closed admission while this task
+     * was held at the gate. Releasing it is still required: the task observes
+     * the stop request and acknowledges its own cooperative join. */
+    if (xSemaphoreGive(s_query_task_start_gate) != pdTRUE) {
+        __atomic_store_n(&s_query_task_stop_requested, true, __ATOMIC_RELEASE);
+        (void)firmware_identity_stop(500);
+        return ESP_FAIL;
+    }
 #endif
+    emit_event("IDENTITY", NULL);
     return ESP_OK;
 }
 
 esp_err_t firmware_identity_stop(uint32_t timeout_ms) {
 #if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
-    if (!query_task_handle()) return ESP_OK;
-    __atomic_store_n(&s_query_task_stop_requested, true, __ATOMIC_RELEASE);
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-    while (query_task_handle()) {
-        if (esp_timer_get_time() >= deadline_us) return ESP_ERR_TIMEOUT;
-        vTaskDelay(pdMS_TO_TICKS(10));
+    TaskHandle_t task = query_task_handle();
+    if (!task && !query_task_is_starting()) return ESP_OK;
+    __atomic_store_n(&s_query_task_stop_requested, true, __ATOMIC_RELEASE);
+    while (query_task_is_active()) {
+        int64_t remaining_us = deadline_us - esp_timer_get_time();
+        if (remaining_us <= 0) return ESP_ERR_TIMEOUT;
+        TickType_t wait_ticks = pdMS_TO_TICKS((uint32_t)((remaining_us + 999) / 1000));
+        if (wait_ticks == 0) wait_ticks = 1;
+        (void)xSemaphoreTake(s_query_task_stopped, wait_ticks);
+    }
+    /* Natural exit must not take the Registry's unbounded lock after it has
+     * published completion.  The lifecycle caller owns removal under its
+     * parent deadline; an exhausted budget leaves the entry fail-closed. */
+    if (task) {
+        int64_t remaining_us = deadline_us - esp_timer_get_time();
+        if (remaining_us <= 0) return ESP_ERR_TIMEOUT;
+        uint32_t remaining_ms = (uint32_t)((remaining_us + 999) / 1000);
+        esp_err_t unregister_err = task_registry_unregister_with_timeout(
+            TASK_REGISTRY_OWNER_DIAGNOSTICS, (void *)task, remaining_ms);
+        if (unregister_err != ESP_OK) return unregister_err;
     }
 #else
     (void)timeout_ms;

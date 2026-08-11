@@ -38,7 +38,10 @@ var (
 
 func ensureMatmulPool() {
 	poolOnce.Do(func() {
-		n := runtime.NumCPU()
+		// Respect GOMAXPROCS: callers use it to cap actual CPU parallelism
+		// (including reproducible single-core inference). Spawning NumCPU jobs
+		// when GOMAXPROCS=1 only adds queueing/context-switch overhead.
+		n := runtime.GOMAXPROCS(0)
 		// Cap workers: too many thrash L3 on encoder mats; CTC (N≈25k) still
 		// benefits up to ~12 on 16-thread CPUs.
 		if n > 12 {

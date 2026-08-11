@@ -10,7 +10,21 @@ import (
 
 // parseXLSNative reads a .xls (BIFF) file using the pure-Go xlsReader library.
 func parseXLSNative(source Source, filePath string) ([]DocumentNode, error) {
-	wb, err := xls.OpenFile(filePath)
+	return parseXLSNativeWithOpen(source, filePath, xls.OpenFile)
+}
+
+// parseXLSNativeWithOpen keeps legacy BIFF parsing behind the same panic
+// boundary as the unified Office extractor. The third-party reader processes
+// attacker-controlled binary records; an unexpected panic must fail the
+// import rather than unwind a knowledge-import worker.
+func parseXLSNativeWithOpen(source Source, filePath string, open func(string) (xls.Workbook, error)) (nodes []DocumentNode, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			nodes = nil
+			err = fmt.Errorf("parse xls panicked: %v", recovered)
+		}
+	}()
+	wb, err := open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("open .xls: %w", err)
 	}
@@ -88,7 +102,21 @@ func parseXLSNative(source Source, filePath string) ([]DocumentNode, error) {
 
 // parseDOCNative reads a .doc (Word 97-2003) file using the pure-Go doc reader.
 func parseDOCNative(source Source, filePath string) ([]DocumentNode, error) {
-	document, err := doc.OpenFile(filePath)
+	return parseDOCNativeWithOpen(source, filePath, doc.OpenFile)
+}
+
+// parseDOCNativeWithOpen keeps legacy Word parsing inside an explicit panic
+// boundary. This mirrors agent's legacy DOC extraction contract and prevents
+// malformed OLE/Word records from crashing knowledge imports when rich
+// OfficeRead Markdown is intentionally disabled for staged rollout.
+func parseDOCNativeWithOpen(source Source, filePath string, open func(string) (doc.Document, error)) (nodes []DocumentNode, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			nodes = nil
+			err = fmt.Errorf("parse doc panicked: %v", recovered)
+		}
+	}()
+	document, err := open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("open .doc: %w", err)
 	}

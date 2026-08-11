@@ -74,6 +74,14 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	if opts.RecordToolCall != nil {
 		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 	}
+	// Tool visibility is not an execution boundary: a model can still emit a
+	// stale/hallucinated computer_* call after a local attachment turn has
+	// removed it from the advertised list. Reject before progress reporting,
+	// approval UI, or the desktop handler can cause side effects.
+	if localFileWorkBlocksComputerUseExecution(opts.Context, opts.UserText, tc.Function.Name) {
+		text := "[system rejected] Computer Use is unavailable while handling the current local attachment. Use the local file/document tools instead."
+		return toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	if reason := rejectUnstableBrowserToolCallJSON(tc.Function.Name, tc.Function.Arguments); reason != "" {
 		return toolExecutionResult{Text: "[system rejected] " + reason, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
@@ -375,7 +383,7 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	}
 	result := runner(
 		h,
-		h.getMaclawLLMConfig(),
+		h.getCodingLLMConfig(),
 		httpClient,
 		task,
 		projectPath,
@@ -828,6 +836,18 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 		kind = classifyAgentToolKind(name)
 	}
 	policyUserID = strings.TrimSpace(policyUserID)
+	// Direct/resumed execution paths do not necessarily receive the original
+	// user text, but the active loop context carries the local-file fence. Keep
+	// this check after internal name rewriting so aliases cannot bypass it.
+	if localFileWorkBlocksComputerUseExecution(h.runtimeLoopContextForOwner(policyUserID), userText, name) {
+		return toolExecutionResult{
+			Text:        "[system rejected] Computer Use is unavailable while handling the current local attachment. Use the local file/document tools instead.",
+			ToolName:    name,
+			ToolKind:    kind,
+			Outcome:     toolOutcomeFailed,
+			FailureKind: toolFailurePolicyRejected,
+		}
+	}
 	if policyUserID != "" {
 		if !h.isWorkflowToolAllowedForOwner(policyUserID, name) {
 			return toolExecutionResult{Text: workflowPolicyToolRejectedText(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
@@ -894,7 +914,7 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 				return toolExecutionResult{Text: "[system rejected] " + err.Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 			}
 			markLansengerGroupPublicWebToolArgs(args)
-		case "knowledge_search", "knowledge_explain", "knowledge_context_pack", "knowledge_search_facets":
+		case "knowledge_search", "knowledge_image_search", "knowledge_explain", "knowledge_context_pack", "knowledge_search_facets":
 			if err := groupPermissions.restrictKnowledgeArgs(args); err != nil {
 				return toolExecutionResult{Text: "[system rejected] " + err.Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 			}
@@ -987,7 +1007,7 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 			if tool.HandlerCtx != nil {
 				text := tool.HandlerCtx(execCtx, args, onProgress)
 				result := registeredToolExecutionResultForContext(text, execCtx)
-				if name == "knowledge_search" && groupPermissions != nil {
+				if (name == "knowledge_search" || name == "knowledge_image_search") && groupPermissions != nil {
 					groupPermissions.recordKnowledgeSearchResult(result)
 				}
 				return result
@@ -995,7 +1015,7 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 			if tool.HandlerProg != nil {
 				text := tool.HandlerProg(args, onProgress)
 				result := registeredToolExecutionResult(text)
-				if name == "knowledge_search" && groupPermissions != nil {
+				if (name == "knowledge_search" || name == "knowledge_image_search") && groupPermissions != nil {
 					groupPermissions.recordKnowledgeSearchResult(result)
 				}
 				return result
@@ -1003,7 +1023,7 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 			if tool.Handler != nil {
 				text := tool.Handler(args)
 				result := registeredToolExecutionResult(text)
-				if name == "knowledge_search" && groupPermissions != nil {
+				if (name == "knowledge_search" || name == "knowledge_image_search") && groupPermissions != nil {
 					groupPermissions.recordKnowledgeSearchResult(result)
 				}
 				return result
@@ -1147,6 +1167,7 @@ func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 	switch strings.TrimSpace(name) {
 	case "bash",
 		"read_file", "read_tool_result", "write_file", "edit_file", "edit_lines", "list_directory", "send_file", "send_to_im",
+		"office",
 		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
 		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",
 		"group_discussion", "screenshot", "call_mcp_tool", "discover_tool",

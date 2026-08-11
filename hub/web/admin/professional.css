@@ -33,6 +33,35 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 #tab-virtualemployees .ve-row-actions button{flex:0 0 auto}
 .ve-history-dialog{width:min(860px,calc(100% - 48px));max-height:86vh;overflow:auto}
 .ve-history-dialog-list{display:grid;gap:8px}
+
+/* Digital assets: keep library selection and access decisions in one calm work area. */
+#tab-digital-assets{max-width:1240px}
+#tab-digital-assets .digital-assets-workspace{display:grid;grid-template-columns:minmax(250px,.72fr) minmax(0,1.8fr);gap:16px;align-items:start}
+#tab-digital-assets #digitalAssetsList{display:grid;gap:8px;max-height:calc(100vh - 226px);overflow:auto;padding-right:3px}
+#tab-digital-assets .digital-assets-library-card{width:100%;display:grid;gap:6px;padding:13px 14px;text-align:left;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--text);box-shadow:none}
+#tab-digital-assets .digital-assets-library-card:hover{border-color:#b9cbe8;background:#f8fbff}
+#tab-digital-assets .digital-assets-library-card.is-selected{border-color:#8cb5fb;background:#eef5ff}
+#tab-digital-assets .digital-assets-library-card strong{font-size:14px;color:#243044}
+#tab-digital-assets .digital-assets-library-card small{font-size:11px;line-height:1.4;color:var(--muted)}
+#tab-digital-assets #digitalAssetsDetail>.item{padding:16px!important;border-radius:10px!important;box-shadow:none!important}
+#tab-digital-assets .digital-assets-acl-tree-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-bottom:8px}
+#tab-digital-assets .digital-assets-acl-tree-toolbar input{height:34px;min-width:0;padding:0 10px;font-size:12px}
+#tab-digital-assets .digital-assets-acl-tree-toolbar button{height:34px;min-height:34px;padding:0 10px;font-size:12px;box-shadow:none}
+#tab-digital-assets .digital-assets-acl-tree{max-height:260px;overflow:auto;border:1px solid #e1e8f1;border-radius:9px;padding:5px;background:#fbfcfe}
+#tab-digital-assets .digital-assets-acl-dept-row{border-radius:6px;color:#3d4b60;transition:background-color .16s ease,color .16s ease}
+#tab-digital-assets .digital-assets-acl-dept-row:hover{background:#eef5ff}
+#tab-digital-assets .digital-assets-acl-dept-row:focus-within{background:#eef5ff;box-shadow:inset 0 0 0 1px #8cb5fb}
+#tab-digital-assets .digital-assets-acl-dept-row.is-unknown{color:#9a6700;background:#fff8e8}
+#tab-digital-assets .digital-assets-acl-dept-row.has-children{font-weight:700;color:#334155}
+#tab-digital-assets .digital-assets-acl-dept-row{padding-inline-start:calc(8px + var(--digital-assets-tree-depth,0) * 16px)!important}
+#tab-digital-assets .digital-assets-acl-tree-children{display:grid}
+#tab-digital-assets .digital-assets-acl-dept-row input{width:16px;height:16px;min-height:16px;margin:0;accent-color:#2563eb}
+#tab-digital-assets .digital-assets-acl-dept-row input:focus-visible{outline:3px solid rgba(37,99,235,.34);outline-offset:2px}
+#tab-digital-assets input[type="radio"]{width:16px;height:16px;min-height:16px;margin:0;accent-color:#2563eb}
+#tab-digital-assets #digitalAssetsAclRestrictedBox{padding:12px;border:1px solid #dfe8f5;border-radius:10px;background:#f8fbff}
+#tab-digital-assets #digitalAssetsAclSaveBtn:disabled{cursor:not-allowed;opacity:.58;box-shadow:none}
+#tab-digital-assets #digitalAssetsDetail{min-width:0}
+@media (max-width:860px){#tab-digital-assets .digital-assets-workspace{grid-template-columns:1fr}#tab-digital-assets #digitalAssetsList{max-height:260px}#tab-digital-assets .digital-assets-acl-tree{max-height:220px}}
 .tenant-list-shell{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.tenant-card{padding:0;border-radius:10px;border:1px solid var(--line);background:#fff;box-shadow:none;overflow:hidden}.tenant-summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:14px 16px;background:#fbfcfe}.tenant-identity{display:grid;grid-template-columns:10px minmax(0,1fr);gap:10px;align-items:start;min-width:0}.tenant-dot{width:8px;height:8px;border-radius:999px;background:#2563eb;margin-top:8px}.tenant-name{font-weight:700;color:#243244;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tenant-id{font-size:12px;color:#667386;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tenant-cell{min-width:0}.tenant-cell label{display:block;margin:0 0 4px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:#64748b}.tenant-value{font-size:13px;color:#243244;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tenant-summary .tenant-cell:nth-of-type(1){grid-column:1/-1}.tenant-status-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.tenant-actions{grid-column:1/-1;display:flex;gap:6px;justify-content:flex-start;flex-wrap:wrap}.tenant-actions button{height:38px;min-height:38px;padding:0 10px;font-size:12px}.tenant-settings{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:10px;align-items:end;padding:12px 16px;border-top:1px solid var(--line);background:#fff}.tenant-settings input{height:38px}.tenant-settings textarea{min-height:64px;line-height:1.45;resize:vertical}.tenant-check{display:flex;gap:8px;align-items:center;margin:0 0 9px;font-size:13px;font-weight:700;color:#30364a}.tenant-check input{width:18px;height:18px;min-height:auto}.tenant-save{height:38px;min-height:38px;padding:0 12px;white-space:nowrap}.tenant-pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px}.tenant-pager button{height:34px;min-height:34px;padding:0 12px}.tenant-default .tenant-summary{background:#f8fbff}.tenant-default .tenant-dot{background:#5b8def}
 .tenant-authorization-row{display:flex;gap:12px;flex-wrap:wrap;padding:10px 16px;border-top:1px solid var(--line);background:#f8fafc}.tenant-authz-badge{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid var(--line);font-size:12px}.authz-icon{font-size:14px;line-height:1}.authz-label{font-weight:700;color:#475569;white-space:nowrap}.tenant-authz-badge .badge{font-size:11px;padding:2px 8px}
 .hero{background:linear-gradient(135deg,#eef5ff 0%,#f7fbff 54%,#e9f7f4 100%);border-right:1px solid var(--line)}.hero h1{letter-spacing:0}.form{background:#fff}.login-card{border-radius:10px}.toast{border-radius:10px}

@@ -75,7 +75,7 @@ func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOp
 	}
 	if bonusResp != nil {
 		usageStartedAt := time.Now()
-		usage := h.recordLLMUsageSnapshot("bonus_round", bonusResp, conversation)
+		usage := h.recordLLMUsageSnapshot("bonus_round", opts.Config, bonusResp, conversation)
 		result.InputTokens = usage.Input
 		result.OutputTokens = usage.Output
 		result.CacheReadTokens = usage.CacheRead

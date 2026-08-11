@@ -89,6 +89,8 @@ func runRPCMode() {
 		log.Printf("[rpc] config load warning: %v", err)
 	}
 
+	installTUIOfficeReadConfigProvider(dataDir)
+
 	llmCfg := buildLLMConfigFromAppConfig(appCfg)
 	if !tuiConfigLLMReady(appCfg) {
 		emitRPCEvent(RPCEvent{Type: "error", Message: "LLM not configured. Run setup or configure via GUI first."})

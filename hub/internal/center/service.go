@@ -45,6 +45,18 @@ const (
 
 const centerUserUsageBackfillSyncs = 2
 
+// deviceCredentialBackupSnapshotMaxBytes must remain aligned with Hub Center's
+// request limit. Rejecting before JSON encoding prevents a corrupt local
+// snapshot from allocating an even larger request body or entering the retry
+// outbox loop.
+const deviceCredentialBackupSnapshotMaxBytes = 16 << 20
+
+// A JSON string may require an escape byte for every source byte, so allow a
+// bounded two-times envelope when reading an authenticated recovery response.
+// This still prevents a faulty or hostile Center from making Hub allocate an
+// unbounded response before DeviceGateway validates the raw snapshot.
+const deviceCredentialBackupResponseMaxBytes = deviceCredentialBackupSnapshotMaxBytes*2 + 64<<10
+
 var tenantEmailDomainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type SystemSettingsRepository interface {
@@ -111,6 +123,7 @@ type centerErrorPayload struct {
 type registerHubRequest struct {
 	InstallationID        string         `json:"installation_id"`
 	OwnerEmail            string         `json:"owner_email"`
+	RecoverySecret        string         `json:"recovery_secret,omitempty"`
 	Name                  string         `json:"name"`
 	Description           string         `json:"description"`
 	BaseURL               string         `json:"base_url"`
@@ -129,6 +142,16 @@ type registerHubResponse struct {
 	HubSecret           string `json:"hub_secret"`
 	PendingConfirmation bool   `json:"pending_confirmation"`
 	Message             string `json:"message"`
+}
+
+type deviceCredentialBackupRequest struct {
+	HubSecret         string `json:"hub_secret"`
+	DeviceCredentials string `json:"device_credentials"`
+}
+
+type deviceCredentialBackupResponse struct {
+	Found             bool   `json:"found"`
+	DeviceCredentials string `json:"device_credentials"`
 }
 
 type syncUserLinkRequest struct {
@@ -202,11 +225,14 @@ type Service struct {
 	tenants  TenantLister
 	sessions UserUsageSummarizer
 
-	mu               sync.Mutex
-	heartbeatStarted bool
-	heartbeatCancel  context.CancelFunc
-	usageBackfills   int
-	recorder         *diagnostics.FailureEventRecorder
+	mu                 sync.Mutex
+	heartbeatStarted   bool
+	heartbeatCancel    context.CancelFunc
+	usageBackfills     int
+	recorder           *diagnostics.FailureEventRecorder
+	credentialRecovery func(context.Context)
+	credentialMu       sync.Mutex
+	configPath         string
 }
 
 func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service {
@@ -222,6 +248,70 @@ func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service 
 
 func (s *Service) SetFailureEventRecorder(recorder *diagnostics.FailureEventRecorder) {
 	s.recorder = recorder
+}
+
+func (s *Service) SetConfigPath(path string) {
+	s.mu.Lock()
+	s.configPath = strings.TrimSpace(path)
+	s.mu.Unlock()
+}
+
+func (s *Service) persistRecoveryIdentity(installationID, ownerEmail, recoverySecret string) {
+	installationID = strings.TrimSpace(installationID)
+	ownerEmail = normalizeEmail(ownerEmail)
+	recoverySecret = strings.TrimSpace(recoverySecret)
+	if installationID == "" && ownerEmail == "" && recoverySecret == "" {
+		return
+	}
+	s.mu.Lock()
+	configPath := s.configPath
+	s.mu.Unlock()
+	if configPath != "" {
+		if err := config.SaveCenterRecoveryIdentity(configPath, installationID, ownerEmail, recoverySecret); err != nil {
+			log.Printf("[center] persist Hub recovery identity to config: %v", err)
+			return
+		}
+	}
+	if installationID != "" {
+		s.cfg.Center.InstallationID = installationID
+	}
+	if ownerEmail != "" {
+		s.cfg.Center.OwnerEmail = ownerEmail
+	}
+	if recoverySecret != "" {
+		s.cfg.Center.RecoverySecret = recoverySecret
+	}
+}
+
+// SetDeviceCredentialRecovery registers the bootstrap hook that restores
+// hardware bindings after this Hub has re-established its Hub Center identity.
+func (s *Service) SetDeviceCredentialRecovery(recover func(context.Context)) {
+	s.mu.Lock()
+	s.credentialRecovery = recover
+	s.mu.Unlock()
+}
+
+func (s *Service) triggerDeviceCredentialRecovery() {
+	s.mu.Lock()
+	recover := s.credentialRecovery
+	s.mu.Unlock()
+	if recover != nil {
+		go recover(context.Background())
+	}
+}
+
+// RecoverDeviceCredentialsNow invokes the registered recovery hook
+// synchronously. Startup registration uses the asynchronous variant so Hub
+// availability is never delayed; Bootstrap uses this path once all recovery
+// dependencies are wired, closing the race where an auto-registration could
+// otherwise fire before the hook was installed.
+func (s *Service) RecoverDeviceCredentialsNow(ctx context.Context) {
+	s.mu.Lock()
+	recover := s.credentialRecovery
+	s.mu.Unlock()
+	if recover != nil {
+		recover(ctx)
+	}
 }
 
 func (s *Service) VerifyHubSecretHash(ctx context.Context, secretHash string) bool {
@@ -477,6 +567,9 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 		ownerEmail = normalizeEmail(storedAdminEmail)
 	}
 	if ownerEmail == "" {
+		ownerEmail = normalizeEmail(s.cfg.Center.OwnerEmail)
+	}
+	if ownerEmail == "" {
 		return nil, fmt.Errorf("admin email is required for hub registration")
 	}
 	installationID, err := s.installationID(ctx)
@@ -507,6 +600,7 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 	reqBody := registerHubRequest{
 		InstallationID:        installationID,
 		OwnerEmail:            ownerEmail,
+		RecoverySecret:        strings.TrimSpace(s.cfg.Center.RecoverySecret),
 		Name:                  s.cfg.Hub.Name,
 		Description:           s.cfg.Hub.Description,
 		BaseURL:               advertisedBaseURL,
@@ -592,6 +686,8 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 		if err := s.saveRegistration(ctx, record); err != nil {
 			return nil, err
 		}
+		s.persistRecoveryIdentity(installationID, ownerEmail, registerResp.HubSecret)
+		s.triggerDeviceCredentialRecovery()
 		s.startHeartbeatLoop()
 		return s.Status(ctx)
 	}
@@ -615,14 +711,191 @@ func (s *Service) StartBackgroundSync() {
 		return
 	}
 	if !record.Registered && !record.PendingConfirmation && !record.Disabled && s.cfg.Center.RegisterOnStartup {
-		if adminEmail, err := s.adminEmail(ctx); err == nil && adminEmail != "" {
-			if _, err := s.Register(ctx, adminEmail); err == nil {
+		ownerEmail, ownerErr := s.adminEmail(ctx)
+		if ownerErr == nil && ownerEmail == "" {
+			ownerEmail = s.cfg.Center.OwnerEmail
+		}
+		if ownerErr == nil && strings.TrimSpace(ownerEmail) != "" {
+			if _, err := s.Register(ctx, ownerEmail); err == nil {
 				return
 			}
 		}
 	}
+	if (record.Registered || record.PendingConfirmation) && record.HubID != "" && record.HubSecret != "" {
+		installationID, installationErr := s.installationID(ctx)
+		if installationErr != nil {
+			log.Printf("[center] persist Hub installation identity for recovery: %v", installationErr)
+		}
+		if ownerEmail, ownerErr := s.adminEmail(ctx); ownerErr == nil {
+			s.persistRecoveryIdentity(installationID, ownerEmail, record.HubSecret)
+		}
+	}
+	// Existing Hubs do not call Register again on startup, so publish their
+	// current hardware binding snapshot here as well. This lets deployments
+	// upgraded to credential recovery seed Hub Center without requiring a new
+	// pairing or hardware configuration change.
+	if (record.Registered || record.PendingConfirmation) && record.HubID != "" && record.HubSecret != "" {
+		s.triggerDeviceCredentialRecovery()
+	}
 	if (record.Registered || record.PendingConfirmation || record.Disabled) && record.HubID != "" && record.HubSecret != "" {
 		s.startHeartbeatLoop()
+	}
+}
+
+// BackupDeviceCredentials stores an opaque hardware-binding snapshot in Hub
+// Center. The snapshot is keyed by the Hub's stable installation identity, so
+// it can be restored after the Hub's local database is re-created.
+func (s *Service) BackupDeviceCredentials(ctx context.Context, snapshot string) error {
+	if s == nil || !s.cfg.Center.Enabled || strings.TrimSpace(snapshot) == "" {
+		return nil
+	}
+	if len(snapshot) > deviceCredentialBackupSnapshotMaxBytes {
+		return fmt.Errorf("device credential snapshot exceeds %d bytes", deviceCredentialBackupSnapshotMaxBytes)
+	}
+	// One snapshot is sufficient: DeviceGateway serializes changes before it
+	// calls this sink. Serializing here as well prevents the bootstrap seeding
+	// write from racing a normal mutation and making the remote copy stale.
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
+	record, err := s.loadRegistration(ctx)
+	if err != nil || strings.TrimSpace(record.HubID) == "" || strings.TrimSpace(record.HubSecret) == "" {
+		return err
+	}
+	payload, err := json.Marshal(deviceCredentialBackupRequest{DeviceCredentials: snapshot})
+	if err != nil {
+		return err
+	}
+	baseURLs := s.credentialCenterBaseURLs(ctx, record)
+	if len(baseURLs) == 0 {
+		return fmt.Errorf("hub center base url is required")
+	}
+	for _, baseURL := range baseURLs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/device-credentials", bytes.NewReader(payload))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+record.HubSecret)
+		resp, err := s.client.Do(req)
+		if err != nil {
+			continue
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+			s.rememberCredentialCenter(ctx, &record, baseURL)
+			return nil
+		}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("hub center rejected device credential backup with status %d", resp.StatusCode)
+		}
+	}
+	return fmt.Errorf("hub center device credential backup failed")
+}
+
+// RestoreDeviceCredentials obtains a previously backed-up opaque hardware
+// binding snapshot. A missing record is a normal first-install state.
+func (s *Service) RestoreDeviceCredentials(ctx context.Context) (string, bool, error) {
+	if s == nil || !s.cfg.Center.Enabled {
+		return "", false, nil
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil || strings.TrimSpace(record.HubID) == "" || strings.TrimSpace(record.HubSecret) == "" {
+		return "", false, err
+	}
+	baseURLs := s.credentialCenterBaseURLs(ctx, record)
+	if len(baseURLs) == 0 {
+		return "", false, fmt.Errorf("hub center base url is required")
+	}
+	var lastErr error
+	missingEverywhere := true
+	for _, baseURL := range baseURLs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/device-credentials", nil)
+		if err != nil {
+			lastErr = err
+			missingEverywhere = false
+			continue
+		}
+		req.Header.Set("Authorization", "Bearer "+record.HubSecret)
+		resp, err := s.client.Do(req)
+		if err != nil {
+			lastErr = err
+			missingEverywhere = false
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, deviceCredentialBackupResponseMaxBytes+1))
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			missingEverywhere = false
+			continue
+		}
+		if len(body) > deviceCredentialBackupResponseMaxBytes {
+			lastErr = fmt.Errorf("hub center device credential recovery response exceeds %d bytes", deviceCredentialBackupResponseMaxBytes)
+			missingEverywhere = false
+			continue
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			// A lagging HA node can legitimately not have received the snapshot
+			// yet. Try all configured nodes before treating it as a first install.
+			continue
+		}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return "", false, fmt.Errorf("hub center rejected device credential recovery with status %d", resp.StatusCode)
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("hub center device credential recovery received status %d", resp.StatusCode)
+			missingEverywhere = false
+			continue
+		}
+		var result deviceCredentialBackupResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			lastErr = fmt.Errorf("decode hub center device credential recovery response: %w", err)
+			missingEverywhere = false
+			continue
+		}
+		if !result.Found || strings.TrimSpace(result.DeviceCredentials) == "" {
+			continue
+		}
+		if len(result.DeviceCredentials) > deviceCredentialBackupSnapshotMaxBytes {
+			lastErr = fmt.Errorf("hub center device credential recovery returned snapshot exceeding %d bytes", deviceCredentialBackupSnapshotMaxBytes)
+			missingEverywhere = false
+			continue
+		}
+		s.rememberCredentialCenter(ctx, &record, baseURL)
+		return result.DeviceCredentials, true, nil
+	}
+	if missingEverywhere {
+		return "", false, nil
+	}
+	if lastErr != nil {
+		return "", false, fmt.Errorf("hub center device credential recovery failed: %w", lastErr)
+	}
+	return "", false, fmt.Errorf("hub center device credential recovery failed without a usable response")
+}
+
+func (s *Service) credentialCenterBaseURLs(ctx context.Context, record registrationRecord) []string {
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return nil
+	}
+	return baseURLs
+}
+
+// rememberCredentialCenter biases future credential recovery toward the node
+// that has just successfully served the snapshot. A failed persistence only
+// affects ordering, never the completed backup or restore operation.
+func (s *Service) rememberCredentialCenter(ctx context.Context, record *registrationRecord, baseURL string) {
+	if record == nil {
+		return
+	}
+	baseURL = normalizeBaseURL(baseURL)
+	if baseURL == "" || record.LastBaseURL == baseURL {
+		return
+	}
+	record.LastBaseURL = baseURL
+	if err := s.saveRegistration(ctx, *record); err != nil {
+		log.Printf("[center] persist device credential center preference: %v", err)
 	}
 }
 
@@ -779,6 +1052,9 @@ func (s *Service) adminEmail(ctx context.Context) (string, error) {
 }
 
 func (s *Service) installationID(ctx context.Context) (string, error) {
+	if configured := strings.TrimSpace(s.cfg.Center.InstallationID); configured != "" {
+		return configured, nil
+	}
 	raw, err := s.settings.Get(ctx, systemKeyInstallationID)
 	if err != nil {
 		return "", err
@@ -791,7 +1067,22 @@ func (s *Service) installationID(ctx context.Context) (string, error) {
 			return "", err
 		}
 		if strings.TrimSpace(payload.Value) != "" {
-			return strings.TrimSpace(payload.Value), nil
+			id := strings.TrimSpace(payload.Value)
+			// Upgrade existing installations: copy their durable database identity
+			// into config.yaml before any later data-directory rebuild can lose it.
+			if strings.TrimSpace(s.cfg.Center.InstallationID) == "" {
+				s.mu.Lock()
+				configPath := s.configPath
+				s.mu.Unlock()
+				if configPath != "" {
+					if err := config.SaveCenterInstallationID(configPath, id); err != nil {
+						log.Printf("[center] persist existing hub installation id to config: %v", err)
+					} else {
+						s.cfg.Center.InstallationID = id
+					}
+				}
+			}
+			return id, nil
 		}
 	}
 
@@ -801,6 +1092,19 @@ func (s *Service) installationID(ctx context.Context) (string, error) {
 	}
 	if err := s.settings.Set(ctx, systemKeyInstallationID, mustJSON(map[string]string{"value": id})); err != nil {
 		return "", err
+	}
+	// Persist outside the recreated SQLite database as well. A config write
+	// failure is non-fatal for first registration, but is logged so an operator
+	// can preserve the stable installation identity manually.
+	s.mu.Lock()
+	configPath := s.configPath
+	s.mu.Unlock()
+	if configPath != "" {
+		if err := config.SaveCenterInstallationID(configPath, id); err != nil {
+			log.Printf("[center] persist hub installation id to config: %v", err)
+		} else {
+			s.cfg.Center.InstallationID = id
+		}
 	}
 	return id, nil
 }

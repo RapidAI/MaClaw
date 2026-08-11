@@ -115,10 +115,34 @@ func (a *App) initOpenHumanModules() {
 // Falls back to auxiliary LLM for lightweight tasks when no explicit route exists.
 func (h *IMMessageHandler) routeLLMConfig(task cllm.TaskType) corelib.MaclawLLMConfig {
 	primary := h.getMaclawLLMConfig()
+	return h.routeLLMConfigFromBase(task, primary)
+}
+
+// routeCodingLLMConfig applies a request-level route to an already resolved
+// coding profile snapshot. It must never re-read the assistant profile: coding
+// profiles may be independent and callers may be executing a long-lived task
+// that intentionally retains its start-time selection.
+func (h *IMMessageHandler) routeCodingLLMConfig(task cllm.TaskType, primary corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	return h.routeLLMConfigFromBase(task, primary)
+}
+
+func (h *IMMessageHandler) routeLLMConfigFromBase(task cllm.TaskType, primary corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
 	if h.app == nil || h.app.ohModules.modelRouter == nil {
 		return primary
 	}
-	return h.app.ohModules.modelRouter.RouteWithAux(task, primary, h.app.ohModules.cachedAuxLLM)
+	routed := h.app.ohModules.modelRouter.RouteWithAux(task, primary, h.app.ohModules.cachedAuxLLM)
+	if routed.Model == primary.Model && routed.URL == primary.URL && routed.Key == primary.Key && routed.Protocol == primary.Protocol && routed.ProviderName == primary.ProviderName {
+		return primary
+	}
+	// Routes only replace request-level details. Preserve profile attribution
+	// and mark why this final model differs from its configured base choice.
+	routed.Profile = primary.Profile
+	routed.ProviderID = primary.ProviderID
+	if routed.ProviderName == "" {
+		routed.ProviderName = primary.ProviderName
+	}
+	routed.RouteSource = "route"
+	return routed
 }
 
 // reloadModelRouterFromConfig rebuilds the in-process ModelRouter from AppConfig.

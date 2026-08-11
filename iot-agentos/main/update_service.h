@@ -35,6 +35,11 @@ typedef struct {
 } update_service_status_t;
 
 esp_err_t update_service_init(const update_service_config_t *config);
+/* Synchronous metadata observer shutdown. It closes all public update-tool
+ * admission before Persistence may stop; no firmware download/install state
+ * or hardware resource is owned here. */
+esp_err_t update_service_deinit(uint32_t timeout_ms);
+bool update_service_is_initialized(void);
 
 // Consumes only validated Hub metadata. It returns true only when a user
 // visible reminder should be presented. `now_epoch` is 0 when wall-clock time

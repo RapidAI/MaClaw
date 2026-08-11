@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestHashScanCandidatesParallel(t *testing.T) {
@@ -73,6 +76,35 @@ func TestScanDirectoryProgressCallback(t *testing.T) {
 	}
 	if maxHashDone < 20 {
 		t.Fatalf("hash done=%d want >=20", maxHashDone)
+	}
+}
+
+func TestStoreScanProgressCallbackSerializesParallelHashEvents(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 24; i++ {
+		mustWrite(t, filepath.Join(root, fmt.Sprintf("p%02d.md", i)), []byte(fmt.Sprintf("scan-serial-%d", i)))
+	}
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var inCallback atomic.Int32
+	var overlaps atomic.Int32
+	store.SetScanProgressCallback(func(string, int, int, string) {
+		if inCallback.Add(1) != 1 {
+			overlaps.Add(1)
+		}
+		inCallback.Add(-1)
+	})
+	if _, err := store.ScanDirectory(context.Background(), DirectoryImportRequest{
+		RootPath: root, Recursive: true, IncludeExts: []string{".md"}, MaxFileBytes: 1024,
+	}); err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if got := overlaps.Load(); got != 0 {
+		t.Fatalf("scan progress callback overlapped %d times", got)
 	}
 }
 
@@ -167,6 +199,40 @@ func TestScanDirectoryFiltersAndDedups(t *testing.T) {
 	}
 }
 
+func TestScanDirectoryCapsParserHeavyFormatsAtSharedExtractionLimit(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"large.csv", "large.xlsx", "large.pdf"} {
+		path := filepath.Join(root, name)
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Truncate(32*1024*1024 + 1); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, items, err := ScanDirectory(context.Background(), DirectoryImportRequest{
+		RootPath: root, Recursive: true, IncludeExts: []string{".csv", ".xlsx", ".pdf"},
+		// Deliberately higher than the shared extraction ceiling.
+		MaxFileBytes: DefaultMaxFileBytes,
+	}, nil)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.QueuedFiles != 0 || res.SkippedFiles != 3 {
+		t.Fatalf("scan result = %#v, want three shared-limit skips", res)
+	}
+	for _, item := range items {
+		if item.Status != ItemStatusSkippedTooLarge {
+			t.Fatalf("item = %#v, want skipped_too_large", item)
+		}
+	}
+}
+
 func TestScanDirectoryHonorsRecursiveFalse(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "a.md"), []byte("alpha"))
@@ -250,6 +316,24 @@ func TestNormalizeDirectoryImportRequestSplitsIncludeExts(t *testing.T) {
 		if req.IncludeExts[i] != want[i] {
 			t.Fatalf("IncludeExts = %#v, want %#v", req.IncludeExts, want)
 		}
+	}
+}
+
+func TestNormalizeDirectoryImportRequestCopiesOfficeReadPolicy(t *testing.T) {
+	emitMarkdown := true
+	fallback := true
+	policy := &agent.OfficeReadConfig{
+		Engine:       "officeread",
+		Formats:      []string{"docx"},
+		Fallback:     &fallback,
+		EmitMarkdown: &emitMarkdown,
+	}
+	normalized := NormalizeDirectoryImportRequest(DirectoryImportRequest{OfficeReadConfig: policy})
+	policy.Formats[0] = "pptx"
+	fallback = false
+	emitMarkdown = false
+	if normalized.OfficeReadConfig == nil || normalized.OfficeReadConfig.Formats[0] != "docx" || normalized.OfficeReadConfig.Fallback == nil || !*normalized.OfficeReadConfig.Fallback || normalized.OfficeReadConfig.EmitMarkdown == nil || !*normalized.OfficeReadConfig.EmitMarkdown {
+		t.Fatalf("OfficeRead policy must be immutable request snapshot: %#v", normalized.OfficeReadConfig)
 	}
 }
 

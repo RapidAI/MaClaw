@@ -2,8 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +227,46 @@ func TestCloneTaskDeliveryDeep(t *testing.T) {
 	cp.Normalize() // must not affect src channel defaults if already set
 	if src.Channel != DeliveryChannelLansenger {
 		t.Fatalf("src mutated: %q", src.Channel)
+	}
+}
+
+func TestTaskDeliveryBotProfileIDNormalizesAndRoundTrips(t *testing.T) {
+	t.Parallel()
+	d, err := ParseDeliveryFromAny(`{"enabled":true,"channel":"lansenger","bot_profile_id":" support ","targets":[{"kind":"user","user_id":"u1"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d == nil || d.BotProfileID != "support" {
+		t.Fatalf("delivery = %#v, want normalized bot profile", d)
+	}
+	cp := CloneTaskDelivery(d)
+	if cp == nil || cp.BotProfileID != "support" {
+		t.Fatalf("clone = %#v, want bot profile", cp)
+	}
+	raw, err := json.Marshal(d)
+	if err != nil || !strings.Contains(string(raw), `"bot_profile_id":"support"`) {
+		t.Fatalf("marshal = %q err=%v", raw, err)
+	}
+}
+
+func TestScheduledTaskBotProfileIDSurvivesManagerCopies(t *testing.T) {
+	t.Parallel()
+	m, err := NewManager(filepath.Join(t.TempDir(), "tasks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Stop)
+	id, err := m.Add(ScheduledTask{
+		BotProfileID: "support", Name: "report", Action: "write report", Hour: 9, Minute: 0, DayOfWeek: -1, DayOfMonth: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task := m.Get(id); task == nil || task.BotProfileID != "support" {
+		t.Fatalf("Get() task = %#v", task)
+	}
+	if tasks := m.List(); len(tasks) != 1 || tasks[0].BotProfileID != "support" {
+		t.Fatalf("List() tasks = %#v", tasks)
 	}
 }
 

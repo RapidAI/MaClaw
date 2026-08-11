@@ -728,7 +728,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolDownloadFile(args) })
 
 	// --- Unified office document tool ---
-	reg("office", "Office/PDF 文档工具（内置原生解析，无需 Python/Word）。action：read_document（推荐，自动识别 .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx）、read_doc/read_docx/read_pdf、read_excel、write_excel、read_pptx、generate_pdf。读文档优先 read_document，禁止对二进制文件用 read_file。若 office 失败或不支持的格式（.ppt/.rtf/.odt/.wps 等），必须继续用 craft_tool 生成解析脚本，不要直接放弃。",
+	reg("office", "Office/PDF 文档工具（内置原生解析，无需 Python/Word）。action：read_document（推荐，自动识别 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx）、read_doc/read_docx/read_pdf、read_excel、write_excel、read_pptx、generate_pdf。read_excel 仅接受 .xls/.xlsx/.csv，read_pptx 仅接受 .pptx；需读取其他 Office 格式文本时用 read_document。read_excel 默认最多返回 1000 行（max_rows 最大 5000），read_pptx 默认最多返回 100 页（max_slides 最大 500）；truncated=true 时可用 next_offset 作为 slide_offset 分段读取。读文档优先 read_document，禁止对二进制文件用 read_file。仅当失败不属于 error_class=encrypted、error_class=malformed、error_class=source_changed、error_class=input_too_large、error_class=output_too_large 时，才可用 craft_tool 处理不支持格式；这些安全、版本或资源拒绝必须按工具提示处理，不得用其他解析器绕过。",
 		ToolCategoryBuiltin, []string{"office", "pdf", "doc", "docx", "excel", "xlsx", "xls", "csv", "pptx", "ppt", "document", "spreadsheet", "presentation", "word"},
 		map[string]interface{}{
 			"action":       map[string]string{"type": "string", "description": "操作类型: read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/generate_pdf"},
@@ -743,6 +743,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"line_numbers": map[string]string{"type": "boolean", "description": "read_document 可选：为每行加 L1:/L2: 行号前缀（跨 offset 连续）"},
 			"sheet":        map[string]string{"type": "string", "description": "工作表名称（read_excel 时可选，默认第一个工作表）"},
 			"range":        map[string]string{"type": "string", "description": "A1 表示法的单元格范围，如 A1:D10（read_excel 的 .xlsx/.csv 可选）"},
+			"max_rows":     map[string]string{"type": "integer", "description": "read_excel 可选：返回的最大行数（默认 1000，最大 5000）；truncated=true 时请缩小 range 或分段读取"},
+			"max_slides":   map[string]string{"type": "integer", "description": "read_pptx（仅 .pptx）可选：返回的最大幻灯片数（默认 100，最大 500）；truncated=true 时请分段或用 read_document"},
+			"slide_offset": map[string]string{"type": "integer", "description": "read_pptx 可选：零基幻灯片偏移；truncated=true 时使用 next_offset 继续读取"},
 			"data":         map[string]string{"type": "object", "description": "写入数据（write_excel 时必填），格式: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolOffice(args) })

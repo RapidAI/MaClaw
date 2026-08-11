@@ -2,10 +2,20 @@ import { describe, expect, it } from 'vitest';
 import {
     isKnowledgeImportJobActive,
     isKnowledgeImportJobTerminal,
+    knowledgeImportSupportedFormatsHint,
+    knowledgeImportSupportedFormatsHintZhHans,
     mergeKnowledgeImportProgress,
 } from '../KnowledgeImportDialog';
 
 describe('knowledge import job helpers', () => {
+    it('advertises every Office format while retaining the PPT rich-content caveat', () => {
+        expect(knowledgeImportSupportedFormatsHint).toContain('PPT/PPTX');
+        expect(knowledgeImportSupportedFormatsHint).toContain('DOC/DOCX');
+        expect(knowledgeImportSupportedFormatsHint).toContain('XLS/XLSX');
+        expect(knowledgeImportSupportedFormatsHintZhHans).toContain('PPT/PPTX');
+        expect(knowledgeImportSupportedFormatsHintZhHans).toContain('.ppt 富内容需启用 OfficeRead 知识库灰度');
+    });
+
     it('detects active and terminal statuses', () => {
         expect(isKnowledgeImportJobActive({ status: 'running' })).toBe(true);
         expect(isKnowledgeImportJobActive({ status: 'queued' })).toBe(true);

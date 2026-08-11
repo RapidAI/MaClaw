@@ -20,27 +20,17 @@ import (
 const defaultHubModelBaseURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release"
 
 // defaultHubModelFiles lists the model artifacts the hub prefetches from
-// defaultHubModelBaseURL (the OCR PP-OCRv6 ONNX files are mirrored there from
-// their HuggingFace upstream; see ocr.DetModelURL/ocr.RecModelURL).
-var defaultHubModelFiles = strings.Join(append([]string{
+// defaultHubModelBaseURL (the OCR PP-OCRv6 ONNX files of every tier ship
+// bundled in ocr.ModelsZipFilename; see ocr.DefaultModelsZipURL).
+var defaultHubModelFiles = strings.Join([]string{
 	"embeddinggemma-300M-Q8_0.gguf",
 	asr.DefaultModelFilename,
 	diarization.DefaultCAMPlusFilename,
 	"omniparser-v2.yolow",
 	"kokoro-v1_0.koro",
 	"kokoro_82m_selected_voices_koro_v2.zip",
-}, defaultHubOCRModelFiles()...), " ")
-
-// defaultHubOCRModelFiles returns the det+rec filenames for every published
-// PP-OCRv6 tier (tiny/small/medium).
-func defaultHubOCRModelFiles() []string {
-	tiers := []string{"tiny", "small", "medium"}
-	out := make([]string, 0, len(tiers)*2)
-	for _, tier := range tiers {
-		out = append(out, ocr.DetModelFilename(tier), ocr.RecModelFilename(tier))
-	}
-	return out
-}
+	ocr.ModelsZipFilename,
+}, " ")
 
 const defaultHubModelLockTTL = 24 * time.Hour
 const modelDownloadScriptVersion = "maclaw-model-download-v3"

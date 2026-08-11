@@ -42,6 +42,51 @@ func TestNormalizeFramelessTopInsetUsesCSSPixels(t *testing.T) {
 	}
 }
 
+func TestResolveFramelessTopInsetPrefersMeasuredGap(t *testing.T) {
+	tests := []struct {
+		name        string
+		clientInset int
+		metricInset int
+		dpi         int
+		want        int
+	}{
+		{name: "measured Win11 gap", clientInset: 10, metricInset: 12, dpi: 120, want: 8},
+		{name: "Win11 metric fallback", metricInset: 12, dpi: 96, want: 12},
+		{name: "Win10 metric fallback", metricInset: 10, dpi: 120, want: 8},
+		{name: "zero client origin still falls back", metricInset: 10, dpi: 120, want: 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveFramelessTopInset(tt.clientInset, tt.metricInset, tt.dpi); got != tt.want {
+				t.Fatalf("resolveFramelessTopInset() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGlobalFloatingWindowCallbackTargetIsSynchronized(t *testing.T) {
+	previous := currentGlobalFloatingWindow()
+	defer setGlobalFloatingWindow(previous)
+
+	first := &windowsFloatingWindow{}
+	second := &windowsFloatingWindow{}
+	setGlobalFloatingWindow(first)
+	if got := currentGlobalFloatingWindow(); got != first {
+		t.Fatalf("global floating window = %p, want %p", got, first)
+	}
+	// An old window must not clear the callback target after a replacement has
+	// been published by the next create cycle.
+	setGlobalFloatingWindow(second)
+	clearGlobalFloatingWindow(first)
+	if got := currentGlobalFloatingWindow(); got != second {
+		t.Fatalf("stale clear changed callback target to %p, want %p", got, second)
+	}
+	clearGlobalFloatingWindow(second)
+	if got := currentGlobalFloatingWindow(); got != nil {
+		t.Fatalf("global floating window = %p, want nil", got)
+	}
+}
+
 func TestRenderAnimatedPetFrameCrossfadesStateImages(t *testing.T) {
 	previous := image.NewNRGBA(image.Rect(0, 0, 8, 8))
 	current := image.NewNRGBA(image.Rect(0, 0, 8, 8))

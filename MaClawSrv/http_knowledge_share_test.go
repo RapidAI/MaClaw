@@ -132,6 +132,39 @@ func TestFitKnowledgeExportPackageJSONTruncatesEscapedContent(t *testing.T) {
 	}
 }
 
+func TestKnowledgeExportPackageDoesNotExposeImageSourceProvenance(t *testing.T) {
+	privatePath := `C:\private\knowledge_assets\private-diagram.png`
+	source := knowledge.Source{
+		ID:           "private-image",
+		Kind:         knowledge.SourceKindImage,
+		URI:          privatePath,
+		CanonicalURI: "file://" + privatePath,
+		Title:        privatePath,
+		ProjectPath:  privatePath,
+		RelativePath: privatePath,
+		ErrorMessage: "import failed at " + privatePath,
+		Labels:       []string{"diagram"},
+		Status:       knowledge.StatusParsed,
+	}
+	pkg := buildKnowledgeExportPackageWithStore(context.Background(), nil, t.TempDir(), agentservice.Principal{}, "Export", "portable package", []knowledge.Source{source})
+	if len(pkg.Sources) != 1 {
+		t.Fatalf("sources = %#v", pkg.Sources)
+	}
+	body, err := json.Marshal(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{privatePath, "file://", "private-diagram.png", "import failed"} {
+		if strings.Contains(string(body), leaked) {
+			t.Fatalf("image export leaked %q: %s", leaked, body)
+		}
+	}
+	item := pkg.Sources[0]
+	if item.ID != source.ID || item.Kind != knowledge.SourceKindImage || len(item.Labels) != 1 || item.Status != knowledge.StatusParsed {
+		t.Fatalf("image export lost safe identity: %#v", item)
+	}
+}
+
 func TestKnowledgeExportPackageIncludesLargeInlineContent(t *testing.T) {
 	ctx := context.Background()
 	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))

@@ -402,6 +402,8 @@ func warmComputerUseYOLO() map[string]interface{} {
 }
 
 // warmComputerUseOCR loads the native OCR models if installed (no download here).
+// Skipped entirely when OCR is disabled in settings — otherwise startup warmup
+// would load a multi-hundred-MB engine the user explicitly turned off.
 func warmComputerUseOCR() map[string]interface{} {
 	start := time.Now()
 	out := map[string]interface{}{
@@ -411,6 +413,13 @@ func warmComputerUseOCR() map[string]interface{} {
 		"warm_ms":   int64(0),
 		"error":     "",
 		"skipped":   false,
+	}
+
+	if !ocrConfiguredEnabled() {
+		out["skipped"] = true
+		out["note"] = "OCR disabled in settings (ocr_enabled=false)"
+		out["warm_ms"] = time.Since(start).Milliseconds()
+		return out
 	}
 
 	globalComputerUse.mu.Lock()

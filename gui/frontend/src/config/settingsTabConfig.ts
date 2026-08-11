@@ -18,6 +18,7 @@ export const SETTINGS_TABS_NEEDING_CONFIG = [
     'im',
     'security',
     'system',
+    'hardware',
 ] as const satisfies readonly SettingsTabId[];
 
 /** Tabs that load their own data; GetSettingsTabConfig is a no-op. */
@@ -29,6 +30,7 @@ export const SETTINGS_TABS_SELF_LOADING = [
     'misData',
     'embedding',
     'migration',
+    'assetManagement',
 ] as const satisfies readonly SettingsTabId[];
 
 const needsConfigSet: ReadonlySet<string> = new Set(SETTINGS_TABS_NEEDING_CONFIG);

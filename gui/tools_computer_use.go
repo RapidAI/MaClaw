@@ -74,7 +74,8 @@ func (a *taskOCRFromBrowser) IsAvailable() bool {
 
 // registerComputerUseTools registers text-primary Computer Use tools.
 // OmniParser (YOLO) + OCR are the local "eyes" for non-multimodal models.
-func registerComputerUseTools(registry *ToolRegistry) {
+// app may be nil (tests); then observation uses the local OCR engine only.
+func registerComputerUseTools(registry *ToolRegistry, app *App) {
 	if registry == nil {
 		return
 	}
@@ -143,7 +144,7 @@ func registerComputerUseTools(registry *ToolRegistry) {
 	} else {
 		globalComputerUse.session = sess
 	}
-	ocr := &taskOCRFromBrowser{inner: ocrSidecar}
+	ocr := &taskOCRFromBrowser{inner: newVisionFirstOCRProvider(app, ocrSidecar)}
 	globalComputerUse.ocr = ocr
 	globalComputerUse.logger = logger
 	globalComputerUse.mu.Unlock()
@@ -152,7 +153,7 @@ func registerComputerUseTools(registry *ToolRegistry) {
 	registry.Register(RegisteredTool{
 		Name: "computer_observe",
 		Description: "Observe the desktop as structured TEXT for Computer Use (text-primary). " +
-			"Uses local OmniParser (YOLO) + OCR + accessibility. Does NOT return screenshots/base64 — " +
+			"Uses local OmniParser (YOLO) + accessibility + on-screen text recognition (main model's vision when it supports images, local OCR otherwise). Does NOT return screenshots/base64 — " +
 			"safe for text-only models. Returns eN elements; click with computer_click ref=eN. " +
 			"Defaults to primary monitor (screen_index=0). Use screen_index=-1 only when you need all monitors stitched.",
 		Category: ToolCategoryBuiltin,

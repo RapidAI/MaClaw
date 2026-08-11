@@ -25,41 +25,57 @@ func ExtractPPTXImages(source Source, filePath string, textNodes []DocumentNode)
 	}
 	defer r.Close()
 
-	// Step 1: Collect all media files
-	mediaFiles := make(map[string][]byte) // "ppt/media/image1.png" → bytes
-	for _, f := range r.File {
-		if strings.HasPrefix(f.Name, "ppt/media/") && !f.FileInfo().IsDir() {
-			data, err := readZipFile(f)
-			if err != nil {
-				continue
-			}
-			mediaFiles[f.Name] = data
-		}
-	}
-	if len(mediaFiles) == 0 {
-		return nil, nil, nil
-	}
-
-	// Step 2: Parse each slide's relationships and find image references
-	slideRels := parsePPTXSlideRels(r)      // slide path → (rId → media path)
+	// Step 1: Parse each slide's relationships and find image references.
+	// Relationship and slide XML use the bounded shared ZIP reader, so their
+	// declared expansion cannot become an image-import allocation.
+	slideRels := parsePPTXSlideRels(r)                // slide path → (rId → media path)
 	slideImages := parsePPTXSlideImages(r, slideRels) // slide number → []imageRef
 
 	if len(slideImages) == 0 {
 		return nil, nil, nil
 	}
 
+	// Step 2: Build an index of media entries without reading every embedded
+	// payload. Only slide-referenced images may enter the bounded retention
+	// budget below.
+	mediaFiles := make(map[string]*zip.File)
+	for _, f := range r.File {
+		if strings.HasPrefix(f.Name, "ppt/media/") && !f.FileInfo().IsDir() {
+			mediaFiles[f.Name] = f
+		}
+	}
+
 	// Step 3: Build slide text context map (from textNodes)
 	slideTextMap := buildSlideTextMap(textNodes)
 
-	// Step 4: Create image nodes
+	// Step 4: Create image nodes. The per-document retention ceiling applies
+	// before image bytes are read so unused or excess media never accumulates
+	// in this extractor.
 	var nodes []DocumentNode
 	imageBytes := make(map[string][]byte)
+	var retainedBytes int64
+	mediaData := make(map[string][]byte)
+	mediaReadFailed := make(map[string]bool)
 
 	for slideNum, refs := range slideImages {
 		slideContext := slideTextMap[slideNum]
 		for _, ref := range refs {
-			data, ok := mediaFiles[ref.mediaPath]
+			data, ok := mediaData[ref.mediaPath]
 			if !ok {
+				media, exists := mediaFiles[ref.mediaPath]
+				if !exists || mediaReadFailed[ref.mediaPath] || media.UncompressedSize64 < 500 || media.UncompressedSize64 > uint64(MaxKnowledgeImageAssetBytes) || media.UncompressedSize64 > uint64(maxKnowledgeDocumentImageBytes-retainedBytes) {
+					continue
+				}
+				var readErr error
+				data, readErr = readZipFileAtMost(media, MaxKnowledgeImageAssetBytes)
+				if readErr != nil || len(data) > int(maxKnowledgeDocumentImageBytes-retainedBytes) {
+					mediaReadFailed[ref.mediaPath] = true
+					continue
+				}
+				retainedBytes += int64(len(data))
+				mediaData[ref.mediaPath] = data
+			}
+			if len(data) == 0 {
 				continue
 			}
 			// Skip tiny images

@@ -10,6 +10,10 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 )
 
 // Remote SSH tool surface by nested role. Worker allows the full remote set
@@ -17,16 +21,16 @@ import (
 var remoteCodingSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 	// todo_write is root/worker-only (requirement breakdown for implement turns).
 	codingRoleExplorer: {
-		"ssh_read_file": true, "ssh_list_dir": true, "ssh_bash": true,
+		"ssh_read_file": true, "ssh_list_dir": true,
 		codeNavigationToolName: true, reportLocalizationToolName: true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
-		"coding_knowledge_search": true, "knowledge_search": true,
+		"coding_knowledge_search": true, "knowledge_search": true, "knowledge_image_search": true,
 	},
 	codingRoleReviewer: {
-		"ssh_read_file": true, "ssh_list_dir": true, "ssh_bash": true, "ssh_check_task": true,
+		"ssh_read_file": true, "ssh_list_dir": true, "ssh_check_task": true,
 		codeNavigationToolName: true, reportLocalizationToolName: true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
-		"coding_knowledge_search": true, "knowledge_search": true,
+		"coding_knowledge_search": true, "knowledge_search": true, "knowledge_image_search": true,
 	},
 }
 
@@ -57,10 +61,33 @@ func (r *RemoteCodingSubAgent) remoteToolAllowedForRole(name string) bool {
 		return true
 	}
 	allowed, ok := remoteCodingSpawnRoleTools[role]
-	if !ok || allowed == nil {
-		return true
+	if !ok {
+		return false
 	}
-	return allowed[name]
+	return (codingagent.ToolPolicy{Role: role, Allowed: allowed, Normalize: func(value string) string { return strings.ToLower(strings.TrimSpace(value)) }}).Allows(name)
+}
+
+// remoteToolCallAllowedForRole mirrors the local inspection contract at the
+// concrete call boundary. web_fetch writes through the local host when given
+// a destination, even though the coding task itself targets SSH.
+func (r *RemoteCodingSubAgent) remoteToolCallAllowedForRole(name string, args map[string]interface{}) (bool, string) {
+	if r == nil {
+		return false, "remote coding subagent is unavailable"
+	}
+	normalize := func(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
+	name = normalize(name)
+	role := r.role
+	if role == "" || role == codingRoleWorker {
+		if !r.remoteToolAllowedForRole(name) {
+			return false, fmt.Sprintf("tool %s is not available for nested role %q", name, r.role)
+		}
+		return true, ""
+	}
+	allowed, ok := remoteCodingSpawnRoleTools[role]
+	if !ok {
+		return false, fmt.Sprintf("tool %s is not available for nested role %q", name, r.role)
+	}
+	return (codingagent.ToolPolicy{Role: role, Allowed: allowed, Normalize: normalize}).IsToolCallAllowed(name, args)
 }
 
 func filterRemoteCodingToolsForRole(tools []map[string]interface{}, agent *RemoteCodingSubAgent) []map[string]interface{} {
@@ -83,15 +110,7 @@ func filterRemoteCodingToolsForRole(tools []map[string]interface{}, agent *Remot
 		}
 		return out
 	}
-	out := make([]map[string]interface{}, 0, len(tools))
-	for _, t := range tools {
-		fn, _ := t["function"].(map[string]interface{})
-		name, _ := fn["name"].(string)
-		if agent.remoteToolAllowedForRole(name) {
-			out = append(out, t)
-		}
-	}
-	return out
+	return (codingagent.ToolPolicy{Role: role, Allowed: remoteCodingSpawnRoleTools[role], Normalize: func(value string) string { return strings.ToLower(strings.TrimSpace(value)) }}).FilterToolDefinitions(tools)
 }
 
 func (c *remoteCodingCallbacks) executeSpawnRemoteCodingAgent(args map[string]interface{}) string {
@@ -109,6 +128,18 @@ func (c *remoteCodingCallbacks) executeSpawnRemoteCodingAgent(args map[string]in
 	}
 	if parent.loopCtx != nil && parent.loopCtx.IsCancelled() {
 		return "remote coding subagent cancelled before spawn"
+	}
+	// Runtime attempt status is the durable authority. A callback can arrive
+	// after cancellation or after another callback admitted children; neither
+	// case may create more work from the old parent attempt.
+	if parent.runtimeAttempt != nil && parent.runtimeStore != nil {
+		current, getErr := parent.runtimeStore.GetAttempt(parent.runtimeAttempt.AttemptID)
+		if getErr != nil || current.Status != codingruntime.TaskRunning {
+			return "spawn_coding_agent: runtime parent attempt is no longer running"
+		}
+	}
+	if parent.runtimeAttempt != nil {
+		return c.executeLedgerReadOnlyRemoteSpawn(specs)
 	}
 
 	var progressMu sync.Mutex
@@ -224,6 +255,75 @@ func (c *remoteCodingCallbacks) executeSpawnRemoteCodingAgent(args map[string]in
 	}
 	b.WriteString(fmt.Sprintf("\npassed=%d failed=%d\n", passed, failed))
 	return strings.TrimSpace(b.String())
+}
+
+func (c *remoteCodingCallbacks) executeLedgerReadOnlyRemoteSpawn(specs []codingSpawnSpec) string {
+	if c == nil || c.agent == nil || c.agent.runtimeAttempt == nil || c.agent.runtimeStore == nil {
+		return "spawn_coding_agent: runtime child admission is unavailable"
+	}
+	parent := c.agent
+	remoteTarget := guiRemoteCodingTargetIdentity(parent.handler, parent.sessionID, parent.projectDir)
+	policy := codingruntime.PolicySnapshot{Digest: codingRuntimeDigest(remoteTarget + "\n" + parent.projectDir + "\nreadonly-child"), ProjectRoot: parent.projectDir, RemoteTarget: remoteTarget, Mode: "remote", ReadOnly: true}
+	childSpecs := make([]codingruntime.ChildTaskSpec, 0, len(specs))
+	for _, spec := range specs {
+		childSpecs = append(childSpecs, codingruntime.ChildTaskSpec{Name: string(spec.Role), RequestedWork: spec.Task, ProjectRef: parent.projectDir, Mode: "remote"})
+	}
+	service := codingruntime.ChildTaskService{Store: parent.runtimeStore}
+	handles, err := service.AdmitReadOnlyChildren(parent.runtimeAttempt.AttemptID, parent.runtimeAttempt.LeaseOwner, childSpecs, policy)
+	if err != nil {
+		return "spawn_coding_agent: runtime admission failed: " + err.Error()
+	}
+	// See the local counterpart: return durable admission handles now. A child
+	// runs after the parent has stopped and can only deliver its bounded result
+	// to a later explicit parent Attempt.
+	store := parent.runtimeStore
+	for i, handle := range handles {
+		child := parent.newReadOnlyNestedRemoteCodingAgent(specs[i], c)
+		prober := newGUIRemoteWorkspaceProber(parent.handler, parent.sessionID, parent.projectDir, remoteTarget)
+		go runAdmittedRemoteReadOnlyChild(store, parent.runtimeAttempt.TaskID, handle, policy, child, prober, parent.onProgress)
+	}
+	return formatAdmittedReadOnlyChildHandles(handles)
+}
+
+func runAdmittedRemoteReadOnlyChild(store codingruntime.Store, parentTaskID string, handle codingruntime.ChildTaskHandle, policy codingruntime.PolicySnapshot, child *RemoteCodingSubAgent, prober codingruntime.WorkspaceProber, onProgress func(string)) {
+	if store == nil || child == nil {
+		return
+	}
+	ctx, release := guiAdmittedChildExecutions.Begin(parentTaskID, handle.TaskID)
+	defer release()
+	if onProgress != nil {
+		emitCodingSubAgentProgress(onProgress, fmt.Sprintf("remote read-only child admitted: %s (%s)", handle.TaskID, handle.Name))
+	}
+	service := codingruntime.ChildTaskService{Store: store}
+	runner := codingruntime.Runner{Store: store, LeaseOwner: "gui:remote-child:" + handle.TaskID, LeaseDuration: 15 * time.Minute, WorkspaceProber: prober}
+	outcome := <-service.StartReadOnlyChild(ctx, runner, handle.TaskID, policy, child)
+	if onProgress == nil {
+		return
+	}
+	if outcome.Err != nil {
+		emitCodingSubAgentProgress(onProgress, fmt.Sprintf("remote read-only child %s failed: %s", handle.TaskID, compactSubAgentErrorSummary(outcome.Err.Error())))
+		return
+	}
+	status := codingruntime.TaskFailed
+	if outcome.Attempt != nil {
+		status = outcome.Attempt.Status
+	}
+	emitCodingSubAgentProgress(onProgress, fmt.Sprintf("remote read-only child %s completed: %s", handle.TaskID, status))
+}
+
+func (parent *RemoteCodingSubAgent) newReadOnlyNestedRemoteCodingAgent(spec codingSpawnSpec, _ *remoteCodingCallbacks) *RemoteCodingSubAgent {
+	child := NewRemoteCodingSubAgent(parent.handler, parent.cfg, parent.httpClient, parent.sessionID, parent.workDir, parent.projectDir, parent.loopCtx)
+	child.nestDepth, child.role = parent.nestDepth+1, spec.Role
+	// The child receives its own Attempt later in ExecuteReadOnlyChild; the
+	// store is shared solely for cancellation/lease observation during that
+	// fresh attempt, never to resume the parent's old loop.
+	child.runtimeStore = parent.runtimeStore
+	child.codingKB, child.generalKB = parent.codingKB, parent.generalKB
+	// Inspection children share neither the root preview lifecycle nor its
+	// session-end signal: they cannot edit remote files and must not close the
+	// root panel while their detached Runtime Attempt is still reporting.
+	child.sourcePreviewEnabled = false
+	return child
 }
 
 func (c *remoteCodingCallbacks) mergeRemoteSpawnedFileAudit(modified, created []string) {

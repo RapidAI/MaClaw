@@ -1,12 +1,151 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestAutoExtractErrorClassIsContentFree(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{err: errOfficeReadInputTooLarge, want: "input_too_large"},
+		{err: ErrOfficeReadUnsafeContainer, want: "malformed"},
+		{err: ErrOfficeReadSourceChanged, want: "source_changed"},
+		{err: errors.New(`zip failure while parsing C:\\Users\\private\\proposal.docx`), want: "malformed"},
+		{err: errors.New("private implementation detail"), want: "extract_error"},
+	} {
+		if got := autoExtractErrorClass(test.err); got != test.want {
+			t.Fatalf("autoExtractErrorClass(%v) = %q, want %q", test.err, got, test.want)
+		}
+	}
+}
+
+func TestFormatAutoExtractedDocument_RedactsExtractionAndStatErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "private.ppt")
+	// Use a valid OLE PowerPoint stream so the test reaches the injected
+	// OfficeRead parser error. A directory-only CFBF is now correctly rejected
+	// by the stricter legacy PowerPoint preflight before any parser is invoked.
+	writeMinimalOLE(t, path, "PowerPoint Document")
+
+	oldExtract := officeReadExtract
+	defer func() { officeReadExtract = oldExtract }()
+	const sensitiveDetail = `parser detail: C:\\Users\\private\\proposal.ppt`
+	officeReadExtract = func(string) (string, string, error) {
+		return "", "ppt", errors.New(sensitiveDetail)
+	}
+
+	block := FormatAutoExtractedDocument(path)
+	if strings.Contains(block, sensitiveDetail) || strings.Contains(block, "C:\\Users\\private") {
+		t.Fatalf("extraction detail must be redacted from auto-inject block:\n%s", block)
+	}
+	if !strings.Contains(block, "error_class=extract_error") {
+		t.Fatalf("stable error class missing:\n%s", block)
+	}
+	if !strings.Contains(block, filepath.Base(path)) {
+		t.Fatalf("selected path should remain available for fallback:\n%s", block)
+	}
+
+	missingPath := filepath.Join(dir, "missing-private.docx")
+	missingBlock := FormatAutoExtractedDocument(missingPath)
+	if strings.Contains(missingBlock, "The system cannot find") || strings.Contains(missingBlock, "no such file") {
+		t.Fatalf("stat error must be redacted from auto-inject block:\n%s", missingBlock)
+	}
+	if !strings.Contains(missingBlock, "error_class=unavailable") {
+		t.Fatalf("stable unavailable class missing:\n%s", missingBlock)
+	}
+}
+
+func TestFormatAutoExtractedDocument_OversizedInputDoesNotSuggestUnavailablePaging(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.docx")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(MaxOfficeReadFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	block := FormatAutoExtractedDocument(path)
+	if !strings.Contains(block, "error_class=input_too_large") || !strings.Contains(block, "32 MiB") {
+		t.Fatalf("oversized auto-extract response lost shared-boundary guidance:\n%s", block)
+	}
+	for _, forbidden := range []string{"office(action=\"read_document\"", "craft_tool", "manage_skill", "COM", "LibreOffice", "专用处理工具"} {
+		if strings.Contains(block, forbidden) {
+			t.Fatalf("oversized auto-extract must not suggest a boundary bypass %q:\n%s", forbidden, block)
+		}
+	}
+}
+
+func TestFormatAutoExtractedDocument_BlockedFailureDoesNotSuggestBypass(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "encrypted.docx")
+	writeEncryptedOfficeReadZIP(t, path)
+	block := FormatAutoExtractedDocument(path)
+	for _, want := range []string{"error_class=encrypted", "不支持提供密码后解密或读取"} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("encrypted auto-extract response missing %q:\n%s", want, block)
+		}
+	}
+	for _, forbidden := range []string{"office(action=\"read_document\"", "craft_tool", "manage_skill", "COM", "LibreOffice"} {
+		if strings.Contains(block, forbidden) {
+			t.Fatalf("encrypted auto-extract response suggested a bypass %q:\n%s", forbidden, block)
+		}
+	}
+}
+
+// Text-like extensions retain a bounded raw-text compatibility fallback for
+// ordinary parser errors. They must not use that fallback to expose an Office
+// container that the shared extraction boundary has already rejected.
+func TestFormatAutoExtractedDocument_TextLikeSuffixDoesNotBypassRejectedContainer(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(*testing.T, string)
+		want  string
+	}{
+		{
+			name: "encrypted-ooxml-as-csv",
+			write: func(t *testing.T, path string) {
+				writeEncryptedOfficeReadZIP(t, path)
+			},
+			want: "error_class=encrypted",
+		},
+		{
+			name: "docx-as-markdown",
+			write: func(t *testing.T, path string) {
+				writeMinimalDOCX(t, path, "must not enter auto-extract body")
+			},
+			want: "error_class=malformed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ext := ".csv"
+			if tc.name == "docx-as-markdown" {
+				ext = ".md"
+			}
+			path := filepath.Join(t.TempDir(), "disguised"+ext)
+			tc.write(t, path)
+			block := FormatAutoExtractedDocument(path)
+			if !strings.Contains(block, tc.want) {
+				t.Fatalf("rejected container missing %q: %s", tc.want, block)
+			}
+			for _, forbidden := range []string{"must not enter auto-extract body", "office(action=\"read_document\"", "craft_tool", "manage_skill", "COM", "LibreOffice"} {
+				if strings.Contains(block, forbidden) {
+					t.Fatalf("rejected text-like input exposed or bypassed %q: %s", forbidden, block)
+				}
+			}
+		})
+	}
+}
 
 func TestExpandUserSelectedFilePaths_MarkerInProseDoesNotBlock(t *testing.T) {
 	dir := t.TempDir()
@@ -72,6 +211,30 @@ func TestExpandUserSelectedFilePaths_ImageOnlyNoExtract(t *testing.T) {
 	}
 	if !strings.Contains(out, path) {
 		t.Fatalf("image path should remain:\n%s", out)
+	}
+}
+
+func TestExpandUserSelectedFilePaths_AllOfficeFormatsUseOfficeReadDefaultRoute(t *testing.T) {
+	dir := t.TempDir()
+	oldExtract := officeReadExtract
+	defer func() { officeReadExtract = oldExtract }()
+	officeReadExtract = func(got string) (string, string, error) {
+		format := strings.TrimPrefix(strings.ToLower(filepath.Ext(got)), ".")
+		if !isOfficeReadFormat(format) {
+			t.Fatalf("OfficeRead received unsupported snapshot %q", got)
+		}
+		return "Office document body", format, nil
+	}
+
+	for _, format := range []string{"doc", "docx", "ppt", "pptx", "xls", "xlsx"} {
+		t.Run(format, func(t *testing.T) {
+			path := filepath.Join(dir, "document."+format)
+			writeValidOfficeDefaultRouteFixture(t, path, format)
+			out := ExpandUserSelectedFilePaths(FilePathPromptPrefix + "\n" + path + "\n")
+			if !strings.Contains(out, "Office document body") || !strings.Contains(out, `format="`+format+`"`) {
+				t.Fatalf("%s should use the default OfficeRead route:\n%s", format, out)
+			}
+		})
 	}
 }
 

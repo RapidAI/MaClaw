@@ -21,7 +21,10 @@ func TestEnsureMemoryStoreConcurrentCallsShareOneStore(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			app.ensureMemoryStore()
-			stores <- app.memoryStore
+			app.memoryStoreMu.Lock()
+			store := app.memoryStore
+			app.memoryStoreMu.Unlock()
+			stores <- store
 		}()
 	}
 	wg.Wait()

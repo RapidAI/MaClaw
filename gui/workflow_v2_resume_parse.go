@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -24,7 +25,8 @@ import (
 // field values that the frontend can populate into the form.
 //
 // Parameters:
-//   - filePath: absolute path to the uploaded resume file (.pdf, .docx, .md, .txt)
+//   - filePath: absolute path to the uploaded resume file (.pdf, .doc/.docx,
+//     .ppt/.pptx, .xls/.xlsx, .md, .txt)
 //   - phaseID: the workflow phase ID (to look up the InputSchema)
 //
 // Returns JSON-serialized map of field name → {value, source, confidence, ...}
@@ -156,42 +158,110 @@ func (c *appResumeLLMCaller) CallLLMForResumeParse(ctx context.Context, systemPr
 
 // --- File text extraction ---
 
-// extractTextFromFile reads a file and extracts its text content.
-// Supports: .txt, .md (direct read), .pdf (via pymupdf subprocess), .docx (via python-docx subprocess).
-// For unsupported formats, attempts to read as plain text.
+// extractTextFromFile reads a workflow document through the same Office text
+// boundary as attachments and read_document. This keeps format-level rollback,
+// input limits, container preflight, and OfficeRead migration observation from
+// being bypassed by resume or supplementary-material imports. Every path first
+// becomes a bounded private snapshot, including apparent plain text: an Office
+// container can be deliberately given a .txt or unknown extension, and the
+// raw-text compatibility fallback must not reopen it after that boundary.
 func extractTextFromFile(filePath string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
+	info, err := os.Stat(filePath)
+	if err != nil || info.IsDir() {
+		return "", errors.New("文件不存在、无法访问或不是普通文件")
+	}
+	if info.Size() > agent.MaxOfficeReadFileBytes {
+		return "", fmt.Errorf("文件超过 %d MiB 读取上限", agent.MaxOfficeReadFileBytes>>20)
+	}
+
+	snapshot, cleanup, err := agent.SnapshotBoundedDocumentInput(filePath, ext)
+	if err != nil {
+		if officeExtractionMustStayClosed(err) {
+			return "", errors.New("文档文本提取被安全、版本或资源策略拒绝")
+		}
+		return "", errors.New("文档文本提取失败")
+	}
+	defer cleanup()
 
 	switch ext {
+	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv":
+		text, _, extractErr := agent.ExtractOfficeText(snapshot)
+		if extractErr == nil && strings.TrimSpace(text) != "" {
+			return limitWorkflowExtractedText(text), nil
+		}
+		if officeExtractionMustStayClosed(extractErr) {
+			return "", errors.New("文档文本提取被安全、版本或资源策略拒绝")
+		}
+		if ext != ".pdf" {
+			// The shared extractor deliberately has content-free adapter errors at
+			// its security boundary. Do not reveal a parser or filesystem message
+			// through a workflow form merely because this caller is GUI-local.
+			return "", errors.New("文档文本提取失败")
+		}
+		// Preserve the existing PDF-only quality fallback. It remains bounded by
+		// the file-size check above and only runs after the native shared route
+		// has declined the file.
+		text, pythonErr := extractTextViaPython(snapshot, "import fitz; doc=fitz.open(r'%s'); print('\\n'.join(page.get_text() for page in doc))")
+		if pythonErr != nil {
+			return "", pythonErr
+		}
+		return limitWorkflowExtractedText(text), nil
+
 	case ".txt", ".md", ".markdown":
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			return "", err
+		// Run the apparent text file through the shared signature boundary first.
+		// A ZIP/OLE container named .txt must remain fail-closed instead of being
+		// copied verbatim into a form prompt.
+		text, _, extractErr := agent.ExtractOfficeText(snapshot)
+		if extractErr == nil {
+			return limitWorkflowExtractedText(text), nil
 		}
-		return string(data), nil
-
-	case ".pdf":
-		// Primary: shared native extractor (no Python required)
-		if text, err := agent.ExtractPDFText(filePath); err == nil && strings.TrimSpace(text) != "" {
-			return text, nil
+		if officeExtractionMustStayClosed(extractErr) {
+			return "", errors.New("文档文本提取被安全、版本或资源策略拒绝")
 		}
-		// Fallback: Python pymupdf (better quality for complex PDFs)
-		return extractTextViaPython(filePath, "import fitz; doc=fitz.open(r'%s'); print('\\n'.join(page.get_text() for page in doc))")
-
-	case ".docx":
-		return agent.ExtractDocxText(filePath)
-
-	case ".doc":
-		return agent.ExtractDocText(filePath)
+		return "", errors.New("文档文本提取失败")
 
 	default:
-		// Try reading as plain text
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			return "", fmt.Errorf("unsupported file type %s: %v", ext, err)
+		// Keep historical plain-text tolerance for workflow schemas, but first
+		// route the exact snapshot through the shared signature boundary. This
+		// recognizes a genuinely misnamed Office/PDF document and rejects a
+		// malformed or encrypted container before the raw-text compatibility read.
+		text, _, extractErr := agent.ExtractOfficeText(snapshot)
+		if extractErr == nil && strings.TrimSpace(text) != "" {
+			return limitWorkflowExtractedText(text), nil
 		}
-		return string(data), nil
+		if officeExtractionMustStayClosed(extractErr) {
+			return "", errors.New("文档文本提取被安全、版本或资源策略拒绝")
+		}
+		data, readErr := os.ReadFile(snapshot)
+		if readErr != nil {
+			return "", errors.New("文件无法读取")
+		}
+		return limitWorkflowExtractedText(string(data)), nil
 	}
+}
+
+// officeExtractionMustStayClosed identifies shared extraction outcomes for
+// which this workflow prefill path must not launch its PDF Python fallback or
+// otherwise reopen the same rejected file.
+func officeExtractionMustStayClosed(err error) bool {
+	return errors.Is(err, agent.ErrOfficeReadEncryptedContainer) ||
+		errors.Is(err, agent.ErrOfficeReadUnsafeContainer) ||
+		errors.Is(err, agent.ErrOfficeReadSourceChanged) ||
+		errors.Is(err, agent.ErrOfficeReadInputTooLarge) ||
+		errors.Is(err, agent.ErrOfficeReadOutputTooLarge)
+}
+
+// limitWorkflowExtractedText prevents a file selected for form prefill from
+// growing an LLM prompt beyond the adapter's retained-text boundary. The
+// truncation happens after extraction, so it does not affect the shared
+// read_document paging protocol or OfficeRead migration counters.
+func limitWorkflowExtractedText(text string) string {
+	runes := []rune(text)
+	if len(runes) <= agent.MaxOfficeReadTextRunes {
+		return text
+	}
+	return string(runes[:agent.MaxOfficeReadTextRunes])
 }
 
 // extractTextViaPython runs a Python one-liner to extract text from a file.

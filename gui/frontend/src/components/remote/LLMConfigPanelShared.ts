@@ -3,6 +3,8 @@ import { colors } from "./styles";
 import { localizeHubServiceReason } from "../../utils/hubServiceI18n";
 
 export interface LLMProvider {
+	/** Stable backend identifier; provider name is display-only. */
+    id?: string;
     name: string;
     url: string;
     key: string;

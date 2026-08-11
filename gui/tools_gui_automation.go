@@ -41,7 +41,8 @@ func (a *guiReplayActivityAdapter) ClearReplay() {
 // registerGUIAutomationTools registers native GUI automation tools (recording,
 // replay, click, type, screenshot) into the gui ToolRegistry.
 // loopMgr and statusC enable async background replay; activityStore tracks progress.
-func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopManager, activityStore *AgentActivityStore, statusC chan StatusEvent) {
+// app may be nil (tests); then observation/verification uses the local OCR engine only.
+func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopManager, activityStore *AgentActivityStore, statusC chan StatusEvent, app *App) {
 	// Initialize platform components
 	bridge := accessibility.NewBridge()
 	inputSim := guiautomation.NewInputSimulator()
@@ -344,11 +345,13 @@ func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopM
 	// --- gui_observe ---
 	// Provides structured state observation of desktop GUI applications,
 	// analogous to browser_observe for web pages. Returns accessibility
-	// tree elements, focused element info, and OCR text — all as structured
-	// text, no screenshot, no LLM vision cost.
-	// OCR via the shared native PP-OCRv6 provider (same engine as browser) so
-	// text_contains / labels work without multimodal LLM vision.
-	ocrForGUI := &taskOCRFromBrowser{inner: sharedNativeOCRProvider()}
+	// tree elements, focused element info, and recognized screen text — all
+	// as structured text (the screenshot itself is never returned).
+	// Text recognition goes through the vision-first provider: when the current
+	// main model supports images it reads the screenshot directly (one vision
+	// call per observation); otherwise the shared native PP-OCRv6 engine (same
+	// engine as browser) is used, subject to the ocr_enabled toggle.
+	ocrForGUI := &taskOCRFromBrowser{inner: newVisionFirstOCRProvider(app, sharedNativeOCRProvider())}
 	guiObserver := guiautomation.NewGUIStateObserver(bridge, ocrForGUI, screenshotFn, func(msg string) {
 		log.Printf("[gui-observe] %s", msg)
 	})
@@ -368,7 +371,7 @@ func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopM
 
 	registry.Register(RegisteredTool{
 		Name:        "gui_observe",
-		Description: "观测桌面 GUI 程序的结构化状态（窗口元素树、焦点元素、OCR 文本）。返回纯文本，不截屏，不消耗 vision token。Observe desktop GUI state: accessibility tree, focused element, OCR text. Returns structured text, no screenshot.",
+		Description: "观测桌面 GUI 程序的结构化状态（窗口元素树、焦点元素、屏幕文字）。返回纯文本，不截屏。屏幕文字识别：当前主模型支持图片时优先用模型视觉（消耗一次视觉调用），否则用本地 OCR。Observe desktop GUI state: accessibility tree, focused element, on-screen text. Returns structured text, no screenshot. Text comes from the main model's vision when it supports images, local OCR otherwise.",
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"gui", "test", "automation", "桌面", "观测", "accessibility"},
 		Priority:    5,

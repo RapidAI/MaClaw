@@ -423,7 +423,7 @@ func TestRunLoop_ReplanInterruptsTransientRetryBackoff(t *testing.T) {
 				sawSteer.Store(true)
 			}
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"resp_steered","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"steered retry"}]}]}`))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"resp_steered","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"steered retry"}]}]}`))}, nil
 	})}
 	started := time.Now()
 	result := RunLoop(cb, "start", nil, client, cb)

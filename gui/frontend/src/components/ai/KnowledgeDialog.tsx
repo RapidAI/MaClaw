@@ -4,6 +4,9 @@ import type { CSSProperties } from "react";
 import { KnowledgeSettingsPanel } from "../settings/KnowledgeSettingsPanel";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
+import { usePortalThemeAttributes } from "../../hooks/usePortalThemeAttributes";
+
+const dialogFocusableSelector = 'button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [href]:not([tabindex="-1"])';
 
 type WailsNoDragStyle = CSSProperties & {
     WebkitAppRegion?: "no-drag";
@@ -55,6 +58,7 @@ const headerStyle: CSSProperties = {
 const bodyStyle: CSSProperties = {
     flex: 1,
     overflow: "auto",
+    overscrollBehavior: "contain",
     padding: "0 4px 4px",
 };
 
@@ -77,10 +81,40 @@ const toastStyle: CSSProperties = {
 export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogProps) {
     const [toastMessage, setToastMessage] = useState("");
     const toastTimerRef = useRef<number | null>(null);
+    const closeCallbackRef = useRef(onClose);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
+    closeCallbackRef.current = onClose;
+    // This dialog is portaled to document.body, outside #App where the
+    // theme variables normally live. Mirror the theme attributes so the
+    // knowledge panel keeps its selected light/dark scheme.
+    const portalThemeAttributes = usePortalThemeAttributes(open);
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
-        if (e.key === "Escape") onClose();
-    }, [onClose]);
+        const activeElement = document.activeElement;
+        const dialog = dialogRef.current;
+        if (!dialog || (activeElement instanceof HTMLElement && !dialog.contains(activeElement))) return;
+        const nestedDialog = Array.from(dialog.querySelectorAll<HTMLElement>('[role="dialog"]'))
+            .findLast((element) => element.contains(activeElement));
+        // Nested dialogs own their Escape and Tab behavior. The parent must
+        // not close or pull focus away while the import flow is active.
+        if (nestedDialog) return;
+        if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            closeCallbackRef.current();
+            return;
+        }
+        if (e.key !== "Tab") return;
+        const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(dialogFocusableSelector));
+        if (!focusable.length) return;
+        const activeIndex = focusable.indexOf(document.activeElement as HTMLElement);
+        const nextIndex = e.shiftKey
+            ? (activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1)
+            : (activeIndex === focusable.length - 1 ? 0 : activeIndex + 1);
+        e.preventDefault();
+        focusable[nextIndex].focus();
+    }, []);
 
     const showToastMessage = useCallback((message: string, duration = 3000) => {
         setToastMessage(message);
@@ -95,8 +129,17 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
 
     useEffect(() => {
         if (!open) return;
+        const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
         document.addEventListener("keydown", handleKeyDown);
-        return () => document.removeEventListener("keydown", handleKeyDown);
+        const focusFrame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+        return () => {
+            window.cancelAnimationFrame(focusFrame);
+            document.body.style.overflow = previousOverflow;
+            document.removeEventListener("keydown", handleKeyDown);
+            if (previousFocus?.isConnected) previousFocus.focus();
+        };
     }, [open, handleKeyDown]);
 
     useEffect(() => {
@@ -121,14 +164,18 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
 
     const dialog = (
         <div
+            className="knowledge-dialog-overlay"
             style={overlayStyle}
-            role="dialog"
-            aria-modal="true"
-            aria-label={title}
+            {...portalThemeAttributes}
             {...backdropProps}
         >
             <div
+                ref={dialogRef}
+                className="knowledge-dialog-modal"
                 style={{ ...modalStyle, position: "relative", background: theme.bg, border: `1px solid ${theme.divider}` }}
+                role="dialog"
+                aria-modal="true"
+                aria-label={title}
                 {...dialogProps}
             >
                 <div style={{ ...headerStyle, borderBottom: `1px solid ${theme.divider}` }}>
@@ -136,6 +183,7 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
                         {title}
                     </h3>
                     <button
+                        ref={closeButtonRef}
                         onClick={onClose}
                         className="knowledge-dialog-close"
                         style={{

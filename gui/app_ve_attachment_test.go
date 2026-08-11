@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestClassifyFileType(t *testing.T) {
@@ -44,7 +45,12 @@ func TestClassifyFileType(t *testing.T) {
 		{"old.bmp", "image"},
 		// Document files
 		{"report.pdf", "document"},
+		{"letter.doc", "document"},
 		{"letter.docx", "document"},
+		{"budget.xls", "document"},
+		{"budget.xlsx", "document"},
+		{"deck.ppt", "document"},
+		{"deck.pptx", "document"},
 		// Unsupported
 		{"archive.zip", ""},
 		{"binary.exe", ""},
@@ -61,6 +67,26 @@ func TestClassifyFileType(t *testing.T) {
 			result := classifyFileType(tt.path)
 			if result != tt.expected {
 				t.Errorf("classifyFileType(%q) = %q, want %q", tt.path, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestPrepareVEAttachmentMessageSupportsAllOfficeFormats(t *testing.T) {
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{}}
+	for _, ext := range []string{".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"} {
+		t.Run(ext, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "attachment"+ext)
+			if err := os.WriteFile(path, []byte("office attachment"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			msg, err := app.prepareVEAttachmentMessage("session-1", "review this", []string{path}, false)
+			if err != nil {
+				t.Fatalf("prepareVEAttachmentMessage(%s): %v", ext, err)
+			}
+			if len(msg.FileAttachments) != 1 || msg.FileAttachments[0].LocalPath != path || msg.FileAttachments[0].MimeType != mimeTypeForFile(path) {
+				t.Fatalf("unexpected Office attachment message: %#v", msg)
 			}
 		})
 	}
@@ -284,6 +310,45 @@ func TestPrepareVEAttachmentMessageDoesNotLeakLocalPathsForRemoteUpload(t *testi
 	}
 }
 
+func TestVEFileAttachmentMaxBytesForUsesSharedDocumentLimit(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want int64
+	}{
+		{"report.pdf", agent.MaxOfficeReadFileBytes},
+		{"report.doc", agent.MaxOfficeReadFileBytes},
+		{"report.docx", agent.MaxOfficeReadFileBytes},
+		{"report.xls", agent.MaxOfficeReadFileBytes},
+		{"report.xlsx", agent.MaxOfficeReadFileBytes},
+		{"report.ppt", agent.MaxOfficeReadFileBytes},
+		{"report.pptx", agent.MaxOfficeReadFileBytes},
+		{"photo.png", veFileAttachmentMaxSize},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			if got := veFileAttachmentMaxBytesFor(test.path); got != test.want {
+				t.Fatalf("limit(%q) = %d, want %d", test.path, got, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildLocalVEFileAttachmentMessageRejectsOversizedOfficeDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.docx")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(agent.MaxOfficeReadFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := buildLocalVEFileAttachmentMessage(path, "", ""); err == nil || !strings.Contains(err.Error(), "32 MiB") {
+		t.Fatalf("oversized Office attachment error = %v", err)
+	}
+}
 func TestValidateFileSize(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -368,7 +433,12 @@ func TestMimeTypeForFile(t *testing.T) {
 		{"file.webp", "image/webp"},
 		{"file.bmp", "image/bmp"},
 		{"file.pdf", "application/pdf"},
+		{"file.doc", "application/msword"},
 		{"file.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		{"file.xls", "application/vnd.ms-excel"},
+		{"file.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+		{"file.ppt", "application/vnd.ms-powerpoint"},
+		{"file.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
 		{"file.unknown", "application/octet-stream"},
 		{"file.log", "text/plain"},
 	}

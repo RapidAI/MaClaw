@@ -74,9 +74,9 @@ func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingR
 	if h == nil || h.client == nil || strings.TrimSpace(userText) == "" {
 		return fallback
 	}
-	cfg := h.getLightweightLLMConfig()
+	cfg := h.getCodingLightweightLLMConfig()
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		cfg = h.getMaclawLLMConfig()
+		cfg = h.getCodingLLMConfig()
 	}
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return fallback
@@ -134,7 +134,7 @@ func isCodingInquiryTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "list_directory", "glob", "read_file", "search_files", "search_file", "bash",
 		"ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task",
-		codeNavigationToolName, "coding_knowledge_search", "knowledge_search":
+		codeNavigationToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return true
 	default:
 		return false
@@ -160,7 +160,7 @@ func filterCodingInquiryTools(tools []map[string]interface{}) []map[string]inter
 func isCodingOperationalTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "glob", "ripgrep", "read_file", "list_directory", "bash", codeNavigationToolName,
-		"coding_knowledge_search", "knowledge_search":
+		"coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return true
 	default:
 		return false
@@ -182,7 +182,7 @@ func filterCodingOperationalTools(tools []map[string]interface{}) []map[string]i
 func isRemoteCodingInquiryTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task", codeNavigationToolName,
-		"coding_knowledge_search", "knowledge_search":
+		"coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return true
 	default:
 		return false
@@ -303,7 +303,7 @@ func filterRemoteCodingOperationalTools(tools []map[string]interface{}) []map[st
 		name, _ := fn["name"].(string)
 		switch strings.ToLower(strings.TrimSpace(name)) {
 		case "ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task", codeNavigationToolName,
-			"coding_knowledge_search", "knowledge_search":
+			"coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 			out = append(out, tool)
 		}
 	}
@@ -313,7 +313,7 @@ func filterRemoteCodingOperationalTools(tools []map[string]interface{}) []map[st
 func isRemoteCodingOperationalTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task", codeNavigationToolName,
-		"coding_knowledge_search", "knowledge_search":
+		"coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return true
 	default:
 		return false
@@ -650,9 +650,9 @@ func (h *IMMessageHandler) planCodingWorkbenchTasks(
 	if h == nil {
 		return "", nil
 	}
-	cfg := h.getLightweightLLMConfig()
+	cfg := h.getCodingLightweightLLMConfig()
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		cfg = h.getMaclawLLMConfig()
+		cfg = h.getCodingLLMConfig()
 	}
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return "", nil
@@ -691,8 +691,12 @@ Rules:
 - If the request is already a single trivial change, return exactly one step.
 
 Preferred JSON schema:
-{"steps":[{"title":"...","description":"...","depends_on":[1]}]}
+{"steps":[{"title":"...","description":"...","files":["relative/path.go"],"depends_on":[1]}]}
 depends_on uses 1-based step indices and is optional.
+files is mandatory for a write-capable step. It must list every intended
+project-relative file; use a trailing slash only for an explicit directory
+claim. Omit files for read-only exploration. Do not use absolute paths,
+wildcards, or vague placeholders.
 
 Alternatively Markdown:
 ### T1: title
@@ -719,9 +723,10 @@ type codingWorkbenchPlanJSON struct {
 }
 
 type codingWorkbenchPlanStepJSON struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	DependsOn   []int  `json:"depends_on"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Files       []string `json:"files"`
+	DependsOn   []int    `json:"depends_on"`
 }
 
 func parseCodingWorkbenchPlan(raw string) []*v2.TaskItem {
@@ -812,6 +817,7 @@ func stepsJSONToTasks(steps []codingWorkbenchPlanStepJSON) []*v2.TaskItem {
 			Index:       len(out) + 1,
 			Title:       title,
 			Description: desc,
+			Files:       append([]string(nil), s.Files...),
 			DependsOn:   deps,
 		})
 	}
@@ -1021,6 +1027,11 @@ func formatCodingWorkbenchPlanMarkdown(userText string, tasks []*v2.TaskItem) st
 		if d := planStepDescriptionForDisplay(t.Description, title); d != "" {
 			b.WriteString("描述: ")
 			b.WriteString(d)
+			b.WriteString("\n")
+		}
+		if len(t.Files) > 0 {
+			b.WriteString("Files: ")
+			b.WriteString(strings.Join(t.Files, ", "))
 			b.WriteString("\n")
 		}
 		if len(t.DependsOn) > 0 {

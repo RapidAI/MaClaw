@@ -62,8 +62,11 @@ type TabIndex struct {
 
 // TabSessionData represents the persisted state of a single project tab session.
 type TabSessionData struct {
-	TabID        string        `json:"tab_id"`
-	ProjectPath  string        `json:"project_path"`
+	TabID       string `json:"tab_id"`
+	ProjectPath string `json:"project_path"`
+	// WorkingDir is an optional tab-local override. Empty means this tab follows
+	// the main assistant's current working directory.
+	WorkingDir   string        `json:"working_dir,omitempty"`
 	Conversation []interface{} `json:"conversation"`
 	ScrollTop    int           `json:"scroll_top"`
 	InputText    string        `json:"input_text"`

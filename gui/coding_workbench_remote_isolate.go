@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"path"
 	"strings"
 	"time"
 )
@@ -14,13 +17,17 @@ type remoteCodingIsolate struct {
 	SourceDir  string
 	IsolateDir string
 	StepIndex  int
-	created    bool
+	// DeclaredWrites is optional for legacy sequential workbench execution.
+	// When present, automatic merge verifies the isolate's actual changed files
+	// against this frozen scope before changing the primary checkout.
+	DeclaredWrites []string
+	created        bool
 }
 
 // createRemoteCodingIsolate creates an isolated remote workspace.
 // Prefers `git worktree` when the remote project is a git repo with commits;
 // full directory copy is used only when allowFullCopy is true (always mode).
-func createRemoteCodingIsolate(h *IMMessageHandler, sessionID, projectDir string, stepIndex int, allowFullCopy bool) (*remoteCodingIsolate, error) {
+func createRemoteCodingIsolate(h *IMMessageHandler, sessionID, projectDir string, stepIndex int, allowFullCopy bool, declaredWrites ...[]string) (*remoteCodingIsolate, error) {
 	if h == nil {
 		return nil, fmt.Errorf("nil handler")
 	}
@@ -30,9 +37,11 @@ func createRemoteCodingIsolate(h *IMMessageHandler, sessionID, projectDir string
 		return nil, fmt.Errorf("missing session or project")
 	}
 	id := fmt.Sprintf("%d-%d", stepIndex, time.Now().UnixNano()%1e9)
+	writes := remoteIsolateDeclaredWrites(declaredWrites...)
 
 	// Try remote git worktree first (cheap, preferred).
 	if iso, err := tryCreateRemoteGitWorktree(h, sessionID, projectDir, stepIndex, id); err == nil && iso != nil {
+		iso.DeclaredWrites = writes
 		return iso, nil
 	} else if err != nil {
 		log.Printf("[remote-isolate] git worktree unavailable step=%d: %v", stepIndex, err)
@@ -61,11 +70,12 @@ func createRemoteCodingIsolate(h *IMMessageHandler, sessionID, projectDir string
 	}
 	log.Printf("[remote-isolate] created step=%d dir=%s session=%s", stepIndex, isolateDir, sessionID)
 	return &remoteCodingIsolate{
-		SessionID:  sessionID,
-		SourceDir:  projectDir,
-		IsolateDir: isolateDir,
-		StepIndex:  stepIndex,
-		created:    true,
+		SessionID:      sessionID,
+		SourceDir:      projectDir,
+		IsolateDir:     isolateDir,
+		StepIndex:      stepIndex,
+		DeclaredWrites: writes,
+		created:        true,
 	}, nil
 }
 
@@ -107,68 +117,181 @@ func tryCreateRemoteGitWorktree(h *IMMessageHandler, sessionID, projectDir strin
 	}, nil
 }
 
-// mergeBack integrates isolate changes back into source.
-// For git worktrees (path contains maclaw-wt-): try commit + cherry-pick, else rsync.
-// For directory copies: rsync/cp exclude .git.
-func (r *remoteCodingIsolate) mergeBack(h *IMMessageHandler) (string, error) {
+// mergeBack permits one controlled Git cherry-pick only. It intentionally has
+// no rsync/cp fallback: copying into a primary directory can overwrite an
+// unexpected change and cannot prove write-set conformance. Full-copy isolates
+// remain review artifacts that must be adopted manually per file.
+func (r *remoteCodingIsolate) mergeBack(h *IMMessageHandler, declaredWrites ...[]string) (string, error) {
 	if r == nil || !r.created || h == nil {
 		return "", nil
 	}
-	isWT := strings.Contains(r.IsolateDir, "maclaw-wt-")
-	if isWT {
-		cmd := fmt.Sprintf(
-			`set -e; WT=%s; SRC=%s; `+
-				`cd "$WT"; `+
-				`if [ -n "$(git status --porcelain 2>/dev/null)" ]; then git add -A; git commit -m "coding workbench T%d remote" --no-verify || true; fi; `+
-				`BR=$(git rev-parse --abbrev-ref HEAD); `+
-				`cd "$SRC"; `+
-				`if [ -z "$(git status --porcelain 2>/dev/null)" ]; then `+
-				`  if git cherry-pick --allow-empty "$BR"; then echo "__MACLAW_ISO_MERGE_OK__:cherry-pick"; exit 0; fi; `+
-				`  git cherry-pick --abort 2>/dev/null || true; `+
-				`fi; `+
-				`if command -v rsync >/dev/null 2>&1; then rsync -a --exclude .git "$WT"/ "$SRC"/; `+
-				`else cp -a "$WT"/. "$SRC"/; fi; `+
-				`echo "__MACLAW_ISO_MERGE_OK__:rsync"`,
-			remoteShellQuote(r.IsolateDir),
-			remoteShellQuote(r.SourceDir),
-			r.StepIndex,
-		)
-		out := h.sshExec(map[string]interface{}{
-			"session_id":   r.SessionID,
-			"command":      cmd,
-			"wait_seconds": float64(180),
-		})
-		if !strings.Contains(out, "__MACLAW_ISO_MERGE_OK__") {
-			return "", fmt.Errorf("remote worktree merge failed: %s", truncateRunesForSubAgent(out, 400))
-		}
-		mode := "rsync"
-		if strings.Contains(out, "cherry-pick") {
-			mode = "cherry-pick"
-		}
-		return fmt.Sprintf("merged remote git worktree T%d via %s (%s → %s)", r.StepIndex, mode, r.IsolateDir, r.SourceDir), nil
+	if !strings.Contains(r.IsolateDir, "maclaw-wt-") {
+		return "", fmt.Errorf("remote full-copy isolate is not eligible for automatic merge; inspect and manually adopt the isolated files")
 	}
-
-	cmd := fmt.Sprintf(
-		`set -e; SRC=%s; DST=%s; `+
-			`if command -v rsync >/dev/null 2>&1; then rsync -a --exclude .git "$SRC"/ "$DST"/; `+
-			`else cp -a "$SRC"/. "$DST"/; fi; `+
-			`echo "__MACLAW_ISO_MERGE_OK__"`,
-		remoteShellQuote(r.IsolateDir),
-		remoteShellQuote(r.SourceDir),
-	)
+	writes := remoteIsolateDeclaredWrites(declaredWrites...)
+	if len(writes) == 0 {
+		writes = append([]string(nil), r.DeclaredWrites...)
+	}
+	if err := validateRemoteIsolateWriteClaims(writes); err != nil {
+		return "", err
+	}
+	start, end, err := remoteIsolateMergeMarkers()
+	if err != nil {
+		return "", err
+	}
 	out := h.sshExec(map[string]interface{}{
-		"session_id":   r.SessionID,
-		"command":      cmd,
-		"wait_seconds": float64(120),
+		"session_id": r.SessionID, "command": remoteGitWorktreeMergeCommand(r.IsolateDir, r.SourceDir, r.StepIndex, writes, start, end), "wait_seconds": float64(180),
 	})
-	if !strings.Contains(out, "__MACLAW_ISO_MERGE_OK__") {
-		return "", fmt.Errorf("remote isolate merge failed: %s", truncateRunesForSubAgent(out, 400))
+	if !remoteIsolateMergeFrameComplete(out, start, end) {
+		return "", fmt.Errorf("remote worktree merge failed or returned an incomplete result frame: %s", truncateRunesForSubAgent(out, 400))
 	}
-	return fmt.Sprintf("merged remote isolate T%d %s → %s", r.StepIndex, r.IsolateDir, r.SourceDir), nil
+	return fmt.Sprintf("merged remote git worktree T%d via controlled cherry-pick (%s → %s)", r.StepIndex, r.IsolateDir, r.SourceDir), nil
+}
+
+func remoteIsolateDeclaredWrites(values ...[]string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]string(nil), values[0]...)
+}
+
+func validateRemoteIsolateWriteClaims(writes []string) error {
+	if len(writes) == 0 {
+		// An isolate needs a precise merge boundary. Without it the SSH-side
+		// "git add -A" could turn an arbitrary model edit into a primary-tree
+		// cherry-pick.
+		return fmt.Errorf("remote isolated merge requires at least one declared write path")
+	}
+	for _, write := range writes {
+		// A trailing slash denotes a directory claim. All other normalization is
+		// rejected rather than silently cleaned, so the frozen claim used for the
+		// SSH-side admission check is exactly what was reviewed.
+		trimmed := strings.TrimSpace(strings.ReplaceAll(write, "\\", "/"))
+		if strings.HasSuffix(trimmed, "/") {
+			trimmed = strings.TrimSuffix(trimmed, "/")
+		}
+		if _, err := normalizeRemoteIsolateRelativeFile(trimmed); err != nil {
+			return fmt.Errorf("remote isolated merge has invalid declared write path %q: %w", write, err)
+		}
+	}
+	return nil
+}
+
+// normalizeRemoteIsolateRelativeFile accepts one exact project-relative file
+// path. It is shared by automatic merge claims and manual remote-conflict
+// operations so a conflict action can never escape either remote tree through
+// a lexical traversal such as "dir/../../outside".
+func normalizeRemoteIsolateRelativeFile(value string) (string, error) {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	if value == "" || value == "." || strings.HasPrefix(value, "/") ||
+		strings.ContainsAny(value, "*?[${\r\n\x00") {
+		return "", fmt.Errorf("must be a plain relative path")
+	}
+	clean := path.Clean(value)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || clean != value {
+		return "", fmt.Errorf("path traversal or normalization is not allowed")
+	}
+	return clean, nil
+}
+
+// remoteIsolateClaimContainsFile reports whether a frozen file/directory claim
+// authorizes one exact relative file. Directory claims retain their trailing
+// slash semantics; a prefix without that slash is deliberately not a directory
+// claim ("cmd" does not authorize "cmd/main.go").
+func remoteIsolateClaimContainsFile(claim, file string) bool {
+	file, err := normalizeRemoteIsolateRelativeFile(file)
+	if err != nil {
+		return false
+	}
+	claim = strings.TrimSpace(strings.ReplaceAll(claim, "\\", "/"))
+	isDir := strings.HasSuffix(claim, "/")
+	claim = strings.TrimSuffix(claim, "/")
+	claim, err = normalizeRemoteIsolateRelativeFile(claim)
+	if err != nil {
+		return false
+	}
+	if isDir {
+		return strings.HasPrefix(file, claim+"/")
+	}
+	return file == claim
+}
+
+func remoteIsolateFileWithinFrozenWriteScope(file string, claims []string) bool {
+	for _, claim := range claims {
+		if remoteIsolateClaimContainsFile(claim, file) {
+			return true
+		}
+	}
+	return false
+}
+
+// isManagedRemoteCodingIsolatePath is the destructive-operation boundary for
+// remote artifacts. Conflict records are persisted locally and therefore must
+// never be trusted as arbitrary remote rm/cp roots after restart. Creation only
+// ever uses direct children of /tmp with one of these two prefixes.
+func isManagedRemoteCodingIsolatePath(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || path.Clean(dir) != dir || path.Dir(dir) != "/tmp" {
+		return false
+	}
+	base := path.Base(dir)
+	return strings.HasPrefix(base, "maclaw-wt-") || strings.HasPrefix(base, "maclaw-coding-")
+}
+
+func remoteIsolateMergeMarkers() (string, string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", "", fmt.Errorf("generate remote isolate merge marker: %w", err)
+	}
+	base := "__MACLAW_REMOTE_ISOLATE_" + hex.EncodeToString(nonce[:])
+	return base + "_BEGIN__", base + "_END__", nil
+}
+
+func remoteGitWorktreeMergeCommand(worktree, source string, stepIndex int, writes []string, markerStart, markerEnd string) string {
+	quotedWrites := make([]string, 0, len(writes))
+	for _, write := range writes {
+		quotedWrites = append(quotedWrites, remoteShellQuote(strings.TrimSpace(strings.ReplaceAll(write, "\\", "/"))))
+	}
+	return fmt.Sprintf(
+		`set -eu; WT=%s; SRC=%s; set -- %s; cd "$WT"; `+
+			`test "$#" -gt 0; changes_file=$(mktemp); trap 'rm -f "$changes_file"' EXIT HUP INT TERM; `+
+			`{ git diff --name-only HEAD; git ls-files --others --exclude-standard; } | LC_ALL=C sort -u > "$changes_file"; while IFS= read -r path || [ -n "$path" ]; do allowed=0; for claim in "$@"; do case "$claim" in */) case "$path" in "$claim"*) allowed=1 ;; esac ;; *) [ "$path" = "$claim" ] && allowed=1 ;; esac; done; [ "$allowed" -eq 1 ] || { echo "undeclared isolate write: $path" >&2; exit 42; }; done < "$changes_file"; `+
+			`if [ -n "$(git status --porcelain)" ]; then git add -A; git commit -m "coding workbench T%d remote" --no-verify; commit=$(git rev-parse HEAD); else commit=""; fi; `+
+			`cd "$SRC"; test -z "$(git status --porcelain)"; if [ -n "$commit" ]; then if ! git cherry-pick --allow-empty "$commit"; then git cherry-pick --abort || true; exit 43; fi; fi; `+
+			`printf '\n%%s\n%%s\n' %s %s`,
+		remoteShellQuote(worktree), remoteShellQuote(source), strings.Join(quotedWrites, " "), stepIndex, remoteShellQuote(markerStart), remoteShellQuote(markerEnd),
+	)
+}
+
+func remoteIsolateMergeFrameComplete(output, markerStart, markerEnd string) bool {
+	markerStart, markerEnd = strings.TrimSpace(markerStart), strings.TrimSpace(markerEnd)
+	if markerStart == "" || markerEnd == "" || markerStart == markerEnd {
+		return false
+	}
+	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+	begin := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == markerStart {
+			begin = i
+		}
+	}
+	if begin < 0 {
+		return false
+	}
+	for _, line := range lines[begin+1:] {
+		if strings.TrimSpace(line) == markerEnd {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *remoteCodingIsolate) cleanup(h *IMMessageHandler) {
 	if r == nil || !r.created || h == nil {
+		return
+	}
+	if !isManagedRemoteCodingIsolatePath(r.IsolateDir) {
+		log.Printf("[remote-isolate] refusing cleanup of unmanaged path step=%d dir=%q", r.StepIndex, r.IsolateDir)
 		return
 	}
 	isWT := strings.Contains(r.IsolateDir, "maclaw-wt-")

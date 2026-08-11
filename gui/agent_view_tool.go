@@ -123,6 +123,14 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 	if explicitRuntimeOwner && policyOwnerID == "" && h.registeredToolAcceptsRuntimePolicyOwnerArg(toolName) {
 		return &IMAgentResponse{Text: "Tool execution failed: runtime owner is missing; isolated runtime will not fall back to desktop loop.", Error: "runtime owner is missing", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
+	// A task-panel submit can outlive the model turn that opened it.  Keep the
+	// current loop's local-file Computer Use fence on this direct-handler path
+	// too, otherwise a stale computer_* panel can bypass the normal execution
+	// gateway and drive the desktop after an attachment has been staged.
+	if localFileWorkBlocksComputerUseExecution(h.runtimeLoopContextForOwner(policyOwnerID), "", toolName) {
+		text := "[system rejected] Computer Use is unavailable while handling the current local attachment. Use the local file/document tools instead."
+		return &IMAgentResponse{Text: text, Error: text, ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
 	if rejection := h.registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, toolName, args); rejection != nil {
 		return rejection
 	}

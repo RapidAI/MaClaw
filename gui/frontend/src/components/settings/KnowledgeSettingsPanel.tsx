@@ -4,7 +4,7 @@ import { KNOWLEDGE_IMPORT_EXPAND_EVENT, consumeKnowledgeImportExpandFlag, useKno
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
-import { GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListNodesBySource, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageFile, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
+import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
 import { knowledge } from '../../../wailsjs/go/models';
 
 type Props = {
@@ -70,7 +70,15 @@ type KnowledgeNode = {
     col_range?: string;
     xpath?: string;
     offset?: number;
+    extractor?: string;
+    truncated?: boolean;
     token_count?: number;
+};
+
+type SourcePreview = {
+    sourceID: string;
+    title: string;
+    nodes: KnowledgeNode[];
 };
 
 type SourceVersion = {
@@ -509,6 +517,14 @@ type SearchResult = {
     summary?: string;
     snippet?: string;
     score?: number;
+    media?: {
+        asset_id?: string;
+        thumbnail_url?: string;
+        preview_url?: string;
+        original_url?: string;
+        alt?: string;
+        caption?: string;
+    };
 };
 
 type Citation = {
@@ -719,10 +735,10 @@ type ContextPackResult = {
     notes?: string[];
 };
 
-const sourceKindOptions = ['url', 'pdf', 'pptx', 'docx', 'xlsx', 'csv', 'markdown', 'text', 'conversation', 'workflow_artifact', 'doc', 'xls'];
+const sourceKindOptions = ['url', 'pdf', 'ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'markdown', 'text', 'conversation', 'workflow_artifact'];
 const sourceStatusOptions = ['pending', 'parsed', 'distilled', 'failed', 'stale', 'disabled'];
 const sourceCoverageOptions = ['missing_nodes', 'missing_cards', 'missing_facts', 'missing_links', 'missing_labels', 'pdf_ocr_needed', 'complete', 'has_nodes', 'has_cards', 'has_facts', 'has_links'];
-const refreshableSourceKinds = new Set(['url', 'html', 'pdf', 'docx', 'xlsx', 'csv', 'markdown', 'text', 'doc', 'xls']);
+const refreshableSourceKinds = new Set(['url', 'html', 'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'csv', 'markdown', 'text']);
 const preferredCoverageAliasOrder = ['rebuildcards', 'rebuild_cards', 'rebuildfacts', 'rebuild_facts', 'needsocr', 'needs_ocr', 'haslinks', 'linked', 'missinglabels', 'unlabeled'];
 
 export function normalizeKnowledgeCoverageOption(value: string) {
@@ -1141,7 +1157,28 @@ export function knowledgeHealthActionManualLabel(action: any) {
     return reason ? `Manual: ${reason}` : 'Manual';
 }
 
-type KnowledgeSubTab = 'overview' | 'ingest' | 'export' | 'sync' | 'search' | 'sources' | 'quality';
+type KnowledgeSubTab = 'overview' | 'ingest' | 'export' | 'sync' | 'enterprise' | 'search' | 'sources' | 'quality';
+
+type EnterpriseLibrary = {
+    library_id?: string;
+    name?: string;
+    last_rev?: number;
+    access_state?: string;
+    acl_fingerprint?: string;
+    last_sync_at?: string;
+    last_error?: string;
+    user_sync_enabled?: boolean;
+    hub_sync_enabled?: boolean;
+};
+
+type EnterpriseSyncStatusView = {
+    running?: boolean;
+    paused?: boolean;
+    last_run_at?: string;
+    last_error?: string;
+    last_outcome?: string;
+    library_count?: number;
+};
 
 type ExportSourceGroup = {
     id: string;
@@ -1279,6 +1316,8 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [health, setHealth] = useState<any>(null);
     const [capabilities, setCapabilities] = useState<KnowledgeCapabilitiesResult | null>(null);
     const [sources, setSources] = useState<Source[] | null>(null);
+    const [sourcePreview, setSourcePreview] = useState<SourcePreview | null>(null);
+    const sourcePreviewRequestRef = useRef(0);
     const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
     const [facets, setFacets] = useState<SearchFacetsResult | null>(null);
     const [structuredCatalog, setStructuredCatalog] = useState<StructuredCatalogResult | null>(null);
@@ -1304,6 +1343,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [syncForm, setSyncForm] = useState({ hubURL: '', hubToken: '', tenantID: '', email: '', hubCenterURL: '', hubID: '', tenantName: '', password: '', passwordConfirm: '', conflictStrategy: '' });
     const [syncStatus, setSyncStatus] = useState<any>(null);
     const [syncConflictResult, setSyncConflictResult] = useState<any>(null);
+    const [enterpriseLibraries, setEnterpriseLibraries] = useState<EnterpriseLibrary[] | null>(null);
+    const [enterpriseSyncStatus, setEnterpriseSyncStatus] = useState<EnterpriseSyncStatusView | null>(null);
+    const [enterpriseLoaded, setEnterpriseLoaded] = useState(false);
     const [hubLLMServiceStatus, setHubLLMServiceStatus] = useState<any>(null);
     const [hubShareResult, setHubShareResult] = useState<any>(null);
     const [exportResult, setExportResult] = useState<any>(null);
@@ -1497,6 +1539,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         { id: 'ingest' as const, label: t('Ingest', '导入'), desc: t('Text, URL, files, and crawl', '文本、URL、文件与抓取') },
         { id: 'export' as const, label: t('Export', '导出'), desc: t('Snapshots, Hub sharing, and share links', '快照、Hub 分享与分享链接') },
         { id: 'sync' as const, label: t('Sync', '同步'), desc: t('Encrypted manual sync through Hub', '通过 Hub 中转的加密手动同步') },
+        { id: 'enterprise' as const, label: t('Enterprise digital assets', '企业数字资产'), desc: t('Synced tenant digital assets from Hub', '从 Hub 同步的租户企业数字资产') },
         { id: 'search' as const, label: t('Search', '检索'), desc: t('Query and facets', '查询与分面') },
         { id: 'sources' as const, label: t('Sources', '来源'), desc: t('Inspect and manage source records', '查看并管理来源') },
         { id: 'quality' as const, label: t('Quality', '质量'), desc: t('Reports and maintenance plans', '报告与维护计划') },
@@ -1564,6 +1607,24 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         return nextSources;
     };
 
+    useEffect(() => {
+        // Invalidate both the visible preview and any request that was started
+        // for the prior source-filter result set. A late bridge response must
+        // never reopen a preview for a source the user can no longer see.
+        sourcePreviewRequestRef.current += 1;
+        setSourcePreview(null);
+    }, [sourcePayload]);
+
+    useEffect(() => {
+        // The request may resolve after navigating away from Sources. Keep the
+        // source inspector local to its tab instead of leaving stale indexed
+        // text mounted in another workflow surface.
+        if (activeTab !== 'sources') {
+            sourcePreviewRequestRef.current += 1;
+            setSourcePreview(null);
+        }
+    }, [activeTab]);
+
     const loadExportSelectionData = useCallback(async () => {
         setExportListAttempted(true);
         setExportListLoading(true);
@@ -1604,6 +1665,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         syncStatusIdentityRef.current = identityKey;
         void refreshKnowledgeSyncStatus();
     }, [activeTab, busy, syncForm.hubURL, syncForm.hubToken, syncForm.tenantID, syncForm.email, syncStatus]);
+
+    useEffect(() => {
+        if (activeTab !== 'enterprise' || enterpriseLoaded || busy === 'enterpriseList') return;
+        void loadEnterpriseLibraries({ quiet: true });
+    }, [activeTab, enterpriseLoaded, busy]);
 
     useEffect(() => {
         busyRef.current = busy;
@@ -1996,6 +2062,105 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         }, { successMessage: false });
     };
 
+    const loadEnterpriseLibraries = async (opts?: { quiet?: boolean }) => {
+        const quiet = !!opts?.quiet;
+        const run = async () => {
+            const [libs, status] = await Promise.all([
+                EnterpriseKnowledgeListLibraries(),
+                EnterpriseSyncStatus().catch(() => null),
+            ]);
+            setEnterpriseLibraries(Array.isArray(libs) ? libs : []);
+            setEnterpriseSyncStatus(status || null);
+            setEnterpriseLoaded(true);
+            return libs;
+        };
+        if (quiet) {
+            try {
+                await run();
+            } catch (err: any) {
+                setError(err?.message || String(err));
+                setEnterpriseLibraries([]);
+                setEnterpriseLoaded(true);
+            }
+            return;
+        }
+        await runTask('enterpriseList', run, { successMessage: false });
+    };
+
+    const toggleEnterpriseLibraryUserSync = async (lib: EnterpriseLibrary, enabled: boolean) => {
+        const id = String(lib.library_id || '').trim();
+        if (!id) return;
+        await runTask(`enterpriseUserSync:${id}`, async () => {
+            await EnterpriseKnowledgeSetLibraryUserSync(id, enabled);
+            setEnterpriseLibraries(prev => (prev || []).map(item => (
+                item.library_id === id ? { ...item, user_sync_enabled: enabled } : item
+            )));
+            notifySuccess(enabled
+                ? t('Digital-asset sync enabled.', '已开启该数字资产同步。')
+                : t('Digital-asset sync disabled.', '已禁止该数字资产同步。'));
+            return true;
+        }, { successMessage: false });
+    };
+
+    const purgeEnterpriseLibrary = async (lib: EnterpriseLibrary) => {
+        const id = String(lib.library_id || '').trim();
+        if (!id) return;
+        const name = lib.name || id;
+        if (!window.confirm(t(
+            `Permanently delete local cache for "${name}"? It will only return after the next Hub sync.`,
+            `将永久删除「${name}」的本地缓存，仅在下次 Hub 同步后重新拉取。确认清除？`,
+        ))) return;
+        await runTask(`enterprisePurge:${id}`, async () => {
+            await EnterprisePurgeRevokedLibrary(id);
+            setEnterpriseLibraries(prev => (prev || []).filter(item => item.library_id !== id));
+            notifySuccess(t('Digital-asset cache purged.', '已清除该数字资产本地缓存。'));
+            return true;
+        }, { successMessage: false });
+    };
+
+    const runEnterpriseSyncNow = async () => {
+        await runTask('enterpriseSyncNow', async () => {
+            const status = await EnterpriseSyncNow();
+            setEnterpriseSyncStatus(status || null);
+            const libs = await EnterpriseKnowledgeListLibraries();
+            setEnterpriseLibraries(Array.isArray(libs) ? libs : []);
+            setEnterpriseLoaded(true);
+            const syncView = status as unknown as EnterpriseSyncStatusView | null;
+            if (syncView?.last_error || syncView?.last_outcome === 'skipped_no_credentials' || syncView?.last_outcome === 'skipped_tenant_sync_disabled') {
+                const fallback = syncView?.last_outcome === 'skipped_tenant_sync_disabled'
+                    ? t('Tenant digital-asset sync is disabled in Hub.', 'Hub 已关闭租户数字资产同步。')
+                    : t('Hub connection credentials are missing.', '缺少 Hub 连接凭据。');
+                throw new Error(String(syncView?.last_error || fallback));
+            }
+            notifySuccess(t('Digital-asset sync finished.', '企业数字资产同步已完成。'));
+            return status;
+        }, { successMessage: false });
+    };
+
+    const setEnterpriseSyncPaused = async (paused: boolean) => {
+        await runTask('enterprisePause', async () => {
+            await EnterpriseSetSyncPaused(paused);
+            const status = await EnterpriseSyncStatus();
+            setEnterpriseSyncStatus(status || null);
+            notifySuccess(paused
+                ? t('Digital-asset auto-sync paused.', '已暂停数字资产自动同步。')
+                : t('Digital-asset auto-sync resumed.', '已恢复数字资产自动同步。'));
+            return status;
+        }, { successMessage: false });
+    };
+
+    const enterpriseOutcomeLabel = (outcome?: string) => {
+        switch (String(outcome || '').trim()) {
+            case 'completed': return t('Completed', '已完成');
+            case 'failed': return t('Failed', '失败');
+            case 'skipped_no_credentials': return t('Skipped: credentials missing', '未执行：缺少 Hub 凭据');
+            case 'skipped_feature_disabled': return t('Skipped: feature disabled on Hub', '未执行：Hub 未启用该功能');
+			case 'skipped_tenant_sync_disabled': return t('Skipped: tenant sync disabled', '未执行：租户已关闭数字资产同步');
+            case 'running': return t('Running', '运行中');
+            default: return outcome || '—';
+        }
+    };
+
     const ensureKnowledgeSyncCanWrite = (latestStatus: any) => {
         if (String(latestStatus?.service_status || '') === 'official_expired') {
             throw new Error(t('Upload failed: maclaw official service has expired. Renew maclaw official service before updating sync data.', '上传失败：当前服务已过期，请续费 maclaw 官方服务后再更新同步数据。'));
@@ -2128,6 +2293,30 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             const nextSources = await refreshSourceList();
             return { count: nextSources.length };
         });
+    };
+
+    // Source previews deliberately render persisted knowledge nodes rather than
+    // reopening a local document. This makes the GUI show the exact bounded
+    // content that was indexed (including explicitly enabled OfficeRead
+    // Markdown), while keeping attachment/chat reads on their text-only path.
+    const previewSourceNodes = async (source: Source) => {
+        const sourceID = String(source.id || '').trim();
+        if (!sourceID) return;
+        const requestID = sourcePreviewRequestRef.current + 1;
+        sourcePreviewRequestRef.current = requestID;
+        setSourcePreview(null);
+        await runTask('sourcePreview', async () => {
+            const nodes = await KnowledgePreviewNodesBySource(sourceID, 100);
+            const safeNodes = Array.isArray(nodes) ? nodes : [];
+            if (sourcePreviewRequestRef.current === requestID) {
+                setSourcePreview({
+                    sourceID,
+                    title: String(source.title || source.relative_path || source.uri || sourceID),
+                    nodes: safeNodes,
+                });
+            }
+            return { source_id: sourceID, nodes: safeNodes.length };
+        }, { successMessage: false });
     };
 
     const loadStructuredCatalog = async () => {
@@ -3042,6 +3231,148 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 </div>
             )}
 
+            {activeTab === 'enterprise' && (
+                <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-enterprise" aria-labelledby="knowledge-tab-enterprise">
+                    <PanelBlock title={t('Enterprise digital assets', '企业数字资产')}>
+                        <span className="knowledge-muted-line">
+                            {t(
+                                'One-way Hub → this device sync of tenant digital assets. Disable sync to stop updates for a library on this device; local cache stays searchable when Hub access is active.',
+                                '租户数字资产单向从 Hub 同步到本机。禁止同步后该库不再拉取更新；在 Hub 访问状态为可用时，本地缓存仍可检索。',
+                            )}
+                        </span>
+                        <div className="knowledge-stats-grid" style={{ marginTop: 12 }}>
+                            <Stat label={t('Libraries', '企业数字资产库')} value={enterpriseLibraries?.length ?? enterpriseSyncStatus?.library_count ?? 0} />
+                            <Stat
+                                label={t('Agent', '同步代理')}
+                                value={enterpriseSyncStatus?.running
+                                    ? t('Running', '运行中')
+                                    : enterpriseSyncStatus?.paused
+                                        ? t('Paused', '已暂停')
+                                        : t('Idle', '空闲')}
+                            />
+                            <Stat label={t('Last run', '上次运行')} value={enterpriseSyncStatus?.last_run_at || '—'} />
+                            <Stat label={t('Result', '最近结果')} value={enterpriseOutcomeLabel(enterpriseSyncStatus?.last_outcome)} />
+                            <Stat label={t('Last error', '最近错误')} value={enterpriseSyncStatus?.last_error ? t('Yes', '有') : t('None', '无')} />
+                        </div>
+                        {enterpriseSyncStatus?.last_outcome === 'skipped_no_credentials' ? (
+                            <div className="knowledge-alert knowledge-alert--warning" style={{ marginTop: 10 }}>
+                                <strong>{t('Hub credentials required', '需要 Hub 凭据')}</strong>
+                                <span>{t('Configure the Hub URL and viewer token in the Sync tab, then run enterprise sync again.', '请先在「同步」页配置 Hub 地址和 Viewer Token，再重新同步企业数字资产。')}</span>
+                            </div>
+                        ) : null}
+						{enterpriseSyncStatus?.last_outcome === 'skipped_tenant_sync_disabled' ? (
+							<div className="knowledge-alert knowledge-alert--warning" style={{ marginTop: 10 }}>
+								<strong>{t('Tenant sync is disabled', '租户同步已关闭')}</strong>
+								<span>{t('An administrator must enable digital-asset sync in Hub before this device can receive updates.', '请由管理员在 Hub 启用数字资产同步后，再在本机重新同步。')}</span>
+							</div>
+						) : null}
+                        {enterpriseSyncStatus?.last_error ? (
+                            <div className="knowledge-alert knowledge-alert--warning" style={{ marginTop: 10 }}>
+                                <strong>{t('Sync agent error', '同步代理错误')}</strong>
+                                <span>{enterpriseSyncStatus.last_error}</span>
+                            </div>
+                        ) : null}
+                        <div className="knowledge-panel-actions">
+                            <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => loadEnterpriseLibraries()}>
+                                {busy === 'enterpriseList' ? t('Refreshing...', '刷新中...') : t('Refresh', '刷新')}
+                            </button>
+                            <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={() => void runEnterpriseSyncNow()}>
+                                <SyncIcon />
+                                {busy === 'enterpriseSyncNow' ? t('Syncing...', '同步中...') : t('Sync now', '立即同步')}
+                            </button>
+                            <button
+                                type="button"
+                                className="knowledge-button knowledge-button--secondary"
+                                disabled={!!busy}
+                                onClick={() => void setEnterpriseSyncPaused(!enterpriseSyncStatus?.paused)}
+                            >
+                                {enterpriseSyncStatus?.paused
+                                    ? (busy === 'enterprisePause' ? t('Resuming...', '恢复中...') : t('Resume auto-sync', '恢复自动同步'))
+                                    : (busy === 'enterprisePause' ? t('Pausing...', '暂停中...') : t('Pause auto-sync', '暂停自动同步'))}
+                            </button>
+                        </div>
+                    </PanelBlock>
+                    <PanelBlock title={t('Synced digital assets', '已同步企业数字资产')}>
+                        <div className="knowledge-list">
+                            {enterpriseLibraries === null ? (
+                                <div className="knowledge-empty">{t('Loading enterprise digital assets…', '正在加载企业数字资产…')}</div>
+                            ) : enterpriseLibraries.length ? enterpriseLibraries.map(lib => {
+                                const id = String(lib.library_id || '');
+                                const userOn = lib.user_sync_enabled !== false;
+                                const hubOff = lib.hub_sync_enabled === false || String(lib.access_state || '') === 'sync_disabled';
+                                const accessLabel = String(lib.access_state || '') === 'revoked'
+                                    ? t('Revoked', '已撤销')
+                                    : hubOff
+                                    ? t('Hub sync off', 'Hub 已停同步')
+                                    : String(lib.access_state || '') === 'active'
+                                        ? t('Active', '可用')
+                                        : (lib.access_state || t('Unknown', '未知'));
+                                const userLabel = userOn
+                                    ? t('Sync on', '同步已开启')
+                                    : t('Sync off', '同步已禁止');
+                                return (
+                                    <div key={id || lib.name} className="knowledge-row">
+                                        <div className="knowledge-row-main">
+                                            <strong>{lib.name || id || t('Unnamed digital asset', '未命名企业数字资产')}</strong>
+                                            <span className="knowledge-muted-line">
+                                                {[
+                                                    id ? `ID ${id}` : '',
+                                                    accessLabel,
+                                                    userLabel,
+                                                    lib.last_rev !== undefined && lib.last_rev !== null ? `rev ${lib.last_rev}` : '',
+                                                    lib.last_sync_at ? `${t('Synced', '同步于')} ${lib.last_sync_at}` : '',
+                                                ].filter(Boolean).join(' · ')}
+                                            </span>
+                                            {lib.last_error ? (
+                                                <span className="knowledge-muted-line">{t('Error', '错误')}: {lib.last_error}</span>
+                                            ) : null}
+                                            {hubOff ? (
+                                                <span className="knowledge-muted-line">
+                                                    {t('Administrator disabled Hub sync for this library. Local cache may still be available.', '管理员已关闭该库的 Hub 同步。本地缓存可能仍可用。')}
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        <div className="knowledge-inline-actions">
+                                            {String(lib.access_state || '') !== 'revoked' && (
+                                            <button
+                                                type="button"
+                                                className={userOn ? 'knowledge-button knowledge-button--secondary' : 'knowledge-button knowledge-button--primary'}
+                                                disabled={!!busy || !id}
+                                                onClick={() => void toggleEnterpriseLibraryUserSync(lib, !userOn)}
+                                            >
+                                                {busy === `enterpriseUserSync:${id}`
+                                                    ? t('Saving...', '保存中...')
+                                                    : userOn
+                                                        ? t('Disable sync', '禁止同步')
+                                                        : t('Enable sync', '开启同步')}
+                                            </button>
+                                            )}
+                                            <button
+                                                type="button"
+                                                className="knowledge-button knowledge-button--danger"
+                                                disabled={!!busy || !id}
+                                                onClick={() => void purgeEnterpriseLibrary(lib)}
+                                            >
+                                                {busy === `enterprisePurge:${id}`
+                                                    ? t('Purging...', '清除中...')
+                                                    : t('Purge cache', '清除缓存')}
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            }) : (
+                                <div className="knowledge-empty">
+                                    {t(
+                                        'No enterprise libraries yet. Connect Hub with digital assets enabled and run Sync now.',
+                                        '暂无数字资产。请连接已启用数字资产的 Hub，并点击「立即同步」。',
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </PanelBlock>
+                </div>
+            )}
+
             {activeTab === 'sync' && (
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-sync" aria-labelledby="knowledge-tab-sync">
                     <PanelBlock title={t('Hub Knowledge Sync', 'Hub 知识库同步')}>
@@ -3252,12 +3583,38 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                     <span className="knowledge-muted-line">{[`nodes ${source.node_count || 0}`, `cards ${source.card_count || 0}`, `facts ${source.fact_count || 0}`].join(' · ')}</span>
                                 </div>
                                 <div className="knowledge-inline-actions">
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => previewSourceNodes(source)}>{t('Preview', '预览')}</button>
                                     <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => toggleSource(source)}>{String(source.status || '').toLowerCase() === 'disabled' ? t('Enable', '启用') : t('Disable', '禁用')}</button>
                                     <button type="button" className="knowledge-button knowledge-button--danger" disabled={!!busy} onClick={() => deleteSource(source)}>{t('Delete', '删除')}</button>
                                 </div>
                             </div>
                         )) : <div className="knowledge-empty">{t('No sources match the current filters.', '当前筛选条件下没有匹配的来源。')}</div>}
                     </div>
+                    {sourcePreview ? (
+                        <PanelBlock title={`${t('Document Preview', '文档预览')} · ${sourcePreview.title}`}>
+                            <div className="knowledge-muted-line">
+                                {t('Shows up to 100 indexed nodes. Previewing does not reopen the original file or add content to chat.', '最多显示 100 个已索引节点。预览不会重新打开原文件，也不会将内容加入聊天。')}
+                            </div>
+                            {sourcePreview.nodes.length ? <div className="knowledge-list" data-testid="knowledge-source-preview">
+                                {sourcePreview.nodes.map((node, index) => {
+                                    const extractor = String(node.extractor || '').trim();
+                                    const metadata = [
+                                        node.type,
+                                        node.sheet_name ? `sheet ${node.sheet_name}` : '',
+                                        node.page ? `page ${node.page}` : '',
+                                        extractor === 'officeread_structured_markdown' ? 'OfficeRead Markdown' : '',
+                                    ].filter(Boolean).join(' · ');
+                                    return <div key={node.id || `${sourcePreview.sourceID}-${index}`} className="knowledge-row knowledge-row--preview">
+                                        <div className="knowledge-row-main">
+                                            {node.title ? <strong>{node.title}</strong> : null}
+                                            {metadata ? <span className="knowledge-muted-line">{metadata}</span> : null}
+                                            {node.text ? <span className="knowledge-preview-text">{node.text}{node.truncated ? ` ${t('[preview truncated]', '[预览已截断]')}` : ''}</span> : null}
+                                        </div>
+                                    </div>;
+                                })}
+                            </div> : <div className="knowledge-empty">{t('No indexed nodes are available for this source.', '该来源没有可预览的已索引节点。')}</div>}
+                        </PanelBlock>
+                    ) : null}
                 </div>
             )}
 
@@ -3373,41 +3730,30 @@ function highlightText(text: string, regex: RegExp | null): React.ReactNode {
     })}</>;
 }
 
-function ImageResultThumbnail({ sourceID, nodeID, title }: { sourceID: string; nodeID: string; title: string }) {
+function ImageResultThumbnail({ assetID, title }: { assetID: string; title: string }) {
     const [thumbPath, setThumbPath] = useState('');
-    const [originalPath, setOriginalPath] = useState('');
 
     useEffect(() => {
-        if (!sourceID) return;
-        // Try with the full node-qualified ID first (embedded images use sourceID_nodeID),
-        // then fall back to sourceID alone (standalone images).
-        const ids = nodeID ? [sourceID + '_' + nodeID, sourceID] : [sourceID];
+        if (!assetID) return;
         let cancelled = false;
         (async () => {
-            for (const id of ids) {
-                try {
-                    const paths = await KnowledgeGetImageAssetPaths(id);
-                    if (cancelled) return;
-                    if (paths && (paths.thumb_data_url || paths.original)) {
-                        setThumbPath(paths.thumb_data_url || '');
-                        setOriginalPath(paths.original || paths.preview || '');
-                        return;
-                    }
-                } catch { /* continue to next id */ }
+            try {
+                const paths = await KnowledgeGetImageAssetPaths(assetID);
+                if (!cancelled) setThumbPath(paths?.thumb_data_url || '');
+            } catch {
+                if (!cancelled) setThumbPath('');
             }
         })();
         return () => { cancelled = true; };
-    }, [sourceID, nodeID]);
+    }, [assetID]);
 
     if (!thumbPath) return null;
 
     const handleClick = async () => {
-        if (originalPath) {
-            try {
-                await KnowledgeOpenImageFile(originalPath);
-            } catch (e) {
-                console.warn('[knowledge-image] open failed:', e);
-            }
+        try {
+            await KnowledgeOpenImageAsset(assetID);
+        } catch (e) {
+            console.warn('[knowledge-image] open failed:', e);
         }
     };
 
@@ -3438,9 +3784,7 @@ function ResultList({ results, empty, query }: { results: SearchResult[]; empty:
         ].filter(Boolean).join(' · ');
         return (
             <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || result.row_id || index}`} className={`knowledge-row ${isImage ? 'knowledge-row--image' : ''}`}>
-                {isImage && (
-                    <ImageResultThumbnail sourceID={result.source?.id || ''} nodeID={result.node_id || ''} title={sourceLabel} />
-                )}
+                {isImage && result.media?.asset_id && <ImageResultThumbnail assetID={result.media.asset_id} title={sourceLabel} />}
                 <div className="knowledge-row-main">
                     <strong>
                         {isImage && <span className="knowledge-chip knowledge-chip--image">IMG</span>}

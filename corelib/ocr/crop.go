@@ -11,17 +11,14 @@ import (
 // warpPerspective with BORDER_REPLICATE. Boxes taller than wide (ratio >=
 // 1.5) are rotated 90° counterclockwise like the reference does.
 func cropBox(src *image.RGBA, box [4][2]float32) *image.RGBA {
-	dist := func(a, b [2]float32) float64 {
-		return math.Hypot(float64(a[0]-b[0]), float64(a[1]-b[1]))
-	}
-	w := int(math.Max(dist(box[0], box[1]), dist(box[2], box[3])))
-	h := int(math.Max(dist(box[0], box[3]), dist(box[1], box[2])))
-	if w < 1 {
-		w = 1
-	}
-	if h < 1 {
-		h = 1
-	}
+	return cropBoxS(src, box, nil)
+}
+
+// cropBoxS is cropBox with an optional per-Engine scratch; the returned
+// image aliases scratch memory when sc is non-nil and is only valid until
+// the next scratch-using call (Engine.Recognize consumes it immediately).
+func cropBoxS(src *image.RGBA, box [4][2]float32, sc *engineScratch) *image.RGBA {
+	w, h, rotate := cropOutputSize(box)
 
 	srcPts := [4]point{
 		{float64(box[0][0]), float64(box[0][1])},
@@ -36,12 +33,42 @@ func cropBox(src *image.RGBA, box [4][2]float32) *image.RGBA {
 		{0, float64(h)},
 	}
 	hm := homography(srcPts, dstPts)
-	out := warpPerspective(src, hm, w, h)
+	out := warpPerspectiveS(src, hm, w, h, sc)
 
-	if float64(h)/float64(w) >= 1.5 {
-		out = rotate90CCW(out)
+	if rotate {
+		out = rotate90CCWS(out, sc)
 	}
 	return out
+}
+
+func cropOutputSize(box [4][2]float32) (w, h int, rotate bool) {
+	dist := func(a, b [2]float32) float64 {
+		return math.Hypot(float64(a[0]-b[0]), float64(a[1]-b[1]))
+	}
+	w = int(math.Max(dist(box[0], box[1]), dist(box[2], box[3])))
+	h = int(math.Max(dist(box[0], box[3]), dist(box[1], box[2])))
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return w, h, float64(h)/float64(w) >= 1.5
+}
+
+func recWidthForBox(box [4][2]float32) int {
+	w, h, rotate := cropOutputSize(box)
+	if rotate {
+		w, h = h, w
+	}
+	rw := int(math.Ceil(float64(recHeight) * float64(w) / float64(h)))
+	if rw < 1 {
+		return 1
+	}
+	if rw > recMaxWidth {
+		return recMaxWidth
+	}
+	return rw
 }
 
 // mat3 is a row-major 3x3 matrix.
@@ -103,8 +130,18 @@ func (h mat3) apply(x, y float64) (float64, float64) {
 // src with bilinear sampling; out-of-bounds samples replicate the border
 // (OpenCV BORDER_REPLICATE).
 func warpPerspective(src *image.RGBA, fwd mat3, w, h int) *image.RGBA {
+	return warpPerspectiveS(src, fwd, w, h, nil)
+}
+
+// warpPerspectiveS is warpPerspective with an optional scratch target.
+func warpPerspectiveS(src *image.RGBA, fwd mat3, w, h int, sc *engineScratch) *image.RGBA {
 	inv := invert3x3(fwd)
-	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	var dst *image.RGBA
+	if sc != nil {
+		dst = rgbaScratch(&sc.crop, w, h)
+	} else {
+		dst = image.NewRGBA(image.Rect(0, 0, w, h))
+	}
 	sw, sh := src.Bounds().Dx(), src.Bounds().Dy()
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
@@ -173,8 +210,18 @@ func invert3x3(m mat3) mat3 {
 // rotate90CCW rotates an image 90° counterclockwise (PaddleOCR rotates tall
 // crops so text reads horizontally).
 func rotate90CCW(src *image.RGBA) *image.RGBA {
+	return rotate90CCWS(src, nil)
+}
+
+// rotate90CCWS is rotate90CCW with an optional scratch target.
+func rotate90CCWS(src *image.RGBA, sc *engineScratch) *image.RGBA {
 	w, h := src.Bounds().Dx(), src.Bounds().Dy()
-	dst := image.NewRGBA(image.Rect(0, 0, h, w))
+	var dst *image.RGBA
+	if sc != nil {
+		dst = rgbaScratch(&sc.rot, h, w)
+	} else {
+		dst = image.NewRGBA(image.Rect(0, 0, h, w))
+	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			dst.Set(h-1-y, x, src.At(x, y))

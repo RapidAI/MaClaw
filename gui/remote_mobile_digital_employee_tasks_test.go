@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -193,6 +196,88 @@ func TestRemoteHubClientUpdateMobileDocumentUploadTaskSendsResultPayload(t *test
 	}
 }
 
+func TestProcessMobileDocumentUploadTaskUsesPersistedOfficeReadPolicy(t *testing.T) {
+	for _, key := range []string{
+		"MACLAW_OFFICE_READ_ENGINE",
+		"MACLAW_OFFICE_READ_FORMATS",
+		"MACLAW_OFFICE_READ_FALLBACK",
+		"MACLAW_OFFICE_READ_EMIT_MARKDOWN",
+	} {
+		t.Setenv(key, "")
+	}
+
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	entry, err := zw.Create("word/document.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>End-to-end mobile OfficeRead policy</w:t></w:r></w:p></w:body></w:document>`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotPatch map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/upload/upload-1/source":
+			if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
+				t.Fatalf("source Authorization = %q", got)
+			}
+			if got := r.Header.Get("X-Machine-ID"); got != "machine-1" {
+				t.Fatalf("source X-Machine-ID = %q", got)
+			}
+			_, _ = w.Write(archive.Bytes())
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/mobile/documents/upload/upload-1/result":
+			if err := json.NewDecoder(r.Body).Decode(&gotPatch); err != nil {
+				t.Fatalf("decode result payload: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"task_id": "upload-1", "status": gotPatch["status"]})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	restoreProvider := agent.SetOfficeReadConfigProvider(func() agent.OfficeReadConfig {
+		return agent.OfficeReadConfig{Engine: "legacy"}
+	})
+	defer restoreProvider()
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		OfficeReadEngine:   "officeread",
+		OfficeReadFormats:  []string{"docx"},
+	}); err != nil {
+		t.Fatalf("save persisted mobile OfficeRead policy: %v", err)
+	}
+
+	var observations []agent.OfficeReadObservation
+	restoreObserver := agent.SetOfficeReadObservationHandler(func(observation agent.OfficeReadObservation) {
+		observations = append(observations, observation)
+	})
+	defer restoreObserver()
+
+	client := &RemoteHubClient{app: app}
+	client.processMobileDocumentUploadTask(mobileDocumentUploadTask{
+		TaskID:            "upload-1",
+		Filename:          "resume.docx",
+		ContentType:       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		SourceDownloadURL: "/api/mobile/documents/upload/upload-1/source",
+	})
+
+	if gotPatch["status"] != "ready" || !strings.Contains(gotPatch["markdown"], "End-to-end mobile OfficeRead policy") || gotPatch["error"] != "" {
+		t.Fatalf("mobile Office result patch = %#v", gotPatch)
+	}
+	if len(observations) != 1 || observations[0].Format != "docx" || observations[0].Engine != agent.OfficeExtractEngineOfficeRead || !observations[0].OfficeReadOK {
+		t.Fatalf("end-to-end mobile OfficeRead observations = %#v", observations)
+	}
+}
 func TestMobileDocumentSourceMarkdownParsesTextLikeSource(t *testing.T) {
 	markdown, ok := mobileDocumentSourceMarkdown("incident.txt", "text/plain", []byte("service recovered"))
 	if !ok {
@@ -207,6 +292,143 @@ func TestMobileDocumentSourceMarkdownParsesTextLikeSource(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentRequiresOfficeExtractionRecognizesSixFormats(t *testing.T) {
+	for _, name := range []string{"resume.doc", "resume.docx", "slides.ppt", "slides.pptx", "data.xls", "data.xlsx"} {
+		if !mobileDocumentRequiresOfficeExtraction(name) {
+			t.Errorf("%s must use the shared Office extractor", name)
+		}
+	}
+	for _, name := range []string{"notes.txt", "report.pdf", "photo.png"} {
+		if mobileDocumentRequiresOfficeExtraction(name) {
+			t.Errorf("%s must not be classified as an Office upload", name)
+		}
+	}
+}
+
+func TestMobileDocumentSourceLimitUsesOfficeReadBoundForSixFormats(t *testing.T) {
+	if got := mobileDocumentSourceLimit("report.doc"); got != agent.MaxOfficeReadFileBytes {
+		t.Fatalf("DOC source limit = %d, want OfficeRead limit %d", got, agent.MaxOfficeReadFileBytes)
+	}
+	if got := mobileDocumentSourceLimit("photo.png"); got != mobileDocumentSourceMaxBytes {
+		t.Fatalf("image source limit = %d, want default %d", got, mobileDocumentSourceMaxBytes)
+	}
+}
+
+func TestMobileDocumentSourceMarkdownUsesSharedOfficeRouteForDOCX(t *testing.T) {
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	entry, err := zw.Create("word/document.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Mobile OfficeRead route</w:t></w:r></w:p></w:body></w:document>`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	markdown, ok := mobileDocumentSourceMarkdown("resume.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", archive.Bytes())
+	if !ok || !strings.Contains(markdown, "Mobile OfficeRead route") {
+		t.Fatalf("Office DOCX markdown = %q, ok=%v", markdown, ok)
+	}
+}
+
+func TestMobileDocumentOfficeMarkdownRejectsEncryptedDocumentWithoutFallback(t *testing.T) {
+	for _, key := range []string{
+		"MACLAW_OFFICE_READ_ENGINE",
+		"MACLAW_OFFICE_READ_FORMATS",
+		"MACLAW_OFFICE_READ_FALLBACK",
+		"MACLAW_OFFICE_READ_EMIT_MARKDOWN",
+	} {
+		t.Setenv(key, "")
+	}
+
+	restoreProvider := agent.SetOfficeReadConfigProvider(func() agent.OfficeReadConfig {
+		// Legacy is a global rollback and intentionally has no enabled OfficeRead
+		// format. The shared preflight still rejects the encrypted input, but it
+		// must not manufacture a migration observation for a disabled rollout.
+		return agent.OfficeReadConfig{Engine: "legacy", Formats: []string{"docx"}}
+	})
+	defer restoreProvider()
+
+	var observations []agent.OfficeReadObservation
+	restoreObserver := agent.SetOfficeReadObservationHandler(func(observation agent.OfficeReadObservation) {
+		observations = append(observations, observation)
+	})
+	defer restoreObserver()
+
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	entry, err := zw.CreateHeader(&zip.FileHeader{Name: "word/document.xml", Method: zip.Deflate, Flags: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>must never be extracted</w:t></w:r></w:p></w:body></w:document>`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if markdown, ok := mobileDocumentSourceMarkdown("protected.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", archive.Bytes()); ok || markdown != "" {
+		t.Fatalf("encrypted mobile document must fail closed, markdown=%q ok=%v", markdown, ok)
+	}
+	if len(observations) != 0 {
+		t.Fatalf("legacy rollback must not emit OfficeRead rollout evidence: %#v", observations)
+	}
+}
+
+func TestMobileDocumentSourceMarkdownUsesPersistedOfficeReadPolicy(t *testing.T) {
+	for _, key := range []string{
+		"MACLAW_OFFICE_READ_ENGINE",
+		"MACLAW_OFFICE_READ_FORMATS",
+		"MACLAW_OFFICE_READ_FALLBACK",
+		"MACLAW_OFFICE_READ_EMIT_MARKDOWN",
+	} {
+		t.Setenv(key, "")
+	}
+
+	// The mobile worker shares the desktop process. Its document extraction must
+	// follow the persisted GUI policy, not the provider that happened to be
+	// installed before the GUI app was created.
+	restoreProvider := agent.SetOfficeReadConfigProvider(func() agent.OfficeReadConfig {
+		return agent.OfficeReadConfig{Engine: "legacy"}
+	})
+	defer restoreProvider()
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	if err := app.SaveConfig(corelib.AppConfig{OfficeReadEngine: "officeread", OfficeReadFormats: []string{"docx"}}); err != nil {
+		t.Fatalf("save OfficeRead policy: %v", err)
+	}
+
+	var observations []agent.OfficeReadObservation
+	restoreObserver := agent.SetOfficeReadObservationHandler(func(observation agent.OfficeReadObservation) {
+		observations = append(observations, observation)
+	})
+	defer restoreObserver()
+
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	entry, err := zw.Create("word/document.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Persisted mobile OfficeRead policy</w:t></w:r></w:p></w:body></w:document>`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	markdown, ok := mobileDocumentSourceMarkdown("resume.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", archive.Bytes())
+	if !ok || !strings.Contains(markdown, "Persisted mobile OfficeRead policy") {
+		t.Fatalf("mobile OfficeRead markdown = %q, ok=%v", markdown, ok)
+	}
+	if len(observations) != 1 || observations[0].Format != "docx" || observations[0].Engine != agent.OfficeExtractEngineOfficeRead || !observations[0].OfficeReadOK {
+		t.Fatalf("persisted-policy observations = %#v", observations)
+	}
+}
 func TestMobileDocumentUploadIsImage(t *testing.T) {
 	if !mobileDocumentUploadIsImage("shot.png", "application/octet-stream") {
 		t.Fatal("png by extension should be image")

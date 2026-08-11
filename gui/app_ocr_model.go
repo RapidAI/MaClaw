@@ -1,8 +1,10 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,13 +18,10 @@ import (
 
 var ocrDownloadMu sync.Mutex
 
-// ocrDetModelURL/ocrRecModelURL resolve the default (HuggingFace) download
-// URLs for a tier. Package vars so tests can point the download flow at a
-// mock server (same pattern as diarizationModelDefaultURL).
-var (
-	ocrDetModelURL = ocr.DetModelURL
-	ocrRecModelURL = ocr.RecModelURL
-)
+// ocrModelsZipURL resolves the default (GitHub release) download URL for the
+// OCR models zip. Package var so tests can point the download flow at a mock
+// server (same pattern as diarizationModelDefaultURL).
+var ocrModelsZipURL = ocr.DefaultModelsZipURL
 
 // GetOCREnabled returns whether OCR is enabled in config.
 func (a *App) GetOCREnabled() bool {
@@ -49,20 +48,39 @@ func (a *App) SetOCREnabled(enabled bool) error {
 
 // CheckOCRModel returns the configured PP-OCRv6 models' file status.
 // "exists" is true only when BOTH det and rec files are present and valid.
+// "tier" always reports the configured model tier so the UI can render the
+// selector even before any model files exist.
 func (a *App) CheckOCRModel() map[string]interface{} {
+	tier := a.ocrModelTier()
 	dir, err := embeddingModelsDir() // same dir as embedding model
 	if err != nil {
-		return map[string]interface{}{"exists": false, "size": 0}
+		return map[string]interface{}{"exists": false, "size": 0, "tier": tier}
 	}
-	tier := a.ocrModelTier()
 	detPath := filepath.Join(dir, ocr.DetModelFilename(tier))
 	recPath := filepath.Join(dir, ocr.RecModelFilename(tier))
 	detSize, detOK := ocr.ModelFileStatus(detPath)
 	recSize, recOK := ocr.ModelFileStatus(recPath)
 	if !detOK || !recOK {
-		return map[string]interface{}{"exists": false, "size": 0}
+		return map[string]interface{}{"exists": false, "size": 0, "tier": tier}
 	}
-	return map[string]interface{}{"exists": true, "size": detSize + recSize, "model": "ppocrv6_" + tier}
+	return map[string]interface{}{"exists": true, "size": detSize + recSize, "model": "ppocrv6_" + tier, "tier": tier}
+}
+
+// SetOCRModelTier persists the PP-OCRv6 model tier ("tiny"/"small"/"medium";
+// junk normalizes to the default via PatchConfigFields). When OCR is enabled
+// and the new tier's model files are missing, it kicks the same background
+// download flow used when enabling OCR.
+func (a *App) SetOCRModelTier(tier string) error {
+	if _, err := a.PatchConfigFields(map[string]interface{}{"ocr_model_tier": tier}); err != nil {
+		return err
+	}
+	if a.ocrStillConfiguredEnabled() {
+		info := a.CheckOCRModel()
+		if !info["exists"].(bool) {
+			go a.downloadOCRModelIfStillEnabled()
+		}
+	}
+	return nil
 }
 
 // ocrModelTier returns the configured OCR model tier (defaults to "small").
@@ -156,7 +174,8 @@ func (a *App) ensureOCRModelFiles() (detPath, recPath string, ok bool) {
 	return detPath, recPath, true
 }
 
-// DownloadOCRModel downloads the OCR models (HuggingFace first, Hub fallback).
+// DownloadOCRModel downloads the OCR models zip (GitHub first, Hub fallback)
+// and extracts every tier's det/rec ONNX files into the models dir.
 func (a *App) DownloadOCRModel() error {
 	return a.downloadOCRModel(true)
 }
@@ -176,27 +195,23 @@ func (a *App) downloadOCRModel(autoEnable bool) error {
 		return fmt.Errorf("create models dir: %w", err)
 	}
 	tier := a.ocrModelTier()
-	files := []struct {
-		filename string
-		url      string
-	}{
-		{ocr.DetModelFilename(tier), ocrDetModelURL(tier)},
-		{ocr.RecModelFilename(tier), ocrRecModelURL(tier)},
-	}
+	detPath := filepath.Join(dir, ocr.DetModelFilename(tier))
+	recPath := filepath.Join(dir, ocr.RecModelFilename(tier))
 
-	hubURL := ""
-	for _, f := range files {
-		destPath := filepath.Join(dir, f.filename)
-		if _, ok := ocr.ModelFileStatus(destPath); ok {
-			continue
-		}
-		if err := a.downloadOCRFileWithFallback(f.url, f.filename, destPath, &hubURL); err != nil {
+	_, detOK := ocr.ModelFileStatus(detPath)
+	_, recOK := ocr.ModelFileStatus(recPath)
+	if !detOK || !recOK {
+		zipPath := filepath.Join(dir, ocr.ModelsZipFilename)
+		if err := a.downloadOCRZipWithFallback(zipPath); err != nil {
 			return err
 		}
-		// Validate the downloaded file; delete garbage (e.g. an HTML error page).
-		if _, ok := ocr.ModelFileStatus(destPath); !ok {
-			_ = os.Remove(destPath)
-			return fmt.Errorf("downloaded OCR model %s failed validation", f.filename)
+		// Extraction validates every tier's files; on failure it removes the
+		// partials it extracted. The zip itself is only a transport artifact —
+		// drop it either way so a corrupt bundle is re-downloaded next time.
+		extractErr := extractOCRModelsZip(zipPath, dir)
+		_ = os.Remove(zipPath)
+		if extractErr != nil {
+			return extractErr
 		}
 	}
 
@@ -207,34 +222,114 @@ func (a *App) downloadOCRModel(autoEnable bool) error {
 	}
 	// Both files for the configured tier are now present; make sure the shared
 	// provider uses them (it may have been created for a previous tier).
-	sharedNativeOCRProvider().SetModelPaths(
-		filepath.Join(dir, ocr.DetModelFilename(tier)),
-		filepath.Join(dir, ocr.RecModelFilename(tier)),
-	)
+	sharedNativeOCRProvider().SetModelPaths(detPath, recPath)
 	a.emitOCRProgress(100, 0, 0, "")
 	return nil
 }
 
-// downloadOCRFileWithFallback tries the HuggingFace URL (3 silent retries),
-// then falls back to the Hub mirror endpoint. hubURL is resolved lazily and
-// cached across the det/rec downloads via the pointer.
-func (a *App) downloadOCRFileWithFallback(url, filename, destPath string, hubURL *string) error {
-	// HuggingFace first (3 retries, silent)
+// downloadOCRZipWithFallback tries the GitHub release URL (3 silent retries),
+// then falls back to the Hub mirror endpoint serving the same zip filename.
+func (a *App) downloadOCRZipWithFallback(destPath string) error {
+	// GitHub first (3 retries, silent)
 	for attempt := 0; attempt < 3; attempt++ {
-		if err := a.downloadOCRFrom(url, destPath, false); err == nil {
+		if err := a.downloadOCRFrom(ocrModelsZipURL, destPath, false); err == nil {
 			return nil
 		}
 	}
 
 	// Fallback: Hub (lock-free peek)
-	if *hubURL == "" {
-		*hubURL = a.PeekRemoteHubURLTrimmed()
-	}
-	if *hubURL == "" {
+	hubURL := a.PeekRemoteHubURLTrimmed()
+	if hubURL == "" {
 		a.emitOCRProgress(0, 0, 0, "默认下载地址不可用，且 Hub URL 未配置")
 		return fmt.Errorf("默认下载地址不可用，且 Hub URL 未配置")
 	}
-	return a.downloadOCRFrom(*hubURL+"/api/v1/models/"+filename, destPath, true)
+	return a.downloadOCRFrom(hubURL+"/api/v1/models/"+ocr.ModelsZipFilename, destPath, true)
+}
+
+// expectedOCRModelFilenames returns the det+rec filenames for every published
+// PP-OCRv6 tier (tiny/small/medium) bundled in the models zip.
+func expectedOCRModelFilenames() []string {
+	tiers := []string{"tiny", "small", "medium"}
+	out := make([]string, 0, len(tiers)*2)
+	for _, tier := range tiers {
+		out = append(out, ocr.DetModelFilename(tier), ocr.RecModelFilename(tier))
+	}
+	return out
+}
+
+// extractOCRModelsZip extracts the .onnx entries of the OCR models zip into
+// dir, writing each entry to <name>.tmp first and renaming it into place
+// (mirroring the download .tmp+rename pattern). Non-.onnx entries are skipped
+// and zip-slip paths are rejected. After extraction every expected tier file
+// is validated via ocr.ModelFileStatus; on any failure the extracted partials
+// are removed and an error is returned.
+func extractOCRModelsZip(zipPath, dir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("open OCR models zip: %w", err)
+	}
+	defer r.Close()
+
+	extracted := make([]string, 0, len(r.File))
+	fail := func(err error) error {
+		for _, path := range extracted {
+			_ = os.Remove(path)
+		}
+		return err
+	}
+
+	for _, f := range r.File {
+		cleaned := filepath.Clean(f.Name)
+		if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+			return fail(fmt.Errorf("OCR models zip contains unsafe path %q", f.Name))
+		}
+		name := filepath.Base(cleaned)
+		if !strings.HasSuffix(strings.ToLower(name), ".onnx") {
+			continue
+		}
+		dst := filepath.Join(dir, name)
+		if err := extractOCRZipEntry(f, dst); err != nil {
+			return fail(err)
+		}
+		extracted = append(extracted, dst)
+	}
+
+	for _, name := range expectedOCRModelFilenames() {
+		if _, ok := ocr.ModelFileStatus(filepath.Join(dir, name)); !ok {
+			return fail(fmt.Errorf("extracted OCR model %s failed validation", name))
+		}
+	}
+	return nil
+}
+
+// extractOCRZipEntry writes a single zip entry to dst via a <dst>.tmp sibling
+// followed by an atomic rename.
+func extractOCRZipEntry(f *zip.File, dst string) error {
+	rc, err := f.Open()
+	if err != nil {
+		return fmt.Errorf("open zip entry %s: %w", f.Name, err)
+	}
+	defer rc.Close()
+	tmp := dst + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return fmt.Errorf("create temp file for %s: %w", f.Name, err)
+	}
+	_, copyErr := io.Copy(out, rc)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("extract %s: %w", f.Name, copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("extract %s: %w", f.Name, closeErr)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("install %s: %w", f.Name, err)
+	}
+	return nil
 }
 
 // autoEnableOCR sets OCREnabled=true in config after successful download.
@@ -262,11 +357,7 @@ func (a *App) ocrStillConfiguredEnabled() bool {
 
 // backgroundPreloadOCRModel silently downloads OCR models if not present.
 func (a *App) backgroundPreloadOCRModel() {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return
-	}
-	if !cfg.OCREnabled {
+	if !a.ocrStillConfiguredEnabled() {
 		return
 	}
 
@@ -274,72 +365,17 @@ func (a *App) backgroundPreloadOCRModel() {
 	if err != nil {
 		return
 	}
-	tier := corelib.NormalizeOCRModelTier(cfg.OCRModelTier)
-	files := []struct {
-		filename string
-		url      string
-	}{
-		{ocr.DetModelFilename(tier), ocrDetModelURL(tier)},
-		{ocr.RecModelFilename(tier), ocrRecModelURL(tier)},
-	}
-
-	missing := false
-	for _, f := range files {
-		if _, ok := ocr.ModelFileStatus(filepath.Join(dir, f.filename)); !ok {
-			missing = true
-			break
-		}
-	}
-	if !missing {
+	tier := a.ocrModelTier()
+	_, detOK := ocr.ModelFileStatus(filepath.Join(dir, ocr.DetModelFilename(tier)))
+	_, recOK := ocr.ModelFileStatus(filepath.Join(dir, ocr.RecModelFilename(tier)))
+	if detOK && recOK {
 		return
 	}
-
-	if !ocrDownloadMu.TryLock() {
-		return
-	}
-	defer ocrDownloadMu.Unlock()
 
 	fmt.Println("[ocr] background preload: starting silent download")
-
-	hubURL := strings.TrimRight(cfg.RemoteHubURL, "/")
-	for _, f := range files {
-		destPath := filepath.Join(dir, f.filename)
-		if _, ok := ocr.ModelFileStatus(destPath); ok {
-			continue
-		}
-		downloaded := false
-		// HuggingFace first (3 retries)
-		for attempt := 0; attempt < 3; attempt++ {
-			if err := a.downloadModelFromWithEvent(f.url, destPath, false, "ocr-download-progress"); err == nil {
-				downloaded = true
-				break
-			}
-		}
-		// Hub fallback
-		if !downloaded && hubURL != "" {
-			fallbackURL := hubURL + "/api/v1/models/" + f.filename
-			if err := a.downloadModelFromWithEvent(fallbackURL, destPath, false, "ocr-download-progress"); err == nil {
-				downloaded = true
-			}
-		}
-		if !downloaded {
-			fmt.Printf("[ocr] background preload: failed to download %s\n", f.filename)
-			return
-		}
-		if _, ok := ocr.ModelFileStatus(destPath); !ok {
-			_ = os.Remove(destPath)
-			fmt.Printf("[ocr] background preload: %s failed validation\n", f.filename)
-			return
-		}
-		if !a.ocrStillConfiguredEnabled() {
-			return
-		}
+	if err := a.downloadOCRModel(false); err != nil {
+		fmt.Printf("[ocr] background preload: %v\n", err)
+		return
 	}
-	// Switch the shared provider to the downloaded tier's files (it may have
-	// been created with paths of a previously configured tier).
-	sharedNativeOCRProvider().SetModelPaths(
-		filepath.Join(dir, ocr.DetModelFilename(tier)),
-		filepath.Join(dir, ocr.RecModelFilename(tier)),
-	)
 	fmt.Println("[ocr] background preload: download complete")
 }

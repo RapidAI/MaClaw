@@ -1830,18 +1830,26 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	if rawProjectPath != "" && rawProjectPath != projectPath {
 		log.Printf("[AI assistant] normalized project path request_id=%s raw=%q normalized=%q", requestID, rawProjectPath, projectPath)
 	}
-	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != projectPath {
-		log.Printf("[AI assistant] route managed task to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
-		if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
-			log.Printf("[AI assistant] reject managed task working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
-			return nil, err
-		}
-	}
 	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
 	if expertID := strings.TrimSpace(req.ExpertID); expertID != "" {
 		// Expert tab: session is keyed by expert id, not by project path, so the
 		// persona/history stay isolated per expert regardless of any projectPath.
 		userID = expertSessionUserID(expertID)
+	}
+	// event_scope_id is the concrete UI tab. Restore its optional private
+	// directory before any downstream tool/prompt/workflow resolution.
+	if tabID := strings.TrimSpace(req.EventScopeID); tabID != "" {
+		a.bindAssistantTabWorkingDir(tabID, userID)
+	}
+	if projectPath != "" {
+		executionProjectPath := a.EffectiveWorkingDirForOwner(userID)
+		if executionProjectPath != projectPath {
+			log.Printf("[AI assistant] route tab to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
+			if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
+				log.Printf("[AI assistant] reject tab working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
+				return nil, err
+			}
+		}
 	}
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
 		log.Printf("[AI assistant] reject closed project request request_id=%s session_key=%q project_path=%q", requestID, userID, projectPath)
@@ -3150,10 +3158,16 @@ func pastedFileExtensionFromMIME(mimeType string) string {
 		return ".json"
 	case "application/zip", "application/x-zip-compressed":
 		return ".zip"
+	case "application/msword":
+		return ".doc"
 	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
 		return ".docx"
+	case "application/vnd.ms-excel":
+		return ".xls"
 	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
 		return ".xlsx"
+	case "application/vnd.ms-powerpoint":
+		return ".ppt"
 	case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
 		return ".pptx"
 	default:
@@ -3264,6 +3278,15 @@ func (a *App) QueryIMAuditMessages(platform, userID, keyword string, page int) (
 	return store.Query(platform, userID, keyword, page)
 }
 
+// QueryIMAuditMessagesForBot returns history isolated to one Lansenger bot profile.
+func (a *App) QueryIMAuditMessagesForBot(botID, userID, keyword string, page int) (*IMAuditQueryResult, error) {
+	store := a.getIMAuditStore()
+	if store == nil {
+		return &IMAuditQueryResult{Messages: []IMAuditMessage{}, PageSize: imAuditPageSize}, nil
+	}
+	return store.QueryForBot("lansenger", botID, userID, keyword, page)
+}
+
 // DeleteIMAuditMessagesBefore removes IM audit messages older than N days (Wails binding).
 func (a *App) DeleteIMAuditMessagesBefore(days int) (int64, error) {
 	store := a.getIMAuditStore()
@@ -3288,6 +3311,15 @@ func (a *App) ExportIMAuditCSV(platform, userID, keyword string) (string, error)
 	return store.ExportCSV(platform, userID, keyword, outputDir)
 }
 
+// ExportIMAuditCSVForBot exports history isolated to one Lansenger bot profile.
+func (a *App) ExportIMAuditCSVForBot(botID, userID, keyword string) (string, error) {
+	store := a.getIMAuditStore()
+	if store == nil {
+		return "", fmt.Errorf("audit store not available")
+	}
+	return store.ExportCSVForBot("lansenger", botID, userID, keyword, a.GetTempDir())
+}
+
 // GetIMAuditUsers returns distinct user IDs for the given platform (Wails binding).
 func (a *App) GetIMAuditUsers(platform string) ([]string, error) {
 	store := a.getIMAuditStore()
@@ -3295,6 +3327,15 @@ func (a *App) GetIMAuditUsers(platform string) ([]string, error) {
 		return []string{}, nil
 	}
 	return store.ListUsers(platform)
+}
+
+// GetIMAuditUsersForBot returns history participants for one Lansenger bot profile.
+func (a *App) GetIMAuditUsersForBot(botID string) ([]string, error) {
+	store := a.getIMAuditStore()
+	if store == nil {
+		return []string{}, nil
+	}
+	return store.ListUsersForBot("lansenger", botID)
 }
 
 // GetIMAuditStats returns per-platform message count statistics (Wails binding).

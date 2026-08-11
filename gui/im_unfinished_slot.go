@@ -246,6 +246,19 @@ func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimm
 		return true, nil, false
 	}
 	if decision.ResumeSlotID != "" {
+		// Runtime-backed recovery may have uncertain side effects. Probe before
+		// binding the slot so no generic continuation machinery can treat the old
+		// conversation as permission to replay it.
+		if current := h.memory.GetUnfinishedSlot(msg.UserID); current != nil && current.SlotID == decision.ResumeSlotID && strings.TrimSpace(current.RuntimeTaskID) != "" {
+			review, err := h.prepareCodingRuntimeRecoveryForSlot(current.RuntimeTaskID)
+			if err != nil {
+				return true, &IMAgentResponse{Error: "coding recovery probe failed: " + err.Error()}, true
+			}
+			return true, &IMAgentResponse{
+				Text:                  "Coding task recovery probe completed. Review the workspace diff and explicitly confirm before a new attempt can be created.",
+				CodingRuntimeRecovery: review,
+			}, true
+		}
 		if h.memory.BindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
 			*unfinishedSlot = h.memory.ActiveUnfinishedSlot(msg.UserID)
 		}
@@ -265,7 +278,7 @@ func localizedPreviousTaskDismissedMessage(lang string) string {
 }
 
 func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trimmed string, freshTask bool, decision explicitTaskSlotDecision, unfinishedSlot *agent.UnfinishedTaskSlot) (*IMAgentResponse, bool) {
-	if unfinishedSlot == nil || !unfinishedSlotNeedsDecision(unfinishedSlot) || unfinishedSlot.Source.IsSessionExit() || msg.IsBackground || freshTask || isSlotActionCommand(trimmed) || decision.StartNewTask || decision.ResumeSlotID != "" {
+	if unfinishedSlot == nil || !unfinishedSlotNeedsDecision(unfinishedSlot) || unfinishedSlot.Source.IsSessionExit() || unfinishedSlot.Source.IsAppExit() || msg.IsBackground || freshTask || isSlotActionCommand(trimmed) || decision.StartNewTask || decision.ResumeSlotID != "" {
 		return nil, false
 	}
 

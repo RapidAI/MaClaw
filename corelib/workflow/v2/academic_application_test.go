@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,14 @@ func TestBuildAcademicApplicationTemplate_AllProfiles(t *testing.T) {
 			}
 			if !p1.InputSchema.AcceptsResume {
 				t.Error("Phase 1 InputSchema.AcceptsResume should be true")
+			}
+			if p1.InputSchema.AcceptsSupplementary == nil {
+				t.Fatal("Phase 1 must declare supplementary document support")
+			}
+			for _, ext := range []string{".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"} {
+				if !slices.Contains(p1.InputSchema.AcceptsSupplementary.AcceptedTypes, ext) {
+					t.Errorf("supplementary documents must accept %s", ext)
+				}
 			}
 			// Fields are in Variants (resume_mode + manual_mode), not top-level Fields
 			if len(p1.InputSchema.Variants) < 2 {
@@ -74,6 +83,20 @@ func TestBuildAcademicApplicationTemplate_AllProfiles(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPatentDisclosureFilePromptsDescribeSixOfficeFormats(t *testing.T) {
+	for _, tmpl := range []*WorkflowTemplate{PatentApplicationTemplate(), USPatentApplicationTemplate()} {
+		if tmpl == nil || len(tmpl.Phases) == 0 || tmpl.Phases[0].InputSchema == nil || len(tmpl.Phases[0].InputSchema.Variants) == 0 {
+			t.Fatalf("invalid patent template: %#v", tmpl)
+		}
+		field := tmpl.Phases[0].InputSchema.Variants[0].Fields[0]
+		for _, want := range []string{"PDF", "Word", "PowerPoint", "Excel"} {
+			if !strings.Contains(field.Placeholder, want) {
+				t.Errorf("%s disclosure placeholder missing %s: %q", tmpl.Type, want, field.Placeholder)
+			}
+		}
 	}
 }
 
@@ -252,8 +275,8 @@ func TestAcademicPhaseInstruction_ReviewCriteriaInjected(t *testing.T) {
 // TestIsAcademicApplicationPhase_Detection verifies the phaseID → profile lookup.
 func TestIsAcademicApplicationPhase_Detection(t *testing.T) {
 	tests := []struct {
-		phaseID string
-		wantHit bool
+		phaseID  string
+		wantHit  bool
 		wantType string
 	}{
 		{"cj_profile", true, "changjiang_scholar"},

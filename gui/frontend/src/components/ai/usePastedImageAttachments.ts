@@ -20,6 +20,7 @@ async function savePastedFile(base64: string, fileName: string, mimeType: string
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
 const MAX_PATHLESS_IMAGE_BYTES = 37 * 1024 * 1024;
 const MAX_PATHLESS_FILE_BYTES = 75 * 1024 * 1024;
+const PASTE_DUPLICATE_WINDOW_MS = 1500;
 
 function fileNameFromPath(filePath: string): string {
     return filePath.split(/[/\\]/).pop() || filePath;
@@ -50,6 +51,16 @@ function transferredFilePath(file: File): string {
     return typeof candidate === "string" ? candidate.trim() : "";
 }
 
+// Pathless clipboard blobs (e.g. screenshots) may surface twice — once via
+// DataTransferItemList and once via FileList — with mismatched name/lastModified
+// metadata on some WebViews. Treat same type+size blobs as the same image; two
+// genuinely different pathless files with identical type and size in a single
+// transfer are not realistic.
+function fileDedupeKey(file: File): string {
+    const directPath = transferredFilePath(file);
+    return directPath ? `path|${directPath}` : `blob|${file.type}|${file.size}`;
+}
+
 function readFileBase64(file: Blob): Promise<string> {
     return new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -71,7 +82,7 @@ function uniqueFilesFromSources(items?: DataTransferItemList | null, fileList?: 
     const seen = new Set<string>();
     const addFile = (file: File | null) => {
         if (!file) return;
-        const key = [transferredFilePath(file), file.name, file.type, file.size, file.lastModified].join("|");
+        const key = fileDedupeKey(file);
         if (seen.has(key)) return;
         seen.add(key);
         files.push(file);
@@ -129,6 +140,7 @@ export function usePastedImageAttachments(sessionKey = DEFAULT_ATTACHMENT_SESSIO
     const activeSessionKeyRef = useRef(activeSessionKey);
     const mountedRef = useRef(true);
     const objectUrlsRef = useRef<Set<string>>(new Set());
+    const pasteSignaturesRef = useRef<Map<string, number>>(new Map());
 
     const sessionResetVersion = useCallback((session: string) => {
         return sessionResetVersionsRef.current.get(normalizeAttachmentSessionKey(session)) || 0;
@@ -223,6 +235,26 @@ export function usePastedImageAttachments(sessionKey = DEFAULT_ATTACHMENT_SESSIO
         objectUrlsRef.current.clear();
     }, [bumpSessionResetVersion]);
 
+    // Returns the recorded signature the first time a file is seen in a session;
+    // null when the same signature repeats within PASTE_DUPLICATE_WINDOW_MS.
+    // Signatures are session-scoped so pasting the same image into two different
+    // sessions in quick succession is not mistaken for a duplicate event.
+    const markPasteSignature = useCallback((session: string, file: File): string | null => {
+        const now = Date.now();
+        const signatures = pasteSignaturesRef.current;
+        for (const [key, seenAt] of Array.from(signatures)) {
+            if (now - seenAt >= PASTE_DUPLICATE_WINDOW_MS) signatures.delete(key);
+        }
+        const signature = `${session}||${fileDedupeKey(file)}`;
+        if (signatures.has(signature)) return null;
+        signatures.set(signature, now);
+        return signature;
+    }, []);
+
+    const clearPasteSignature = useCallback((signature: string) => {
+        pasteSignaturesRef.current.delete(signature);
+    }, []);
+
     const attachFiles = useCallback(async (files: File[], source: "pasted" | "dropped") => {
         if (disabled || files.length === 0) return;
         const targetSession = activeSessionKeyRef.current;
@@ -232,6 +264,15 @@ export function usePastedImageAttachments(sessionKey = DEFAULT_ATTACHMENT_SESSIO
             const fileName = file.name || `${source}-file`;
             const directPath = transferredFilePath(file);
             const image = isImageFile(file);
+            // A single Ctrl+V can deliver the same clipboard content through two
+            // back-to-back paste events on some WebViews (each event creates new
+            // File objects, defeating per-event dedupe). Suppress identical
+            // files repeated within a short window.
+            let pasteSignature: string | null = null;
+            if (source === "pasted") {
+                pasteSignature = markPasteSignature(targetSession, file);
+                if (pasteSignature === null) continue;
+            }
             try {
                 if (directPath) {
                     const thumbnailDataUrl = image ? URL.createObjectURL(file) : undefined;
@@ -260,10 +301,12 @@ export function usePastedImageAttachments(sessionKey = DEFAULT_ATTACHMENT_SESSIO
                 const filePath = await savePastedFile(base64, fileName, file.type || "application/octet-stream");
                 setPendingAttachmentsForSession(targetSession, prev => [...prev, { filePath, isImage: false, fileName: fileNameFromPath(filePath), extension: extensionFromName(filePath) }], targetResetVersion);
             } catch (err) {
+                // Allow an immediate retry paste when the attach failed.
+                if (pasteSignature) clearPasteSignature(pasteSignature);
                 console.error(`Failed to attach ${source} file:`, err);
             }
         }
-    }, [disabled, sessionResetVersion, setPendingAttachmentsForSession]);
+    }, [disabled, clearPasteSignature, markPasteSignature, sessionResetVersion, setPendingAttachmentsForSession]);
 
     const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
         const files = uniqueClipboardFiles(e);

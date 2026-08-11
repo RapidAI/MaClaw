@@ -14,6 +14,15 @@ type Presentation struct {
 	SlideCount int                `json:"slide_count"`
 	Properties DocumentProperties `json:"properties"`
 	Slides     []Slide            `json:"slides"`
+	Truncated  bool               `json:"truncated,omitempty"`
+	NextOffset int                `json:"next_offset,omitempty"`
+}
+
+// ReadOptions bounds structured presentation extraction. A zero MaxSlides
+// retains the historical all-slides behavior for non-tool callers.
+type ReadOptions struct {
+	Offset    int
+	MaxSlides int
 }
 
 // DocumentProperties holds standard document metadata.
@@ -112,6 +121,13 @@ type DataSeries struct {
 
 // Read parses a PPTX file and returns a structured representation.
 func Read(filePath string) (*Presentation, error) {
+	return ReadWithOptions(filePath, ReadOptions{})
+}
+
+// ReadWithOptions parses a PPTX file into the established structured model
+// while limiting how many slides are materialized when requested.
+func ReadWithOptions(filePath string, opts ReadOptions) (presentation *Presentation, err error) {
+	defer recoverPresentationRead(&presentation, &err)
 	// Check if file exists
 	if _, err := os.Stat(filePath); errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("文件不存在: %s", filePath)
@@ -137,10 +153,27 @@ func Read(filePath string) (*Presentation, error) {
 	}
 
 	// Extract slides
-	allSlides := pres.GetAllSlides()
-	slides := make([]Slide, 0, len(allSlides))
+	slideCount := pres.GetSlideCount()
+	start := opts.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start > slideCount {
+		start = slideCount
+	}
+	limit := slideCount
+	truncated := false
+	if opts.MaxSlides > 0 && limit-start > opts.MaxSlides {
+		limit = start + opts.MaxSlides
+		truncated = true
+	}
+	slides := make([]Slide, 0, limit-start)
 
-	for i, s := range allSlides {
+	for i := start; i < limit; i++ {
+		s, slideErr := pres.GetSlide(i)
+		if slideErr != nil || s == nil {
+			return nil, fmt.Errorf("读取 PPTX 幻灯片失败")
+		}
 		slide := Slide{
 			Number: i + 1,
 			Shapes: extractShapes(s.GetShapes()),
@@ -153,7 +186,45 @@ func Read(filePath string) (*Presentation, error) {
 		SlideCount: pres.GetSlideCount(),
 		Properties: docProps,
 		Slides:     slides,
+		Truncated:  truncated,
+		NextOffset: limit,
 	}, nil
+}
+
+// GoPPT reads untrusted OOXML and shape records. Keep the public structured
+// presentation API fail-closed: callers must receive neither a process panic
+// nor a partially populated deck when a dependency panics on malformed input.
+func recoverPresentationRead(presentation **Presentation, err *error) {
+	if recover() != nil {
+		*presentation = nil
+		*err = fmt.Errorf("presentation parser panicked")
+	}
+}
+
+// Paginate returns a stable slice of an already parsed presentation. It keeps
+// the full SlideCount while exposing the same continuation fields used by
+// ReadWithOptions, and provides a narrow seam for callers/tests that already
+// own a Presentation.
+func Paginate(presentation *Presentation, offset, maxSlides int) *Presentation {
+	if presentation == nil {
+		return nil
+	}
+	copy := *presentation
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	if start > len(presentation.Slides) {
+		start = len(presentation.Slides)
+	}
+	end := len(presentation.Slides)
+	if maxSlides > 0 && end-start > maxSlides {
+		end = start + maxSlides
+	}
+	copy.Slides = presentation.Slides[start:end]
+	copy.Truncated = end < len(presentation.Slides)
+	copy.NextOffset = end
+	return &copy
 }
 
 // extractShapes converts GoPPT shapes to our Shape type.

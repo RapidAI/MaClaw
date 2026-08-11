@@ -9,15 +9,18 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
-// Match Mobile binary download budget (slow links + multi-MB originals).
+// Default budget for Mobile binary downloads (slow links + multi-MB originals).
+// The six Office formats get the shared extractor's 32 MiB input budget below.
 const (
 	mobileDocumentSourceDownloadTimeout = 90 * time.Second
 	mobileDocumentSourceMaxBytes        = 25 * 1024 * 1024
@@ -116,12 +119,13 @@ func (c *RemoteHubClient) downloadMobileDocumentUploadSource(task mobileDocument
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("hub returned HTTP %d", resp.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, mobileDocumentSourceMaxBytes+1))
+	limit := mobileDocumentSourceLimit(task.Filename)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) > mobileDocumentSourceMaxBytes {
-		return nil, fmt.Errorf("mobile document source exceeds %d bytes", mobileDocumentSourceMaxBytes)
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("mobile document source exceeds %d bytes", limit)
 	}
 	return raw, nil
 }
@@ -167,10 +171,13 @@ func (c *RemoteHubClient) processMobileDocumentUploadTask(task mobileDocumentUpl
 }
 
 func mobileDocumentSourceMarkdown(filename, contentType string, raw []byte) (string, bool) {
-	if len(raw) > mobileDocumentSourceMaxBytes {
+	if int64(len(raw)) > mobileDocumentSourceLimit(filename) {
 		return "", false
 	}
 	ext := strings.ToLower(filepath.Ext(filename))
+	if mobileDocumentRequiresOfficeExtraction(filename) {
+		return mobileDocumentOfficeMarkdown(filename, raw)
+	}
 	normalizedType := strings.ToLower(strings.TrimSpace(contentType))
 	textLike := strings.HasPrefix(normalizedType, "text/") ||
 		strings.Contains(normalizedType, "json") ||
@@ -186,6 +193,64 @@ func mobileDocumentSourceMarkdown(filename, contentType string, raw []byte) (str
 	}
 	if ext == ".md" || ext == ".markdown" {
 		return text + "\n", true
+	}
+	title := strings.TrimSpace(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))
+	if title == "" {
+		title = "移动文档"
+	}
+	return "# " + title + "\n\n" + text + "\n", true
+}
+
+// mobileDocumentRequiresOfficeExtraction is the Mobile worker's explicit
+// contract for the six Office formats supported by the shared OfficeRead
+// boundary. Keep the upload scheduler in Hub in sync with this list.
+func mobileDocumentRequiresOfficeExtraction(filename string) bool {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx":
+		return true
+	default:
+		return false
+	}
+}
+
+func mobileDocumentSourceLimit(filename string) int64 {
+	if mobileDocumentRequiresOfficeExtraction(filename) {
+		return agent.MaxOfficeReadFileBytes
+	}
+	return mobileDocumentSourceMaxBytes
+}
+
+// mobileDocumentOfficeMarkdown writes an immutable, bounded upload to a
+// private temporary file and delegates parsing to the same OfficeRead route as
+// desktop attachments and read_document. This keeps Mobile's legacy Office
+// files within the configured per-format rollout/fallback policy rather than
+// treating binary data as text in the remote worker.
+func mobileDocumentOfficeMarkdown(filename string, raw []byte) (string, bool) {
+	if len(raw) == 0 || int64(len(raw)) > agent.MaxOfficeReadFileBytes {
+		return "", false
+	}
+	ext := strings.ToLower(filepath.Ext(filename))
+	if !mobileDocumentRequiresOfficeExtraction(filename) {
+		return "", false
+	}
+	temp, err := os.CreateTemp("", "maclaw-mobile-office-*"+ext)
+	if err != nil {
+		return "", false
+	}
+	path := temp.Name()
+	defer os.Remove(path)
+	if _, err := temp.Write(raw); err != nil {
+		_ = temp.Close()
+		return "", false
+	}
+	if err := temp.Close(); err != nil {
+		return "", false
+	}
+
+	text, _, err := agent.ExtractOfficeText(path)
+	text = strings.TrimSpace(text)
+	if err != nil || text == "" {
+		return "", false
 	}
 	title := strings.TrimSpace(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))
 	if title == "" {

@@ -39,11 +39,21 @@ type Config struct {
 	} `yaml:"pwa"`
 
 	Center struct {
-		Enabled              bool     `yaml:"enabled"`
-		BaseURL              string   `yaml:"base_url"`
-		BaseURLs             []string `yaml:"base_urls"`
-		RegisterOnStartup    bool     `yaml:"register_on_startup"`
-		HeartbeatIntervalSec int      `yaml:"heartbeat_interval_sec"`
+		Enabled  bool     `yaml:"enabled"`
+		BaseURL  string   `yaml:"base_url"`
+		BaseURLs []string `yaml:"base_urls"`
+		// InstallationID is generated once on first Hub Center registration and
+		// kept in config.yaml so a rebuilt local database still represents the
+		// same Hub installation.
+		InstallationID string `yaml:"installation_id"`
+		// OwnerEmail is recovery metadata only. It is not an authenticator.
+		OwnerEmail string `yaml:"owner_email"`
+		// RecoverySecret is the current Hub credential copied outside the local
+		// database. It proves possession of the existing Hub registration before
+		// Hub Center will rotate that registration after a database rebuild.
+		RecoverySecret       string `yaml:"recovery_secret"`
+		RegisterOnStartup    bool   `yaml:"register_on_startup"`
+		HeartbeatIntervalSec int    `yaml:"heartbeat_interval_sec"`
 	} `yaml:"center"`
 
 	Hub struct {
@@ -77,6 +87,13 @@ type Config struct {
 		Level string `yaml:"level"`
 		Dir   string `yaml:"dir"`
 	} `yaml:"logging"`
+
+	// DigitalAssets seeds enterprise digital asset libraries (Hub admin + client sync).
+	// Process-level enabled is only the default when a tenant has no saved setting;
+	// tenant admins can toggle under System Settings (persisted in system_settings).
+	DigitalAssets struct {
+		Enabled bool `yaml:"enabled"`
+	} `yaml:"digital_assets"`
 
 	Bridge struct {
 		Dir string `yaml:"dir"` // path to openclaw-bridge directory

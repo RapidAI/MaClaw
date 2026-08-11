@@ -135,11 +135,12 @@ func corelibToHubIncoming(msg cim.IncomingMessage) IncomingMessage {
 	}
 	for _, att := range msg.Attachments {
 		hubMsg.Attachments = append(hubMsg.Attachments, MessageAttachment{
-			Type:     att.Type,
-			FileName: att.FileName,
-			MimeType: att.MimeType,
-			Data:     att.Data,
-			Size:     att.Size,
+			Type:          att.Type,
+			FileName:      att.FileName,
+			MimeType:      att.MimeType,
+			Data:          att.Data,
+			Size:          att.Size,
+			SourceMediaID: att.SourceMediaID,
 		})
 	}
 	return hubMsg
@@ -159,11 +160,12 @@ func hubToCorelibIncoming(msg IncomingMessage) cim.IncomingMessage {
 	}
 	for _, att := range msg.Attachments {
 		cMsg.Attachments = append(cMsg.Attachments, cim.Attachment{
-			Type:     att.Type,
-			FileName: att.FileName,
-			MimeType: att.MimeType,
-			Data:     att.Data,
-			Size:     att.Size,
+			Type:          att.Type,
+			FileName:      att.FileName,
+			MimeType:      att.MimeType,
+			Data:          att.Data,
+			Size:          att.Size,
+			SourceMediaID: att.SourceMediaID,
 		})
 	}
 	return cMsg

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -138,11 +139,27 @@ func buildConversation(req ExecuteRequest, cfg corelib.MaclawLLMConfig) []interf
 		}
 		conversation = append(conversation, map[string]string{"role": role, "content": msg.Content})
 	}
-	userContent := agent.BuildUserContent(req.Message.Content, req.Message.Attachments, cfg.Protocol, cfg.SupportsVision, nil)
+	// SimpleLLMExecutor can serve concurrent tenants in one process. Bind the
+	// trusted request config to attachment auto-extraction so one tenant's
+	// persisted OfficeRead rollout does not select another tenant's parser.
+	// Environment overrides remain honored by the agent resolver for emergency
+	// operational rollback.
+	userContent := agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfig(req.Message.Content, req.Message.Attachments, cfg.Protocol, cfg.SupportsVision, nil, nil, attachmentStagingDir(req.Instance.Workspace), officeReadConfigFromAppConfig(req.Config))
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 	return conversation
 }
 
+// attachmentStagingDir keeps service attachments within an instance workspace.
+// Service-created instances always have a workspace; returning "" for malformed
+// direct executor calls preserves the shared desktop fallback instead of
+// accidentally creating a relative .attachments directory under the host CWD.
+func attachmentStagingDir(workspace string) string {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return ""
+	}
+	return filepath.Join(workspace, ".attachments")
+}
 func serviceSystemPrompt(req ExecuteRequest) string {
 	return fmt.Sprintf(
 		"You are MaClawSrv, a REST-exposed MaClaw agent runtime. Tenant=%s User=%s Instance=%s Session=%s. Keep answers practical and concise. Match the user's language. Shared user data root: %s.",

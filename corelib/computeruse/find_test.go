@@ -142,3 +142,19 @@ func TestPlaybookMentionsFindAndWindowHint(t *testing.T) {
 		}
 	}
 }
+
+func TestFindMatches_SkipsZeroBBoxOCRLines(t *testing.T) {
+	obs := &ObserveResult{
+		OCRLines: []taskengine.OCRResult{
+			{Text: "定位不到的按钮", BBox: [4]int{0, 0, 0, 0}, Confidence: 0.9},
+			{Text: "定位到的按钮", BBox: [4]int{100, 100, 80, 24}, Confidence: 0.9},
+		},
+	}
+	matches := FindMatches(obs, "按钮", 10)
+	if len(matches) != 1 {
+		t.Fatalf("matches = %d, want 1 (zero-bbox line must be skipped)", len(matches))
+	}
+	if matches[0].CenterX != 140 || matches[0].CenterY != 112 {
+		t.Fatalf("center = %d,%d, want 140,112", matches[0].CenterX, matches[0].CenterY)
+	}
+}

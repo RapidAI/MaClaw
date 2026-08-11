@@ -150,6 +150,168 @@ func TestApplyHubLLMServiceStatusToConfig_RemovesProviderWhenUnauthorized(t *tes
 	}
 }
 
+func TestApplyHubLLMServiceStatusToConfigRepairsProfilesReferencingRemovedHub(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: "Custom1",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: hubServiceProviderName, URL: "https://hub.example.com/v1", Model: "hub-model"},
+			{ID: "custom", Name: "Custom1", URL: "https://custom.example.com/v1", Model: "custom-model"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "custom", Model: "custom-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "hub", Model: "hub-model"},
+		},
+	}
+	if !app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{Active: false}) {
+		t.Fatal("expected removing referenced hub provider to change config")
+	}
+	if cfg.MaclawLLMProfiles == nil || !cfg.MaclawLLMProfiles.Coding.InheritAssistant {
+		t.Fatalf("coding profile = %#v, want follow assistant", cfg.MaclawLLMProfiles)
+	}
+	if cfg.MaclawLLMProfiles.Coding.ProviderID != "" || cfg.MaclawLLMProfiles.Coding.Model != "" {
+		t.Fatalf("following recovery draft = %#v, want cleared", cfg.MaclawLLMProfiles.Coding)
+	}
+}
+
+func TestApplyHubLLMServiceStatusToConfigKeepsAssistantHubProfileIntact(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: hubServiceProviderName, URL: "https://hub.example.com/v1", Model: "hub-model"},
+			{ID: "custom", Name: "Custom1", URL: "https://custom.example.com/v1", Model: "custom-model"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "hub-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}
+	// Normalization may still materialize defaults in a synthetic test config;
+	// the invariant is that it cannot delete or alter the active assignment.
+	app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{Active: false})
+	if _, ok := findProviderByName(cfg.MaclawLLMProviders, hubServiceProviderName); !ok {
+		t.Fatal("Hub provider referenced by assistant profile must remain")
+	}
+	if got := cfg.MaclawLLMProfiles.Assistant; got.ProviderID != "hub" || got.Model != "hub-model" {
+		t.Fatalf("assistant profile = %#v, want unchanged Hub selection", got)
+	}
+}
+
+func TestApplyHubLLMServiceStatusToConfigKeepsNormalizedAssistantHubCatalog(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			// The legacy alias has surrounding whitespace which normalization trims.
+			{ID: "hub", Name: " " + hubServiceProviderName + " ", URL: "https://hub.example.com/v1", Model: "hub-model"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "hub-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}
+	if !app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{Active: false}) {
+		t.Fatal("expected legacy Hub provider normalization")
+	}
+	if len(cfg.MaclawLLMProviders) != 1 || !isHubServiceProviderName(cfg.MaclawLLMProviders[0].Name) {
+		t.Fatalf("normalized Hub provider catalog = %#v", cfg.MaclawLLMProviders)
+	}
+	if cfg.MaclawLLMProfiles.Assistant.ProviderID != "hub" {
+		t.Fatalf("assistant profile changed: %#v", cfg.MaclawLLMProfiles.Assistant)
+	}
+}
+
+func TestApplyHubLLMServiceStatusToConfigPreservesHubProviderID(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: hubServiceProviderName, URL: "https://old.example.com/v1", Model: "hub-model"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "hub-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}
+	if !app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{Active: true, HubLLMBaseURL: "https://hub.example.com/v1"}) {
+		t.Fatal("expected Hub connection refresh to update the provider")
+	}
+	if got := cfg.MaclawLLMProviders[0].ID; got != "hub" {
+		t.Fatalf("Hub provider ID = %q, want stable ID hub", got)
+	}
+}
+
+func TestApplyHubLLMServiceStatusKeepsAssistantCompatibilityProjection(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "custom", Name: "Custom", URL: "https://custom.example.com/v1", Key: "custom-key", Model: "custom-model"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "custom", Model: "custom-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}
+	if !app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{Active: true, HubLLMBaseURL: "https://hub.example.com/v1"}) {
+		t.Fatal("expected Hub provider to be added")
+	}
+	if cfg.MaclawLLMCurrentProvider != "Custom" || cfg.MaclawLLMModel != "custom-model" || cfg.MaclawLLMUrl != "https://custom.example.com/v1" {
+		t.Fatalf("Hub sync overwrote assistant compatibility projection: current=%q model=%q url=%q", cfg.MaclawLLMCurrentProvider, cfg.MaclawLLMModel, cfg.MaclawLLMUrl)
+	}
+}
+
+func TestApplyHubLLMServiceStatusForceCurrentDoesNotOverrideProfiles(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: "Custom",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "custom", Name: "Custom", URL: "https://custom.example.com/v1", Model: "custom-model"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "custom", Model: "custom-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}
+	if !app.applyHubLLMServiceStatusPatchToConfig(cfg, HubLLMServiceStatus{Active: true, HubLLMBaseURL: "https://hub.example.com/v1"}, true) {
+		t.Fatal("expected Hub catalog change")
+	}
+	if cfg.MaclawLLMCurrentProvider != "Custom" {
+		t.Fatalf("force sync changed profile-backed current provider to %q", cfg.MaclawLLMCurrentProvider)
+	}
+}
+
+func TestApplyHubLLMServiceStatusRemovalRestoresAssistantCompatibilityProjection(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: hubServiceProviderName, // stale legacy mirror
+		MaclawLLMUrl:             "https://hub.example.com/v1",
+		MaclawLLMModel:           "hub-model",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: hubServiceProviderName, URL: "https://hub.example.com/v1", Model: "hub-model"},
+			{ID: "custom", Name: "Custom", URL: "https://custom.example.com/v1", Key: "custom-key", Model: "custom-model"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "custom", Model: "custom-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "hub", Model: "hub-model"},
+		},
+	}
+	if !app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{Active: false}) {
+		t.Fatal("expected Hub provider removal")
+	}
+	if cfg.MaclawLLMCurrentProvider != "Custom" || cfg.MaclawLLMModel != "custom-model" || cfg.MaclawLLMUrl != "https://custom.example.com/v1" {
+		t.Fatalf("Hub removal did not restore assistant compatibility projection: current=%q model=%q url=%q", cfg.MaclawLLMCurrentProvider, cfg.MaclawLLMModel, cfg.MaclawLLMUrl)
+	}
+	if !cfg.MaclawLLMProfiles.Coding.InheritAssistant {
+		t.Fatalf("coding profile = %#v, want follow assistant after Hub removal", cfg.MaclawLLMProfiles.Coding)
+	}
+}
+
 func TestSyncHubLLMServiceStatusPatchesWithoutStaleOverwrite(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

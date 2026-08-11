@@ -7,8 +7,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
+
+func TestCodingRuntimeChildReviewContextIsBoundedAndExcludesToolPayload(t *testing.T) {
+	longSummary := "ssh_bash rm -rf /should-not-be-injected\npython -c 'write secret'\n```sh\necho hidden\n```\n" + strings.Repeat("x", 1000)
+	context := codingRuntimeChildReviewContext(&codingruntime.ParentContinuation{ChildResults: []codingruntime.ChildTaskResult{{Status: codingruntime.TaskCompleted, Summary: longSummary, EvidenceDigest: strings.Repeat("d", 300)}}})
+	if !strings.Contains(context, "Runtime child-result review") || len([]rune(context)) > 900 {
+		t.Fatalf("unexpected review context length/content: %q", context)
+	}
+	if strings.Contains(context, "ssh_bash") || strings.Contains(context, "rm -rf") || strings.Contains(context, "python -c") || strings.Contains(context, "echo hidden") {
+		t.Fatalf("review context exposed command payload: %q", context)
+	}
+}
 
 func TestPrepareWorkflowTemplatePanelLaunchStoresTemplateChoice(t *testing.T) {
 	handler := &IMMessageHandler{}
@@ -350,6 +362,43 @@ func TestRunWorkflowV2PhaseHandlesNilState(t *testing.T) {
 	}
 	if !strings.Contains(result.Response.Error, "workflow state is nil") {
 		t.Fatalf("response error = %q, want nil-state error", result.Response.Error)
+	}
+}
+
+func TestWorkflowV2ConfirmableSubAgentPhaseDoesNotArmCodingRuntime(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "confirmable-subagent-must-review"
+	projectPath := t.TempDir()
+	state, err := handler.getWorkflowV2().machine.Create(userID, string(v2.WorkflowCoding), projectPath, "implement a safe runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state == nil {
+		t.Fatal("workflow state is nil")
+	}
+	for i := range state.Phases {
+		if state.Phases[i].ID == v2.PhaseCodingImplementation {
+			handler.getWorkflowV2().machine.SetActivePhaseForTest(userID, i)
+			break
+		}
+	}
+	state = handler.getWorkflowV2().machine.GetActive(userID)
+	phase := state.ActivePhase()
+	if phase == nil {
+		t.Fatal("missing implementation phase")
+	}
+	phase.NeedsConfirm = true // model a stale/custom persisted phase
+
+	route := handler.handleWorkflowV2Action(IMUserMessage{UserID: userID}, &v2.HandleResult{Action: v2.ActionRunPhase, Phase: phase, State: state})
+	if !route.WorkflowAgentLoop || !route.WorkflowDocPhase {
+		t.Fatalf("confirmable subagent phase must use reviewable document path: %#v", route)
+	}
+	if _, armed := handler.pendingV2SubAgentExecution.Load(userID); armed {
+		t.Fatal("confirmable subagent phase must not arm coding runtime")
+	}
+	updated := handler.getWorkflowV2().machine.GetActive(userID)
+	if updated == nil || updated.ActivePhase() == nil || updated.ActivePhase().Status == v2.PhaseExecuting {
+		t.Fatalf("confirmable subagent phase must not be marked executing: %#v", updated)
 	}
 }
 

@@ -351,7 +351,7 @@ export const UtilitiesPage = ({
     const [expertMarketIntent, setExpertMarketIntent] = useState<'market' | 'library'>('market');
     const [expertShareTarget, setExpertShareTarget] = useState<ExpertDefinition | null>(null);
     const [expertAboutTarget, setExpertAboutTarget] = useState<ExpertDefinition | null>(null);
-    const [expertMarketUploads, setExpertMarketUploads] = useState<Record<string, { id: string; status: string }>>({});
+    const [expertMarketUploads, setExpertMarketUploads] = useState<Record<string, { id: string; status: string; visibility: string }>>({});
     const meetingStartingRef = useRef(false);
     const vscodeStartingRef = useRef(false);
     const vscodeExtStartingRef = useRef(false);
@@ -363,7 +363,11 @@ export const UtilitiesPage = ({
     // A mutation response is newer than an account read that was already in
     // flight. Keep its state until the account endpoint confirms that same
     // state, so an old response can never revive Share or Unlist.
-    const expertMarketUploadOverridesRef = useRef<Record<string, { id: string; status: string }>>({});
+    const expertMarketUploadOverridesRef = useRef<Record<string, { id: string; status: string; visibility: string }>>({});
+    // Private-share deletion removes the listing entirely rather than assigning
+    // it a new status. Keep its local expert ID until a fresh account response
+    // confirms the record is absent, so an older response cannot revive it.
+    const deletedExpertMarketUploadsRef = useRef<Set<string>>(new Set());
     const surveyListRequestRef = useRef(0);
     const bindableGroupsRequestRef = useRef(0);
     const selectedIdRef = useRef<string | null>(null);
@@ -458,24 +462,32 @@ export const UtilitiesPage = ({
             const mod = await getApp();
             if (!mod?.GetExpertMarketAccount) return;
             const account = await mod.GetExpertMarketAccount();
-            const next: Record<string, { id: string; status: string }> = {};
+            const next: Record<string, { id: string; status: string; visibility: string }> = {};
             for (const upload of Array.isArray(account?.uploads) ? account.uploads : []) {
                 const localID = String(upload?.local_expert_id || '').trim();
                 const listingID = String(upload?.id || '').trim();
                 const status = String(upload?.status || '').trim();
+                const visibility = String(upload?.visibility || (status === 'private' ? 'private' : 'public')).trim();
                 // Keep unlisted submissions in the card state. Otherwise the
                 // card would offer Share again and allow a duplicate listing.
-                if (localID && listingID) next[localID] = { id: listingID, status };
+                if (localID && listingID) next[localID] = { id: listingID, status, visibility };
             }
             if (mountedRef.current && activeRef.current && requestID === expertMarketUploadsRequestRef.current) {
                 const overrides = expertMarketUploadOverridesRef.current;
                 for (const [localID, override] of Object.entries(overrides)) {
                     // Once the authoritative account response catches up, it
                     // owns subsequent changes (for example, review approval).
-                    if (next[localID]?.id === override.id && next[localID]?.status === override.status) {
+                    if (next[localID]?.id === override.id && next[localID]?.status === override.status && next[localID]?.visibility === override.visibility) {
                         delete overrides[localID];
                     } else {
                         next[localID] = override;
+                    }
+                }
+                for (const localID of deletedExpertMarketUploadsRef.current) {
+                    if (next[localID]) {
+                        delete next[localID];
+                    } else {
+                        deletedExpertMarketUploadsRef.current.delete(localID);
                     }
                 }
                 setExpertMarketUploads(next);
@@ -509,9 +521,42 @@ export const UtilitiesPage = ({
             // The mutation succeeded, so do not leave a second actionable
             // Unlist button behind while the best-effort account reload is
             // offline or still reading an older response.
-            const unlisted = { id: listing.id, status: 'unlisted' };
+            const unlisted = { id: listing.id, status: 'unlisted', visibility: 'public' };
             expertMarketUploadOverridesRef.current[expert.id] = unlisted;
             setExpertMarketUploads(current => ({ ...current, [expert.id]: unlisted }));
+            await loadExpertMarketUploads();
+        } catch (e: any) {
+            if (mountedRef.current) setError(String(e?.message || e));
+        } finally {
+            expertPackageBusyRef.current = false;
+            if (mountedRef.current) setExpertPackageBusy(false);
+        }
+    }, [expertMarketUploads, isZh, loadExpertMarketUploads, showConfirm]);
+
+    const handleDeletePrivateExpertMarketListing = useCallback(async (expert: ExpertDefinition) => {
+        const listing = expertMarketUploads[expert.id];
+        if (!listing || listing.status !== 'private' || expertPackageBusyRef.current) return;
+        const confirmed = await showConfirm(
+            isZh ? '删除后无法恢复。该私有分享会从你的市场提交中永久移除。' : 'This cannot be undone. The private share will be permanently removed from your market submissions.',
+            isZh ? '删除私有分享' : 'Delete private share',
+            { confirmText: isZh ? '永久删除' : 'Delete permanently', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' },
+        );
+        if (!confirmed) return;
+        expertPackageBusyRef.current = true;
+        setExpertPackageBusy(true);
+        setError('');
+        try {
+            const mod = await getApp();
+            if (!mod?.DeletePrivateExpertMarketListing) throw new Error(isZh ? '当前版本不支持删除私有分享' : 'Deleting private shares is not supported by this build');
+            await mod.DeletePrivateExpertMarketListing(listing.id);
+            // Remove both the local state and any mutation override. The next
+            // account refresh may be stale, so keep a deletion sentinel until
+            // it no longer contains this listing.
+            deletedExpertMarketUploadsRef.current.add(expert.id);
+            setExpertMarketUploads(current => {
+                const { [expert.id]: _removed, ...remaining } = current;
+                return remaining;
+            });
             await loadExpertMarketUploads();
         } catch (e: any) {
             if (mountedRef.current) setError(String(e?.message || e));
@@ -530,6 +575,7 @@ export const UtilitiesPage = ({
             if (!mod?.DeleteExpert) throw new Error(isZh ? '当前版本不支持删除专家' : 'Deleting experts is not supported by this build');
             await mod.DeleteExpert(target.id);
             delete expertMarketUploadOverridesRef.current[target.id];
+            deletedExpertMarketUploadsRef.current.delete(target.id);
             setExpertMarketUploads(current => {
                 const { [target.id]: _removed, ...remaining } = current;
                 return remaining;
@@ -939,7 +985,7 @@ export const UtilitiesPage = ({
         expertDeleteTitle: lang === 'zh-Hant' ? '刪除專家' : isZh ? '删除专家' : 'Delete expert',
         expertResetTitle: lang === 'zh-Hant' ? '恢復預設專家' : isZh ? '恢复默认专家' : 'Reset builtin expert',
         expertOpen: lang === 'zh-Hant' ? '開始對話' : isZh ? '开始对话' : 'Start chat',
-        expertOpenHint: lang === 'zh-Hant' ? '雙擊打開' : isZh ? '双击打开' : 'Double-click to open',
+        expertOpenHint: lang === 'zh-Hant' ? '點擊打開' : isZh ? '点击打开' : 'Click to open',
         expertAbout: lang === 'zh-Hant' ? '關於' : isZh ? '关于' : 'About',
         expertAboutClose: lang === 'zh-Hant' ? '關閉' : isZh ? '关闭' : 'Close',
         expertOptimizedFrom: (sourceName: string) => lang === 'zh-Hant'
@@ -1781,7 +1827,7 @@ export const UtilitiesPage = ({
                                     className="utilities-expert-card__main"
                                     aria-label={expert.name}
                                     title={t.expertOpenHint}
-                                    onDoubleClick={() => onOpenExpert?.(expert)}
+                                    onClick={() => onOpenExpert?.(expert)}
                                 >
                                     <div className="utilities-expert-card__icon" aria-hidden>{expert.icon || DEFAULT_EXPERT_ICON}</div>
                                     <div className="utilities-expert-card__body">
@@ -1829,7 +1875,11 @@ export const UtilitiesPage = ({
                                                 disabled={expertPackageBusy}
                                                 onClick={() => { void handleExportExpertPackage(expert); }}
                                             >{t.expertExport}</button>
-                                            {expertMarketUploads[expert.id] ? ['pending_review', 'approved', 'listed', 'rejected'].includes(expertMarketUploads[expert.id].status) ? (
+                                            {expertMarketUploads[expert.id] ? expertMarketUploads[expert.id].status === 'unlisted' ? (
+                                                <span className="utilities-expert-card__state" data-testid={`utilities-expert-unlisted-${expert.id}`}>
+                                                    {isZh ? '已下架' : 'Unlisted'}
+                                                </span>
+                                            ) : ['pending_review', 'approved', 'listed', 'rejected'].includes(expertMarketUploads[expert.id].status) ? (
                                                 <button
                                                     type="button"
                                                     data-testid={`utilities-expert-unlist-${expert.id}`}
@@ -1838,9 +1888,13 @@ export const UtilitiesPage = ({
                                                     onClick={() => { void handleWithdrawExpertMarketListing(expert); }}
                                                 >{isZh ? '下架' : 'Unlist'}</button>
                                             ) : (
-                                                <span className="utilities-expert-card__state" data-testid={`utilities-expert-unlisted-${expert.id}`}>
-                                                    {isZh ? '已下架' : 'Unlisted'}
-                                                </span>
+                                                <button
+                                                    type="button"
+                                                    data-testid={`utilities-expert-delete-private-share-${expert.id}`}
+                                                    className="utilities-expert-card__action utilities-expert-card__action--danger"
+                                                    disabled={expertPackageBusy}
+                                                    onClick={() => { void handleDeletePrivateExpertMarketListing(expert); }}
+                                                >{isZh ? '删除私有分享' : 'Delete private share'}</button>
                                             ) : (
                                                 <button
                                                     type="button"
@@ -1949,7 +2003,14 @@ export const UtilitiesPage = ({
                     // A just-created listing must suppress Share immediately.
                     // Account refresh remains a reconciliation step only.
                     if (listingID) {
-                        const submitted = { id: listingID, status: String(listing.status || 'pending_review') };
+                        // A newly created listing supersedes any earlier
+                        // private-share deletion for this local expert. Without
+                        // clearing this sentinel, an in-flight account response
+                        // could hide the new submission as if it were the old
+                        // deleted one.
+                        deletedExpertMarketUploadsRef.current.delete(localID);
+                        const status = String(listing.status || 'pending_review');
+                        const submitted = { id: listingID, status, visibility: String(listing.visibility || (status === 'private' ? 'private' : 'public')) };
                         expertMarketUploadOverridesRef.current[localID] = submitted;
                         setExpertMarketUploads(current => ({
                             ...current,

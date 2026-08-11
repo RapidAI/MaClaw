@@ -22,7 +22,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     LoadProjectTabIndex: vi.fn().mockResolvedValue([]),
-    CloseProjectTabSession: vi.fn().mockResolvedValue(undefined),
+    CloseAssistantTabSession: vi.fn().mockResolvedValue(undefined),
     CreateProjectTabSession: vi.fn().mockResolvedValue(undefined),
     SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
     LoadProjectTabConversation: vi.fn().mockResolvedValue(null),
@@ -65,6 +65,27 @@ describe('AITabTypes', () => {
 });
 
 describe('useAITabManager', () => {
+    it('assigns quick model scope from task type as tabs change', () => {
+        const { result } = renderHook(() => useAITabManager());
+
+        expect(result.current.activeTab.executionProfile).toBe('assistant');
+
+        act(() => {
+            result.current.createProjectTab('D:/tasks/coding-profile', 'Coding task', { agentMode: 'coding_dev' });
+        });
+        expect(result.current.activeTab.executionProfile).toBe('coding');
+
+        act(() => {
+            result.current.activateTab('local');
+        });
+        expect(result.current.activeTab.executionProfile).toBe('assistant');
+
+        act(() => {
+            result.current.createProjectTab('D:/tasks/unspecified-profile', 'Legacy task');
+        });
+        expect(result.current.activeTab.executionProfile).toBe('none');
+    });
+
     it('opens pending digital employees by machine id when available', async () => {
         const createVETab = vi.fn().mockReturnValue(null);
         const onHandled = vi.fn();

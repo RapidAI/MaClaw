@@ -15,6 +15,7 @@ func TestShouldMaximiseMainWindowForConstrainedScreens(t *testing.T) {
 		{"1366x768 laptop", 1366, 768, true},
 		{"1280x1024 desktop", 1280, 1024, true},
 		{"1080p at 150 percent scaling", 1280, 720, true},
+		{"1080p at 125 percent scaling", 1536, 864, false},
 		{"1440x900 laptop", 1440, 900, false},
 		{"1080p desktop", 1920, 1080, false},
 		{"screen detection failed", 0, 0, false},
@@ -42,6 +43,7 @@ func TestPostEnvironmentCheckPreservesTheStartupMaximisePolicy(t *testing.T) {
 	tests := [][2]int{
 		{1366, 768},
 		{1280, 720},
+		{1536, 864},
 		{1440, 900},
 		{1920, 1080},
 	}

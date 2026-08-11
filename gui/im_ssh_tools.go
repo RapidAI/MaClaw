@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -38,6 +39,62 @@ func (h *IMMessageHandler) sshSessionAlive(sessionID string) bool {
 		return false
 	}
 	return sshSessionStatusUsable(status)
+}
+
+// sshExecRuntimeBound is the narrow SSH execution path for a frozen remote
+// coding Runtime target. Unlike sshExec it deliberately never reconnects,
+// starts a background task, or substitutes another session. A Runtime attempt
+// must be interrupted and reviewed when its verified session disappears.
+//
+// expectedIdentity includes host, user, port, workdir and the configured
+// host-key pin. Callers construct commands only from frozen task values; this
+// helper is not a general-purpose SSH tool surface.
+func (h *IMMessageHandler) sshExecRuntimeBound(sessionID, command string, waitSeconds int, expectedIdentity, workDir string) (string, error) {
+	return h.sshExecRuntimeBoundContext(context.Background(), sessionID, command, waitSeconds, expectedIdentity, workDir)
+}
+
+// sshExecRuntimeBoundContext preserves the frozen-session/no-reconnect
+// contract while allowing a runtime child to stop waiting promptly. It does
+// not send an interrupt to the shared SSH session: cancellation only prevents
+// this caller from accepting further output or issuing another tool call.
+func (h *IMMessageHandler) sshExecRuntimeBoundContext(ctx context.Context, sessionID, command string, waitSeconds int, expectedIdentity, workDir string) (string, error) {
+	if h == nil {
+		return "", fmt.Errorf("remote coding runtime handler is unavailable")
+	}
+	sessionID, command = strings.TrimSpace(sessionID), strings.TrimSpace(command)
+	if sessionID == "" || command == "" || strings.TrimSpace(expectedIdentity) == "" || strings.TrimSpace(workDir) == "" {
+		return "", fmt.Errorf("remote coding runtime binding is incomplete")
+	}
+	mgr := h.ensureSSHManager()
+	if mgr == nil {
+		return "", fmt.Errorf("remote coding runtime session manager is unavailable")
+	}
+	session, ok := mgr.Get(sessionID)
+	if !ok || !guiRuntimeSSHSessionAlive(session) || guiRemoteCodingTargetIdentity(h, sessionID, workDir) != expectedIdentity {
+		return "", fmt.Errorf("verified remote coding session is unavailable; no reconnect was attempted")
+	}
+	before := session.LineCount()
+	if err := mgr.WriteInput(sessionID, command); err != nil {
+		return "", fmt.Errorf("submit remote coding command: %w", err)
+	}
+	if waitSeconds <= 0 {
+		waitSeconds = 15
+	}
+	if waitSeconds > 600 {
+		waitSeconds = 600
+	}
+	lines, _ := mgr.WaitForOutputContext(ctx, sessionID, before, time.Duration(waitSeconds)*time.Second)
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	output := strings.Join(lines, "\n")
+	if len(output) > 8000 {
+		output = output[:4000] + "\n... (truncated) ...\n" + output[len(output)-4000:]
+	}
+	if strings.TrimSpace(output) == "" {
+		return "", fmt.Errorf("remote coding command returned no output")
+	}
+	return output, nil
 }
 
 // sshSessionStatusUsable is deliberately stricter than "record exists": a

@@ -15,7 +15,9 @@ func TestAdminWebServesEmbeddedShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	defer svc.Close()
 	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	defer server.Close()
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)
 	w := httptest.NewRecorder()
@@ -390,6 +392,7 @@ func TestAdminWebUsesTenantUserSelectors(t *testing.T) {
 		"/import/file",
 		"/import/urls",
 		"id=\"publicKnowledgeFile\" type=\"file\" multiple",
+		"accept=\".doc,.docx,.pdf,.ppt,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar\"",
 		"files.forEach(file=>form.append('file',file))",
 		"data-public-kb-add",
 		"data-public-kb-remove",

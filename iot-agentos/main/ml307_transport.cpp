@@ -15,6 +15,7 @@
 #include "at_uart.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "maclaw_ml307";
@@ -23,6 +24,19 @@ static std::unique_ptr<AtModem> s_modem;
 // Modem discovery/network registration is a lifecycle operation. HTTP traffic
 // only borrows the shared AtUart and must not hold this lock during a request.
 static std::mutex s_lifecycle_mutex;
+static std::atomic<bool> s_admission_open{true};
+static std::atomic<bool> s_start_in_progress{false};
+static std::atomic<bool> s_start_stop_requested{false};
+
+/* Admission and active-borrower accounting form one lifecycle boundary.  A
+ * request is counted before it observes the shared modem/UART, so quiesce can
+ * close admission and then wait for every pre-existing borrower to finish its
+ * MHTTP cleanup.  Keep this separate from s_lifecycle_mutex: HTTP traffic
+ * must not serialize for its full lifetime just because start/probe needs the
+ * modem object. */
+static std::mutex s_http_borrower_mutex;
+static std::condition_variable s_http_borrower_cv;
+static unsigned s_active_http_borrowers;
 
 // +MHTTPCREATE does not identify the caller. Serialize only allocation so the
 // one request whose awaiting_create_ flag is set can claim the returned ID.
@@ -33,6 +47,11 @@ static std::mutex s_http_create_mutex;
 class Ml307Request;
 static std::mutex s_foreground_mutex;
 static Ml307Request *s_foreground_request;
+/* Requests are registered by a logical worker owner, rather than by a board
+ * or modem role.  A meeting upload can therefore be cancelled during a
+ * lifecycle stop without borrowing the foreground slot used by commands. */
+static std::mutex s_owner_requests_mutex;
+static std::vector<Ml307Request *> s_owner_requests;
 
 // The modem exposes exactly four HTTP IDs (0..3). Waiting here avoids turning
 // a brief burst (poll + ACK + foreground + asset) into MHTTPCREATE failures.
@@ -55,10 +74,17 @@ static constexpr int kHttpContentWriteTimeoutMs = 10000;
 // instead of trusting the last successful boot state indefinitely.
 static constexpr int kNetworkProbeIntervalMs = 5000;
 static TaskHandle_t s_network_probe_task;
+static SemaphoreHandle_t s_network_probe_stopped;
+static std::atomic<bool> s_network_probe_stop_requested{false};
+static std::mutex s_network_probe_mutex;
 
 static void network_probe_task(void *) {
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(kNetworkProbeIntervalMs));
+    while (!s_network_probe_stop_requested.load()) {
+        /* The probe owns no persistent transport state.  Use its direct task
+         * notification as the stop token rather than making quiesce wait for
+         * a five-second periodic sleep. */
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(kNetworkProbeIntervalMs));
+        if (s_network_probe_stop_requested.load()) break;
         std::shared_ptr<AtUart> uart;
         {
             std::lock_guard<std::mutex> lock(s_lifecycle_mutex);
@@ -70,15 +96,52 @@ static void network_probe_task(void *) {
         (void)uart->SendCommand("AT+CEREG?", 1000);
         (void)uart->SendCommand("AT+MIPCALL?", 1000);
     }
+    {
+        std::lock_guard<std::mutex> lock(s_network_probe_mutex);
+        if (s_network_probe_task == xTaskGetCurrentTaskHandle()) {
+            s_network_probe_task = nullptr;
+        }
+    }
+    if (s_network_probe_stopped) xSemaphoreGive(s_network_probe_stopped);
+    vTaskDelete(nullptr);
 }
 
 static void ensure_network_probe_task() {
-    if (s_network_probe_task) return;
+    std::lock_guard<std::mutex> lock(s_network_probe_mutex);
+    if (s_network_probe_task || !s_admission_open.load()) return;
+    if (!s_network_probe_stopped) {
+        s_network_probe_stopped = xSemaphoreCreateBinary();
+        if (!s_network_probe_stopped) {
+            ESP_LOGW(TAG, "cannot allocate ML307 network probe completion semaphore");
+            return;
+        }
+    }
+    while (xSemaphoreTake(s_network_probe_stopped, 0) == pdTRUE) {}
+    s_network_probe_stop_requested.store(false);
     if (xTaskCreate(network_probe_task, "ml307_network_probe", 3072, nullptr, 2,
                     &s_network_probe_task) != pdPASS) {
         s_network_probe_task = nullptr;
         ESP_LOGW(TAG, "cannot start ML307 network probe");
     }
+}
+
+static esp_err_t stop_network_probe_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    TaskHandle_t task = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(s_network_probe_mutex);
+        task = s_network_probe_task;
+    }
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+    s_network_probe_stop_requested.store(true);
+    xTaskNotifyGive(task);
+    if (!s_network_probe_stopped ||
+        xSemaphoreTake(s_network_probe_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    ESP_LOGI(TAG, "ML307 network probe stopped");
+    return ESP_OK;
 }
 
 static bool acquire_http_slot(std::unique_lock<std::mutex>& lock,
@@ -87,7 +150,8 @@ static bool acquire_http_slot(std::unique_lock<std::mutex>& lock,
     return s_slot_cv.wait_for(
         lock, std::chrono::milliseconds(timeout_ms),
         [&cancelled] {
-            return s_slots_in_use < kHttpSlotCount || cancelled.load();
+            return s_slots_in_use < kHttpSlotCount || cancelled.load() ||
+                   !s_admission_open.load();
         });
 }
 
@@ -120,12 +184,58 @@ static int method_number(const char *method) {
     return 0;
 }
 
+/* Lifetime must enclose the complete Ml307Request object.  In particular,
+ * Ml307Request's destructor sends MHTTPDEL and removes its URC callback before
+ * this borrower decrements the counter; a successful quiesce therefore proves
+ * neither operation is still touching the modem/UART. */
+class Ml307HttpBorrower {
+public:
+    Ml307HttpBorrower() = default;
+    ~Ml307HttpBorrower() { Release(); }
+
+    Ml307HttpBorrower(const Ml307HttpBorrower&) = delete;
+    Ml307HttpBorrower& operator=(const Ml307HttpBorrower&) = delete;
+
+    bool Acquire() {
+        std::unique_lock<std::mutex> borrower_lock(s_http_borrower_mutex);
+        if (!s_admission_open.load()) return false;
+
+        /* Lock order is borrower -> lifecycle everywhere.  Quiesce only holds
+         * the borrower lock long enough to close admission, then releases it
+         * before joining workers, so it cannot deadlock behind a UART call. */
+        std::lock_guard<std::mutex> lifecycle_lock(s_lifecycle_mutex);
+        if (!s_admission_open.load() || !s_modem || !s_modem->network_ready()) {
+            return false;
+        }
+        uart_ = s_modem->GetAtUart();
+        if (!uart_) return false;
+        ++s_active_http_borrowers;
+        active_ = true;
+        return true;
+    }
+
+    const std::shared_ptr<AtUart>& uart() const { return uart_; }
+
+private:
+    void Release() {
+        if (!active_) return;
+        std::lock_guard<std::mutex> lock(s_http_borrower_mutex);
+        active_ = false;
+        uart_.reset();
+        if (s_active_http_borrowers > 0) --s_active_http_borrowers;
+        s_http_borrower_cv.notify_all();
+    }
+
+    std::shared_ptr<AtUart> uart_;
+    bool active_ = false;
+};
+
 class Ml307Request {
 public:
     Ml307Request(std::shared_ptr<AtUart> uart, int timeout_ms,
-                 bool foreground)
+                 const void *cancellation_owner, bool foreground)
         : uart_(std::move(uart)), timeout_ms_(timeout_ms > 0 ? timeout_ms : 30000),
-          foreground_(foreground) {
+          cancellation_owner_(cancellation_owner), foreground_(foreground) {
         callback_ = uart_->RegisterUrcCallback(
             [this](const std::string& command,
                    const std::vector<AtArgumentValue>& arguments) {
@@ -135,9 +245,18 @@ public:
             std::lock_guard<std::mutex> lock(s_foreground_mutex);
             s_foreground_request = this;
         }
+        if (cancellation_owner_) {
+            std::lock_guard<std::mutex> lock(s_owner_requests_mutex);
+            s_owner_requests.push_back(this);
+        }
     }
 
     ~Ml307Request() {
+        if (cancellation_owner_) {
+            std::lock_guard<std::mutex> lock(s_owner_requests_mutex);
+            auto request = std::find(s_owner_requests.begin(), s_owner_requests.end(), this);
+            if (request != s_owner_requests.end()) s_owner_requests.erase(request);
+        }
         if (foreground_) {
             std::lock_guard<std::mutex> lock(s_foreground_mutex);
             if (s_foreground_request == this) s_foreground_request = nullptr;
@@ -155,6 +274,8 @@ public:
     Ml307Request(const Ml307Request&) = delete;
     Ml307Request& operator=(const Ml307Request&) = delete;
 
+    const void *cancellation_owner() const { return cancellation_owner_; }
+
     bool Open(const char *method, const char *url, const char *content_type,
               const char *authorization, const char *extra_header_name,
               const char *extra_header_value, const void *body,
@@ -170,7 +291,7 @@ public:
         {
             std::unique_lock<std::mutex> slot_lock(s_slot_mutex);
             bool available = acquire_http_slot(slot_lock, timeout_ms_, cancelled_);
-            if (!available || cancelled_.load()) return false;
+            if (!available || cancelled_.load() || !s_admission_open.load()) return false;
             ++s_slots_in_use;
             slot_acquired_ = true;
         }
@@ -310,13 +431,17 @@ public:
         return static_cast<int>(count);
     }
 
-    void Cancel() {
+    void RequestCancel() {
         cancelled_.store(true);
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             state_cv_.notify_all();
         }
         s_slot_cv.notify_all();
+    }
+
+    void Cancel() {
+        RequestCancel();
         // If MHTTPCREATE is in progress, wait until Open has claimed the
         // returned ID before deleting it. Otherwise a cancellation between the
         // command's OK and its allocation URC can leak one of four modem slots.
@@ -461,6 +586,7 @@ private:
 
     std::shared_ptr<AtUart> uart_;
     int timeout_ms_;
+    const void *cancellation_owner_ = nullptr;
     bool foreground_;
     std::list<UrcCallback>::iterator callback_;
     std::mutex state_mutex_;
@@ -490,16 +616,34 @@ extern "C" bool ml307_transport_is_ready(void) {
 extern "C" esp_err_t ml307_transport_start(int tx_gpio, int rx_gpio,
                                             int baud_rate, int timeout_ms,
                                             const char *apn) {
+    if (timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
+    if (!s_admission_open.load()) return ESP_ERR_INVALID_STATE;
+    bool expected_not_starting = false;
+    if (!s_start_in_progress.compare_exchange_strong(expected_not_starting, true)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_start_stop_requested.store(false);
+    const auto complete_start = []() { s_start_in_progress.store(false); };
     std::lock_guard<std::mutex> lock(s_lifecycle_mutex);
-    if (s_modem && s_modem->network_ready()) return ESP_OK;
+    if (!s_admission_open.load() || s_start_stop_requested.load()) {
+        complete_start();
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_modem && s_modem->network_ready()) {
+        complete_start();
+        return ESP_OK;
+    }
 
     if (!s_modem) {
         ESP_LOGI(TAG, "detecting ML307 on GPIO%d/GPIO%d at %d baud",
                  tx_gpio, rx_gpio, baud_rate);
         s_modem = AtModem::Detect((gpio_num_t)tx_gpio, (gpio_num_t)rx_gpio,
-                                  GPIO_NUM_NC, baud_rate, timeout_ms);
+                                  GPIO_NUM_NC, baud_rate, timeout_ms,
+                                  [] { return s_start_stop_requested.load() ||
+                                               !s_admission_open.load(); });
         if (!s_modem) {
             ESP_LOGE(TAG, "ML307 detection failed");
+            complete_start();
             return ESP_ERR_NOT_FOUND;
         }
     }
@@ -517,20 +661,25 @@ extern "C" esp_err_t ml307_transport_start(int tx_gpio, int rx_gpio,
         }
         if (!safe) {
             ESP_LOGE(TAG, "invalid ML307 APN");
+            complete_start();
             return ESP_ERR_INVALID_ARG;
         }
         auto uart = s_modem->GetAtUart();
         std::string command = "AT+CGDCONT=1,\"IP\",\"" + std::string(apn) + "\"";
         if (!uart->SendCommand(command)) {
             ESP_LOGE(TAG, "cannot configure ML307 APN");
+            complete_start();
             return ESP_FAIL;
         }
         ESP_LOGI(TAG, "ML307 custom APN configured");
     }
 
-    NetworkStatus status = s_modem->WaitForNetworkReady(timeout_ms);
+    NetworkStatus status = s_modem->WaitForNetworkReady(
+        timeout_ms, [] { return s_start_stop_requested.load() ||
+                                     !s_admission_open.load(); });
     if (status != NetworkStatus::Ready || !s_modem->network_ready()) {
         ESP_LOGE(TAG, "ML307 network registration failed: %d", (int)status);
+        complete_start();
         return status == NetworkStatus::ErrorTimeout ? ESP_ERR_TIMEOUT : ESP_FAIL;
     }
     ESP_LOGI(TAG, "ML307 network ready: revision=%s carrier=%s signal=%d",
@@ -541,14 +690,98 @@ extern "C" esp_err_t ml307_transport_start(int tx_gpio, int rx_gpio,
     if (!uart->SendCommand("AT+MSSLCFG=\"auth\",0,0")) {
         ESP_LOGW(TAG, "cannot select ML307 TLS auth mode");
     }
+    complete_start();
+    return ESP_OK;
+}
+
+extern "C" esp_err_t ml307_transport_quiesce(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    {
+        /* Serialize the admission transition with HttpBorrower::Acquire(). A
+         * request can therefore be either rejected or included in the drain
+         * count; it cannot slip between the readiness check and registration. */
+        std::lock_guard<std::mutex> lock(s_http_borrower_mutex);
+        s_admission_open.store(false);
+    }
+    // Wake requests waiting for a scarce modem HTTP ID so they reject promptly
+    // instead of holding the quiesce drain behind their full caller timeout.
+    s_slot_cv.notify_all();
+    s_start_stop_requested.store(true);
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = pdMS_TO_TICKS(timeout_ms);
+    while (s_start_in_progress.load()) {
+        if (xTaskGetTickCount() - started >= budget) {
+            ESP_LOGW(TAG, "ML307 transport start did not stop before quiesce deadline");
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
+    const TickType_t elapsed = xTaskGetTickCount() - started;
+    uint32_t remaining_ms = 1u;
+    if (elapsed < budget) {
+        const TickType_t remaining_ticks = budget - elapsed;
+        remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+        if (remaining_ms == 0) remaining_ms = 1u;
+    }
+    esp_err_t probe_err = stop_network_probe_task(remaining_ms);
+    if (probe_err != ESP_OK) {
+        ESP_LOGW(TAG, "ML307 network probe did not stop during quiesce: %s",
+                 esp_err_to_name(probe_err));
+        return probe_err;
+    }
+
+    const TickType_t after_probe = xTaskGetTickCount() - started;
+    if (after_probe >= budget) {
+        ESP_LOGW(TAG, "ML307 HTTP borrowers did not drain before quiesce deadline");
+        return ESP_ERR_TIMEOUT;
+    }
+    const uint32_t drain_ms = std::max<uint32_t>(
+        1u, (uint32_t)((budget - after_probe) * portTICK_PERIOD_MS));
+    {
+        std::unique_lock<std::mutex> lock(s_http_borrower_mutex);
+        if (!s_http_borrower_cv.wait_for(
+                lock, std::chrono::milliseconds(drain_ms),
+                [] { return s_active_http_borrowers == 0; })) {
+            ESP_LOGW(TAG, "ML307 quiesce timed out with %u active HTTP borrower(s)",
+                     s_active_http_borrowers);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    /* Do not destroy s_modem or its UART here. A successful drain proves all
+     * admitted requests completed MHTTPDEL and unregistered their callbacks;
+     * the adapter may safely regard the transport as quiescent, but this slice
+     * deliberately does not claim a full modem deinit/restart contract. */
+    ESP_LOGI(TAG, "ML307 transport admission closed; probe and HTTP borrowers quiesced");
     return ESP_OK;
 }
 
 extern "C" bool ml307_transport_cancel_foreground(void) {
+    /* Foreground cancellation has the same non-blocking lifecycle semantics
+     * as owner cancellation.  The request releases its modem HTTP ID while
+     * its synchronous caller unwinds, rather than letting an input/cancel
+     * worker wait on a possibly wedged UART/create transaction. */
     std::lock_guard<std::mutex> lock(s_foreground_mutex);
     if (!s_foreground_request) return false;
-    s_foreground_request->Cancel();
+    s_foreground_request->RequestCancel();
     return true;
+}
+
+extern "C" bool ml307_transport_cancel_requests_for_owner(const void *owner) {
+    if (!owner) return false;
+    /* Request destructors take the same mutex before their object storage can
+     * disappear.  Cancel only its atomic token and condition variables while
+     * protected; do not issue MHTTPDEL here, because that can wait behind the
+     * create critical section and would deadlock a returning request trying to
+     * unregister itself. The synchronous owner performs Close() as it unwinds. */
+    std::lock_guard<std::mutex> lock(s_owner_requests_mutex);
+    bool cancelled = false;
+    for (Ml307Request *request : s_owner_requests) {
+        if (request && request->cancellation_owner() == owner) {
+            request->RequestCancel();
+            cancelled = true;
+        }
+    }
+    return cancelled;
 }
 
 extern "C" esp_err_t ml307_transport_http_request(
@@ -557,7 +790,7 @@ extern "C" esp_err_t ml307_transport_http_request(
     const char *extra_header_value, const void *body, size_t body_len,
     char *response, size_t response_capacity, size_t *response_len,
     int *status_code, bool *truncated, int timeout_ms,
-    bool foreground) {
+    const void *cancellation_owner, bool foreground) {
     if (!method || !url || !response || response_capacity < 2 ||
         !response_len || !status_code || !truncated) {
         return ESP_ERR_INVALID_ARG;
@@ -567,14 +800,10 @@ extern "C" esp_err_t ml307_transport_http_request(
     *truncated = false;
     response[0] = '\0';
 
-    std::shared_ptr<AtUart> uart;
-    {
-        std::lock_guard<std::mutex> lock(s_lifecycle_mutex);
-        if (!s_modem || !s_modem->network_ready()) return ESP_ERR_INVALID_STATE;
-        uart = s_modem->GetAtUart();
-    }
+    Ml307HttpBorrower borrower;
+    if (!borrower.Acquire()) return ESP_ERR_INVALID_STATE;
 
-    Ml307Request request(std::move(uart), timeout_ms, foreground);
+    Ml307Request request(borrower.uart(), timeout_ms, cancellation_owner, foreground);
     if (!request.Open(method, url, content_type, authorization,
                       extra_header_name, extra_header_value, body, body_len)) {
         ESP_LOGE(TAG, "ML307 HTTP open failed: %s %s", method, url);
@@ -615,7 +844,7 @@ extern "C" esp_err_t ml307_transport_http_request_stream(
     void *stream_buffer, size_t stream_buffer_size,
     char *response, size_t response_capacity, size_t *response_len,
     int *status_code, bool *truncated, int timeout_ms,
-    bool foreground) {
+    const void *cancellation_owner, bool foreground) {
     if (!method || !url || !body_reader || !stream_buffer ||
         stream_buffer_size < kHttpContentChunkSize || !response ||
         response_capacity < 2 || !response_len || !status_code || !truncated) {
@@ -626,14 +855,10 @@ extern "C" esp_err_t ml307_transport_http_request_stream(
     *truncated = false;
     response[0] = '\0';
 
-    std::shared_ptr<AtUart> uart;
-    {
-        std::lock_guard<std::mutex> lock(s_lifecycle_mutex);
-        if (!s_modem || !s_modem->network_ready()) return ESP_ERR_INVALID_STATE;
-        uart = s_modem->GetAtUart();
-    }
+    Ml307HttpBorrower borrower;
+    if (!borrower.Acquire()) return ESP_ERR_INVALID_STATE;
 
-    Ml307Request request(std::move(uart), timeout_ms, foreground);
+    Ml307Request request(borrower.uart(), timeout_ms, cancellation_owner, foreground);
     if (!request.Open(method, url, content_type, authorization,
                       extra_header_name, extra_header_value, nullptr, body_len,
                       body_reader, body_reader_context,

@@ -19,6 +19,13 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
+const knowledgeImageDisplayPromptRule = `
+## Knowledge image display
+- Use knowledge_image_search when the user asks to find, view, show, select, or compare an imported knowledge-base image.
+- Its result can contain a [KB_IMAGE:asset_id|data_url] marker. When the user asks to see an image, copy the exact marker unchanged onto its own line in the final response so the chat can render it.
+- Never construct a marker yourself and never expose local image paths.
+`
+
 // ---------------------------------------------------------------------------
 // Knowledge store references on CodingSubAgent
 // ---------------------------------------------------------------------------
@@ -75,6 +82,7 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 			ProjectPath: projectPath,
 			MaxItems:    4,
 			MaxChars:    1500,
+			MaxTokens:   750,
 		})
 		if err == nil && len(pack.Items) > 0 {
 			b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
@@ -87,6 +95,7 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 
 	// 2. General knowledge (project docs)
 	if c.subagent.generalKB != nil {
+		b.WriteString(knowledgeImageDisplayPromptRule)
 		searchOpts := knowledge.SearchOptions{
 			Query:       taskQuery,
 			ProjectPath: projectPath,
@@ -141,6 +150,64 @@ func knowledgeSearchToolDef() map[string]interface{} {
 	)
 }
 
+// knowledgeImageSearchToolDef is the coding subagent variant of the dedicated
+// text-to-image route. It returns image evidence only; display remains the
+// responsibility of the outer client that owns the image asset store.
+func knowledgeImageSearchToolDef() map[string]interface{} {
+	return buildToolDef(
+		"knowledge_image_search",
+		"搜索当前项目知识库中已导入的图片，基于 OCR 文本、视觉描述、文件名和文档上下文召回。用户要求查找、查看或比较已保存图片时使用。结果可包含安全展示标记；需要展示时原样复制该标记，绝不构造标记或暴露本地路径。",
+		map[string]interface{}{
+			"query": map[string]interface{}{
+				"type":        "string",
+				"description": "图片 OCR、描述或上下文的搜索关键词",
+			},
+			"topic_hint": map[string]interface{}{
+				"type":        "string",
+				"description": "可选的当前任务主题提示，用于本地重排。",
+			},
+			"context_terms": map[string]interface{}{
+				"type":        "array",
+				"items":       map[string]interface{}{"type": "string"},
+				"description": "可选的当前任务或对话术语，用于本地重排。",
+			},
+			"source_kinds": map[string]interface{}{
+				"type":        "array",
+				"items":       map[string]interface{}{"type": "string"},
+				"description": "可选的来源类型过滤；结果始终只包含图片节点。",
+			},
+			"source_ids": map[string]interface{}{
+				"type":        "array",
+				"items":       map[string]interface{}{"type": "string"},
+				"description": "可选的精确来源 ID 过滤。",
+			},
+			"ids": map[string]interface{}{
+				"type":        "array",
+				"items":       map[string]interface{}{"type": "string"},
+				"description": "source_ids 的别名。",
+			},
+			"labels": map[string]interface{}{
+				"type":        "array",
+				"items":       map[string]interface{}{"type": "string"},
+				"description": "可选的来源标签/集合过滤。",
+			},
+			"domain": map[string]interface{}{
+				"type":        "string",
+				"description": "可选的 URL 来源域名过滤。",
+			},
+			"include_disabled": map[string]interface{}{
+				"type":        "boolean",
+				"description": "是否显式包含已禁用的当前项目来源；默认 false。",
+			},
+			"limit": map[string]interface{}{
+				"type":        "integer",
+				"description": "最大图片结果数，默认 5，最大 10。",
+			},
+		},
+		[]string{"query"},
+	)
+}
+
 // executeCodingKnowledgeSearch handles the coding_knowledge_search tool call.
 func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) codingToolExecutionResult {
 	if c.subagent.codingKB == nil {
@@ -176,8 +243,10 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 	})
 	if err != nil {
 		return codingToolExecutionResult{
-			Text:    fmt.Sprintf("编程知识库搜索失败: %v", err),
-			Outcome: codingToolOutcomeFailed,
+			// Knowledge is advisory. A transient DB/index failure must not turn
+			// an otherwise executable coding task into a failed tool turn.
+			Text:    fmt.Sprintf("编程知识库当前不可用；请继续通过项目文件和验证命令完成任务。(%v)", err),
+			Outcome: codingToolOutcomeSuccess,
 		}
 	}
 	if len(experiences) == 0 {
@@ -255,10 +324,13 @@ func (c *codingSubAgentCallbacks) executeKnowledgeSearch(argsJSON string) coding
 	})
 	if err != nil {
 		return codingToolExecutionResult{
-			Text:    fmt.Sprintf("项目知识库搜索失败: %v", err),
-			Outcome: codingToolOutcomeFailed,
+			// Do not make optional project-document recall a task blocker. The
+			// agent still has its normal read/search tools for primary evidence.
+			Text:    fmt.Sprintf("项目知识库当前不可用；请使用 read_file、Glob 或 ripgrep 获取一手项目证据。(%v)", err),
+			Outcome: codingToolOutcomeSuccess,
 		}
 	}
+	results = knowledge.ProjectImageSearchResultsForTool(results)
 	if len(results) == 0 {
 		return codingToolExecutionResult{
 			Text:    fmt.Sprintf("未找到与 %q 相关的项目资料。", query),
@@ -269,13 +341,7 @@ func (c *codingSubAgentCallbacks) executeKnowledgeSearch(argsJSON string) coding
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("找到 %d 条相关项目资料：\n\n", len(results)))
 	for i, r := range results {
-		source := r.Source.Title
-		if source == "" {
-			source = r.Source.RelativePath
-		}
-		if source == "" {
-			source = r.Source.URI
-		}
+		source := knowledge.FormatSourceLabel(r)
 		text := knowledgeSearchSnippet(r)
 		b.WriteString(fmt.Sprintf("%d. [%.1f] **%s**\n   %s\n\n", i+1, r.Score, source, text))
 	}
@@ -288,6 +354,86 @@ func (c *codingSubAgentCallbacks) executeKnowledgeSearch(argsJSON string) coding
 		Text:    b.String(),
 		Outcome: codingToolOutcomeSuccess,
 	}
+}
+
+func (c *codingSubAgentCallbacks) executeKnowledgeImageSearch(argsJSON string) codingToolExecutionResult {
+	if c.subagent.generalKB == nil {
+		return codingToolExecutionResult{Text: "项目知识库未配置。", Outcome: codingToolOutcomeSuccess}
+	}
+	args := parseCodingSubAgentToolArgs(argsJSON)
+	query, _ := args["query"].(string)
+	if query == "" {
+		return codingToolExecutionResult{Text: "Error: query parameter is required", Outcome: codingToolOutcomeFailed}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	results, err := c.subagent.generalKB.SearchImages(ctx, knowledge.ImageSearchOptions{SearchOptions: codingKnowledgeImageSearchOptions(args, c.subagent.projectPath)})
+	if err != nil {
+		return codingToolExecutionResult{Text: fmt.Sprintf("图片知识库当前不可用；请继续使用文本项目证据完成任务。(%v)", err), Outcome: codingToolOutcomeSuccess}
+	}
+	if len(results) == 0 {
+		return codingToolExecutionResult{Text: fmt.Sprintf("未找到与 %q 相关的已导入图片。", query), Outcome: codingToolOutcomeSuccess}
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("找到 %d 张相关图片：\n\n", len(results)))
+	for i, r := range results {
+		source := knowledge.FormatImageSourceLabel(r)
+		title := knowledge.SafeImageDisplayText(r.NodeTitle)
+		if title == "" {
+			title = "image evidence"
+		}
+		b.WriteString(fmt.Sprintf("%d. [%.1f] **%s**\n   %s\n   证据：%s\n", i+1, r.Score, source, title, knowledgeSearchSnippet(r)))
+		// The marker contains only an opaque asset ID and an in-memory thumbnail.
+		// It is intentionally safe to pass through the model/UI boundary and lets
+		// the outer chat renderer show the matched evidence inline.
+		if embed := knowledge.EmbedImageThumbForSearchResult(r, c.subagent.generalKB.ImageAssetBaseDir()); embed != nil {
+			if marker := knowledge.FormatKBImageMarker(embed); marker != "" {
+				b.WriteString("   " + marker + "\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+	c.trackSearchResult("knowledge_image_search", codingKnowledgeImageSearchAuditArgs(args), fmt.Sprintf("%d results", len(results)), true)
+	return codingToolExecutionResult{Text: b.String(), Outcome: codingToolOutcomeSuccess}
+}
+
+// codingKnowledgeImageSearchOptions carries the same read-only filters as the
+// GUI image search. A Coding Agent is additionally pinned to its active
+// project; its tool definition deliberately omits project_path/search_scope so
+// a model cannot widen recall into unrelated project knowledge.
+func codingKnowledgeImageSearchOptions(args map[string]interface{}, projectPath string) knowledge.SearchOptions {
+	limit := knowledgeToolIntArg(args, "limit", 5)
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 10 {
+		limit = 10
+	}
+	return knowledge.SearchOptions{
+		Query:           knowledgeToolStringArg(args, "query"),
+		ProjectPath:     projectPath,
+		TopicHint:       knowledgeToolStringArg(args, "topic_hint"),
+		ContextTerms:    knowledgeToolStringSlice(args["context_terms"]),
+		SourceKinds:     knowledgeToolStringSlice(args["source_kinds"]),
+		SourceIDs:       knowledgeToolSourceIDs(args),
+		Labels:          knowledgeToolStringSlice(args["labels"]),
+		Domain:          knowledgeToolStringArg(args, "domain"),
+		IncludeDisabled: knowledgeToolBoolArg(args, "include_disabled", false),
+		Limit:           limit,
+	}
+}
+
+// codingKnowledgeImageSearchAuditArgs records only declared, read-only search
+// filters. It intentionally omits thumbnail bytes and does not accept hidden
+// scope overrides in the audit payload.
+func codingKnowledgeImageSearchAuditArgs(args map[string]interface{}) map[string]interface{} {
+	result := map[string]interface{}{"query": knowledgeToolStringArg(args, "query")}
+	for _, key := range []string{"topic_hint", "context_terms", "source_kinds", "source_ids", "ids", "labels", "domain", "include_disabled", "limit"} {
+		if value, ok := args[key]; ok {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------

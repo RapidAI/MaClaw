@@ -8,7 +8,7 @@ import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistan
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
     openProjectDirectoryMock: vi.fn().mockResolvedValue(undefined),
@@ -16,6 +16,7 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMo
     loadProjectConversationHistoryMock: vi.fn().mockResolvedValue([]),
     createProjectTabSessionMock: vi.fn().mockResolvedValue(undefined),
     cancelSessionForSessionMock: vi.fn().mockResolvedValue(''),
+    clearAIAssistantHistoryForSessionMock: vi.fn().mockResolvedValue(undefined),
     saveCurrentChatAsTaskMock: vi.fn().mockResolvedValue({ project_path: 'D:/tasks/saved', name: 'Saved task' }),
     suggestCurrentTaskNameMock: vi.fn().mockResolvedValue('Suggested task'),
     listVirtualEmployeesMock: vi.fn().mockResolvedValue([
@@ -160,13 +161,14 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SuggestCurrentTaskName: suggestCurrentTaskNameMock,
     CreateProjectTabSession: createProjectTabSessionMock,
     CancelAIAssistantSessionForSession: cancelSessionForSessionMock,
+    ClearAIAssistantHistoryForSession: clearAIAssistantHistoryForSessionMock,
     RenameTask: vi.fn(),
     PinTask: vi.fn(),
     HideTask: vi.fn(),
     SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
     LoadProjectTabConversation: vi.fn().mockResolvedValue(null),
     LoadProjectTabIndex: vi.fn().mockResolvedValue([]),
-    CloseProjectTabSession: vi.fn().mockResolvedValue(undefined),
+    CloseAssistantTabSession: vi.fn().mockResolvedValue(undefined),
     GroupDiscussionGetConsultationDetail: vi.fn().mockResolvedValue({ discussion: { id: 'disc-1', topic: 'Vendor audit', status: 'open', local_relation: 'owned_ve_invited', readonly: true, participant_ids: ['ve-a'] }, messages: [] }),
     GroupDiscussionRenameConsultation: renameGroupDiscussionMock,
     GetConversationBranchPoints: getConversationBranchPointsMock,
@@ -5669,6 +5671,8 @@ describe('expert tabs', () => {
         window.localStorage.clear();
         cancelSessionForSessionMock.mockReset();
         cancelSessionForSessionMock.mockResolvedValue('');
+        clearAIAssistantHistoryForSessionMock.mockReset();
+        clearAIAssistantHistoryForSessionMock.mockResolvedValue(undefined);
         getTabWorkingDirMock.mockReset();
         getTabWorkingDirMock.mockResolvedValue({ path: '' });
         setTabWorkingDirMock.mockReset();
@@ -5685,16 +5689,16 @@ describe('expert tabs', () => {
         await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
     });
 
-    it('shows the shared current-working-directory selector in an expert tab', async () => {
-        getTabWorkingDirMock.mockResolvedValueOnce({ path: 'D:/workspace/default', is_default: false });
+    it('shows an expert-local working-directory selector that initially inherits the main tab', async () => {
+        getTabWorkingDirMock.mockResolvedValue({ path: 'D:/workspace/default', is_default: false });
         selectWorkingDirMock.mockResolvedValueOnce('D:/workspace/literature');
         renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
         await screen.findByTestId('ai-tab-expert-exp-1');
-        await screen.findByTestId('project-dir-bar');
-        fireEvent.click(screen.getByRole('button', { name: 'Open current working directory' }));
-        expect(openProjectDirectoryMock).toHaveBeenCalledWith('D:/workspace/default');
+        const openDirectory = await screen.findByRole('button', { name: 'Open current working directory' });
+        fireEvent.click(openDirectory);
+        await waitFor(() => expect(openProjectDirectoryMock).toHaveBeenCalledWith('D:/workspace/default'));
         fireEvent.click(screen.getByRole('button', { name: 'Choose a different working directory' }));
-        await waitFor(() => expect(setTabWorkingDirMock).toHaveBeenCalledWith('', 'D:/workspace/literature'));
+        await waitFor(() => expect(setTabWorkingDirMock).toHaveBeenCalledWith('expert-exp-1', 'D:/workspace/literature'));
     });
 
     it('opens only one directory picker when the expert selector is clicked rapidly', async () => {
@@ -5710,7 +5714,7 @@ describe('expert tabs', () => {
         expect(selectWorkingDirMock).toHaveBeenCalledTimes(1);
 
         resolveDirectory('D:/workspace/literature');
-        await waitFor(() => expect(setTabWorkingDirMock).toHaveBeenCalledWith('', 'D:/workspace/literature'));
+        await waitFor(() => expect(setTabWorkingDirMock).toHaveBeenCalledWith('expert-exp-1', 'D:/workspace/literature'));
     });
 
     it('routes expert tab sends with expert_id and no project path', async () => {
@@ -5734,7 +5738,7 @@ describe('expert tabs', () => {
         await screen.findByTestId('ai-tab-expert-exp-1');
         await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
         fireEvent.click(screen.getByTitle('New conversation'));
-        await waitFor(() => expect(cancelSessionForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
         // Expert-specific empty state shows the persona; generic welcome does not render.
         // (ai-expert-empty only renders when displayMessages is empty, so its
         // presence already proves the seed chat message was cleared.)
@@ -5773,7 +5777,7 @@ describe('expert tabs', () => {
 
         // Clear, then switch local → expert: the cleared conversation must not come back.
         fireEvent.click(screen.getByTitle('New conversation'));
-        await waitFor(() => expect(cancelSessionForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
         fireEvent.click(screen.getByTestId('ai-tab-local'));
         // jsdom has no layout width, so the inactive expert tab lives in the overflow menu.
         fireEvent.click(screen.getByTestId('ai-tab-overflow-btn'));

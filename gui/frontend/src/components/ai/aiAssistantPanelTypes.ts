@@ -9,6 +9,7 @@ import type { AssistantUpdatePayload } from "./AssistantUpdateNotice";
 import type { AssistantDarkSchemeId } from "./assistantDarkSchemes";
 import type { AssistantLightSchemeId } from "./assistantLightSchemes";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
+import type { AIExecutionProfile } from "./AITabTypes";
 
 /**
  * State fields provided by useAIAssistant hook.
@@ -130,6 +131,13 @@ export interface AIAssistantPanelProps {
     onSwitchProvider?: (providerName: string) => void;
     onSwitchModel?: (modelId: string) => void;
     onOpenModelMenu?: () => void;
+    onDismissModelMenu?: () => void;
+    activeExecutionProfile?: AIExecutionProfile;
+    codingInheritsAssistant?: boolean;
+    providerSelectionPending?: boolean;
+    onOpenLLMSettings?: () => void;
+    /** Published from the active task's explicit execution metadata. */
+    onActiveExecutionProfileChange?: (profile: AIExecutionProfile) => void;
     onLanguageChange?: (lang: string) => void;
     /**
      * Notifies the shell when project tabs open/close so the task list can block

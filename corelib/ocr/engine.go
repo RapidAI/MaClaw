@@ -23,6 +23,7 @@ type Engine struct {
 	det *onnxrt.Graph
 	rec *onnxrt.Graph
 	mu  sync.Mutex
+	sc  engineScratch // guarded by mu; big pooled buffers, dropped by Close
 }
 
 // NewEngine loads the det and rec ONNX models.
@@ -48,13 +49,13 @@ func (e *Engine) Recognize(img image.Image) ([]Result, error) {
 		return nil, fmt.Errorf("ocr: engine is closed")
 	}
 
-	src := toRGBA(img)
+	src := toRGBAS(img, &e.sc)
 	w, h := src.Bounds().Dx(), src.Bounds().Dy()
 	if w == 0 || h == 0 {
 		return nil, nil
 	}
 
-	input, _, _ := detPreprocess(src)
+	input, _, _ := detPreprocessS(src, &e.sc)
 	outputs, err := e.det.Run(map[string]*onnxrt.Tensor{"x": input})
 	if err != nil {
 		return nil, fmt.Errorf("ocr: det run: %w", err)
@@ -71,22 +72,45 @@ func (e *Engine) Recognize(img image.Image) ([]Result, error) {
 	}
 	ph, pw := prob.Shape[2], prob.Shape[3]
 
-	boxes := dbPostProcess(prob.F32, pw, ph, w, h)
+	boxes := dbPostProcessS(prob.F32, pw, ph, w, h, &e.sc)
 	sortBoxesReadingOrder(boxes)
 
-	results := make([]Result, 0, len(boxes))
-	for _, box := range boxes {
-		crop := cropBox(src, box.Points)
-		text, conf, err := recognizeLine(e.rec, crop)
-		if err != nil {
-			return nil, err
+	// Group by output-frame bucket. Samples retain their exact resized pixels;
+	// only the final (<8px) right edge is padded before batched inference.
+	byWidth := make(map[int][]int, len(boxes))
+	exactWidth := make([]int, len(boxes))
+	for i, box := range boxes {
+		rw := recWidthForBox(box.Points)
+		exactWidth[i] = rw
+		bucket := (rw + 7) &^ 7
+		if bucket > recMaxWidth {
+			bucket = recMaxWidth
 		}
-		r := Result{Text: text, Confidence: conf}
+		byWidth[bucket] = append(byWidth[bucket], i)
+	}
+	texts := make([]string, len(boxes))
+	confs := make([]float64, len(boxes))
+	for bucket, idxs := range byWidth {
+		for len(idxs) > 0 {
+			n := len(idxs)
+			if n > recBatchMaxLines {
+				n = recBatchMaxLines
+			}
+			if err := recognizeBatchPadded(e.rec, src, boxes, exactWidth, idxs[:n], bucket, &e.sc, texts, confs); err != nil {
+				return nil, err
+			}
+			idxs = idxs[n:]
+		}
+	}
+
+	results := make([]Result, 0, len(boxes))
+	for i, box := range boxes {
+		r := Result{Text: texts[i], Confidence: confs[i]}
 		minX, minY := float32(math.MaxFloat32), float32(math.MaxFloat32)
 		maxX, maxY := float32(0), float32(0)
-		for i := 0; i < 4; i++ {
-			px, py := box.Points[i][0], box.Points[i][1]
-			r.Box[i] = [2]int{int(px + 0.5), int(py + 0.5)}
+		for j := 0; j < 4; j++ {
+			px, py := box.Points[j][0], box.Points[j][1]
+			r.Box[j] = [2]int{int(px + 0.5), int(py + 0.5)}
 			minX = min(minX, px)
 			minY = min(minY, py)
 			maxX = max(maxX, px)
@@ -98,11 +122,13 @@ func (e *Engine) Recognize(img image.Image) ([]Result, error) {
 	return results, nil
 }
 
-// Close releases the engine. onnxrt graphs are pure Go, so this only drops
-// the references for the GC.
+// Close releases the engine. onnxrt graphs are pure Go, so this drops the
+// references for the GC; the pooled scratch (det/rec planes, RGBA targets,
+// contour grids) is released too so a Manager idle-unload frees it.
 func (e *Engine) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.det = nil
 	e.rec = nil
+	e.sc.release()
 }

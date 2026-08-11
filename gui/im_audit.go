@@ -18,7 +18,7 @@ func (h *IMMessageHandler) imAuditFinalizer(msg IMUserMessage, trimmed string, r
 		}
 		if !msg.SkipUserAudit {
 			h.writeIMAuditMessage(store, IMAuditMessage{
-				UserID: msg.UserID, Platform: msg.Platform, Role: "user", Content: imAuditUserContent(msg),
+				BotProfileID: imAuditBotProfileID(msg), UserID: msg.UserID, Platform: msg.Platform, Role: "user", Content: imAuditUserContent(msg),
 			})
 		}
 		if result == nil || *result == nil {
@@ -32,12 +32,20 @@ func (h *IMMessageHandler) imAuditFinalizer(msg IMUserMessage, trimmed string, r
 			return
 		}
 		h.writeIMAuditMessage(store, IMAuditMessage{
-			UserID:   msg.UserID,
-			Platform: msg.Platform,
-			Role:     "assistant",
-			Content:  content,
+			BotProfileID: imAuditBotProfileID(msg),
+			UserID:       msg.UserID,
+			Platform:     msg.Platform,
+			Role:         "assistant",
+			Content:      content,
 		})
 	}
+}
+
+func imAuditBotProfileID(msg IMUserMessage) string {
+	if msg.AssistantBinding == nil {
+		return ""
+	}
+	return strings.TrimSpace(msg.AssistantBinding.BotProfileID)
 }
 
 func imAuditUserContent(msg IMUserMessage) string {

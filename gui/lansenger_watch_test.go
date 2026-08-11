@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/lansengerwatch"
 )
@@ -22,6 +23,39 @@ func TestWatchServiceInitOnce(t *testing.T) {
 	b := app.watchService()
 	if a == nil || a != b {
 		t.Fatalf("expected singleton watch service, got %p %p", a, b)
+	}
+}
+
+func TestWatchRosterStoreKeyIsProfileScopedAndFilesystemSafe(t *testing.T) {
+	if got := lansengerWatchRosterStoreKey(corelib.DefaultLansengerBotProfileID, "a/b"); got != "a/b" {
+		t.Fatalf("default roster key changed: %q", got)
+	}
+	left := lansengerWatchRosterStoreKey("support", "a/b")
+	right := lansengerWatchRosterStoreKey("support", "a?b")
+	if left == right || !strings.HasPrefix(left, "bot-support-") || strings.ContainsAny(left, "\\/:?*\"<>|") {
+		t.Fatalf("custom roster keys must be safe and collision-resistant: left=%q right=%q", left, right)
+	}
+}
+
+func TestWatchRostersAreIsolatedForSanitizeCollidingGroups(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{LansengerBots: []corelib.LansengerBotProfile{{ID: "support", Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.AddLansengerWatchMemberForBot("support", "a/b", "left", "Left"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.AddLansengerWatchMemberForBot("support", "a?b", "right", "Right"); err != nil {
+		t.Fatal(err)
+	}
+	svc := app.watchService()
+	left, err := svc.store.LoadRoster(lansengerWatchRosterStoreKey("support", "a/b"))
+	if err != nil || len(left.Members) != 1 || left.Members[0].StaffID != "left" {
+		t.Fatalf("left roster=%+v err=%v", left, err)
+	}
+	right, err := svc.store.LoadRoster(lansengerWatchRosterStoreKey("support", "a?b"))
+	if err != nil || len(right.Members) != 1 || right.Members[0].StaffID != "right" {
+		t.Fatalf("right roster=%+v err=%v", right, err)
 	}
 }
 
@@ -42,10 +76,21 @@ func TestGroupReplyDedupeOnlyAfterRemember(t *testing.T) {
 		t.Fatal("different text must send")
 	}
 	s.mu.Lock()
-	s.replyDedupe["g1\x00hello"] = time.Now().Add(-lansengerWatchReplyDedupeTTL - time.Second)
+	s.replyDedupe[corelib.DefaultLansengerBotProfileID+"\x00g1\x00hello"] = time.Now().Add(-lansengerWatchReplyDedupeTTL - time.Second)
 	s.mu.Unlock()
 	if s.recentGroupReply("g1", "hello") {
 		t.Fatal("after TTL must send again")
+	}
+}
+
+func TestGroupReplyDedupeIsProfileScoped(t *testing.T) {
+	s := &lansengerWatchService{replyDedupe: make(map[string]time.Time)}
+	s.rememberGroupReplyForBot("support", "g1", "hello")
+	if !s.recentGroupReplyForBot("support", "g1", "hello") {
+		t.Fatal("same bot reply must be deduplicated")
+	}
+	if s.recentGroupReplyForBot("sales", "g1", "hello") {
+		t.Fatal("another bot must not inherit reply deduplication")
 	}
 }
 
@@ -401,6 +446,71 @@ func TestDeliverToOwnerChannelUnknown(t *testing.T) {
 	// Empty text
 	if err := svc.deliverToOwnerChannel(lansengerwatch.ChannelHub, "  "); err == nil {
 		t.Fatal("expected empty text error")
+	}
+}
+
+func TestWatchForwardResultsAreProfileScoped(t *testing.T) {
+	svc := (&App{testHomeDir: t.TempDir()}).watchService()
+	svc.recordForwardResultForBot("support", WatchForwardResult{Channel: lansengerwatch.ChannelLansenger, OK: true})
+	svc.recordForwardResultForBot("sales", WatchForwardResult{Channel: lansengerwatch.ChannelLansenger, OK: false})
+
+	support := svc.listForwardResultsForBot("support")
+	if len(support) != 1 || support[0].BotProfileID != "support" || !support[0].OK {
+		t.Fatalf("support results = %+v", support)
+	}
+	sales := svc.listForwardResultsForBot("sales")
+	if len(sales) != 1 || sales[0].BotProfileID != "sales" || sales[0].OK {
+		t.Fatalf("sales results = %+v", sales)
+	}
+}
+
+func TestProcessMessageForBotDoesNotRunAnotherBotsJob(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	svc := app.watchService()
+	if _, err := svc.store.UpsertJob(lansengerwatch.Job{
+		Name: "support", BotProfileID: "support", Enabled: true, GroupID: "g", TargetStaffIDs: []string{"u"}, RecordAll: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.invalidateCache()
+	svc.processMessageForBot("sales", nil, lansenger.IncomingMessage{
+		ChatType: "group", GroupID: "g", FromUserID: "u", Text: "hello", SenderName: "User",
+	})
+	if files, err := svc.store.ListTranscriptFiles("support"); err != nil || len(files) != 0 {
+		t.Fatalf("sales must not process support job; files=%v err=%v", files, err)
+	}
+}
+
+func TestCustomWatchForwardDoesNotFallbackToDefaultBot(t *testing.T) {
+	defaultManager := newLansengerGatewayManager(nil)
+	defaultManager.lastPrivateUserID = "default-user"
+	registry := newLansengerGatewayRegistry(nil)
+	registry.bots[corelib.DefaultLansengerBotProfileID] = defaultManager
+	app := &App{testHomeDir: t.TempDir(), lansengerGateway: defaultManager, lansengerGateways: registry}
+
+	err := app.TestLansengerWatchForwardForBot("support", lansengerwatch.ChannelLansenger)
+	if err == nil || !strings.Contains(err.Error(), "蓝信未启用") {
+		t.Fatalf("custom bot should not fall back to default, err=%v", err)
+	}
+}
+
+func TestCustomWatchRosterDoesNotFallbackToDefaultGateway(t *testing.T) {
+	defaultGateway := lansenger.NewGateway(lansenger.Config{AppID: "default", AppSecret: "secret", ApiGatewayURL: "http://127.0.0.1:1"}, nil)
+	defaultManager := newLansengerGatewayManager(nil)
+	defaultManager.gateway = defaultGateway
+	registry := newLansengerGatewayRegistry(nil)
+	app := &App{testHomeDir: t.TempDir(), lansengerGateway: defaultManager, lansengerGateways: registry}
+	if err := app.SaveConfig(corelib.AppConfig{LansengerBots: []corelib.LansengerBotProfile{{
+		ID: "support", Enabled: true, AppID: "support", AppSecret: "secret", GatewayURL: "http://127.0.0.1:2",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := app.lansengerGatewayForWatch("support")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == defaultGateway {
+		t.Fatal("custom bot roster lookup must not use the default gateway")
 	}
 }
 

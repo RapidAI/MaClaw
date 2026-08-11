@@ -180,13 +180,17 @@ func (h *IMMessageHandler) forceStartWorkflow(msg IMUserMessage, workflowType, l
 			}
 		}()
 	} else {
-		// IM channel: send through HandleIMMessage with the original user identity.
+		// IM channel: preserve the trusted per-turn binding. In particular, a
+		// profile-bound expert must not lose its persona, tool/skill limits or
+		// filesystem boundary when /workflow dispatches its synthetic choice
+		// command through the normal message path.
 		go func() {
 			h.HandleIMMessage(IMUserMessage{
-				UserID:   userID,
-				Platform: msg.Platform,
-				Text:     choiceCommand,
-				Lang:     msg.Lang,
+				UserID:           userID,
+				Platform:         msg.Platform,
+				Text:             choiceCommand,
+				Lang:             msg.Lang,
+				AssistantBinding: cloneAssistantBinding(msg.AssistantBinding),
 			})
 		}()
 	}

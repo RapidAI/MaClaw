@@ -359,6 +359,75 @@ func (s *expertStore) Save(def ExpertDefinition) error {
 	return s.writeLocked(f)
 }
 
+// SaveNewOptimized atomically creates a direct optimized expert only when the
+// source has no child yet. SaveExpert uses this instead of a separate lookup
+// followed by Save, which would allow two simultaneous optimization requests
+// to both pass the uniqueness check.
+func (s *expertStore) SaveNewOptimized(def ExpertDefinition) (existingID string, err error) {
+	if strings.TrimSpace(def.ID) == "" {
+		return "", fmt.Errorf("expert id is required")
+	}
+	sourceID := strings.TrimSpace(def.OptimizedFromID)
+	if sourceID == "" {
+		return "", fmt.Errorf("optimized expert source id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.loadLocked()
+	if err != nil {
+		return "", err
+	}
+	for _, e := range f.Experts {
+		if e.OptimizedFromID == sourceID && e.ID != def.ID {
+			return e.ID, nil
+		}
+	}
+	f.Experts = append(f.Experts, def)
+	if f.DeletedIDs != nil {
+		delete(f.DeletedIDs, def.ID)
+	}
+	if f.PendingHubDeletes != nil {
+		delete(f.PendingHubDeletes, def.ID)
+	}
+	return "", s.writeLocked(f)
+}
+
+// UpdateOptimized atomically updates an existing optimized expert without
+// allowing its source lineage to change. It closes the lookup-then-save race
+// that could otherwise resurrect a deleted/replaced lineage between checks.
+func (s *expertStore) UpdateOptimized(def ExpertDefinition) error {
+	if strings.TrimSpace(def.ID) == "" {
+		return fmt.Errorf("expert id is required")
+	}
+	sourceID := strings.TrimSpace(def.OptimizedFromID)
+	if sourceID == "" {
+		return fmt.Errorf("optimized expert source id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	for i := range f.Experts {
+		if f.Experts[i].ID != def.ID {
+			continue
+		}
+		if strings.TrimSpace(f.Experts[i].OptimizedFromID) != sourceID {
+			return fmt.Errorf("optimized expert lineage cannot be changed")
+		}
+		f.Experts[i] = def
+		if f.DeletedIDs != nil {
+			delete(f.DeletedIDs, def.ID)
+		}
+		if f.PendingHubDeletes != nil {
+			delete(f.PendingHubDeletes, def.ID)
+		}
+		return s.writeLocked(f)
+	}
+	return fmt.Errorf("optimized expert not found: %s", def.ID)
+}
+
 // SaveLocalOnly upserts a device-local expert. The local-only marker is
 // persisted alongside the definition, so its Hub exclusion is atomic with the
 // install/update. Existing markers are deliberately retained by Save as well:

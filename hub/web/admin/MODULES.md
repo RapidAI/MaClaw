@@ -12,7 +12,7 @@ This folder now uses a thin-shell structure.
 ## Shared infrastructure
 
 - admin-tabs.js: tab registry
-- admin-ui.js: shared UI helpers
+- admin-ui.js: shared UI helpers; custom dialogs via `AdminUI.confirmDialog` / `AdminUI.promptDialog` (never `window.alert` / `prompt` / `confirm`). Unit tests: `admin-ui-dialog.test.js`
 
 ## Removed Mirror Tree
 

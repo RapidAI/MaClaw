@@ -11,25 +11,26 @@ import (
 
 // IncomingMessage represents a standardized inbound message from any IM platform.
 type IncomingMessage struct {
-	Platform    string            `json:"platform"`     // "feishu", "dingtalk", "wecom", "telegram", "weixin", "qqbot"
-	PlatformUID string           `json:"platform_uid"`  // Platform-specific user ID
-	UserName    string            `json:"user_name"`     // Display name
-	MessageID   string            `json:"message_id"`    // Platform message ID for dedup
-	MessageType string            `json:"message_type"`  // "text", "image", "file"
-	Text        string            `json:"text"`
-	Lang        string            `json:"lang,omitempty"`
-	Attachments []Attachment      `json:"attachments,omitempty"`
-	RawPayload  json.RawMessage   `json:"raw_payload,omitempty"`
-	Timestamp   time.Time         `json:"timestamp"`
+	Platform    string          `json:"platform"`     // "feishu", "dingtalk", "wecom", "telegram", "weixin", "qqbot"
+	PlatformUID string          `json:"platform_uid"` // Platform-specific user ID
+	UserName    string          `json:"user_name"`    // Display name
+	MessageID   string          `json:"message_id"`   // Platform message ID for dedup
+	MessageType string          `json:"message_type"` // "text", "image", "file"
+	Text        string          `json:"text"`
+	Lang        string          `json:"lang,omitempty"`
+	Attachments []Attachment    `json:"attachments,omitempty"`
+	RawPayload  json.RawMessage `json:"raw_payload,omitempty"`
+	Timestamp   time.Time       `json:"timestamp"`
 }
 
 // Attachment represents a file/image attachment in a message.
 type Attachment struct {
-	Type     string `json:"type"`      // "image", "file", "audio", "video"
-	FileName string `json:"file_name"`
-	MimeType string `json:"mime_type"`
-	Data     string `json:"data"` // base64-encoded
-	Size     int64  `json:"size"`
+	Type          string `json:"type"` // "image", "file", "audio", "video"
+	FileName      string `json:"file_name"`
+	MimeType      string `json:"mime_type"`
+	Data          string `json:"data"` // base64-encoded
+	Size          int64  `json:"size"`
+	SourceMediaID string `json:"source_media_id,omitempty"` // transport-local authenticated media reference
 }
 
 // OutgoingMessage represents a standardized outbound message.

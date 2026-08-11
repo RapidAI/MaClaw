@@ -29,8 +29,16 @@ func (e *Engine) runCLI(ctx context.Context, command string, p CLIParams, timeou
 	return RunCLI(ctx, command, p, timeoutSec)
 }
 
-// Process evaluates all jobs for the message group and applies record/keyword/forward actions.
+// Process evaluates legacy/default-bot jobs for the message group and applies
+// record/keyword/forward actions. New multi-bot callers should use ProcessForBot.
 func (e *Engine) Process(ctx context.Context, jobs []Job, msg Incoming) ActionResult {
+	return e.ProcessForBot(ctx, jobs, "", msg)
+}
+
+// ProcessForBot evaluates jobs belonging to one bot profile. Keeping filtering
+// inside the engine prevents a future caller from accidentally processing jobs
+// for every bot that happens to share a Lansenger group ID.
+func (e *Engine) ProcessForBot(ctx context.Context, jobs []Job, botProfileID string, msg Incoming) ActionResult {
 	var res ActionResult
 	if e == nil || e.Store == nil {
 		return res
@@ -56,7 +64,7 @@ func (e *Engine) Process(ctx context.Context, jobs []Job, msg Incoming) ActionRe
 	// Per job+channel: at most one forward package (keyword upgrades speech).
 	forwardByKey := map[string]int{} // jobID\x00channel -> index in res.Forwards
 
-	for _, job := range JobsForGroup(jobs, msg.GroupID) {
+	for _, job := range JobsForBotGroup(jobs, botProfileID, msg.GroupID) {
 		watched := JobWatchesStaff(job, msg.SpeakerID)
 		if !JobNeedsMessageFor(job, watched) {
 			continue

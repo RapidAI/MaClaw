@@ -23,9 +23,9 @@ import (
 const MaxManifestBytes = 1024 * 1024
 const MaxEntries = 64
 
-// Release packages currently contain a <=16 MiB complete image plus small
-// metadata. These caps leave room for future profiles while rejecting offline
-// ZIP bombs before decompression can consume host storage or memory.
+// Release packages can contain a <=32 MiB complete image plus small metadata.
+// These caps cover every supported profile while rejecting offline ZIP bombs
+// before decompression can consume host storage or memory.
 const MaxArchiveBytes int64 = 128 * 1024 * 1024
 const MaxUncompressedBytes uint64 = 64 * 1024 * 1024
 const MaxFileBytes int64 = 32 * 1024 * 1024

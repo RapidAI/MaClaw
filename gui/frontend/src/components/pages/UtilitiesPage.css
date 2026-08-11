@@ -680,19 +680,30 @@
 .expert-editor-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1000;
+    /* This lives beside the scaled application layer. Keep it above page
+       chrome but below global app-level confirmation dialogs. */
+    z-index: 1500;
     display: grid;
     place-items: center;
     padding: 20px;
+    box-sizing: border-box;
+    overflow: auto;
     background: rgba(0, 0, 0, 0.45);
 }
 
 .expert-editor {
+    position: relative;
     width: min(640px, 100%);
-    max-height: calc(100vh - 40px);
-    overflow-y: auto;
-    display: grid;
-    gap: 14px;
+    /* Size against the overlay's real content box rather than 100vh. Desktop
+       shells can reserve title-bar space, making a viewport calculation taller
+       than the visible app area. */
+    max-height: 100%;
+    box-sizing: border-box;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     padding: 20px;
     border-radius: 12px;
     border: 1px solid var(--theme-border, #e2e5ea);
@@ -701,8 +712,39 @@
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
 }
 
+.expert-editor:focus-visible {
+    outline: 2px solid var(--theme-primary, #3b82f6);
+    outline-offset: 2px;
+}
+
+/* Keep the dialog frame and primary actions visible while long prompts,
+   differences, and capability lists scroll as one review surface. */
+.expert-editor__body {
+    flex: 1 1 auto;
+    display: grid;
+    gap: 14px;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 4px;
+}
+
+fieldset.expert-editor__body {
+    min-inline-size: 0;
+    margin: 0;
+    padding-left: 0;
+    padding-bottom: 0;
+    padding-top: 0;
+    border: 0;
+}
+
+.expert-editor__body:disabled {
+    opacity: 0.72;
+}
+
 .expert-editor__title {
     margin: 0;
+    flex: 0 0 auto;
     font-size: 1.05rem;
     font-weight: 700;
     color: var(--theme-text-primary, #1a1a1a);
@@ -866,13 +908,109 @@
     min-height: 76px;
 }
 
+.expert-editor__optimization-diff {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary, #3b82f6) 32%, var(--theme-border, #e2e5ea));
+    background: color-mix(in srgb, var(--theme-primary, #3b82f6) 4%, transparent);
+}
+
+.expert-editor__optimization-diff-title,
+.expert-editor__diff-label {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--theme-text-primary, #1a1a1a);
+}
+
+.expert-editor__diff-section {
+    display: grid;
+    gap: 6px;
+}
+
+.expert-editor__diff-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.expert-editor__diff-summary {
+    flex: 0 0 auto;
+    color: var(--theme-text-secondary, #666);
+    font-size: 0.7rem;
+    white-space: nowrap;
+}
+
+.expert-editor__prompt-diff {
+    margin: 0;
+    max-height: 190px;
+    overflow: auto;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #1a1a1a);
+    font: 0.74rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    contain: content;
+}
+
+.expert-editor__prompt-diff-line {
+    display: block;
+    padding: 1px 4px;
+}
+
+.expert-editor__prompt-diff-line--added,
+.expert-editor__diff-chip--added,
+.expert-editor__check--added {
+    color: var(--theme-success, #26755e);
+    background: color-mix(in srgb, var(--theme-success, #26755e) 12%, transparent);
+}
+
+.expert-editor__prompt-diff-line--removed,
+.expert-editor__diff-chip--removed,
+.expert-editor__check--removed {
+    color: var(--theme-danger, #b42318);
+    background: color-mix(in srgb, var(--theme-danger, #b42318) 10%, transparent);
+}
+
+.expert-editor__diff-chip--access {
+    color: var(--theme-primary, #2563eb);
+    background: color-mix(in srgb, var(--theme-primary, #2563eb) 10%, transparent);
+}
+
+.expert-editor__diff-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.expert-editor__diff-chip,
+.expert-editor__change-tag {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
+.expert-editor__diff-chip {
+    padding: 3px 7px;
+}
+
+.expert-editor__change-tag {
+    padding: 0 5px;
+    line-height: 1.5;
+}
+
 @media (max-width: 420px) {
     .expert-editor-overlay {
         padding: 12px;
     }
 
     .expert-editor {
-        max-height: calc(100vh - 24px);
         padding: 16px;
     }
 
@@ -887,6 +1025,12 @@
 
     .expert-editor__generate-action {
         align-self: flex-end;
+    }
+
+    .expert-editor__diff-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 2px;
     }
 }
 
@@ -1259,6 +1403,38 @@
     display: flex;
     justify-content: flex-end;
     gap: 10px;
+    flex: 0 0 auto;
+    padding-top: 2px;
+    border-top: 1px solid var(--theme-border, #e2e5ea);
+}
+
+.expert-editor__discard-confirm {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    gap: 14px;
+    padding: 24px;
+    box-sizing: border-box;
+    background: color-mix(in srgb, var(--theme-surface, #fff) 94%, transparent);
+    text-align: center;
+}
+
+.expert-editor__discard-confirm p {
+    max-width: 32ch;
+    margin: 0;
+    color: var(--theme-text-primary, #1a1a1a);
+    font-size: 0.9rem;
+    font-weight: 600;
+    line-height: 1.5;
+}
+
+.expert-editor__discard-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
 }
 
 .expert-editor__button {
@@ -1282,6 +1458,10 @@
     cursor: wait;
 }
 
+.expert-editor__button--secondary:disabled {
+    cursor: not-allowed;
+}
+
 .expert-editor__button--secondary {
     background: var(--theme-surface, #fff);
     color: var(--theme-text-primary, #1a1a1a);
@@ -1290,6 +1470,17 @@
 .expert-editor__button--secondary:hover:not(:disabled) {
     border-color: var(--theme-primary, #3b82f6);
     color: var(--theme-primary, #3b82f6);
+}
+
+.expert-editor__button--danger {
+    border-color: var(--theme-danger, #b42318);
+    background: var(--theme-danger, #b42318);
+    color: #fff;
+    font-weight: 600;
+}
+
+.expert-editor__button--danger:hover {
+    filter: brightness(0.94);
 }
 
 

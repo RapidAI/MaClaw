@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func NewID(prefix string) string {
@@ -27,6 +29,10 @@ func NewID(prefix string) string {
 }
 
 func NormalizeDirectoryImportRequest(req DirectoryImportRequest) DirectoryImportRequest {
+	// This request travels through scanning, batching and asynchronous import
+	// preparation. Keep its trusted parser policy independent from the host's
+	// mutable config object for the entire operation.
+	req.OfficeReadConfig = agent.CloneOfficeReadConfigPtr(req.OfficeReadConfig)
 	req.RootPath = strings.TrimSpace(req.RootPath)
 	req.OwnerID = strings.TrimSpace(req.OwnerID)
 	req.TenantID = strings.TrimSpace(req.TenantID)
@@ -157,7 +163,7 @@ func ScanDirectoryProgress(ctx context.Context, req DirectoryImportRequest, exis
 			result.ExtCounts = make(map[string]int)
 		}
 		result.ExtCounts[ext]++
-		if info.Size() > req.MaxFileBytes {
+		if info.Size() > maxKnowledgeImportFileBytesForKind(req.MaxFileBytes, kind) {
 			result.SkippedFiles++
 			item := newSkippedImportItem(root, path, now, ItemStatusSkippedTooLarge, "file exceeds max_file_bytes")
 			item.FileSize = info.Size()
@@ -298,7 +304,7 @@ func ScanFilesProgress(ctx context.Context, req DirectoryImportRequest, filePath
 			result.ExtCounts = make(map[string]int)
 		}
 		result.ExtCounts[ext]++
-		if info.Size() > req.MaxFileBytes {
+		if info.Size() > maxKnowledgeImportFileBytesForKind(req.MaxFileBytes, kind) {
 			result.SkippedFiles++
 			item := newSkippedImportItem(root, path, now, ItemStatusSkippedTooLarge, "file exceeds max_file_bytes")
 			item.FileSize = info.Size()
@@ -347,11 +353,18 @@ func hashScanCandidates(ctx context.Context, candidates []scanHashCandidate, onP
 	if n == 0 {
 		return nil
 	}
+	// Hashing is parallel, but a progress callback belongs to one consumer (the
+	// GUI event bridge in production).  Calling it from multiple workers makes
+	// even a simple callback-owned counter or slice race.  Keep hashing fully
+	// concurrent while serializing only the short notification boundary.
+	var progressMu sync.Mutex
 	report := func(done int, path string) {
 		if onProgress == nil {
 			return
 		}
 		if done == n || done == 1 || done%8 == 0 {
+			progressMu.Lock()
+			defer progressMu.Unlock()
 			onProgress("hash", done, n, path)
 		}
 	}
@@ -561,6 +574,8 @@ func kindForExt(ext string) string {
 		return SourceKindPDF
 	case ".pptx":
 		return SourceKindPPTX
+	case ".ppt":
+		return SourceKindPPT
 	case ".xlsx":
 		return SourceKindXLSX
 	case ".csv":
@@ -580,11 +595,30 @@ func kindForExt(ext string) string {
 
 func isImmediatelyParsedKind(kind string) bool {
 	switch kind {
-	case SourceKindMarkdown, SourceKindText, SourceKindDOCX, SourceKindPDF, SourceKindPPTX, SourceKindXLSX, SourceKindCSV, SourceKindImage:
+	case SourceKindMarkdown, SourceKindText, SourceKindDOCX, SourceKindDOC, SourceKindPDF, SourceKindPPT, SourceKindPPTX, SourceKindXLSX, SourceKindXLS, SourceKindCSV, SourceKindImage:
 		return true
 	default:
 		return false
 	}
+}
+
+// maxKnowledgeImportFileBytesForKind preserves a caller's lower import cap,
+// while preventing Office containers, CSV grids, and PDFs from entering a
+// knowledge workflow above the common 32 MiB extraction boundary. PDF OCR
+// reads the source into memory and can rasterize pages, so allowing the wider
+// generic import ceiling here would bypass the same resource guard used by the
+// other parser-heavy formats.
+func maxKnowledgeImportFileBytesForKind(requested int64, kind string) int64 {
+	if requested <= 0 {
+		requested = DefaultMaxFileBytes
+	}
+	switch kind {
+	case SourceKindDOC, SourceKindDOCX, SourceKindXLS, SourceKindXLSX, SourceKindPPT, SourceKindPPTX, SourceKindCSV, SourceKindPDF:
+		if requested > agent.MaxOfficeReadFileBytes {
+			return agent.MaxOfficeReadFileBytes
+		}
+	}
+	return requested
 }
 
 func normalizeExt(ext string) string {
@@ -702,6 +736,27 @@ func fileSHA256(path string) (string, error) {
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// boundedDocumentSHA256 is the refresh-time identity check for files that
+// subsequently enter the shared document snapshot boundary. Unlike generic
+// scan hashing, it must not read an arbitrarily large current pathname merely
+// to decide whether a 32 MiB-bounded parser may run.
+func boundedDocumentSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(f, agent.MaxOfficeReadFileBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if n > agent.MaxOfficeReadFileBytes {
+		return "", agent.ErrOfficeReadInputTooLarge
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -46,6 +47,44 @@ func TestTUISkillDownloadGuidanceFollowsLanguage(t *testing.T) {
 	}
 }
 
+func TestTUIOfficeReadProviderUsesPersistedPolicyAndRefreshesImmediately(t *testing.T) {
+	for _, key := range []string{
+		"MACLAW_OFFICE_READ_ENGINE",
+		"MACLAW_OFFICE_READ_FORMATS",
+		"MACLAW_OFFICE_READ_FALLBACK",
+		"MACLAW_OFFICE_READ_EMIT_MARKDOWN",
+	} {
+		t.Setenv(key, "")
+	}
+
+	dataDir := t.TempDir()
+	store := commands.NewFileConfigStore(dataDir)
+	fallback := false
+	emitMarkdown := true
+	if err := store.SaveConfig(corelib.AppConfig{
+		OfficeReadEngine:       "officeread",
+		OfficeReadFormats:      []string{"doc", "docx"},
+		OfficeReadFallback:     &fallback,
+		OfficeReadEmitMarkdown: &emitMarkdown,
+	}); err != nil {
+		t.Fatalf("save initial OfficeRead policy: %v", err)
+	}
+	restore := installTUIOfficeReadConfigProvider(dataDir)
+	defer restore()
+
+	policy := agent.CurrentOfficeReadRuntimePolicy()
+	if policy.Engine != agent.OfficeExtractEngineOfficeRead || !reflect.DeepEqual(policy.Formats, []string{"doc", "docx"}) || policy.Fallback || !policy.EmitMarkdown {
+		t.Fatalf("initial TUI OfficeRead policy = %#v", policy)
+	}
+
+	if err := store.SaveConfig(corelib.AppConfig{OfficeReadEngine: "legacy", OfficeReadFormats: []string{"doc"}}); err != nil {
+		t.Fatalf("save global rollback policy: %v", err)
+	}
+	policy = agent.CurrentOfficeReadRuntimePolicy()
+	if policy.Engine != agent.OfficeExtractEngineLegacy || !reflect.DeepEqual(policy.Formats, []string{"doc"}) || !policy.Fallback || policy.EmitMarkdown {
+		t.Fatalf("updated TUI OfficeRead policy = %#v", policy)
+	}
+}
 func TestTUISearchResultInstalledUsesSourceAwareIdentity(t *testing.T) {
 	tests := []struct {
 		name      string

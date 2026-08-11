@@ -430,10 +430,11 @@ type acpHostSession struct {
 }
 
 type acpHostAgentSession struct {
-	ID      string
-	Cwd     string
-	UserID  string
-	Created time.Time
+	ID                  string
+	Cwd                 string
+	UserID              string
+	Created             time.Time
+	ActiveRuntimeTaskID string
 }
 
 func newACPHostSession(app *App, token string, conn *acpagent.Conn) *acpHostSession {
@@ -696,7 +697,16 @@ func (s *acpHostSession) onSessionCancel(raw json.RawMessage) {
 	s.mu.Lock()
 	cancel := s.cancels[sid]
 	sess := s.sessions[sid]
+	runtimeTaskID := ""
+	if sess != nil {
+		runtimeTaskID = sess.ActiveRuntimeTaskID
+	}
 	s.mu.Unlock()
+	if runtimeTaskID != "" && s.app != nil {
+		// Durable cancellation precedes in-process cancellation. This prevents a
+		// late ACP/LLM callback from reviving a task after this TCP request ends.
+		s.app.cancelACPProgrammingRuntimeTask(runtimeTaskID)
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -786,6 +796,27 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 	}()
 
 	requestID := "acp-" + sid + "-" + randomHexID(6)
+	runtimeTaskID := ""
+	if acpPromptMayMutateWorkspace(text) && strings.TrimSpace(sess.Cwd) != "" {
+		runtimeTaskID = acpProgrammingRuntimeTaskID(sess.UserID, sess.Cwd, requestID)
+	}
+	s.mu.Lock()
+	if runtimeTaskID != "" {
+		if current := s.sessions[sid]; current == sess {
+			current.ActiveRuntimeTaskID = runtimeTaskID
+		}
+	}
+	s.mu.Unlock()
+	defer func() {
+		if runtimeTaskID == "" {
+			return
+		}
+		s.mu.Lock()
+		if current := s.sessions[sid]; current == sess && current.ActiveRuntimeTaskID == runtimeTaskID {
+			current.ActiveRuntimeTaskID = ""
+		}
+		s.mu.Unlock()
+	}()
 	mirrorUI := true
 	if cfg, err := s.app.LoadConfig(); err == nil {
 		mirrorUI = cfg.IsAcpHostMirrorUI()

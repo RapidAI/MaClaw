@@ -97,6 +97,7 @@ const atomicPatchFields = new Set([
     'hardware_welcome_voice_id',
     'hardware_welcome_audio_path',
     'hardware_volume',
+    'hardware_brightness',
     'pet_ambient_city',
 ]);
 

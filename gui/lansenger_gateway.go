@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -31,7 +34,11 @@ import (
 //     via im.gateway_message, receives replies via im.gateway_reply.
 type lansengerGatewayManager struct {
 	app *App
-	mu  sync.Mutex
+	// profile is nil only for the legacy single-bot compatibility manager.
+	// A profile manager owns exactly one private Agent runtime.
+	profile *corelib.LansengerBotProfile
+	runtime *lansengerBotRuntime
+	mu      sync.Mutex
 	// syncMu serializes config reconciliation with Stop. Gateway Stop may wait
 	// for its connection goroutine, so keep it outside mu while still ensuring a
 	// concurrent sync cannot publish or stop the same gateway out of order.
@@ -80,7 +87,85 @@ func (m *lansengerGatewayManager) currentLocalHandler() *IMMessageHandler {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Profile runtimes deliberately do not publish through localHandler: that
+	// field is the legacy compatibility handler backed by App-wide state. Return
+	// the runtime-owned handler so lifecycle wiring (for example embedding
+	// activation) reaches every live bot without crossing that boundary.
+	if m.runtime != nil && m.runtime.handler != nil {
+		return m.runtime.handler
+	}
+	if m.profile != nil {
+		return nil
+	}
 	return m.localHandler
+}
+
+func newLansengerGatewayManagerForProfile(app *App, profile corelib.LansengerBotProfile) *lansengerGatewayManager {
+	m := newLansengerGatewayManager(app)
+	profile = cloneLansengerBotProfile(profile)
+	m.profile = &profile
+	// A profile bot must not inherit a custom bot's last private peer. The
+	// historical single peer is used only as a one-time compatibility fallback
+	// for the migrated default profile; new profile IDs begin without a target.
+	peers := improactive.NewStore("").LoadOrEmpty()
+	m.lastPrivateUserID = lansengerProfilePrivatePeer(peers, profile.ID)
+	return m
+}
+
+func lansengerProfilePrivatePeer(peers improactive.Peers, profileID string) string {
+	profileID = strings.TrimSpace(profileID)
+	if profileID != "" && peers.LansengerPrivateUserIDsByBotID != nil {
+		if userID := strings.TrimSpace(peers.LansengerPrivateUserIDsByBotID[profileID]); userID != "" {
+			return userID
+		}
+	}
+	// The old field belongs only to the migrated/default profile. Letting an
+	// arbitrary custom profile inherit it would send proactive content through
+	// the wrong bot after an upgrade.
+	if profileID == corelib.DefaultLansengerBotProfileID {
+		return strings.TrimSpace(peers.LansengerPrivateUserID)
+	}
+	return ""
+}
+
+func (m *lansengerGatewayManager) configuredProfile(cfg *corelib.AppConfig) corelib.LansengerBotProfile {
+	if m != nil && m.profile != nil {
+		return cloneLansengerBotProfile(*m.profile)
+	}
+	if cfg == nil {
+		return corelib.LansengerBotProfile{}
+	}
+	return corelib.LansengerBotProfile{
+		ID: corelib.DefaultLansengerBotProfileID, Enabled: cfg.LansengerEnabled, AppID: cfg.LansengerAppID, AppSecret: cfg.LansengerAppSecret,
+		GatewayURL: cfg.LansengerGatewayURL, WSSURL: cfg.LansengerWSSURL, AssistantMode: corelib.LansengerAssistantModeGeneral,
+		GroupPolicy: cfg.LansengerGroupPolicy, AllowedGroupIDs: cfg.LansengerAllowedGroupIDs, IgnoredGroupIDs: cfg.LansengerIgnoredGroupIDs,
+		GroupFileMaxBytes: cfg.LansengerGroupFileMaxBytes, RequireMention: cfg.LansengerRequireMention, RespondToAtAll: cfg.LansengerRespondToAtAll,
+		AutoQuoteReply: cfg.LansengerAutoQuoteReply, KnowledgeSourceIDs: cfg.LansengerGroupKnowledgeSourceIDs, AllowWebSearch: cfg.LansengerGroupAllowWebSearch,
+		AllowAllDirectories: cfg.LansengerGroupAllowAllDirectories, AllowedDirectories: cfg.LansengerGroupAllowedDirectories,
+	}
+}
+
+func (m *lansengerGatewayManager) profileID() string {
+	if m != nil && m.profile != nil && strings.TrimSpace(m.profile.ID) != "" {
+		return strings.TrimSpace(m.profile.ID)
+	}
+	return corelib.DefaultLansengerBotProfileID
+}
+
+// ownsLegacyHubClaim reports whether this manager owns the singleton Hub claim.
+// Profile-bound bots stay local because Hub has no bot-profile discriminator.
+func (m *lansengerGatewayManager) ownsLegacyHubClaim() bool {
+	return m != nil && m.profile == nil
+}
+
+// requiresLocalProcessing keeps a profile-bound bot's identity, memory and
+// tool boundary on this machine. The Hub gateway protocol identifies an
+// inbound Lansenger turn only by platform user ID, not bot profile ID; sending
+// a profile turn there would merge two bots' private conversations and route a
+// reply through the arbitrary compatibility manager. Legacy single-bot mode
+// retains its existing Hub option.
+func (m *lansengerGatewayManager) requiresLocalProcessing(cfg corelib.AppConfig) bool {
+	return m != nil && m.profile != nil || cfg.IsLansengerLocalMode()
 }
 
 type lansengerGroupInfoCacheEntry struct {
@@ -162,15 +247,19 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 	if err != nil {
 		return
 	}
-	m.storeGroupFileLimits(cfg.LansengerGroupFileMaxBytes)
+	profile := m.configuredProfile(&cfg)
+	m.storeGroupFileLimits(profile.GroupFileMaxBytes)
 
-	appID := strings.TrimSpace(cfg.LansengerAppID)
-	appSecret := strings.TrimSpace(cfg.LansengerAppSecret)
-	gwURL := cfg.LansengerApiGatewayURL()
-	wssURL := cfg.LansengerWebSocketGatewayURL()
+	appID := strings.TrimSpace(profile.AppID)
+	appSecret := strings.TrimSpace(profile.AppSecret)
+	gwURL := strings.TrimSpace(profile.GatewayURL)
+	if gwURL == "" {
+		gwURL = cfg.LansengerApiGatewayURL()
+	}
+	wssURL := strings.TrimSpace(profile.WSSURL)
 
 	m.mu.Lock()
-	if !cfg.LansengerEnabled || appID == "" || appSecret == "" {
+	if !profile.Enabled || appID == "" || appSecret == "" {
 		gw := m.gateway
 		healthCancel := m.healthCancel
 		m.gateway = nil
@@ -188,10 +277,13 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 		if gw != nil {
 			_ = gw.Stop()
 		}
-		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformLansenger)
+		if m.ownsLegacyHubClaim() {
+			if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
+				_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformLansenger)
+			}
 		}
 		m.emitStatusEvent()
+		m.stopRuntime()
 		return
 	}
 
@@ -263,7 +355,8 @@ func (m *lansengerGatewayManager) Stop() {
 	if healthCancel != nil {
 		healthCancel()
 	}
-	_ = lh // shared App conversation memory remains alive
+	_ = lh // legacy shared App conversation memory remains alive
+	m.stopRuntime()
 	if gw != nil {
 		_ = gw.Stop()
 	}
@@ -362,7 +455,7 @@ func (m *lansengerGatewayManager) onGatewayStatusChange(gw *lansenger.Gateway, s
 	m.emitStatusEvent()
 
 	if normalized == gatewayConnectionStatusConnected {
-		if cfg, err := m.app.LoadConfig(); err == nil && cfg.IsLansengerLocalMode() {
+		if cfg, err := m.app.LoadConfig(); err == nil && m.requiresLocalProcessing(cfg) {
 			return
 		}
 		hubClient := m.app.hubClient()
@@ -388,7 +481,18 @@ func (m *lansengerGatewayManager) restartFromHealthMonitor(reason string) {
 }
 
 func (m *lansengerGatewayManager) emitStatusEvent() {
-	m.app.emitEvent("lansenger-status-changed", m.Status())
+	if m == nil || m.app == nil {
+		return
+	}
+	// A profile transition must publish the aggregate state. Otherwise a
+	// disconnected secondary bot can hide global controls while another bot is
+	// connected.
+	m.app.emitEvent("lansenger-status-changed", m.app.GetLansengerStatus())
+	// Profile settings surfaces need the exact bot that transitioned; the global
+	// aggregate above intentionally loses that identity.
+	if m.profile != nil {
+		m.app.emitEvent("lansenger-bot-status-changed", m.profileID(), m.Status())
+	}
 }
 
 func (m *lansengerGatewayManager) resetLocalHandler() {
@@ -396,6 +500,58 @@ func (m *lansengerGatewayManager) resetLocalHandler() {
 	defer m.mu.Unlock()
 	m.localHandler = nil
 	m.hubClaimSent = false
+}
+
+func (m *lansengerGatewayManager) profileRuntime() *lansengerBotRuntime {
+	if m == nil || m.profile == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.runtime
+}
+
+func (m *lansengerGatewayManager) ensureProfileRuntime() (*lansengerBotRuntime, error) {
+	if m == nil || m.profile == nil {
+		return nil, nil
+	}
+	if m.app == nil {
+		return nil, fmt.Errorf("lansenger bot runtime requires app")
+	}
+	m.mu.Lock()
+	if runtime := m.runtime; runtime != nil {
+		m.mu.Unlock()
+		return runtime, nil
+	}
+	profileID := m.profileID()
+	m.mu.Unlock()
+	runtime, err := newLansengerBotRuntime(m.app, m.app.remoteSessions, profileID)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	if m.runtime == nil {
+		m.runtime = runtime
+		m.mu.Unlock()
+		return runtime, nil
+	}
+	existing := m.runtime
+	m.mu.Unlock()
+	runtime.stop()
+	return existing, nil
+}
+
+func (m *lansengerGatewayManager) stopRuntime() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	runtime := m.runtime
+	m.runtime = nil
+	m.mu.Unlock()
+	if runtime != nil {
+		runtime.stop()
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -408,7 +564,9 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 		log.Printf("[lansenger-mgr] LoadConfig error: %v", err)
 		return
 	}
-	groupOpts := lansengerGroupChatOptionsFromConfig(&cfg)
+	profile := m.configuredProfile(&cfg)
+	profileCfg := lansengerBotProfileGroupOptions(profile)
+	groupOpts := lansengerGroupChatOptionsFromConfig(&profileCfg)
 	if isLansengerGroupMessage(msg) && msg.MediaType != "" && !normalizeIMMediaKind(msg.MediaType).IsImage() {
 		msg.AuditUserRecorded = m.recordGroupFileAudit(msg)
 	}
@@ -421,9 +579,12 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 	// Watch (盯人): record / keyword / CLI / auto-reply runs for delivered group
 	// messages even when the bot is not @mentioned — so full speech capture works
 	// when the platform pushes non-@ events. Does not claim the message for LLM.
+	//
+	// Watch state is scoped by the bot profile and replies are sent through this
+	// manager, so multiple bots can safely watch the same group independently.
 	if isLansengerGroupMessage(msg) {
 		if svc := m.app.watchService(); svc != nil {
-			svc.processMessage(msg)
+			svc.processMessageForBot(m.profileID(), m, msg)
 		}
 		// Group summary buffer: same delivery scope as watch (before mention gate).
 		m.recordGroupMessage(msg)
@@ -441,7 +602,7 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 			// or /confirm. In local mode it must be able to continue without
 			// making the user @ the bot on every wizard step. This exemption is
 			// session- and user-specific; all other group policy checks still win.
-			if reason == "require_mention" && cfg.IsLansengerLocalMode() && m.app.localStartMenuService().active(lansengerLocalStartMenuSessionKey(msg)) {
+			if reason == "require_mention" && m.requiresLocalProcessing(cfg) && m.app.localStartMenuService().active(lansengerLocalStartMenuSessionKeyForProfile(m.profileID(), msg)) {
 				log.Printf("[lansenger-mgr] local startmenu mention-bypass: group=%s user=%s", msg.GroupID, msg.FromUserID)
 			} else {
 				if reason == "require_mention" && m.surveyCandidateBypassesMention(msg) {
@@ -480,14 +641,14 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 	// Do not hand a group turn to Hub: the Hub-side generic IM pipeline does not
 	// carry this machine's directory and knowledge-source allowlists, so forwarding
 	// would turn a configured local restriction into a bypass in multi-machine
-	// mode. Private messages retain their selected local/Hub routing behavior.
+	// mode.
 	if isLansengerGroupMessage(msg) {
 		log.Printf("[lansenger-mgr] routing group message locally for permission enforcement: group=%s user=%s", msg.GroupID, msg.FromUserID)
 		m.handleLocalMessage(msg, &cfg)
 		return
 	}
 
-	isLocal := cfg.IsLansengerLocalMode()
+	isLocal := m.requiresLocalProcessing(cfg)
 	hubClient := m.app.hubClient()
 	hubNil := hubClient == nil
 	hubConn := !hubNil && hubClient.IsConnected()
@@ -568,12 +729,18 @@ func (m *lansengerGatewayManager) recordGroupFileAudit(msg lansenger.IncomingMes
 		return false
 	}
 	audit := IMAuditMessage{
-		UserID: lansengerConversationUserID(msg), Platform: "lansenger_local", Role: "user", Content: msg.Text,
+		BotProfileID: m.profileID(), UserID: lansengerConversationUserIDForProfile(m.profileID(), msg), Platform: "lansenger_local", Role: "user", Content: msg.Text,
 		AttachmentName: safeIMAuditAttachmentName(msg.MediaName), AttachmentMediaType: msg.MediaType,
 	}
 	if len(msg.MediaData) > 0 {
 		audit.AttachmentSize = int64(len(msg.MediaData))
-		path, err := m.app.saveIMAuditAttachmentNamed("lansenger", msg.GroupID, msg.MessageID, audit.AttachmentName, msg.MediaData)
+		// The audit DB is profile-scoped but the attachment tree used to be only
+		// platform/group scoped. Include the profile in the managed path as well:
+		// this prevents two bot profiles in the same group from co-locating files
+		// and makes retention/forensics reflect the same isolation boundary as the
+		// audit row and conversation memory.
+		auditScope := "lansenger_" + safeIMAuditPathPart(m.profileID())
+		path, err := m.app.saveIMAuditAttachmentNamed(auditScope, msg.GroupID, msg.MessageID, audit.AttachmentName, msg.MediaData)
 		if err != nil {
 			log.Printf("[lansenger-mgr] save audit attachment failed: group=%s message=%s err=%v", msg.GroupID, msg.MessageID, err)
 			if strings.TrimSpace(audit.Content) == "" {
@@ -735,6 +902,12 @@ func (m *lansengerGatewayManager) notifyHubUnavailable(msg lansenger.IncomingMes
 }
 
 func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
+	if m != nil && m.profile != nil {
+		// Defensive guard for future callers: profile-bound messages must never
+		// enter a Hub protocol that lacks a bot-profile routing field.
+		m.handleLocalMessage(msg)
+		return
+	}
 	hubClient := m.app.hubClient()
 	if hubClient == nil || !hubClient.IsConnected() {
 		m.notifyHubUnavailable(msg)
@@ -1016,7 +1189,8 @@ func (m *lansengerGatewayManager) currentGroupOpts() lansenger.GroupChatOptions 
 	if err != nil {
 		return lansenger.GroupChatOptions{RequireMention: true, Policy: lansenger.GroupPolicyOpen}
 	}
-	return lansengerGroupChatOptionsFromConfig(&cfg)
+	profileCfg := lansengerBotProfileGroupOptions(m.configuredProfile(&cfg))
+	return lansengerGroupChatOptionsFromConfig(&profileCfg)
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,6 +1198,19 @@ func (m *lansengerGatewayManager) currentGroupOpts() lansenger.GroupChatOptions 
 // ---------------------------------------------------------------------------
 
 func (m *lansengerGatewayManager) ensureLocalHandler() *IMMessageHandler {
+	if m != nil && m.profile != nil {
+		runtime, err := m.ensureProfileRuntime()
+		if err != nil {
+			log.Printf("[lansenger-mgr] create profile runtime profile=%s: %v", m.profileID(), err)
+			return nil
+		}
+		if runtime != nil {
+			return runtime.handler
+		}
+		// A profile must never fall through to localHandler: it is the legacy
+		// shared handler and would defeat per-bot conversation/state isolation.
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.localHandler != nil {
@@ -1098,13 +1285,81 @@ func (m *lansengerGatewayManager) ensureLocalHandler() *IMMessageHandler {
 }
 
 func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessage, loadedConfig ...*corelib.AppConfig) {
+	if m != nil && m.profile != nil {
+		runtime, err := m.ensureProfileRuntime()
+		if err != nil || runtime == nil {
+			if err != nil {
+				log.Printf("[lansenger-mgr] reject message: profile runtime unavailable profile=%s: %v", m.profileID(), err)
+			} else {
+				log.Printf("[lansenger-mgr] reject message: profile runtime unavailable profile=%s", m.profileID())
+			}
+			m.replyProfileRuntimeUnavailable(msg)
+			return
+		}
+		var cfgCopy *corelib.AppConfig
+		if len(loadedConfig) > 0 && loadedConfig[0] != nil {
+			copy := cloneAppConfigForMutation(*loadedConfig[0])
+			cfgCopy = &copy
+		}
+		if !runtime.queue.submit(runtime.queue.ctx, func(turnCtx context.Context) { m.handleLocalMessageNow(turnCtx, msg, cfgCopy) }) {
+			log.Printf("[lansenger-mgr] reject message: profile queue unavailable or full profile=%s", m.profileID())
+			m.replyProfileQueueUnavailable(msg)
+		}
+		return
+	}
+	m.handleLocalMessageNow(context.Background(), msg, loadedConfig...)
+}
+
+// replyProfileRuntimeUnavailable fails closed when a profile's private Agent
+// cannot be constructed. Falling back to the legacy App-scoped handler would
+// leak conversation, confirmation and loop state across bot boundaries.
+func (m *lansengerGatewayManager) replyProfileRuntimeUnavailable(msg lansenger.IncomingMessage) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return
+	}
+	_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+		msg, "机器人运行环境暂不可用，请稍后再试或联系管理员。", m.currentGroupOpts(), true))
+}
+
+// replyProfileQueueUnavailable makes overload visible to the sender. A profile
+// queue is deliberately bounded so one slow agent cannot block the gateway's
+// receive loop or starve other profiles. This remains a system notice: it must
+// not look like a successful agent answer or add an extra @mention/quote.
+func (m *lansengerGatewayManager) replyProfileQueueUnavailable(msg lansenger.IncomingMessage) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return
+	}
+	_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+		msg, "机器人当前请求较多，请稍后重试。", m.currentGroupOpts(), true))
+}
+
+func (m *lansengerGatewayManager) handleLocalMessageNow(turnCtx context.Context, msg lansenger.IncomingMessage, loadedConfig ...*corelib.AppConfig) {
+	// Profile queues cancel this context during stop/reconfigure. Check before
+	// every local shortcut or attachment side effect so a dequeued-but-canceled
+	// turn cannot start tasks, run a passthrough command, write a temp file, or
+	// emit a reply after its bot instance is gone.
+	if contextErr(turnCtx) != nil {
+		return
+	}
 	// Always work from cleaned text so "@Bot /help" matches slash passthrough
 	// the same way as plain "/help".
 	cleanText := stripLansengerBotMentions(msg)
 	// A start-menu confirmation creates a local coding/general task outside the
 	// group permission boundary. Keep it available in private chats, but never
 	// allow a group member to bootstrap an unrestricted local task this way.
-	if isLansengerGroupMessage(msg) && m.app.localStartMenuService().active(lansengerLocalStartMenuSessionKey(msg)) {
+	if isLansengerGroupMessage(msg) && m.app.localStartMenuService().active(lansengerLocalStartMenuSessionKeyForProfile(m.profileID(), msg)) {
 		m.mu.Lock()
 		gw := m.gateway
 		m.mu.Unlock()
@@ -1117,7 +1372,7 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	if !isLansengerGroupMessage(msg) {
 		// Standalone LANXIN must stay fully local. Handle the stateful wizard
 		// before generic passthrough consumes /run during an active shortcut flow.
-		menu := m.app.localStartMenuService().handle(lansengerLocalStartMenuSessionKey(msg), cleanText)
+		menu := m.app.localStartMenuService().handle(lansengerLocalStartMenuSessionKeyForProfile(m.profileID(), msg), cleanText)
 		if menu.Handled {
 			m.mu.Lock()
 			gw := m.gateway
@@ -1177,6 +1432,15 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	}
 
 	handler := m.ensureLocalHandler()
+	if handler == nil {
+		// Profile runtimes are never allowed to use the legacy shared handler;
+		// handleLocalMessage normally catches this, but retain the guard for
+		// direct/internal callers of handleLocalMessageNow.
+		if m.profile != nil {
+			m.replyProfileRuntimeUnavailable(msg)
+		}
+		return
+	}
 
 	m.mu.Lock()
 	gw := m.gateway
@@ -1189,6 +1453,8 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	// Keep msg.Text raw for any call sites that still need the platform payload;
 	// outbound quotes prefer the stripped form via buildLansengerOutgoingTextEx.
 	text := cleanText
+	cacheQuestion := cleanText
+	cacheableQuestion := lansengerAnswerCacheQuestionEligible(msg)
 
 	// Pass images/files as attachments, matching the pattern used by
 	// WeChat, Telegram and QQ gateways.
@@ -1209,7 +1475,7 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		} else {
 			// Non-image media (file, voice, video) → save to local temp
 			// and prepend the path to the text so the agent can read it.
-			mediaPath, err := saveMediaToTempDir("lansenger", "ls_", msg.FromUserID, msg.MediaType, msg.MediaData, msg.MediaName)
+			mediaPath, err := saveMediaToTempDirForScope("lansenger", "ls_", msg.FromUserID, msg.MediaType, msg.MediaData, msg.MediaName, m.profileID())
 			if err != nil {
 				log.Printf("[lansenger-mgr] save media error: %v", err)
 			} else {
@@ -1231,6 +1497,9 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	var lastProgress time.Time
 	var lastProgressText string
 	onProgress := func(progressText string) {
+		if contextErr(turnCtx) != nil {
+			return
+		}
 		// Progress is IM implementation detail.  In a group it would expose
 		// agent activity to every member, so never publish it (including the
 		// first progress update that the generic visibility filter permits).
@@ -1258,12 +1527,21 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	}
 
 	userMessage := IMUserMessage{
-		UserID:        lansengerConversationUserID(msg),
-		Platform:      "lansenger_local",
-		Text:          text,
-		Lang:          appUILang(m.app),
-		Attachments:   attachments,
-		SkipUserAudit: msg.AuditUserRecorded,
+		UserID:           lansengerConversationUserIDForProfile(m.profileID(), msg),
+		Platform:         "lansenger_local",
+		Text:             text,
+		CacheQuestion:    cacheQuestion,
+		CacheScope:       lansengerAnswerCacheScopeForProfile(m.profileID(), msg),
+		CachePolicyScope: m.lansengerAnswerCachePolicyScope(m.profileID(), msg, loadedConfig...),
+		Lang:             appUILang(m.app),
+		Attachments:      attachments,
+		SkipUserAudit:    msg.AuditUserRecorded,
+		AssistantBinding: lansengerAssistantBinding(m.configuredProfile(nil)),
+		CancelCtx:        turnCtx,
+	}
+	if !cacheableQuestion {
+		userMessage.CacheQuestion = ""
+		userMessage.CacheScope = ""
 	}
 	var loopCtx *LoopContext
 	if isLansengerGroupMessage(msg) {
@@ -1276,12 +1554,19 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 				cfg = &current
 			}
 		}
-		permissions := lansengerGroupPermissionsFromConfig(cfg)
+		profileCfg := lansengerBotProfileGroupOptions(m.configuredProfile(cfg))
+		permissions := lansengerGroupPermissionsFromConfig(&profileCfg)
 		loopCtx = NewLoopContext("lansenger-group", handler.getMaclawAgentMaxIterations(), handler.client)
 		loopCtx.Platform = userMessage.Platform
 		loopCtx.UserID = userMessage.UserID
 		loopCtx.Lang = userMessage.Lang
 		loopCtx.LansengerGroupPermissions = &permissions
+	}
+	if loopCtx == nil && m.profile != nil {
+		loopCtx = NewLoopContext("lansenger-profile", handler.getMaclawAgentMaxIterations(), handler.client)
+		loopCtx.Platform = userMessage.Platform
+		loopCtx.UserID = userMessage.UserID
+		loopCtx.Lang = userMessage.Lang
 	}
 	var resp *IMAgentResponse
 	if loopCtx != nil {
@@ -1291,6 +1576,13 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	}
 
 	if resp == nil || resp.Deferred {
+		return
+	}
+	// The profile queue may have been stopped after the handler completed but
+	// before this goroutine reaches the transport. Never emit a late answer from
+	// a removed/reconfigured bot; the turn context is the authoritative
+	// lifecycle signal for both generated and cache-hit responses.
+	if contextErr(turnCtx) != nil {
 		return
 	}
 
@@ -1303,6 +1595,8 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 // and long-running task bookkeeping all key off IMUserMessage.UserID; using
 // FromUserID alone would let a group prompt inherit or expose private context.
 func lansengerConversationUserID(msg lansenger.IncomingMessage) string {
+	// Legacy compatibility path. Profile runtimes call the explicit helper
+	// below; preserving this value avoids silently remapping old history.
 	if !isLansengerGroupMessage(msg) {
 		return strings.TrimSpace(msg.FromUserID)
 	}
@@ -1311,14 +1605,102 @@ func lansengerConversationUserID(msg lansenger.IncomingMessage) string {
 	return fmt.Sprintf("lansenger-group:%d:%s:%d:%s", len(groupID), groupID, len(userID), userID)
 }
 
+func lansengerConversationUserIDForProfile(profileID string, msg lansenger.IncomingMessage) string {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		profileID = corelib.DefaultLansengerBotProfileID
+	}
+	if !isLansengerGroupMessage(msg) {
+		userID := strings.TrimSpace(msg.FromUserID)
+		return fmt.Sprintf("lansenger:%d:%s:p2p:%d:%s", len(profileID), profileID, len(userID), userID)
+	}
+	groupID := strings.TrimSpace(msg.GroupID)
+	userID := strings.TrimSpace(msg.FromUserID)
+	return fmt.Sprintf("lansenger:%d:%s:group:%d:%s:user:%d:%s", len(profileID), profileID, len(groupID), groupID, len(userID), userID)
+}
+
+// lansengerAnswerCacheScope keeps reusable answers within the originating
+// private-chat or group conversation. User identity deliberately does not
+// participate, so members of one group can reuse the same independent answer.
+func lansengerAnswerCacheScopeForProfile(profileID string, msg lansenger.IncomingMessage) string {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		profileID = corelib.DefaultLansengerBotProfileID
+	}
+	if !isLansengerGroupMessage(msg) {
+		return fmt.Sprintf("lansenger:%d:%s:p2p", len(profileID), profileID)
+	}
+	groupID := strings.TrimSpace(msg.GroupID)
+	return fmt.Sprintf("lansenger:%d:%s:group:%d:%s", len(profileID), profileID, len(groupID), groupID)
+}
+
+// lansengerAnswerCacheQuestionEligible rejects group turns whose transport
+// metadata adds person-specific context beyond the visible question. Bot
+// mentions are deliberately allowed: they only invoke this bot and are removed
+// from cleanText. Staff mentions and quoted messages can change the answer.
+func lansengerAnswerCacheQuestionEligible(msg lansenger.IncomingMessage) bool {
+	if !isLansengerGroupMessage(msg) {
+		return true
+	}
+	return strings.TrimSpace(msg.ReferenceText) == "" && len(msg.MentionedStaffs) == 0
+}
+
+// lansengerAnswerCachePolicyScope fingerprints the non-secret group policy
+// that can affect a response. Group membership metadata is intentionally left
+// out: it is dynamic display context rather than an answer policy.
+func (m *lansengerGatewayManager) lansengerAnswerCachePolicyScope(profileID string, msg lansenger.IncomingMessage, loadedConfig ...*corelib.AppConfig) string {
+	if m == nil || !isLansengerGroupMessage(msg) {
+		return ""
+	}
+	var cfg *corelib.AppConfig
+	if len(loadedConfig) > 0 {
+		cfg = loadedConfig[0]
+	}
+	if cfg == nil && m.app != nil {
+		if loaded, err := m.app.LoadConfig(); err == nil {
+			cfg = &loaded
+		}
+	}
+	profileCfg := lansengerBotProfileGroupOptions(m.configuredProfile(cfg))
+	policy := lansengerGroupPermissionsFromConfig(&profileCfg)
+	encoded, err := json.Marshal(struct {
+		KnowledgeSourceIDs  []string `json:"knowledge_source_ids,omitempty"`
+		AllowWebSearch      bool     `json:"allow_web_search"`
+		AllowAllDirectories bool     `json:"allow_all_directories"`
+		AllowedDirectories  []string `json:"allowed_directories,omitempty"`
+	}{
+		KnowledgeSourceIDs:  canonicalAnswerCacheStrings(policy.KnowledgeSourceIDs),
+		AllowWebSearch:      policy.AllowWebSearch,
+		AllowAllDirectories: policy.AllowAllDirectories,
+		AllowedDirectories:  canonicalAnswerCacheStrings(policy.AllowedDirectories),
+	})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
 func lansengerLocalStartMenuSessionKey(msg lansenger.IncomingMessage) string {
+	return lansengerLocalStartMenuSessionKeyForProfile(corelib.DefaultLansengerBotProfileID, msg)
+}
+
+// lansengerLocalStartMenuSessionKeyForProfile keeps the legacy wizard's
+// process-wide state isolated when multiple profiles talk to the same person
+// or group. Without the profile component, one bot could consume another
+// bot's pending /startmenu reply or mention-bypass slot.
+func lansengerLocalStartMenuSessionKeyForProfile(profileID string, msg lansenger.IncomingMessage) string {
 	// Delimit each part unambiguously. IDs are external input and may contain
 	// ':'; the previous concatenation could make two different conversations
 	// share a wizard state (for example target "a:b" + user "c" versus target
 	// "a" + user "b:c").
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		profileID = corelib.DefaultLansengerBotProfileID
+	}
 	target := strings.TrimSpace(lansengerReplyTarget(msg))
 	user := strings.TrimSpace(msg.FromUserID)
-	return fmt.Sprintf("lansenger:%d:%s:%d:%s", len(target), target, len(user), user)
+	return fmt.Sprintf("lansenger:%d:%s:%d:%s:%d:%s", len(profileID), profileID, len(target), target, len(user), user)
 }
 
 // shouldSendLansengerIMDetail controls process/status messages only.  Final
@@ -1573,6 +1955,28 @@ func (a *App) ensureLansengerGateway() {
 	if err != nil {
 		return
 	}
+	if !cfg.LansengerBotsMigrated {
+		if err := a.PatchConfig(func(next *corelib.AppConfig) { corelib.ApplyLansengerMultiBotMigration(next) }); err != nil {
+			log.Printf("[lansenger-mgr] migrate legacy bot config: %v", err)
+		} else if refreshed, err := a.LoadConfig(); err == nil {
+			cfg = refreshed
+		}
+	}
+	// The registry runs every enabled profile. Keep the historical singleton
+	// pointer as a compatibility facade for delivery and settings code that has
+	// not yet gained an explicit profile selector.
+	if len(cfg.LansengerBots) > 0 {
+		if a.lansengerGateways == nil {
+			a.lansengerGateways = newLansengerGatewayRegistry(a)
+		}
+		a.lansengerGateways.syncFromConfig(cfg, false)
+		a.lansengerGateway = a.lansengerGateways.defaultManager()
+		return
+	}
+	if a.lansengerGateways != nil && !a.lansengerGateways.isEmpty() {
+		a.lansengerGateways.stopAll()
+		a.lansengerGateway = nil
+	}
 	if !cfg.LansengerEnabled || strings.TrimSpace(cfg.LansengerAppID) == "" || strings.TrimSpace(cfg.LansengerAppSecret) == "" {
 		if a.lansengerGateway != nil {
 			a.lansengerGateway.SyncFromConfig()
@@ -1586,10 +1990,33 @@ func (a *App) ensureLansengerGateway() {
 }
 
 func (a *App) GetLansengerStatus() string {
+	// In multi-bot mode custom profiles need not include the migrated default
+	// profile, so the legacy compatibility pointer can be nil. Global UI
+	// surfaces should reflect whether the Lansenger channel is usable at all.
+	if a.lansengerGateways != nil && !a.lansengerGateways.isEmpty() {
+		return a.lansengerGateways.aggregateStatus()
+	}
 	if a.lansengerGateway == nil {
 		return "disconnected"
 	}
 	return a.lansengerGateway.Status()
+}
+
+// GetLansengerBotStatus returns a single profile's connection status.
+func (a *App) GetLansengerBotStatus(botID string) string {
+	if cfg, err := a.LoadConfig(); err == nil {
+		if profile, ok := lansengerBotProfileFromConfig(cfg, botID); ok && profile.EffectiveAssistantMode() == corelib.LansengerAssistantModeExpert && loadExpertDefByID(profile.ExpertID) == nil {
+			return "degraded"
+		}
+	}
+	a.ensureLansengerGateway()
+	if a.lansengerGateways != nil {
+		return a.lansengerGateways.status(botID)
+	}
+	if a.lansengerGateway != nil && strings.TrimSpace(botID) == corelib.DefaultLansengerBotProfileID {
+		return a.lansengerGateway.Status()
+	}
+	return "disconnected"
 }
 
 // noteLastPrivatePeer remembers the owner private peer and persists across restarts.
@@ -1605,8 +2032,17 @@ func (m *lansengerGatewayManager) noteLastPrivatePeer(uid string) {
 	if prev == uid {
 		return
 	}
+	profileID := m.profileID()
+	isProfile := m.profile != nil
 	if err := improactive.NewStore("").Patch(func(p *improactive.Peers) {
-		p.LansengerPrivateUserID = uid
+		if !isProfile {
+			p.LansengerPrivateUserID = uid
+			return
+		}
+		if p.LansengerPrivateUserIDsByBotID == nil {
+			p.LansengerPrivateUserIDsByBotID = make(map[string]string)
+		}
+		p.LansengerPrivateUserIDsByBotID[profileID] = uid
 	}); err != nil {
 		log.Printf("[lansenger-mgr] persist last private peer: %v", err)
 	}
@@ -1670,6 +2106,11 @@ func (m *lansengerGatewayManager) SendProactiveText(text string) error {
 
 func (a *App) RestartLansenger() string {
 	a.ensureLansengerGateway()
+	if a.lansengerGateways != nil {
+		a.lansengerGateways.restartAll()
+		a.invalidateScheduleTargetListCache(scheduler.DeliveryChannelLansenger)
+		return a.GetLansengerStatus()
+	}
 	if a.lansengerGateway == nil {
 		return "disconnected"
 	}
@@ -1679,7 +2120,24 @@ func (a *App) RestartLansenger() string {
 	return a.lansengerGateway.Status()
 }
 
+// RestartLansengerBot restarts only one bot's gateway and leaves every other
+// profile's Agent runtime and queued turns untouched.
+func (a *App) RestartLansengerBot(botID string) string {
+	a.ensureLansengerGateway()
+	if a.lansengerGateways == nil {
+		return "disconnected"
+	}
+	status := a.lansengerGateways.restart(botID)
+	a.invalidateScheduleTargetListCache(scheduler.DeliveryChannelLansenger)
+	return status
+}
+
 func (a *App) StopLansenger() {
+	if a.lansengerGateways != nil {
+		a.lansengerGateways.stopAll()
+		a.lansengerGateway = nil
+		return
+	}
 	if a.lansengerGateway != nil {
 		a.lansengerGateway.Stop()
 	}
@@ -1707,11 +2165,13 @@ func (a *App) SetLansengerLocalMode(enabled bool) error {
 		return err
 	}
 
-	if a.lansengerGateway != nil {
+	// Profile-bound bots remain local because the Hub protocol has no profile
+	// discriminator. Only reset the historical singleton on a mode change.
+	if a.lansengerGateways == nil && a.lansengerGateway != nil {
 		a.lansengerGateway.resetLocalHandler()
 	}
 
-	if !enabled {
+	if !enabled && a.lansengerGateways == nil {
 		hubClient := a.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
 			hubClient.SendIMGatewayClaim(imGatewayPlatformLansenger)
@@ -1758,34 +2218,53 @@ type LansengerGroupListResult struct {
 // has joined (GET /v2/groups/fetch + per-group info). Works with credentials
 // even when the WebSocket gateway is temporarily disconnected.
 func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
+	return a.ListLansengerGroupsForBot(corelib.DefaultLansengerBotProfileID)
+}
+
+// ListLansengerGroupsForBot queries the groups and per-group policy belonging
+// to exactly one bot profile.
+func (a *App) ListLansengerGroupsForBot(botID string) (*LansengerGroupListResult, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return nil, err
 	}
-	appID := strings.TrimSpace(cfg.LansengerAppID)
-	appSecret := strings.TrimSpace(cfg.LansengerAppSecret)
+	profile, ok := lansengerBotProfileFromConfig(cfg, botID)
+	if !ok {
+		return nil, fmt.Errorf("Lansenger bot %q was not found", strings.TrimSpace(botID))
+	}
+	appID := strings.TrimSpace(profile.AppID)
+	appSecret := strings.TrimSpace(profile.AppSecret)
 	if appID == "" || appSecret == "" {
 		return nil, fmt.Errorf("请先填写蓝信 App ID 和 App Secret")
 	}
-	apiURL := strings.TrimSpace(cfg.LansengerApiGatewayURL())
+	apiURL := strings.TrimSpace(profile.GatewayURL)
+	if apiURL == "" {
+		apiURL = strings.TrimSpace(cfg.LansengerApiGatewayURL())
+	}
 	if apiURL == "" {
 		return nil, fmt.Errorf("请先填写蓝信网关地址")
 	}
 
 	// Prefer the running gateway so we can reuse its token cache.
 	var gw *lansenger.Gateway
-	if a.lansengerGateway != nil {
-		a.lansengerGateway.mu.Lock()
-		gw = a.lansengerGateway.gateway
-		a.lansengerGateway.mu.Unlock()
+	if a.lansengerGateways != nil {
+		if manager := a.lansengerGateways.manager(profile.ID); manager != nil {
+			manager.mu.Lock()
+			gw = manager.gateway
+			manager.mu.Unlock()
+		}
 	}
 	// Fall back to a short-lived client when the WS manager is not up yet.
 	if gw == nil {
+		wssURL := strings.TrimSpace(profile.WSSURL)
+		if wssURL == "" {
+			wssURL = strings.TrimSpace(cfg.LansengerWebSocketGatewayURL())
+		}
 		gw = lansenger.NewGateway(lansenger.Config{
 			AppID:            appID,
 			AppSecret:        appSecret,
 			ApiGatewayURL:    apiURL,
-			WebSocketBaseURL: strings.TrimSpace(cfg.LansengerWebSocketGatewayURL()),
+			WebSocketBaseURL: wssURL,
 		}, nil)
 	}
 
@@ -1822,14 +2301,14 @@ func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
 			TotalMembers: g.TotalMembers,
 			MaxMembers:   g.MaxMembers,
 			IsPublic:     g.IsPublic,
-			Ignored:      cfg.IsLansengerGroupIgnored(g.GroupID),
-			Allowed:      cfg.IsLansengerGroupAllowed(g.GroupID),
-			FileMaxBytes: cfg.LansengerGroupFileLimit(g.GroupID),
+			Ignored:      lansengerBotProfileGroupIgnored(profile, g.GroupID),
+			Allowed:      lansengerBotProfileGroupAllowed(profile, g.GroupID),
+			FileMaxBytes: lansengerBotProfileGroupFileLimit(profile, g.GroupID),
 		})
 	}
 	// Surface ignore/allowlist-only entries that are no longer returned by the
 	// platform so the user can still re-enable or un-allow them.
-	for _, id := range cfg.LansengerIgnoredGroupIDs {
+	for _, id := range profile.IgnoredGroupIDs {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
@@ -1841,13 +2320,13 @@ func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
 			GroupID:      id,
 			Name:         id,
 			Ignored:      true,
-			Allowed:      cfg.IsLansengerGroupAllowed(id),
-			FileMaxBytes: cfg.LansengerGroupFileLimit(id),
+			Allowed:      lansengerBotProfileGroupAllowed(profile, id),
+			FileMaxBytes: lansengerBotProfileGroupFileLimit(profile, id),
 			Orphan:       true,
 		})
 		seen[id] = struct{}{}
 	}
-	for _, id := range cfg.LansengerAllowedGroupIDs {
+	for _, id := range profile.AllowedGroupIDs {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
@@ -1859,7 +2338,7 @@ func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
 			GroupID:      id,
 			Name:         id,
 			Allowed:      true,
-			FileMaxBytes: cfg.LansengerGroupFileLimit(id),
+			FileMaxBytes: lansengerBotProfileGroupFileLimit(profile, id),
 			Orphan:       true,
 		})
 	}
@@ -1884,28 +2363,40 @@ func (a *App) GetLansengerIgnoredGroups() []string {
 // SetLansengerGroupIgnored marks or unmarks a group so the bot does not respond
 // there. The bot is not removed from the Lansenger group on the server.
 func (a *App) SetLansengerGroupIgnored(groupID string, ignored bool) error {
+	return a.SetLansengerBotGroupIgnored(corelib.DefaultLansengerBotProfileID, groupID, ignored)
+}
+
+func (a *App) SetLansengerBotGroupIgnored(botID, groupID string, ignored bool) error {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		return fmt.Errorf("group id is required")
 	}
-	return a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.SetLansengerGroupIgnored(groupID, ignored)
+	return a.updateLansengerBotProfile(botID, func(profile *corelib.LansengerBotProfile) {
+		profile.IgnoredGroupIDs = updateLansengerBotGroupIDList(profile.IgnoredGroupIDs, groupID, ignored)
 	})
 }
 
 // SetLansengerGroupAllowed marks or unmarks a group on the allowlist (allowlist policy).
 func (a *App) SetLansengerGroupAllowed(groupID string, allowed bool) error {
+	return a.SetLansengerBotGroupAllowed(corelib.DefaultLansengerBotProfileID, groupID, allowed)
+}
+
+func (a *App) SetLansengerBotGroupAllowed(botID, groupID string, allowed bool) error {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		return fmt.Errorf("group id is required")
 	}
-	return a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.SetLansengerGroupAllowed(groupID, allowed)
+	return a.updateLansengerBotProfile(botID, func(profile *corelib.LansengerBotProfile) {
+		profile.AllowedGroupIDs = updateLansengerBotGroupIDList(profile.AllowedGroupIDs, groupID, allowed)
 	})
 }
 
 // SetLansengerGroupFileMaxBytes updates the local history attachment cap for a group.
 func (a *App) SetLansengerGroupFileMaxBytes(groupID string, maxBytes int64) error {
+	return a.SetLansengerBotGroupFileMaxBytes(corelib.DefaultLansengerBotProfileID, groupID, maxBytes)
+}
+
+func (a *App) SetLansengerBotGroupFileMaxBytes(botID, groupID string, maxBytes int64) error {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		return fmt.Errorf("group id is required")
@@ -1913,12 +2404,27 @@ func (a *App) SetLansengerGroupFileMaxBytes(groupID string, maxBytes int64) erro
 	if maxBytes < 0 {
 		return fmt.Errorf("file size limit cannot be negative")
 	}
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.SetLansengerGroupFileLimit(groupID, maxBytes)
+	if err := a.updateLansengerBotProfile(botID, func(profile *corelib.LansengerBotProfile) {
+		if profile.GroupFileMaxBytes == nil {
+			profile.GroupFileMaxBytes = make(map[string]int64)
+		}
+		if maxBytes == 0 {
+			delete(profile.GroupFileMaxBytes, groupID)
+		} else {
+			profile.GroupFileMaxBytes[groupID] = maxBytes
+		}
 	}); err != nil {
 		return err
 	}
-	if a.lansengerGateway != nil {
+	if a.lansengerGateways != nil {
+		if manager := a.lansengerGateways.manager(botID); manager != nil {
+			manager.updateGroupFileLimit(groupID, maxBytes)
+		}
+	}
+	// Legacy unit/integration callers can install the original singleton
+	// manager directly. Keep its hot-path snapshot in sync while those callers
+	// have not yet moved to the profile registry.
+	if strings.TrimSpace(botID) == corelib.DefaultLansengerBotProfileID && a.lansengerGateway != nil {
 		a.lansengerGateway.updateGroupFileLimit(groupID, maxBytes)
 	}
 	return nil

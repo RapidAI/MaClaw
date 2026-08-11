@@ -813,7 +813,7 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 
 	hasKnowledge := c.veKnowledgeAvailable()
 	if hasKnowledge {
-		sb.WriteString("- You may search the local knowledge base with knowledge_search and knowledge_context_pack.\n")
+		sb.WriteString("- You may search the local knowledge base with knowledge_search, knowledge_image_search, and knowledge_context_pack.\n")
 		sb.WriteString("- The knowledge base is the preferred source for saved pages, documents, notes, and structured knowledge.\n")
 	}
 
@@ -832,14 +832,19 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 	sb.WriteString("- Do not reveal passwords, tokens, API keys, private keys, or other sensitive credentials.\n")
 	sb.WriteString("- If sensitive information is unavailable or not approved, say that you cannot provide it.\n")
 
+	prior := agent.PriorUserMessagesFromHistory(c.history, agent.KnowledgeAutoRecallPriorUserTurns)
 	if hasKnowledge {
 		sb.WriteString("\n## Knowledge Base Rules\n")
 		sb.WriteString("- Prefer the auto-recalled knowledge base context below when relevant, and cite sources when possible.\n")
 		sb.WriteString("- If auto recall is insufficient, call knowledge_search or knowledge_context_pack.\n")
+		sb.WriteString("- When the user asks to find, view, show, select, or compare saved images, call knowledge_image_search. If it returns a [KB_IMAGE:...] marker, copy that exact marker unchanged onto its own line so the chat can render the image.\n")
 		sb.WriteString("- Distinguish knowledge-base information from general model knowledge.\n")
 		sb.WriteString("- If the knowledge base has no relevant information, say that and then supplement with general knowledge.\n")
-		prior := agent.PriorUserMessagesFromHistory(c.history, agent.KnowledgeAutoRecallPriorUserTurns)
 		c.appendVEKnowledgeAutoRecall(&sb, userText, prior)
+	}
+	// Enterprise digital assets (Hub one-way sync) even when personal KB is empty.
+	if c.app != nil {
+		c.app.AppendEnterpriseKnowledgeAutoRecall(&sb, userText, prior)
 	}
 
 	if len(allowedDirs) > 0 {
@@ -917,13 +922,9 @@ func (c *veAgentCallbacks) appendVEKnowledgeAutoRecall(b *strings.Builder, msg s
 		if r.Score < minScore {
 			break
 		}
-		source := r.Source.Title
-		if source == "" {
-			source = r.Source.RelativePath
-		}
-		if source == "" {
-			source = r.Source.URI
-		}
+		// Use the shared label boundary: image imports can retain an absolute
+		// local URI, while this text is injected straight into the model prompt.
+		source := knowledge.FormatSourceLabel(r)
 		text := knowledgeAutoRecallSnippet(r)
 		if text == "" {
 			continue

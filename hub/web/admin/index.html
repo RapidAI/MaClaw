@@ -255,6 +255,7 @@
           <div class="nav-group-label" id="nav-group-label-capabilities" data-i18n="navGroupCapabilities">Capabilities</div>
           <button data-tab="marketplace" onclick="openTab('marketplace')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M6 7l1 13h10l1-13"></path><path d="M9 7a3 3 0 0 1 6 0"></path><path d="M9 12h6"></path></svg></span><div class="nav-copy"><span data-i18n="navMarketplace"></span><small data-i18n="navMarketplaceDesc"></small></div></div></button>
           <button data-tab="knowledge" onclick="openTab('knowledge')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h9l5 5v9H5z"></path><path d="M14 5v5h5"></path><path d="M8 13h8"></path><path d="M8 16h5"></path></svg></span><div class="nav-copy"><span data-i18n="knowledgeTabTitle"></span><small data-i18n="knowledgeNavDesc"></small></div></div></button>
+          <button data-tab="digital-assets" onclick="openTab('digital-assets')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h7v10H4z"></path><path d="M13 7h7v4h-7z"></path><path d="M13 13h7v4h-7z"></path></svg></span><div class="nav-copy"><span data-i18n="digitalAssetsTabTitle">Digital Assets</span><small data-i18n="digitalAssetsNavDesc">Enterprise knowledge</small></div></div></button>
         </div>
         <div class="nav-group" data-nav-group="models" role="group" aria-labelledby="nav-group-label-models">
           <div class="nav-group-label" id="nav-group-label-models" data-i18n="navGroupModels">Models & Commerce</div>
@@ -703,6 +704,28 @@
             <div class="item-meta" id="tenantMigrationSettingsHint" style="align-self:end"></div>
           </div>
           <div class="actions" style="margin-top:10px"><button class="btn-primary" onclick="saveTenantMigrationSettings()" id="tenantMigrationSettingsSaveBtn"></button></div>
+        </div>
+        <div class="item hidden" id="tenantDigitalAssetsSettingsCard" style="margin-top:10px">
+          <div class="head" style="margin-bottom:10px">
+            <div><div class="item-title" id="tenantDigitalAssetsSettingsTitle"></div><div class="item-meta" id="tenantDigitalAssetsSettingsDesc"></div></div>
+            <button class="btn-ghost" type="button" onclick="loadTenantDigitalAssetsSettings()" id="tenantDigitalAssetsSettingsReloadBtn"></button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+              <div>
+                <div class="item-title" style="font-size:14px" id="tenantDigitalAssetsEnabledLabel"></div>
+                <div class="item-meta" id="tenantDigitalAssetsEnabledHint"></div>
+              </div>
+              <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="tenantDigitalAssetsEnabledToggle" onchange="toggleTenantDigitalAssetsEnabled(this.checked)"></label>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+              <div>
+                <div class="item-title" style="font-size:14px" id="tenantDigitalAssetsSyncLabel"></div>
+                <div class="item-meta" id="tenantDigitalAssetsSyncHint"></div>
+              </div>
+              <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="tenantDigitalAssetsSyncToggle" onchange="toggleTenantDigitalAssetsSync(this.checked)"></label>
+            </div>
+          </div>
         </div>
         <div class="item hidden" id="tenantSystemLLMDefaultsCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
@@ -1468,6 +1491,20 @@
           </div>
         </div>
       </section>
+      <!-- Tab: Digital Assets (enterprise knowledge libraries) -->
+      <section id="tab-digital-assets" class="panel card">
+        <div class="head">
+          <div><h3 data-i18n="digitalAssetsTabTitle">Digital Assets</h3><div class="desc" data-i18n="digitalAssetsTabSubtitle"></div></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn-primary" type="button" onclick="createDigitalAssetLibrary()" data-i18n="digitalAssetsCreate">New library</button>
+            <button class="btn-ghost" type="button" onclick="loadDigitalAssetLibraries({refreshGroups:true})" data-i18n="digitalAssetsReload">Reload</button>
+          </div>
+        </div>
+        <div class="digital-assets-workspace">
+          <div id="digitalAssetsList"></div>
+          <div id="digitalAssetsDetail"></div>
+        </div>
+      </section>
       <!-- Tab: Notifications -->
       <section id="tab-notifications" class="panel card"></section>
       <!-- Tab: Console -->
@@ -1501,6 +1538,7 @@
 <script src="/admin/usage-stats-tab.js"></script>
 <script src="/admin/failure-logs-tab.js"></script>
 <script src="/admin/knowledge-management-tab.js"></script>
+<script src="/admin/digital-assets-tab.js"></script>
 <script src="/admin/notification-tab.js"></script>
 <script src="/admin/admin-module-health.js"></script>
 <script src="/admin/overview-tenant-info.js"></script>

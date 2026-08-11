@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { corelib, main } from '../../../../wailsjs/go/models';
 import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
@@ -19,6 +19,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
 }));
 
 afterEach(() => {
+    cleanup();
     vi.clearAllMocks();
 });
 
@@ -81,7 +82,7 @@ describe('GeneralSettingsPanel', () => {
     it('shows and persists the MiniAPP entry switch after language', () => {
         renderPanel({}, 'zh-Hans');
 
-        const languageSelect = screen.getByRole('combobox');
+        const languageSelect = screen.getByRole('combobox', { name: 'language' });
         const toggle = screen.getByLabelText(miniAppLabels.entry.zhHans) as HTMLInputElement;
         // Default-on when field is absent (same as workflow / utilities entry).
         expect(toggle.checked).toBe(true);
@@ -172,6 +173,60 @@ describe('GeneralSettingsPanel', () => {
 
         expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ gossip_auto_publish: false }));
         expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ gossip_auto_publish: false });
+    });
+
+    it('shows the OfficeRead rollout controls and persists their policy', () => {
+        renderPanel({
+            office_read_engine: 'dual',
+            office_read_formats: ['ppt', 'doc'],
+            office_read_fallback: true,
+            office_read_emit_markdown: false,
+        });
+
+        expect((screen.getByLabelText('Office extraction engine') as HTMLSelectElement).value).toBe('dual');
+        expect((screen.getByLabelText('Use OfficeRead for Word 97–2003 (.doc)') as HTMLInputElement).checked).toBe(true);
+        expect((screen.getByLabelText('Fall back to legacy extraction') as HTMLInputElement).checked).toBe(true);
+        expect((screen.getByLabelText('Use structured Markdown in Knowledge') as HTMLInputElement).checked).toBe(false);
+
+        fireEvent.change(screen.getByLabelText('Office extraction engine'), { target: { value: 'officeread' } });
+        fireEvent.click(screen.getByLabelText('Use OfficeRead for Word (.docx)'));
+        fireEvent.click(screen.getByLabelText('Fall back to legacy extraction'));
+        fireEvent.click(screen.getByLabelText('Use structured Markdown in Knowledge'));
+
+        expect(PatchConfigFieldsMock).toHaveBeenNthCalledWith(1, { office_read_engine: 'officeread' });
+        expect(PatchConfigFieldsMock).toHaveBeenNthCalledWith(2, { office_read_formats: ['ppt', 'doc', 'docx'] });
+        expect(PatchConfigFieldsMock).toHaveBeenNthCalledWith(3, { office_read_fallback: false });
+        expect(PatchConfigFieldsMock).toHaveBeenNthCalledWith(4, { office_read_emit_markdown: true });
+    });
+
+    it('renders an empty OfficeRead format policy as the full supported default', () => {
+        renderPanel({ office_read_engine: 'officeread', office_read_formats: [] });
+
+        for (const label of [
+            'Use OfficeRead for Word 97–2003 (.doc)',
+            'Use OfficeRead for Word (.docx)',
+            'Use OfficeRead for PowerPoint 97–2003 (.ppt)',
+            'Use OfficeRead for PowerPoint (.pptx)',
+            'Use OfficeRead for Excel 97–2003 (.xls)',
+            'Use OfficeRead for Excel (.xlsx)',
+        ]) {
+            expect((screen.getByLabelText(label) as HTMLInputElement).checked).toBe(true);
+        }
+        expect(screen.getByText(/Choose Legacy only to disable OfficeRead for every format/i)).toBeTruthy();
+
+        fireEvent.click(screen.getByLabelText('Use OfficeRead for PowerPoint 97–2003 (.ppt)'));
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ office_read_formats: ['doc', 'xls', 'docx', 'xlsx', 'pptx'] });
+    });
+
+    it('keeps a non-empty OfficeRead allowlist when removing a format', () => {
+        renderPanel({ office_read_engine: 'officeread', office_read_formats: ['ppt', 'doc'] });
+
+        fireEvent.click(screen.getByLabelText('Use OfficeRead for PowerPoint 97–2003 (.ppt)'));
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ office_read_formats: ['doc'] });
+
+        const doc = screen.getByLabelText('Use OfficeRead for Word 97–2003 (.doc)') as HTMLInputElement;
+        expect(doc.checked).toBe(true);
+        expect(doc.disabled).toBe(true);
     });
 
     it('keeps chat gossip auto-post checked during stale config refreshes', () => {

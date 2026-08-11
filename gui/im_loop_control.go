@@ -586,6 +586,10 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	if loopCtx.HTTPClient == nil {
 		loopCtx.HTTPClient = httpClient
 	}
+	// A profile queue may be stopped while a turn is in its pre-loop work. Bind
+	// its context before any routing or tool execution so shutdown/reconfigure
+	// cancels the active turn as well as the queued ones.
+	loopCtx.BindParentContext(msg.CancelCtx)
 	if strings.TrimSpace(loopCtx.Platform) == "" {
 		loopCtx.Platform = msg.Platform
 	}

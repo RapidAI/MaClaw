@@ -43,7 +43,7 @@ func (s *SQLiteStore) SourceDigest(ctx context.Context, sourceID string, nodeLim
 	result := SourceDigestResult{
 		SourceID:      sourceID,
 		Source:        source,
-		Title:         firstNonEmpty(source.Title, source.RelativePath, source.CanonicalURI, source.URI, source.ID),
+		Title:         sourceCitationLabel(source),
 		Labels:        append([]string(nil), source.Labels...),
 		NodeCount:     source.NodeCount,
 		CardCount:     source.CardCount,

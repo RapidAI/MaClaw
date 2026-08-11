@@ -92,6 +92,8 @@ func runPrompt(promptText string) {
 		fmt.Fprintf(os.Stderr, "warning: config load failed, using defaults: %v\n", err)
 	}
 
+	installTUIOfficeReadConfigProvider(dataDir)
+
 	// Check LLM is configured.
 	llmCfg := buildLLMConfigFromAppConfig(appCfg)
 	if !tuiConfigLLMReady(appCfg) {

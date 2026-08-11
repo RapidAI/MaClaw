@@ -466,6 +466,29 @@ func TestBuiltinRegistryCapsInlinePayloads(t *testing.T) {
 	}
 }
 
+func TestBuiltinOfficeRegistryDescribesStructuredFormatBoundaries(t *testing.T) {
+	registry := NewToolRegistry()
+	registerBuiltinTools(registry, &IMMessageHandler{})
+	office, ok := registry.Get("office")
+	if !ok || office == nil {
+		t.Fatal("office registry tool missing")
+	}
+	for _, want := range []string{
+		"read_excel 仅接受 .xls/.xlsx/.csv",
+		"read_pptx 仅接受 .pptx",
+		"其他 Office 格式文本时用 read_document",
+	} {
+		if !strings.Contains(office.Description, want) {
+			t.Fatalf("office description missing %q: %s", want, office.Description)
+		}
+	}
+	props := registeredToolSchemaProperties(office.InputSchema)
+	maxSlides, ok := props["max_slides"]
+	if !ok || !strings.Contains(fmt.Sprint(maxSlides["description"]), "仅 .pptx") {
+		t.Fatalf("read_pptx schema must state PPTX-only boundary: %#v", props["max_slides"])
+	}
+}
+
 func toolDefinitionProperties(t *testing.T, defs []map[string]interface{}, name string) map[string]interface{} {
 	t.Helper()
 	for _, def := range defs {

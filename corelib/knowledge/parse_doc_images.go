@@ -2,8 +2,6 @@ package knowledge
 
 import (
 	"fmt"
-	"log"
-
 	"github.com/shakinm/xlsReader/doc"
 )
 
@@ -80,7 +78,7 @@ func ExtractDOCImages(source Source, filePath string, textNodes []DocumentNode) 
 	}
 
 	if len(nodes) > 0 {
-		log.Printf("[knowledge-image] extracted %d images from .doc file %s", len(nodes), source.Title)
+		logKnowledgeImageEvent("extracted", SourceKindDOC, len(nodes))
 	}
 	return nodes, imageBytes, nil
 }

@@ -235,9 +235,16 @@ func (a *App) UninstallExpertMarketListing(localExpertID string) error {
 // SubmitExpertMarketListing exports a local custom Expert only after the
 // caller has selected it in the native UI. Builtins are rejected by the
 // existing package exporter, and the package never crosses into the WebView.
-func (a *App) SubmitExpertMarketListing(expertID, version string, price int64) (map[string]interface{}, error) {
+func (a *App) SubmitExpertMarketListing(expertID, version string, price int64, visibility string) (map[string]interface{}, error) {
 	if price < 0 || price > 999999 {
 		return nil, fmt.Errorf("price must be 0-999999 credits")
+	}
+	visibility = strings.ToLower(strings.TrimSpace(visibility))
+	if visibility == "" {
+		visibility = "public"
+	}
+	if visibility != "public" && visibility != "private" {
+		return nil, fmt.Errorf("visibility must be public or private")
 	}
 	dir := filepath.Join(a.GetDataDir(), "expert-market-drafts")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -270,6 +277,9 @@ func (a *App) SubmitExpertMarketListing(expertID, version string, price int64) (
 	if err := mw.WriteField("price", strconv.FormatInt(price, 10)); err != nil {
 		return nil, err
 	}
+	if err := mw.WriteField("visibility", visibility); err != nil {
+		return nil, err
+	}
 	part, err := mw.CreateFormFile("package", filepath.Base(path))
 	if err != nil {
 		return nil, err
@@ -291,4 +301,30 @@ func (a *App) SubmitExpertMarketListing(expertID, version string, price int64) (
 func (a *App) WithdrawExpertMarketListing(id string) error {
 	_, err := a.expertMarketRequest(http.MethodPost, "/api/v1/expert-market/experts/"+url.PathEscape(strings.TrimSpace(id))+"/withdraw", nil, "")
 	return err
+}
+
+// DeletePrivateExpertMarketListing permanently removes an owner-only share.
+func (a *App) DeletePrivateExpertMarketListing(id string) error {
+	_, err := a.expertMarketRequest(http.MethodDelete, "/api/v1/expert-market/experts/"+url.PathEscape(strings.TrimSpace(id))+"/private", nil, "")
+	return err
+}
+
+func (a *App) MakeExpertMarketListingPrivate(id string) (map[string]interface{}, error) {
+	data, err := a.expertMarketRequest(http.MethodPost, "/api/v1/expert-market/experts/"+url.PathEscape(strings.TrimSpace(id))+"/make-private", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]interface{}
+	return result, json.Unmarshal(data, &result)
+}
+
+// PublishExpertMarketListing changes an owner-only package to public. HubCenter
+// records the transition and places it back into the moderation queue.
+func (a *App) PublishExpertMarketListing(id string) (map[string]interface{}, error) {
+	data, err := a.expertMarketRequest(http.MethodPost, "/api/v1/expert-market/experts/"+url.PathEscape(strings.TrimSpace(id))+"/publish", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]interface{}
+	return result, json.Unmarshal(data, &result)
 }

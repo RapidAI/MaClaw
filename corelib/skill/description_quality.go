@@ -128,7 +128,7 @@ func EvaluateDescription(description string, triggers []string) DescriptionQuali
 func containsSpecificNoun(lower string) bool {
 	specifics := []string{
 		// File formats
-		"pdf", "pptx", "ppt", "docx", "xlsx", "csv", "json", "xml",
+		"pdf", "ppt", "pptx", "doc", "docx", "xls", "xlsx", "csv", "json", "xml",
 		"yaml", "yml", "markdown", "html", "svg", "png", "jpg", "mp3",
 		"mp4", "wav", "drawio", "mermaid",
 		// Platforms

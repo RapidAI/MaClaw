@@ -13,14 +13,19 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // codingExecCheckpoint is resume/retry state for coding implementation after
 // cancel or partial failure. Kept in-process and mirrored to disk (no secrets).
 type codingExecCheckpoint struct {
-	UserID          string             `json:"user_id,omitempty"`
-	WorkflowID      string             `json:"workflow_id,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
+	WorkflowID string `json:"workflow_id,omitempty"`
+	// WorkflowPhaseID binds a completed Runtime projection to the exact active
+	// phase that produced it. Startup repair must never advance a different
+	// implementation phase merely because it finds a completed opaque task ID.
+	WorkflowPhaseID string             `json:"workflow_phase_id,omitempty"`
 	IsRemote        bool               `json:"is_remote"`
 	Tasks           []*v2.TaskItem     `json:"tasks"`
 	Results         []v2.TaskRunResult `json:"results"`
@@ -28,18 +33,27 @@ type codingExecCheckpoint struct {
 	DesignCtx       string             `json:"design_ctx,omitempty"`
 	ProjectPath     string             `json:"project_path,omitempty"`
 	// Remote SSH (non-secret)
-	RemoteSessionID string    `json:"remote_session_id,omitempty"`
-	RemoteWorkDir   string    `json:"remote_work_dir,omitempty"`
-	RemoteHost      string    `json:"remote_host,omitempty"`
-	RemoteUser      string    `json:"remote_user,omitempty"`
-	RemotePort      int       `json:"remote_port,omitempty"`
-	Cancelled       bool      `json:"cancelled,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	RemoteSessionID string `json:"remote_session_id,omitempty"`
+	RemoteWorkDir   string `json:"remote_work_dir,omitempty"`
+	RemoteHost      string `json:"remote_host,omitempty"`
+	RemoteUser      string `json:"remote_user,omitempty"`
+	RemotePort      int    `json:"remote_port,omitempty"`
+	Cancelled       bool   `json:"cancelled,omitempty"`
+	// ProjectionPending marks a completed Ledger execution whose Workflow V2
+	// phase output has not yet been durably projected. It is intentionally a
+	// presentation-only marker: recovery may retry only RecordOutput, never an
+	// executor, model call, tool invocation, or old command.
+	ProjectionPending bool      `json:"projection_pending,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 const (
 	codingExecRetryActionFailed = "failed" // 重试失败
 	codingExecRetryActionResume = "resume" // 继续执行（失败+取消跳过）
+	// codingExecRetryActionReviewChildren starts a deliberately fresh parent
+	// attempt after Runtime has durably delivered all read-only child results.
+	// It is not a retry and must never reuse the old parent transcript.
+	codingExecRetryActionReviewChildren = "review_children"
 
 	codingExecCheckpointFileName = ".coding_exec_checkpoint.json"
 	codingExecCheckpointMaxAge   = 7 * 24 * time.Hour
@@ -193,6 +207,19 @@ func parseCodingExecRetryCommand(text string) string {
 			return codingExecRetryActionResume
 		}
 	}
+
+	// Review a durable Runtime child handoff. Keep this command specific: plain
+	// "continue" remains owned by ordinary workflow confirmation.
+	childReviewHints := []string{
+		"review child results", "review children", "continue after child results",
+		"审阅子任务结果", "审查子任务结果", "查看子任务结果", "继续处理子任务结果",
+		"審閱子任務結果", "審查子任務結果", "查看子任務結果", "繼續處理子任務結果",
+	}
+	for _, h := range childReviewHints {
+		if strings.EqualFold(raw, h) || t == strings.ToLower(h) {
+			return codingExecRetryActionReviewChildren
+		}
+	}
 	return ""
 }
 
@@ -203,6 +230,10 @@ func codingExecCmdRetryFailed() string {
 
 func codingExecCmdResume() string {
 	return codingExecText("continue coding", "继续执行", "繼續執行")
+}
+
+func codingExecCmdReviewChildResults() string {
+	return codingExecText("review child results", "审阅子任务结果", "審閱子任務結果")
 }
 
 func codingExecCmdCancelWorkflow() string {
@@ -253,6 +284,30 @@ func incompleteTaskItemsFromResults(tasks []*v2.TaskItem, results []v2.TaskRunRe
 			if isCodingExecCancelError(r.Error) {
 				out = append(out, t)
 			}
+		}
+	}
+	return out
+}
+
+// childHandoffTaskItemsFromResults returns only Runtime-marked handoffs. A
+// generic skipped task is never eligible: it may be a dependency skip,
+// cancellation, or approval boundary rather than a delivered child result.
+func childHandoffTaskItemsFromResults(tasks []*v2.TaskItem, results []v2.TaskRunResult) []*v2.TaskItem {
+	if len(tasks) == 0 || len(results) == 0 {
+		return nil
+	}
+	byIndex := make(map[int]v2.TaskRunResult, len(results))
+	for _, result := range results {
+		byIndex[result.TaskIndex] = result
+	}
+	var out []*v2.TaskItem
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		result, ok := byIndex[task.Index]
+		if ok && result.RuntimeHandoff && strings.TrimSpace(result.RuntimeTaskID) != "" {
+			out = append(out, task)
 		}
 	}
 	return out
@@ -356,6 +411,13 @@ func codingExecResumeGuidance(cp codingExecCheckpoint, isRemote bool) string {
 		"- 发送 **%s** — 重跑失败与已跳过/未完成的任务\n",
 		"- 傳送 **%s** — 重跑失敗與已跳過/未完成的任務\n",
 	), codingExecCmdResume())
+	if len(childHandoffTaskItemsFromResults(cp.Tasks, cp.Results)) > 0 {
+		fmt.Fprintf(&b, codingExecText(
+			"- Send **%s** — start a fresh review using delivered child findings\n",
+			"- 发送 **%s** — 使用已交付的子任务结论启动新的审阅\n",
+			"- 傳送 **%s** — 使用已交付的子任務結論啟動新的審閱\n",
+		), codingExecCmdReviewChildResults())
+	}
 	fmt.Fprintf(&b, codingExecText(
 		"- Send **%s** — end the coding workflow\n",
 		"- 发送 **%s** — 结束当前编程工作流\n",
@@ -373,6 +435,7 @@ func codingExecResumeGuidance(cp codingExecCheckpoint, isRemote bool) string {
 func codingExecResumeActions(cp codingExecCheckpoint) []IMResponseAction {
 	failedN := len(failedTaskItemsFromResults(cp.Tasks, cp.Results))
 	incompleteN := len(incompleteTaskItemsFromResults(cp.Tasks, cp.Results))
+	childHandoffN := len(childHandoffTaskItemsFromResults(cp.Tasks, cp.Results))
 	var actions []IMResponseAction
 	if failedN > 0 {
 		cmd := codingExecCmdRetryFailed()
@@ -392,6 +455,14 @@ func codingExecResumeActions(cp codingExecCheckpoint) []IMResponseAction {
 			Label:   cmd,
 			Command: cmd,
 			Style:   style,
+		})
+	}
+	if childHandoffN > 0 {
+		cmd := codingExecCmdReviewChildResults()
+		actions = append(actions, IMResponseAction{
+			Label:   cmd,
+			Command: cmd,
+			Style:   "primary",
 		})
 	}
 	cmdCancel := codingExecCmdCancelWorkflow()
@@ -463,6 +534,17 @@ func (h *IMMessageHandler) tryQueueCodingExecRetryCommand(userID, text string) *
 				},
 			}
 		}
+	case codingExecRetryActionReviewChildren:
+		targets = childHandoffTaskItemsFromResults(cp.Tasks, cp.Results)
+		if len(targets) == 0 {
+			return &workflowIMRouteResult{Response: &IMAgentResponse{Text: codingExecText(
+				"No Runtime child-result handoff is ready for review.",
+				"没有可审阅的 Runtime 子任务结果交接。",
+				"沒有可審閱的 Runtime 子任務結果交接。",
+			)}}
+		}
+		// Continue to the normal execution path. It revalidates the durable
+		// Runtime handoff before starting any parent attempt.
 	default:
 		return nil
 	}
@@ -569,6 +651,76 @@ func (h *IMMessageHandler) codingExecCheckpointUsable(userID string, cp codingEx
 	}
 	state := wf.machine.GetActive(strings.TrimSpace(userID))
 	return codingExecCheckpointMatchesActive(cp, state)
+}
+
+// repairCompletedCodingWorkflowProjections is invoked during GUI startup for
+// the narrow crash window after the Ledger committed a successful coding run
+// but before Workflow V2 saved its phase output. It deliberately knows
+// nothing about subagents, tools, SSH sessions, or executor callbacks.
+func (a *App) repairCompletedCodingWorkflowProjections(wf *workflowV2State) {
+	if a == nil || wf == nil || wf.machine == nil {
+		return
+	}
+	store := a.ensureCodingRuntimeStore()
+	if store == nil {
+		log.Printf("[coding-runtime] skip completed workflow projection repair: ledger unavailable")
+		return
+	}
+	userIDs, err := wf.machine.ListAllStoredUserIDs()
+	if err != nil {
+		log.Printf("[coding-runtime] list workflows for completed projection repair failed: %v", err)
+		return
+	}
+	for _, userID := range userIDs {
+		state, err := wf.store.Load(userID)
+		if err != nil || state == nil {
+			continue
+		}
+		cp, ok := loadCodingExecCheckpointFromDisk(userID, state.ProjectPath)
+		if !ok || !cp.ProjectionPending || !codingExecCheckpointStillValid(cp) || !codingExecCheckpointMatchesActive(cp, state) || !allCodingTasksPassed(cp.Tasks, cp.Results) || !completedCodingRuntimeResults(store, state, cp) {
+			continue
+		}
+		report := formatTaskRunResultsReportEx(cp.Results, false)
+		if err := wf.machine.RecordOutput(userID, report); err != nil {
+			log.Printf("[coding-runtime] completed workflow projection still pending: user=%s workflow=%s err=%v", userID, state.ID, err)
+			continue
+		}
+		deleteCodingExecCheckpointFromDisk(userID, cp.ProjectPath)
+		log.Printf("[coding-runtime] repaired completed workflow projection without executor replay: user=%s workflow=%s", userID, state.ID)
+	}
+}
+
+// completedCodingRuntimeResults proves that the presentation checkpoint is
+// backed by terminal Ledger facts for this exact active workflow, phase, mode,
+// and workspace. A missing/mismatched ID fails closed: startup leaves the
+// marker for recovery/diagnosis instead of using a stale UI result to advance
+// a different workflow phase or project.
+func completedCodingRuntimeResults(store codingruntime.Store, state *v2.WorkflowState, cp codingExecCheckpoint) bool {
+	if store == nil || state == nil || len(cp.Results) == 0 {
+		return false
+	}
+	phase := state.ActivePhase()
+	if phase == nil || strings.TrimSpace(cp.WorkflowID) != strings.TrimSpace(state.ID) || strings.TrimSpace(cp.WorkflowPhaseID) == "" || strings.TrimSpace(cp.WorkflowPhaseID) != strings.TrimSpace(phase.ID) {
+		return false
+	}
+	mode, projectRef := "local", strings.TrimSpace(cp.ProjectPath)
+	if cp.IsRemote {
+		mode, projectRef = "remote", strings.TrimSpace(cp.RemoteWorkDir)
+	}
+	if projectRef == "" {
+		return false
+	}
+	for _, result := range cp.Results {
+		taskID := strings.TrimSpace(result.RuntimeTaskID)
+		if taskID == "" {
+			return false
+		}
+		task, err := store.GetTask(taskID)
+		if err != nil || task == nil || task.Status != codingruntime.TaskCompleted || strings.TrimSpace(task.WorkflowID) != strings.TrimSpace(state.ID) || strings.TrimSpace(task.PhaseID) != strings.TrimSpace(phase.ID) || !strings.EqualFold(strings.TrimSpace(task.Mode), mode) || strings.TrimSpace(task.ProjectRef) != projectRef {
+			return false
+		}
+	}
+	return true
 }
 
 func persistCodingExecCheckpointToDisk(userID string, cp codingExecCheckpoint) {

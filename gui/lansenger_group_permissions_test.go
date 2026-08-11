@@ -164,8 +164,10 @@ func TestLansengerGroupPermissionPolicyFiltersToolExposure(t *testing.T) {
 			"project_path": map[string]interface{}{"type": "string"},
 		}, []string{"action"}),
 		agent.ToolDef("knowledge_search", "", nil, nil),
+		agent.ToolDef("knowledge_image_search", "", nil, nil),
 		agent.ToolDef("knowledge_delete_source", "", nil, nil),
 		agent.ToolDef("read_file", "", nil, nil),
+		agent.ToolDef("office", "", nil, nil),
 		agent.ToolDef("bash", "", nil, nil),
 		agent.ToolDef("git_status", "", nil, nil),
 		agent.ToolDef("web_fetch", "", nil, nil),
@@ -186,7 +188,7 @@ func TestLansengerGroupPermissionPolicyFiltersToolExposure(t *testing.T) {
 		AllowedDirectories:  []string{t.TempDir()},
 		AllowAllDirectories: false,
 	})
-	if !containsLansengerPermissionTestTool(filtered, "knowledge_search") || !containsLansengerPermissionTestTool(filtered, "read_file") {
+	if !containsLansengerPermissionTestTool(filtered, "knowledge_search") || !containsLansengerPermissionTestTool(filtered, "knowledge_image_search") || !containsLansengerPermissionTestTool(filtered, "read_file") {
 		t.Fatalf("granted retrieval tools missing: %#v", filtered)
 	}
 	if containsLansengerPermissionTestTool(filtered, "web_fetch") {
@@ -196,7 +198,7 @@ func TestLansengerGroupPermissionPolicyFiltersToolExposure(t *testing.T) {
 	if !containsLansengerPermissionTestTool(filtered, "web_fetch") {
 		t.Fatal("granted web fetch missing")
 	}
-	if containsLansengerPermissionTestTool(filtered, "knowledge_delete_source") || containsLansengerPermissionTestTool(filtered, "bash") || containsLansengerPermissionTestTool(filtered, "git_status") {
+	if containsLansengerPermissionTestTool(filtered, "knowledge_delete_source") || containsLansengerPermissionTestTool(filtered, "office") || containsLansengerPermissionTestTool(filtered, "bash") || containsLansengerPermissionTestTool(filtered, "git_status") {
 		t.Fatalf("unsafe tools remain exposed: %#v", filtered)
 	}
 }
@@ -473,7 +475,7 @@ func TestLansengerGroupPermissionPolicyFailsClosedForUnlistedTools(t *testing.T)
 		KnowledgeSourceIDs: []string{"approved"},
 		AllowedDirectories: []string{t.TempDir()},
 	}
-	for _, name := range []string{"git_status", "check_health", "manage_skill", "call_mcp_tool", "future_local_tool"} {
+	for _, name := range []string{"git_status", "check_health", "manage_skill", "call_mcp_tool", "office", "future_local_tool"} {
 		if policy.allowsTool(name) {
 			t.Fatalf("%q must be denied unless it has an explicit group-permission contract", name)
 		}
@@ -519,6 +521,34 @@ func TestLansengerGroupPermissionPolicyBlocksInjectedAndDiscoveredTools(t *testi
 	discovered := filterDiscoveredToolsForLansengerGroup(ranked, map[string]discoverableMCPTool{"remote_search": {}}, policy)
 	if len(discovered) != 1 || discovered[0].name != "current_datetime" {
 		t.Fatalf("group discovery = %#v, want only current_datetime", discovered)
+	}
+}
+
+func TestLansengerGroupPermissionPolicyBlocksOfficeExecution(t *testing.T) {
+	registry := NewToolRegistry()
+	called := false
+	if err := registry.Register(RegisteredTool{
+		Name: "office",
+		Handler: func(map[string]interface{}) string {
+			called = true
+			return "office handler should not run"
+		},
+	}); err != nil {
+		t.Fatalf("register office: %v", err)
+	}
+
+	ownerID := "lansenger:group:office-policy"
+	ctx := NewLoopContext("lansenger-group", 1, nil)
+	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{AllowedDirectories: []string{t.TempDir()}}
+	h := &IMMessageHandler{registry: registry}
+	h.setSessionLoopCtx(ownerID, ctx)
+
+	result := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, true, "", "office", `{"action":"read_document","file_path":"inside.docx"}`, "", nil)
+	if result.FailureKind != toolFailurePolicyRejected || !strings.Contains(result.Text, "群聊权限未授权") {
+		t.Fatalf("group office execution = %+v, want policy rejection", result)
+	}
+	if called {
+		t.Fatal("group policy allowed office handler execution")
 	}
 }
 
@@ -589,14 +619,20 @@ func TestLansengerGroupWebPermissionDefaultsOffAndMapsFromConfig(t *testing.T) {
 	}
 }
 
-func TestLansengerGroupKnowledgeSearchScopesAndUnlocksWebFallback(t *testing.T) {
+func TestLansengerGroupImageSearchScopesAndUnlocksWebFallback(t *testing.T) {
 	registry := NewToolRegistry()
 	if err := registry.Register(RegisteredTool{
-		Name: "knowledge_search",
+		Name: "knowledge_image_search",
 		HandlerCtx: func(_ context.Context, args map[string]interface{}, _ coretool.ProgressCallback) string {
 			got := knowledgeIDsForLansengerPermissionTest(args["source_ids"])
 			if len(got) != 1 || got[0] != "approved" {
-				t.Fatalf("knowledge source_ids = %#v, want [approved]", got)
+				t.Fatalf("image knowledge source_ids = %#v, want [approved]", got)
+			}
+			if _, ok := args["include_disabled"]; ok {
+				t.Fatalf("image knowledge query must not override disabled source state: %#v", args)
+			}
+			if _, ok := args["project_path"]; ok {
+				t.Fatalf("image knowledge query must not carry caller-controlled project scope: %#v", args)
 			}
 			return `{"ok":true,"count":0,"results":[]}`
 		},
@@ -621,9 +657,9 @@ func TestLansengerGroupKnowledgeSearchScopesAndUnlocksWebFallback(t *testing.T) 
 		t.Fatalf("web before knowledge = %+v, want policy rejection", blocked)
 	}
 
-	searched := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "knowledge_search", `{"query":"jump failed"}`, "", nil)
+	searched := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "knowledge_image_search", `{"query":"jump failed","source_ids":["approved"],"include_disabled":true,"project_path":"C:\\untrusted"}`, "", nil)
 	if searched.Outcome != toolOutcomeSucceeded {
-		t.Fatalf("knowledge search = %+v, want success", searched)
+		t.Fatalf("image knowledge search = %+v, want success", searched)
 	}
 
 	fallback := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "web_search", `{"query":"jump failed"}`, "", nil)
@@ -711,6 +747,9 @@ func TestNewIMMessageHandlerKeepsAuthorizedKnowledgeSearchForLansengerGroup(t *t
 	}
 	if containsLansengerPermissionTestTool(toolSet.Tools, "knowledge_save_text") {
 		t.Fatalf("group permission must not expose knowledge write tools: %#v", toolSet.Tools)
+	}
+	if containsLansengerPermissionTestTool(toolSet.Tools, "office") {
+		t.Fatalf("group permission must not expose local Office document tools: %#v", toolSet.Tools)
 	}
 }
 

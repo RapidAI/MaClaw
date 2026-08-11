@@ -38,11 +38,8 @@ func (c *CompositeOCRProvider) IsAvailable() bool {
 	return false
 }
 
-// Close implements OCRProvider.
-func (c *CompositeOCRProvider) Close() {
-	for _, p := range c.providers {
-		if p != nil {
-			p.Close()
-		}
-	}
-}
+// Close implements OCRProvider. A composite only borrows its members: callers
+// commonly pass a process-wide native provider that is also used by computer
+// use, browser tools, and knowledge import. Closing it through a short-lived
+// wrapper would unload that shared model for unrelated work.
+func (*CompositeOCRProvider) Close() {}

@@ -1041,6 +1041,34 @@ func TestImportMarkdownSkillDir_ParameterizesSampleInputFileUsage(t *testing.T) 
 	}
 }
 
+func TestImportMarkdownSkillDir_ParameterizesLegacyOfficeSampleFiles(t *testing.T) {
+	for _, ext := range []string{"doc", "xls", "ppt"} {
+		t.Run(ext, func(t *testing.T) {
+			root := t.TempDir()
+			skillDir := filepath.Join(root, "legacy-"+ext+"-parser")
+			if err := os.MkdirAll(skillDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			content := "# Legacy Office Parser\n\n```bash\nlegacy-parser parse report." + ext + " --output converted." + ext + "\n```\n"
+			if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+				t.Fatalf("WriteFile(skill.md) error = %v", err)
+			}
+
+			entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+			if err != nil {
+				t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+			}
+			if len(entry.Steps) != 1 {
+				t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+			}
+			command, _ := entry.Steps[0].Params["command"].(string)
+			if command != "legacy-parser parse {{input}} --output {{output}}" {
+				t.Fatalf("command = %q, want legacy Office input/output parameterization", command)
+			}
+		})
+	}
+}
+
 // --- P0: Mixed steps — scripts + direct bash blocks should all be included ---
 
 func TestImportMarkdownSkillDir_ParameterizesAngleInputPlaceholderUsage(t *testing.T) {

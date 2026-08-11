@@ -510,6 +510,7 @@ func (s *SQLiteStore) importSnapshotRecord(ctx context.Context, tx *sql.Tx, reco
 		if node.ID == "" {
 			return fmt.Errorf("node id is required")
 		}
+		node = sanitizeSnapshotDocumentNode(node)
 		if ok, err := s.snapshotReferenceExists(ctx, tx, "knowledge_sources", node.SourceID, state.sources); err != nil {
 			return err
 		} else if !ok {
@@ -901,6 +902,7 @@ func (s *SQLiteStore) exportNodes(ctx context.Context, writer *bufio.Writer, red
 		if !exportSourceSelected(sourceSet, node.SourceID, scoped) {
 			continue
 		}
+		node = sanitizeSnapshotDocumentNode(node)
 		if redact {
 			node.Title = redactSensitiveText(node.Title)
 			node.Text = redactSensitiveText(node.Text)

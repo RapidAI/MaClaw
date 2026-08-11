@@ -21,6 +21,8 @@ const StartXAIOAuthMock = vi.fn();
 const CancelXAIOAuthURLMock = vi.fn();
 const GetMoAConfigMock = vi.fn();
 const SaveMoAConfigMock = vi.fn();
+const GetMaclawLLMProfilePanelStateMock = vi.fn();
+const SaveMaclawLLMProfilesMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
@@ -45,6 +47,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SaveCodeGenModelChoice: vi.fn(),
     GetMoAConfig: (...args: unknown[]) => GetMoAConfigMock(...args),
     SaveMoAConfig: (...args: unknown[]) => SaveMoAConfigMock(...args),
+    GetMaclawLLMProfilePanelState: (...args: unknown[]) => GetMaclawLLMProfilePanelStateMock(...args),
+    SaveMaclawLLMProfiles: (...args: unknown[]) => SaveMaclawLLMProfilesMock(...args),
     GetMoASessionState: vi.fn().mockResolvedValue({ sticky: false }),
     SetMoASticky: vi.fn(),
 }));
@@ -65,6 +69,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 vi.mock('../../providerLogos', () => ({ PROVIDER_LOGOS: {} }));
 vi.mock('../UsageDisplay', () => ({ UsageDisplay: () => null }));
 vi.mock('../TokenUsagePanel', () => ({ TokenUsagePanel: () => null }));
+vi.mock('../LLMProfileAssignments', () => ({ LLMProfileAssignments: () => null }));
 vi.mock('../../CustomDialog', () => ({
     useDialog: () => ({
         showAlert: vi.fn(),
@@ -94,6 +99,14 @@ describe('LLMConfigPanel test-and-save flow', () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({ active: false });
         GetMoAConfigMock.mockResolvedValue({ enabled: false, presets: {} });
         SaveMoAConfigMock.mockResolvedValue(undefined);
+        GetMaclawLLMProfilePanelStateMock.mockResolvedValue({
+            providers: [{ id: 'custom1', name: 'Custom1', model: '', models: [], supports_vision: false }],
+            profiles: { version: 1, assistant: { provider_id: 'custom1', model: '' }, coding: { inherit_assistant: true } },
+            assistant: { profile: 'assistant', provider_id: 'custom1', provider_name: 'Custom1', model: '', health: 'unverified' },
+            coding: { profile: 'coding', provider_id: 'custom1', provider_name: 'Custom1', model: '', inherit_assistant: true, health: 'unverified' },
+            revision: 'test-revision',
+        });
+        SaveMaclawLLMProfilesMock.mockResolvedValue(undefined);
         FetchProviderModelsMock.mockResolvedValue([{ id: 'gpt-test', name: 'GPT Test' }]);
         CreateMobileLLMDesktopQRSessionMock.mockResolvedValue({
             status: 'created',
@@ -117,7 +130,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
 
         fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
         fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
@@ -166,7 +179,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         // The independent settings calls finish first, as they can on a slow
         // desktop. The action is disabled until the local config is known, so
         // a pending read cannot be mistaken for an empty provider list.
-        const configureButton = await screen.findByRole('button', { name: 'Configure' });
+        const configureButton = await screen.findByRole('button', { name: 'Manage providers' });
         expect((configureButton as HTMLButtonElement).disabled).toBe(true);
         expect(screen.getByText('Reading saved providers…')).toBeTruthy();
 
@@ -190,7 +203,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         expect(await screen.findByText('Agent Max Iterations')).toBeTruthy();
         expect(screen.getByText('Reading saved providers…')).toBeTruthy();
-        expect((screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByRole('button', { name: 'Manage providers' }) as HTMLButtonElement).disabled).toBe(true);
         expect((screen.getByRole('button', { name: 'Mobile QR' }) as HTMLButtonElement).disabled).toBe(true);
     });
 
@@ -205,7 +218,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
 
         expect(screen.getByText('Still reading saved providers…')).toBeTruthy();
-        expect((screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByRole('button', { name: 'Manage providers' }) as HTMLButtonElement).disabled).toBe(true);
 
         await act(async () => {
             resolveProviders?.({
@@ -214,7 +227,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             });
             await Promise.resolve();
         });
-        expect((screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement).disabled).toBe(false);
+        expect((screen.getByRole('button', { name: 'Manage providers' }) as HTMLButtonElement).disabled).toBe(false);
     });
 
     it('offers retry when the provider bridge throws synchronously', async () => {
@@ -225,11 +238,11 @@ describe('LLMConfigPanel test-and-save flow', () => {
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
         expect(await screen.findByText("Couldn't read LLM providers. Click retry.")).toBeTruthy();
-        const configureButton = screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement;
+        const configureButton = screen.getByRole('button', { name: 'Manage providers' }) as HTMLButtonElement;
         expect(configureButton.disabled).toBe(true);
         fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
         await waitFor(() => expect(GetMaclawLLMProvidersMock).toHaveBeenCalledTimes(2));
-        await waitFor(() => expect((screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement).disabled).toBe(false));
+        await waitFor(() => expect((screen.getByRole('button', { name: 'Manage providers' }) as HTMLButtonElement).disabled).toBe(false));
     });
 
     it('does not let an older Hub status response overwrite a newer one', async () => {
@@ -245,7 +258,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             await Promise.resolve();
         });
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         expect(await screen.findByRole('button', { name: 'MaClaw Official' })).toBeTruthy();
     });
 
@@ -282,7 +295,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.change(await screen.findByPlaceholderText('sk-...'), { target: { value: 'updated-secret' } });
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
@@ -328,7 +341,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(screen.getByRole('button', { name: 'Custom' }));
         fireEvent.change(screen.getByPlaceholderText('Custom User-Agent'), { target: { value: 'myagent' } });
         fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
@@ -364,7 +377,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
 
         expect(await screen.findByRole('button', { name: '\u706b\u5c71\u5f15\u64ce Agent Plan' })).toBeTruthy();
     });
@@ -409,7 +422,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         // Product intentionally disables Fetch for this preset provider.
         const fetchBtn = screen.queryByRole('button', { name: 'Fetch' });
         if (fetchBtn) {
@@ -439,7 +452,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: '配置' }));
+        fireEvent.click(await screen.findByRole('button', { name: '服务商管理' }));
         // OAuth authenticated state should be shown, not an API Key input.
         expect(await screen.findByText(/OAuth 已认证|OAuth authenticated/)).toBeTruthy();
         expect(screen.queryByPlaceholderText('sk-...')).toBeNull();
@@ -475,7 +488,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: '配置' }));
+        fireEvent.click(await screen.findByRole('button', { name: '服务商管理' }));
         fireEvent.click(screen.getByRole('button', { name: '获取' }));
 
         await waitFor(() => {
@@ -511,7 +524,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: '\u706b\u5c71\u5f15\u64ce Agent Plan' } });
         fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
@@ -546,7 +559,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'xAI-Grok' } });
         expect(screen.getByRole('button', { name: 'Sign in with xAI' })).toBeTruthy();
         expect(screen.queryByPlaceholderText('sk-...')).toBeNull();
@@ -572,7 +585,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
 
         const officialButton = await screen.findByRole('button', { name: /MaClaw Official/i });
         expect(officialButton).toBeTruthy();
@@ -596,7 +609,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
 
         const officialButton = await screen.findByRole('button', { name: /MaClaw Official/i });
         expect(officialButton).toBeTruthy();
@@ -631,7 +644,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} onProviderChanged={onProviderChanged} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: /MaClaw Official/i }));
         fireEvent.click(screen.getByRole('button', { name: 'Use This Service' }));
 
@@ -670,7 +683,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         const repairButton = await screen.findByRole('button', { name: 'Use This Service' });
         expect((repairButton as HTMLButtonElement).disabled).toBe(false);
         fireEvent.click(repairButton);
@@ -699,7 +712,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
 
         await screen.findByText('MaClaw\u5b98\u65b9');
         const maclawButtons = screen.getAllByRole('button').filter(button => button.textContent?.includes('MaClaw'));
@@ -725,7 +738,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
 
         await waitFor(() => {
             expect(screen.getAllByText('MaClaw\u5b98\u65b9').length).toBeGreaterThan(0);
@@ -751,7 +764,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
 
         expect((await screen.findAllByText('Not active yet')).length).toBeGreaterThan(0);
         expect(screen.queryByText('Credits exhausted')).toBeNull();
@@ -769,7 +782,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
 
         fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
         fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
@@ -803,7 +816,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with OpenAI' }));
 
         expect((await screen.findByRole('alert')).textContent).toMatch(/Connection failed, not saved/);
@@ -829,7 +842,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
 
         await waitFor(() => {
@@ -851,7 +864,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
 
         expect((await screen.findByRole('alert')).textContent).toMatch(/Couldn't open the browser automatically/);
@@ -871,7 +884,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={onStatusChange} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
         await waitFor(() => expect(xaiOAuthEventHandler).toBeTypeOf('function'));
 
@@ -898,7 +911,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
 
         expect((await screen.findByRole('alert')).textContent).toMatch(/Connection failed, not saved/);
@@ -917,7 +930,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
         await waitFor(() => expect(BrowserOpenURLMock).toHaveBeenCalledWith(authorizationURL));
         fireEvent.click(await screen.findByRole('button', { name: 'Cancel OAuth login' }));
@@ -939,7 +952,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Cancel OAuth login' }));
         await act(async () => resolveAuthorizationURL?.('https://auth.x.ai/authorize?state=late'));
@@ -957,7 +970,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
-        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
         expect(await screen.findByText('Please complete OAuth login before saving')).toBeTruthy();

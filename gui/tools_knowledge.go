@@ -11,6 +11,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
+const knowledgeToolSourceKindsDescription = "Optional source kinds: url, pdf, doc, docx, ppt, pptx, xls, xlsx, csv, markdown, text, conversation, workflow_artifact"
+
 func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	if registry == nil || app == nil {
 		return
@@ -33,7 +35,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 				"description": "Optional current conversation/project terms for local re-ranking.",
 			},
 			"result_types": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional result types: card, fact, node"},
-			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source kinds: url, pdf, docx, xlsx, csv, markdown, text, conversation, workflow_artifact"},
+			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": knowledgeToolSourceKindsDescription},
 			"source_ids":   knowledgeSourceIDsSchema("Optional exact source IDs to search within."),
 			"ids":          knowledgeSourceIDsAliasSchema(),
 			"labels":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections. Sources must have every supplied label."},
@@ -48,6 +50,37 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		Source: "builtin:knowledge",
 		Handler: func(args map[string]interface{}) string {
 			return app.toolKnowledgeSearch(args)
+		},
+	})
+	registry.Register(RegisteredTool{
+		Name:        "knowledge_image_search",
+		Description: "Search only imported knowledge-base images by OCR text, visual description, filename, and surrounding document context. Use when the user asks to find, show, view, select, or compare stored images. Results include safe display markers; when the user asks to see an image, copy its exact marker unchanged onto its own line in the final answer.",
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"knowledge", "image", "search", "local", "recall"},
+		Priority:    10,
+		Status:      RegToolAvailable,
+		Required:    []string{"query"},
+		InputSchema: map[string]interface{}{
+			"query":        map[string]string{"type": "string", "description": "Search image OCR/caption/context"},
+			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
+			"topic_hint":   map[string]string{"type": "string", "description": "Optional current topic hint for local re-ranking."},
+			"context_terms": map[string]interface{}{
+				"type":        "array",
+				"items":       map[string]string{"type": "string"},
+				"description": "Optional conversation/project terms for local re-ranking.",
+			},
+			"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source kind filter."},
+			"source_ids":       knowledgeSourceIDsSchema("Optional exact source IDs to search within."),
+			"ids":              knowledgeSourceIDsAliasSchema(),
+			"labels":           map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections."},
+			"domain":           map[string]string{"type": "string", "description": "Optional URL source domain filter."},
+			"project_path":     map[string]string{"type": "string", "description": "Optional explicit project path for project scope."},
+			"limit":            map[string]string{"type": "integer", "description": "Max image results, default 8, max 50."},
+			"include_disabled": map[string]string{"type": "boolean", "description": "Include disabled sources. Default false."},
+		},
+		Source: "builtin:knowledge",
+		Handler: func(args map[string]interface{}) string {
+			return app.toolKnowledgeImageSearch(args)
 		},
 	})
 	registry.Register(RegisteredTool{
@@ -68,7 +101,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 				"description": "Optional current conversation/project terms for local re-ranking.",
 			},
 			"result_types": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional result types: card, fact, node"},
-			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source kinds: url, pdf, docx, xlsx, csv, markdown, text, conversation, workflow_artifact"},
+			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": knowledgeToolSourceKindsDescription},
 			"source_ids":   knowledgeSourceIDsSchema("Optional exact source IDs to search within."),
 			"ids":          knowledgeSourceIDsAliasSchema(),
 			"labels":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections. Sources must have every supplied label."},
@@ -103,7 +136,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 				"description": "Optional current conversation/project terms for local re-ranking.",
 			},
 			"result_types":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional result types: card, fact, node"},
-			"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source kinds: url, pdf, docx, xlsx, csv, markdown, text, conversation, workflow_artifact"},
+			"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": knowledgeToolSourceKindsDescription},
 			"source_ids":       knowledgeSourceIDsSchema("Optional exact source IDs to search within."),
 			"ids":              knowledgeSourceIDsAliasSchema(),
 			"labels":           map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections. Sources must have every supplied label."},
@@ -135,7 +168,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 				"description": "Optional current conversation/project terms for local re-ranking.",
 			},
 			"result_types":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional result types: card, fact, node"},
-			"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source kinds: url, pdf, docx, xlsx, csv, markdown, text, conversation, workflow_artifact"},
+			"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": knowledgeToolSourceKindsDescription},
 			"source_ids":       knowledgeSourceIDsSchema("Optional exact source IDs to search within."),
 			"ids":              knowledgeSourceIDsAliasSchema(),
 			"labels":           map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections. Sources must have every supplied label."},
@@ -187,7 +220,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 			"entity":       map[string]string{"type": "string", "description": "Optional subject/object entity drilldown filter."},
 			"predicate":    map[string]string{"type": "string", "description": "Optional predicate/relation filter, for example uses, topic, mentions."},
 			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
-			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source kinds: url, pdf, docx, xlsx, csv, markdown, text, conversation, workflow_artifact"},
+			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": knowledgeToolSourceKindsDescription},
 			"source_ids":   knowledgeSourceIDsSchema("Optional exact source IDs to search within."),
 			"ids":          knowledgeSourceIDsAliasSchema(),
 			"labels":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections. Sources must have every supplied label."},
@@ -215,7 +248,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 			"query":        map[string]string{"type": "string", "description": "Optional text filter applied to labels, predicates, and examples."},
 			"kind":         map[string]string{"type": "string", "description": "entity | predicate | subject | object. Default entity."},
 			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
-			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source kinds: url, pdf, docx, xlsx, csv, markdown, text, conversation, workflow_artifact"},
+			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": knowledgeToolSourceKindsDescription},
 			"source_ids":   knowledgeSourceIDsSchema("Optional exact source IDs to search within."),
 			"ids":          knowledgeSourceIDsAliasSchema(),
 			"labels":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections. Sources must have every supplied label."},
@@ -244,7 +277,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 			"query":        map[string]string{"type": "string", "description": "Optional fallback entity label when entity is omitted."},
 			"predicate":    map[string]string{"type": "string", "description": "Optional predicate/relation filter."},
 			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
-			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source kinds: url, pdf, docx, xlsx, csv, markdown, text, conversation, workflow_artifact"},
+			"source_kinds": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": knowledgeToolSourceKindsDescription},
 			"source_ids":   knowledgeSourceIDsSchema("Optional exact source IDs to search within."),
 			"ids":          knowledgeSourceIDsAliasSchema(),
 			"labels":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections. Sources must have every supplied label."},
@@ -406,7 +439,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	})
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_import_directory",
-		Description: "Scan or import a local directory of documents into MaClaw knowledge base or saved local corpus. Only use after the user explicitly provides or approves the directory. Supported: docx, pdf, xlsx, csv, markdown, txt; legacy doc/xls are supported when local LibreOffice/soffice conversion is available. Action scan is dry-run; action import starts an async import by default.",
+		Description: "Scan or import a local directory of documents into MaClaw knowledge base or saved local corpus. Only use after the user explicitly provides or approves the directory. Supported: doc, docx, ppt, pptx, xls, xlsx, pdf, csv, markdown, txt. Knowledge imports use native fallback parsers by default; OfficeRead structured Markdown/images are an explicit opt-in, and legacy .ppt requires that opt-in. Action scan is dry-run; action import starts an async import by default.",
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"knowledge", "document", "import", "directory", "folder", "brain", "知识库", "导入", "目录", "文件夹", "文档", "外脑"},
 		Priority:    10,
@@ -425,7 +458,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 			"labels":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections to add to imported files."},
 			"auto_labels":   map[string]string{"type": "boolean", "description": "When true, add local rule-based labels such as kind:pdf, folder:contracts, and scope:project. Default true."},
 			"recursive":     map[string]string{"type": "boolean", "description": "Include subdirectories, default true"},
-			"include_exts":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx"},
+			"include_exts":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
 			"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Glob patterns to exclude, e.g. vendor/** or *.tmp"},
 			"max_file_mb":   map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
 			"start_async":   map[string]string{"type": "boolean", "description": "For import action, start async job. Default true."},
@@ -437,7 +470,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	})
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_import_files",
-		Description: "Scan or import explicitly provided local document file paths into MaClaw knowledge base or saved local corpus. Use for importing files/documents/PDFs into the knowledge base / external brain. Only use after the user explicitly provides or approves the file paths. Supported: docx, pdf, xlsx, csv, markdown, txt; legacy doc/xls are parsed through local LibreOffice/soffice conversion when available and otherwise surfaced in diagnostics.",
+		Description: "Scan or import explicitly provided local document file paths into MaClaw knowledge base or saved local corpus. Use for importing files/documents/PDFs into the knowledge base / external brain. Only use after the user explicitly provides or approves the file paths. Supported: doc, docx, ppt, pptx, xls, xlsx, pdf, csv, markdown, txt. Knowledge imports use native fallback parsers by default; OfficeRead structured Markdown/images are an explicit opt-in, and legacy .ppt requires that opt-in.",
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"knowledge", "document", "import", "file", "files", "pdf", "brain", "知识库", "导入", "文件", "文档", "外脑"},
 		Priority:    10,
@@ -454,7 +487,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 			"distill_mode":  map[string]string{"type": "string", "description": "Optional write-time structuring mode: auto, rules_only, llm_if_available. Default auto."},
 			"labels":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source labels/collections to add to imported files."},
 			"auto_labels":   map[string]string{"type": "boolean", "description": "When true, add local rule-based labels such as kind:pdf, folder:contracts, and scope:project. Default true."},
-			"include_exts":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx"},
+			"include_exts":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
 			"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Glob patterns to exclude, e.g. vendor/** or *.tmp"},
 			"max_file_mb":   map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
 			"start_async":   map[string]string{"type": "boolean", "description": "For import action, start async job. Default true."},
@@ -1775,11 +1808,50 @@ func (a *App) toolKnowledgeSearch(args map[string]interface{}) string {
 		IncludeDisabled: knowledgeToolBoolArg(args, "include_disabled", false),
 	}
 	results, err := a.KnowledgeSearch(opts)
+	results = knowledge.ProjectImageSearchResultsForTool(results)
 
-	// Enrich image results with thumbnail data URLs for frontend inline rendering.
+	// General knowledge search may incidentally return image nodes, but it must
+	// not inject image bytes into the model context. Use knowledge_image_search
+	// when the user explicitly asks to find or display image evidence.
+	response := map[string]interface{}{"query": query, "count": len(results), "results": results}
+	if len(results) == 0 && err == nil {
+		response["guidance"] = knowledge.EmptySearchResultMessage
+	} else if len(results) > 0 {
+		response["guidance"] = knowledge.SearchResultsHeader
+	}
+	return knowledgeToolJSON(response, err)
+}
+
+// toolKnowledgeImageSearch is the GUI agent's dedicated text-to-image route.
+// Keeping it separate from knowledge_search ensures unrelated cards and text
+// nodes cannot crowd image evidence out of the result window.
+func (a *App) toolKnowledgeImageSearch(args map[string]interface{}) string {
+	query := knowledgeToolStringArg(args, "query")
+	if query == "" {
+		return knowledgeToolJSON(nil, fmt.Errorf("missing query argument"))
+	}
+	limit := knowledgeToolIntArg(args, "limit", 8)
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	results, err := a.KnowledgeSearchImages(knowledge.ImageSearchOptions{SearchOptions: knowledge.SearchOptions{
+		Query:           query,
+		SearchScope:     knowledgeToolStringArg(args, "search_scope"),
+		ProjectPath:     knowledgeToolStringArg(args, "project_path"),
+		TopicHint:       knowledgeToolStringArg(args, "topic_hint"),
+		ContextTerms:    knowledgeToolStringSlice(args["context_terms"]),
+		SourceKinds:     knowledgeToolStringSlice(args["source_kinds"]),
+		SourceIDs:       knowledgeToolSourceIDs(args),
+		Labels:          knowledgeToolStringSlice(args["labels"]),
+		Domain:          knowledgeToolStringArg(args, "domain"),
+		Limit:           limit,
+		IncludeDisabled: knowledgeToolBoolArg(args, "include_disabled", false),
+	}})
 	enrichedResults := a.enrichKnowledgeImageResults(results)
-
-	response := map[string]interface{}{"query": query, "count": len(enrichedResults), "results": enrichedResults}
+	response := map[string]interface{}{"query": query, "count": len(enrichedResults), "results": enrichedResults, "mode": "text_to_image"}
 	if len(enrichedResults) == 0 && err == nil {
 		response["guidance"] = knowledge.EmptySearchResultMessage
 	} else if len(enrichedResults) > 0 {
@@ -1788,40 +1860,82 @@ func (a *App) toolKnowledgeSearch(args map[string]interface{}) string {
 	return knowledgeToolJSON(response, err)
 }
 
-// enrichKnowledgeImageResults adds kb_image_thumb (base64 data URL) to image search results.
-// This allows the frontend to render inline image previews without additional API calls.
+// enrichKnowledgeImageResults converts image search hits to the narrow display
+// contract used by agents. Source is intentionally projected instead of
+// serialized wholesale: imported images can retain absolute local paths in URI,
+// CanonicalURI, RelativePath, ProjectPath, or ErrorMessage. Those fields are
+// useful to the importer but must never enter a model/tool payload.
 func (a *App) enrichKnowledgeImageResults(results []knowledge.SearchResult) []interface{} {
 	assetBaseDir := filepath.Join(a.GetDataDir(), "knowledge_assets")
 	enriched := make([]interface{}, 0, len(results))
 	for _, r := range results {
-		if r.NodeType == knowledge.NodeTypeImage || r.Source.Kind == knowledge.SourceKindImage {
-			embed := knowledge.EmbedImageThumbForSearchResult(r, assetBaseDir)
-			if embed != nil {
-				// Create enriched map with all original fields + image data
-				enriched = append(enriched, map[string]interface{}{
-					"source":         r.Source,
-					"result_type":    r.ResultType,
-					"node_id":        r.NodeID,
-					"node_title":     r.NodeTitle,
-					"node_type":      r.NodeType,
-					"page":           r.Page,
-					"card_id":        r.CardID,
-					"card_title":     r.CardTitle,
-					"claim":          r.Claim,
-					"summary":        r.Summary,
-					"snippet":        r.Snippet,
-					"citation":       r.Citation,
-					"score":          r.Score,
-					"kb_image_thumb": embed.DataURL,
-					"kb_image_path":  embed.OriginalPath,
-					"kb_image_id":    embed.AssetID,
-				})
-				continue
-			}
+		if r.NodeType != knowledge.NodeTypeImage && r.Source.Kind != knowledge.SourceKindImage {
+			// This endpoint is image-only. Never surface an unexpected general
+			// search hit, because that raw result has a broader source contract.
+			continue
 		}
-		enriched = append(enriched, r)
+
+		// Always use the safe projection, including when the binary asset or its
+		// thumbnail is unavailable. Falling back to r here would reintroduce
+		// host-path leakage on a common degraded-path response.
+		item := map[string]interface{}{
+			"source": map[string]interface{}{
+				"id":           r.Source.ID,
+				"kind":         r.Source.Kind,
+				"display_name": a.knowledgeImageDisplayName(r),
+			},
+			"result_type": r.ResultType,
+			"node_id":     r.NodeID,
+			"node_title":  a.knowledgeImageDisplayText(r.NodeTitle, "image evidence"),
+			"node_type":   r.NodeType,
+			"page":        r.Page,
+			"sheet_name":  r.SheetName,
+			"row_range":   r.RowRange,
+			"col_range":   r.ColRange,
+			"card_id":     r.CardID,
+			"card_title":  a.knowledgeImageDisplayText(r.CardTitle, ""),
+			"claim":       r.Claim,
+			"summary":     r.Summary,
+			"snippet":     r.Snippet,
+			"citation":    knowledge.FormatImageCitationLabel(r),
+			"score":       r.Score,
+		}
+		if embed := knowledge.EmbedImageThumbForSearchResult(r, assetBaseDir); embed != nil {
+			item["media"] = map[string]interface{}{
+				"asset_id":           embed.AssetID,
+				"thumbnail_data_url": embed.DataURL,
+				"alt":                a.knowledgeImageDisplayText(r.NodeTitle, "image evidence"),
+			}
+			item["display_marker"] = knowledge.FormatKBImageMarker(&knowledge.SearchResultImageEmbed{
+				AssetID: embed.AssetID,
+				DataURL: embed.DataURL,
+			})
+		}
+		enriched = append(enriched, item)
 	}
 	return enriched
+}
+
+func (a *App) knowledgeImageDisplayName(r knowledge.SearchResult) string {
+	return a.knowledgeImageDisplayText(r.Source.Title, "knowledge image")
+}
+
+func (a *App) knowledgeImageDisplayText(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	lower := strings.ToLower(value)
+	if value == "" || filepath.IsAbs(value) || strings.HasPrefix(value, "/") || strings.HasPrefix(value, "\\") || isWindowsAbsoluteKnowledgePath(value) || strings.HasPrefix(lower, "file://") {
+		return fallback
+	}
+	dataDir := filepath.Clean(a.GetDataDir())
+	if dataDir != "." && strings.Contains(filepath.Clean(value), dataDir) {
+		return fallback
+	}
+	return value
+}
+
+func isWindowsAbsoluteKnowledgePath(value string) bool {
+	return strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, `//`) ||
+		(len(value) >= 3 && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) && value[1] == ':' && (value[2] == '\\' || value[2] == '/'))
 }
 
 func (a *App) toolKnowledgeExplain(args map[string]interface{}) string {
@@ -1851,6 +1965,7 @@ func (a *App) toolKnowledgeExplain(args map[string]interface{}) string {
 		IncludeDisabled: knowledgeToolBoolArg(args, "include_disabled", false),
 	}
 	explain, err := a.KnowledgeExplain(opts)
+	explain = knowledge.ProjectImageExplainForTool(explain)
 	return knowledgeToolJSON(map[string]interface{}{"explain": explain}, err)
 }
 
@@ -1908,6 +2023,7 @@ func (a *App) toolKnowledgeTopicRelevance(args map[string]interface{}) string {
 		IncludeDisabled: knowledgeToolBoolArg(args, "include_disabled", false),
 	}
 	report, err := a.KnowledgeTopicRelevance(opts)
+	report = knowledge.ProjectImageTopicRelevanceForTool(report)
 	return knowledgeToolJSON(map[string]interface{}{"topic_relevance": report}, err)
 }
 
@@ -2064,6 +2180,7 @@ func (a *App) toolKnowledgeSaveURL(args map[string]interface{}) string {
 		return knowledgeToolJSON(nil, fmt.Errorf("missing url argument (aliases: link, href, uri, target)"))
 	}
 	source, err := a.KnowledgeSaveURL(rawURL, knowledgeToolStringArg(args, "save_scope"), knowledgeToolStringArg(args, "topic_hint"), knowledgeToolStringArg(args, "distill_mode"), knowledgeToolStringSlice(args["labels"]), knowledgeToolBoolArg(args, "auto_labels", true))
+	source = knowledge.ProjectImageSourceForTool(source)
 	return knowledgeToolJSON(map[string]interface{}{"source": source}, err)
 }
 
@@ -2093,6 +2210,7 @@ func (a *App) toolKnowledgeSaveURLs(args map[string]interface{}) string {
 		return knowledgeToolJSON(nil, fmt.Errorf("missing urls argument"))
 	}
 	result, err := a.KnowledgeSaveURLs(urls, knowledgeToolStringArg(args, "save_scope"), knowledgeToolStringArg(args, "topic_hint"), knowledgeToolStringArg(args, "distill_mode"), knowledgeToolStringSlice(args["labels"]), knowledgeToolBoolArg(args, "auto_labels", true))
+	result = knowledge.ProjectImageURLBatchSaveForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result, "discovery": discovery}, err)
 }
 
@@ -2242,6 +2360,7 @@ func (a *App) KnowledgeHealth(args map[string]interface{}) (map[string]interface
 	if err != nil {
 		return nil, err
 	}
+	quality = knowledge.ProjectImageSourceQualityForTool(quality)
 	score := doctor.Score
 	if quality.Count > 0 {
 		score = int(math.Round(float64(doctor.Score)*0.6 + quality.AverageScore*0.4))
@@ -2276,12 +2395,14 @@ func (a *App) KnowledgeHealth(args map[string]interface{}) (map[string]interface
 func (a *App) toolKnowledgeSourceQuality(args map[string]interface{}) string {
 	limit := knowledgeToolSourceFilterLimit(args, 100, 1000, 5000)
 	report, err := a.KnowledgeSourceQualityReport(knowledgeToolListSourcesOptions(args, limit))
+	report = knowledge.ProjectImageSourceQualityForTool(report)
 	return knowledgeToolJSON(map[string]interface{}{"quality": report}, err)
 }
 
 func (a *App) toolKnowledgeQualityMaintenancePlan(args map[string]interface{}) string {
 	limit := knowledgeToolSourceFilterLimit(args, 100, 500, 5000)
 	plan, err := a.KnowledgeSourceQualityMaintenancePlan(knowledgeToolListSourcesOptions(args, limit))
+	plan.Quality = knowledge.ProjectImageSourceQualityForTool(plan.Quality)
 	return knowledgeToolJSON(map[string]interface{}{"plan": plan}, err)
 }
 
@@ -2301,6 +2422,7 @@ func (a *App) toolKnowledgeExecuteQualityMaintenancePlan(args map[string]interfa
 		AllowSensitiveDisable:     knowledgeToolBoolArg(args, "allow_sensitive_disable", false),
 		AllowDuplicateSuppression: knowledgeToolBoolArg(args, "allow_duplicate_suppression", false),
 	})
+	result = knowledge.ProjectImageQualityMaintenanceExecutionForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"execution": result}, err)
 }
 
@@ -2316,6 +2438,7 @@ func (a *App) toolKnowledgeRebuildQualityGaps(args map[string]interface{}) strin
 	if err != nil {
 		return knowledgeToolJSON(nil, err)
 	}
+	report = knowledge.ProjectImageSourceQualityForTool(report)
 	ids := make([]string, 0, len(report.Items))
 	for _, item := range report.Items {
 		if item.Source.ID == "" {
@@ -2335,6 +2458,7 @@ func (a *App) toolKnowledgeRebuildQualityGaps(args map[string]interface{}) strin
 		}, nil)
 	}
 	result, err := a.KnowledgeRebuildSourcesDerived(ids, knowledgeToolStringArg(args, "distill_mode"))
+	result = knowledge.ProjectImageSourceRebuildForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{
 		"quality":            report,
 		"candidate_count":    len(ids),
@@ -2469,6 +2593,7 @@ func (a *App) toolKnowledgeListSources(args map[string]interface{}) string {
 	}
 	opts := knowledgeToolListSourcesOptions(args, limit)
 	sources, err := a.KnowledgeListSources(opts)
+	sources = knowledge.ProjectImageSourcesForTool(sources)
 	return knowledgeToolJSON(map[string]interface{}{"count": len(sources), "sources": sources}, err)
 }
 
@@ -2514,6 +2639,7 @@ func (a *App) toolKnowledgeUpdateSourceLabels(args map[string]interface{}) strin
 		return knowledgeToolJSON(nil, fmt.Errorf("provide add_labels, remove_labels, replace_labels, rename_from/rename_to, or clear_labels"))
 	}
 	result, err := a.KnowledgeUpdateSourceLabels(req)
+	result = knowledge.ProjectImageSourceLabelUpdateForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
@@ -2526,6 +2652,7 @@ func (a *App) toolKnowledgeBackfillSourceAutoLabels(args map[string]interface{})
 		Limit:     limit,
 	}
 	result, err := a.KnowledgeBackfillSourceAutoLabels(req)
+	result = knowledge.ProjectImageSourceLabelUpdateForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
@@ -2541,6 +2668,7 @@ func (a *App) toolKnowledgeBackfillQualityLabels(args map[string]interface{}) st
 	if err != nil {
 		return knowledgeToolJSON(nil, err)
 	}
+	report = knowledge.ProjectImageSourceQualityForTool(report)
 	ids := make([]string, 0, len(report.Items))
 	for _, item := range report.Items {
 		if item.Source.ID == "" {
@@ -2564,6 +2692,7 @@ func (a *App) toolKnowledgeBackfillQualityLabels(args map[string]interface{}) st
 		DryRun:    knowledgeToolBoolArg(args, "dry_run", false),
 		Limit:     len(ids),
 	})
+	result = knowledge.ProjectImageSourceLabelUpdateForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{
 		"quality":         report,
 		"candidate_count": len(ids),
@@ -2681,6 +2810,7 @@ func (a *App) knowledgeQualitySourceIDsWithSignal(args map[string]interface{}, s
 	if err != nil {
 		return knowledge.SourceQualityReport{}, nil, err
 	}
+	report = knowledge.ProjectImageSourceQualityForTool(report)
 	ids := make([]string, 0, len(report.Items))
 	for _, item := range report.Items {
 		if item.Source.ID == "" {
@@ -2876,6 +3006,17 @@ func (a *App) toolKnowledgeSourceDetail(args map[string]interface{}) string {
 		}
 		neighborhood = &graph
 	}
+	source = knowledge.ProjectImageSourceForTool(source)
+	nodes = knowledge.ProjectImageDocumentNodesForTool(nodes)
+	versions = knowledge.ProjectImageSourceVersionsForTool(versions)
+	digest = knowledge.ProjectImageSourceDigestForTool(digest)
+	timeline = knowledge.ProjectImageSourceTimelineForTool(timeline)
+	if neighborhood != nil {
+		projected := knowledge.ProjectImageSourceGraphForTool(*neighborhood)
+		neighborhood = &projected
+	}
+	links = knowledge.ProjectImageSourceLinksForParent(links, source.Kind == knowledge.SourceKindImage)
+	linkEvents = knowledge.ProjectImageSourceLinkEventsForParent(linkEvents, source.Kind == knowledge.SourceKindImage)
 	return knowledgeToolJSON(map[string]interface{}{
 		"source_id":          sourceID,
 		"source":             source,
@@ -2922,6 +3063,9 @@ func (a *App) toolKnowledgeListSourceLinks(args map[string]interface{}) string {
 		limit = 200
 	}
 	links, err := a.KnowledgeListSourceLinks(sourceID, limit)
+	if source, sourceErr := a.KnowledgeGetSource(sourceID); sourceErr == nil {
+		links = knowledge.ProjectImageSourceLinksForParent(links, source.Kind == knowledge.SourceKindImage)
+	}
 	return knowledgeToolJSON(map[string]interface{}{
 		"source_id":  sourceID,
 		"link_count": len(links),
@@ -2945,6 +3089,7 @@ func (a *App) toolKnowledgeSourceGraph(args map[string]interface{}) string {
 		edgeLimit = 2000
 	}
 	graph, err := a.KnowledgeSourceGraph(knowledgeToolListSourcesOptions(args, limit), edgeLimit)
+	graph = knowledge.ProjectImageSourceGraphForTool(graph)
 	return knowledgeToolJSON(map[string]interface{}{
 		"graph": graph,
 	}, err)
@@ -2980,6 +3125,7 @@ func (a *App) toolKnowledgeSourceNeighborhood(args map[string]interface{}) strin
 		edgeLimit = 2000
 	}
 	graph, err := a.KnowledgeSourceNeighborhood(sourceID, depth, limit, edgeLimit)
+	graph = knowledge.ProjectImageSourceGraphForTool(graph)
 	return knowledgeToolJSON(map[string]interface{}{
 		"source_id": sourceID,
 		"graph":     graph,
@@ -3019,6 +3165,7 @@ func (a *App) toolKnowledgeSourcePath(args map[string]interface{}) string {
 		edgeLimit = 5000
 	}
 	path, err := a.KnowledgeSourcePath(fromSourceID, toSourceID, maxDepth, edgeLimit)
+	path = knowledge.ProjectImageSourcePathForTool(path)
 	return knowledgeToolJSON(map[string]interface{}{
 		"from_source_id": fromSourceID,
 		"to_source_id":   toSourceID,
@@ -3042,6 +3189,7 @@ func (a *App) toolKnowledgePreviewTopicLinks(args map[string]interface{}) string
 		limit = 50
 	}
 	result, err := a.KnowledgePreviewSourceTopicLinks(sourceID, limit)
+	result = knowledge.ProjectImageSourceTopicLinksForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{
 		"source_id": sourceID,
 		"preview":   result,
@@ -3131,6 +3279,9 @@ func (a *App) toolKnowledgeListSourceLinkEvents(args map[string]interface{}) str
 		limit = 200
 	}
 	events, err := a.KnowledgeListSourceLinkEvents(sourceID, limit)
+	if source, sourceErr := a.KnowledgeGetSource(sourceID); sourceErr == nil {
+		events = knowledge.ProjectImageSourceLinkEventsForParent(events, source.Kind == knowledge.SourceKindImage)
+	}
 	return knowledgeToolJSON(map[string]interface{}{
 		"source_id":   sourceID,
 		"event_count": len(events),
@@ -3154,6 +3305,7 @@ func (a *App) toolKnowledgeSourceTimeline(args map[string]interface{}) string {
 		limit = 500
 	}
 	timeline, err := a.KnowledgeSourceTimeline(sourceID, limit)
+	timeline = knowledge.ProjectImageSourceTimelineForTool(timeline)
 	return knowledgeToolJSON(map[string]interface{}{
 		"timeline": timeline,
 	}, err)
@@ -3172,6 +3324,7 @@ func (a *App) toolKnowledgeSourceDigest(args map[string]interface{}) string {
 	factLimit := knowledgeToolIntArg(args, "facts_limit", knowledgeToolIntArg(args, "limit", 12))
 	linkLimit := knowledgeToolIntArg(args, "links_limit", knowledgeToolIntArg(args, "limit", 8))
 	digest, err := a.KnowledgeSourceDigest(sourceID, nodeLimit, cardLimit, factLimit, linkLimit)
+	digest = knowledge.ProjectImageSourceDigestForTool(digest)
 	return knowledgeToolJSON(map[string]interface{}{
 		"digest": digest,
 	}, err)
@@ -3191,6 +3344,7 @@ func (a *App) toolKnowledgeRefreshTopicLinks(args map[string]interface{}) string
 	}
 	if sourceID != "" {
 		result, err := a.KnowledgeRefreshSourceTopicLinks(sourceID, limitPerSource)
+		result = knowledge.ProjectImageSourceTopicLinksForTool(result)
 		return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 	}
 	limit := knowledgeToolIntArg(args, "limit", 100)
@@ -3201,6 +3355,7 @@ func (a *App) toolKnowledgeRefreshTopicLinks(args map[string]interface{}) string
 		limit = 500
 	}
 	result, err := a.KnowledgeRefreshSourceTopicLinksByFilter(knowledgeToolListSourcesOptions(args, limit), limitPerSource)
+	result = knowledge.ProjectImageSourceTopicLinksForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
@@ -3220,6 +3375,7 @@ func (a *App) toolKnowledgeListSourceVersions(args map[string]interface{}) strin
 		limit = 200
 	}
 	versions, err := a.KnowledgeListSourceVersions(sourceID, limit)
+	versions = knowledge.ProjectImageSourceVersionsForTool(versions)
 	return knowledgeToolJSON(map[string]interface{}{
 		"source_id":     sourceID,
 		"version_count": len(versions),
@@ -3424,6 +3580,7 @@ func (a *App) toolKnowledgeUpdateSourceMetadata(args map[string]interface{}) str
 		SourceTrust: knowledgeToolFloatArg(args, "source_trust", -1),
 		Labels:      labels,
 	})
+	source = knowledge.ProjectImageSourceForTool(source)
 	return knowledgeToolJSON(map[string]interface{}{"source": source}, err)
 }
 
@@ -3436,6 +3593,7 @@ func (a *App) toolKnowledgeRefreshSource(args map[string]interface{}) string {
 		return knowledgeToolJSON(nil, fmt.Errorf("missing source_id argument"))
 	}
 	source, err := a.KnowledgeRefreshSource(sourceID)
+	source = knowledge.ProjectImageSourceForTool(source)
 	return knowledgeToolJSON(map[string]interface{}{"source": source}, err)
 }
 
@@ -3448,6 +3606,7 @@ func (a *App) toolKnowledgePreviewSourceRefresh(args map[string]interface{}) str
 		return knowledgeToolJSON(nil, fmt.Errorf("missing source_id argument"))
 	}
 	preview, err := a.KnowledgePreviewSourceRefresh(sourceID)
+	preview = knowledge.ProjectImageSourceChangePreviewForTool(preview)
 	return knowledgeToolJSON(map[string]interface{}{"preview": preview}, err)
 }
 
@@ -3460,12 +3619,14 @@ func (a *App) toolKnowledgePreviewSourcesRefresh(args map[string]interface{}) st
 		return knowledgeToolJSON(nil, fmt.Errorf("missing source_ids argument"))
 	}
 	result, err := a.KnowledgePreviewSourcesRefresh(ids)
+	result = knowledge.ProjectImageSourceChangePreviewsForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
 func (a *App) toolKnowledgePreviewSourcesRefreshByFilter(args map[string]interface{}) string {
 	limit := knowledgeToolSourceFilterLimit(args, 100, 500, 5000)
 	result, err := a.KnowledgePreviewSourcesRefreshByFilter(knowledgeToolListSourcesOptions(args, limit))
+	result = knowledge.ProjectImageSourceChangePreviewsForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
@@ -3478,12 +3639,16 @@ func (a *App) toolKnowledgeRefreshChangedSources(args map[string]interface{}) st
 		return knowledgeToolJSON(nil, fmt.Errorf("missing source_ids argument"))
 	}
 	result, err := a.KnowledgeRefreshChangedSources(ids)
+	result.Preview = knowledge.ProjectImageSourceChangePreviewsForTool(result.Preview)
+	result.Refresh = knowledge.ProjectImageSourceRefreshForTool(result.Refresh)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
 func (a *App) toolKnowledgeRefreshChangedSourcesByFilter(args map[string]interface{}) string {
 	limit := knowledgeToolSourceFilterLimit(args, 100, 500, 5000)
 	result, err := a.KnowledgeRefreshChangedSourcesByFilter(knowledgeToolListSourcesOptions(args, limit))
+	result.Preview = knowledge.ProjectImageSourceChangePreviewsForTool(result.Preview)
+	result.Refresh = knowledge.ProjectImageSourceRefreshForTool(result.Refresh)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
@@ -3496,12 +3661,14 @@ func (a *App) toolKnowledgeRefreshSources(args map[string]interface{}) string {
 		return knowledgeToolJSON(nil, fmt.Errorf("missing source_ids argument"))
 	}
 	result, err := a.KnowledgeRefreshSources(ids)
+	result = knowledge.ProjectImageSourceRefreshForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
 func (a *App) toolKnowledgeRefreshSourcesByFilter(args map[string]interface{}) string {
 	limit := knowledgeToolSourceFilterLimit(args, 100, 500, 5000)
 	result, err := a.KnowledgeRefreshSourcesByFilter(knowledgeToolListSourcesOptions(args, limit))
+	result = knowledge.ProjectImageSourceRefreshForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
@@ -3514,6 +3681,7 @@ func (a *App) toolKnowledgeRebuildSourceDerived(args map[string]interface{}) str
 		return knowledgeToolJSON(nil, fmt.Errorf("missing source_id argument"))
 	}
 	source, err := a.KnowledgeRebuildSourceDerived(sourceID, knowledgeToolStringArg(args, "distill_mode"))
+	source = knowledge.ProjectImageSourceForTool(source)
 	return knowledgeToolJSON(map[string]interface{}{"source": source}, err)
 }
 
@@ -3526,24 +3694,28 @@ func (a *App) toolKnowledgeRebuildSourcesDerived(args map[string]interface{}) st
 		return knowledgeToolJSON(nil, fmt.Errorf("missing source_ids argument"))
 	}
 	result, err := a.KnowledgeRebuildSourcesDerived(ids, knowledgeToolStringArg(args, "distill_mode"))
+	result = knowledge.ProjectImageSourceRebuildForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
 func (a *App) toolKnowledgeRebuildSourcesDerivedByFilter(args map[string]interface{}) string {
 	limit := knowledgeToolSourceFilterLimit(args, 100, 500, 5000)
 	result, err := a.KnowledgeRebuildSourcesDerivedByFilter(knowledgeToolListSourcesOptions(args, limit), knowledgeToolStringArg(args, "distill_mode"))
+	result = knowledge.ProjectImageSourceRebuildForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
 func (a *App) toolKnowledgeDisableSourcesByFilter(args map[string]interface{}) string {
 	limit := knowledgeToolSourceFilterLimit(args, 100, 500, 5000)
 	result, err := a.KnowledgeDisableSourcesByFilter(knowledgeToolListSourcesOptions(args, limit))
+	result = knowledge.ProjectImageSourceStatusUpdateForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
 func (a *App) toolKnowledgeEnableSourcesByFilter(args map[string]interface{}) string {
 	limit := knowledgeToolSourceFilterLimit(args, 100, 500, 5000)
 	result, err := a.KnowledgeEnableSourcesByFilter(knowledgeToolListSourcesOptions(args, limit))
+	result = knowledge.ProjectImageSourceStatusUpdateForTool(result)
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
@@ -3556,6 +3728,7 @@ func (a *App) toolKnowledgeDisableSource(args map[string]interface{}) string {
 		return knowledgeToolJSON(nil, fmt.Errorf("missing source_id argument"))
 	}
 	source, err := a.KnowledgeDisableSource(sourceID)
+	source = knowledge.ProjectImageSourceForTool(source)
 	return knowledgeToolJSON(map[string]interface{}{"source": source, "disabled": err == nil}, err)
 }
 
@@ -3568,6 +3741,7 @@ func (a *App) toolKnowledgeEnableSource(args map[string]interface{}) string {
 		return knowledgeToolJSON(nil, fmt.Errorf("missing source_id argument"))
 	}
 	source, err := a.KnowledgeEnableSource(sourceID)
+	source = knowledge.ProjectImageSourceForTool(source)
 	return knowledgeToolJSON(map[string]interface{}{"source": source, "enabled": err == nil}, err)
 }
 

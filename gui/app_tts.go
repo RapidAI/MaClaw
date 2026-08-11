@@ -64,10 +64,8 @@ func normalizeTTSVoiceID(voiceID string) string {
 	if voiceID == "" {
 		return tts.DefaultTTSVoiceID
 	}
-	for _, supported := range tts.SupportedTTSVoiceIDs {
-		if voiceID == supported {
-			return voiceID
-		}
+	if tts.IsSupportedTTSVoiceID(voiceID) {
+		return voiceID
 	}
 	return tts.DefaultTTSVoiceID
 }
@@ -91,21 +89,31 @@ func (a *App) GetTTSVoiceID() string {
 
 func (a *App) SetTTSVoiceID(voiceID string) error {
 	voiceID = normalizeTTSVoiceID(voiceID)
+	// Publish the new setting and replace the desktop manager as one TTS
+	// transition. Hardware synthesis reads both while holding ttsManagerMu.
+	ttsSpeakMu.Lock()
+	defer ttsSpeakMu.Unlock()
+	a.ttsManagerMu.Lock()
+	defer a.ttsManagerMu.Unlock()
 	if _, err := a.PatchConfigFields(map[string]interface{}{"tts_voice_id": voiceID}); err != nil {
 		return err
 	}
-	ttsSpeakMu.Lock()
-	defer ttsSpeakMu.Unlock()
 	if a.ttsManager != nil {
 		a.ttsManager.Unload()
 		a.ttsManager = nil
 	}
-	a.initTTSManager()
+	a.unloadHardwareSpeechSynthesizers()
+	a.initTTSManagerWithoutLock()
 	return nil
 }
 
 // SetTTSEnabled enables/disables TTS. Auto-downloads model if enabling.
 func (a *App) SetTTSEnabled(enabled bool) error {
+	// Keep the enabled setting and manager lifetime coherent for device TTS.
+	ttsSpeakMu.Lock()
+	defer ttsSpeakMu.Unlock()
+	a.ttsManagerMu.Lock()
+	defer a.ttsManagerMu.Unlock()
 	if _, err := a.PatchConfigFields(map[string]interface{}{"tts_enabled": enabled}); err != nil {
 		return err
 	}
@@ -114,15 +122,14 @@ func (a *App) SetTTSEnabled(enabled bool) error {
 		if !info["exists"].(bool) {
 			go a.downloadTTSModelIfStillEnabled()
 		} else {
-			a.initTTSManager()
+			a.initTTSManagerWithoutLock()
 		}
 	} else {
-		ttsSpeakMu.Lock()
 		if a.ttsManager != nil {
 			a.ttsManager.Unload()
 			a.ttsManager = nil
 		}
-		ttsSpeakMu.Unlock()
+		a.unloadHardwareSpeechSynthesizers()
 	}
 	return nil
 }
@@ -259,7 +266,7 @@ func kokoroVoicesReady(voiceDir string) bool {
 	return true
 }
 
-func ensureKokoroEnglishVoice(voiceDir, voiceID string) (string, error) {
+func ensureKokoroWelcomeVoice(voiceDir, voiceID string) (string, error) {
 	if strings.TrimSpace(voiceDir) == "" {
 		return "", fmt.Errorf("TTS voice directory is unavailable")
 	}
@@ -270,7 +277,7 @@ func ensureKokoroEnglishVoice(voiceDir, voiceID string) (string, error) {
 	}
 	path := filepath.Join(voiceDir, voiceID+".koro")
 	if !fileExistsLocal(path) {
-		return "", fmt.Errorf("English TTS voice %s is not installed; update or re-download the TTS voice pack", voiceID)
+		return "", fmt.Errorf("TTS voice %s is not installed; update or re-download the TTS voice pack", voiceID)
 	}
 	return voiceID, nil
 }
@@ -328,6 +335,24 @@ func (a *App) emitTTSProgress(pct int, downloaded, total int64, errMsg string) {
 
 // initTTSManager creates the TTS manager if model exists.
 func (a *App) initTTSManager() {
+	if a == nil {
+		return
+	}
+	a.initTTSManagerLocked()
+}
+
+// initTTSManagerLocked creates the default manager. The name is retained for
+// callers that already hold ttsSpeakMu; it takes the dedicated manager lock so
+// background initialization cannot race a voice replacement.
+func (a *App) initTTSManagerLocked() {
+	a.ttsManagerMu.Lock()
+	defer a.ttsManagerMu.Unlock()
+	a.initTTSManagerWithoutLock()
+}
+
+// initTTSManagerWithoutLock creates the default manager with ttsManagerMu
+// already held.
+func (a *App) initTTSManagerWithoutLock() {
 	if a.ttsManager != nil {
 		return
 	}
@@ -346,6 +371,99 @@ func (a *App) initTTSManager() {
 	voiceID := tts.DefaultTTSVoiceID
 	voiceID = normalizeTTSVoiceID(cfg.TTSVoiceID)
 	a.ttsManager = tts.NewKokoroManager(modelPath, voiceDir, voiceID)
+}
+
+// ttsManagerForSynthesis returns a stable manager pointer for one synthesis.
+// Manager.Unload is safe while a synthesis is active; the mutex only protects
+// replacing the App-owned pointer during a voice change, disable, or shutdown.
+func (a *App) ttsManagerForSynthesis() *tts.Manager {
+	if a == nil {
+		return nil
+	}
+	a.ttsManagerMu.Lock()
+	manager := a.ttsManager
+	a.ttsManagerMu.Unlock()
+	return manager
+}
+
+// ensureTTSManagerForSynthesis lazily creates the default manager and returns
+// a stable pointer. Callers must prepare TTS assets before using it.
+func (a *App) ensureTTSManagerForSynthesis() *tts.Manager {
+	if a == nil {
+		return nil
+	}
+	a.ttsManagerMu.Lock()
+	if a.ttsManager == nil {
+		a.initTTSManagerWithoutLock()
+	}
+	manager := a.ttsManager
+	a.ttsManagerMu.Unlock()
+	return manager
+}
+
+// hardwareSpeechSynthesizer resolves one physical device's reply voice without
+// mutating the process-wide manager. Non-default voices are cached separately:
+// a device does not reload the full Kokoro model for every reply, and no device
+// can change another device's voice mid-response.
+func (a *App) hardwareSpeechSynthesizer(clientID string) (tts.TextSynthesizer, func(), bool) {
+	if a == nil {
+		return nil, func() {}, false
+	}
+	// Read the configuration only after holding the manager lock. A global
+	// voice change writes config before it replaces the desktop manager; taking
+	// the config snapshot beforehand could compare an old global voice against
+	// a newly-created manager and make one hardware reply speak with the wrong
+	// voice. This lock gives every selection a coherent config/manager view.
+	a.ttsManagerMu.Lock()
+	defer a.ttsManagerMu.Unlock()
+	cfg, err := a.LoadConfig()
+	if err != nil || !cfg.TTSEnabled {
+		return nil, func() {}, false
+	}
+	if a.ttsManager == nil {
+		a.initTTSManagerWithoutLock()
+		if a.ttsManager == nil {
+			return nil, func() {}, false
+		}
+	}
+	voiceID := effectiveHardwareReplyVoiceID(cfg.HardwareAgentBindings[normalizeThirdPartyID(clientID)])
+	if voiceID == normalizeTTSVoiceID(cfg.TTSVoiceID) {
+		return a.ttsManager, func() {}, true
+	}
+	modelPath, err := ttsModelPath()
+	if err != nil || !fileExistsLocal(modelPath) {
+		return nil, func() {}, false
+	}
+	voiceDir, err := ttsVoiceDir()
+	if err != nil || !fileExistsLocal(filepath.Join(voiceDir, voiceID+".koro")) {
+		return nil, func() {}, false
+	}
+	a.hardwareTTSMu.Lock()
+	defer a.hardwareTTSMu.Unlock()
+	if a.hardwareTTSManagers == nil {
+		a.hardwareTTSManagers = make(map[string]*tts.Manager)
+	}
+	if manager := a.hardwareTTSManagers[voiceID]; manager != nil {
+		return manager, func() {}, true
+	}
+	manager := tts.NewKokoroManager(modelPath, voiceDir, voiceID)
+	a.hardwareTTSManagers[voiceID] = manager
+	return manager, func() {}, true
+}
+
+func (a *App) unloadHardwareSpeechSynthesizers() {
+	if a == nil {
+		return
+	}
+	a.hardwareTTSMu.Lock()
+	managers := a.hardwareTTSManagers
+	a.hardwareTTSManagers = nil
+	a.hardwareTTSMu.Unlock()
+	for _, manager := range managers {
+		if manager != nil {
+			manager.Unload()
+		}
+	}
 }
 
 // backgroundPreloadTTSModel silently downloads TTS model if not present.
@@ -407,18 +525,16 @@ func (a *App) speakPlainTextAsync(input string) {
 		return
 	}
 	// Recreate lazily if another settings path unloaded the selected voice.
-	if a.ttsManager == nil {
-		a.initTTSManager()
-		if a.ttsManager == nil {
-			fmt.Println("[tts] manager unavailable after asset preparation")
-			return
-		}
+	manager := a.ensureTTSManagerForSynthesis()
+	if manager == nil {
+		fmt.Println("[tts] manager unavailable after asset preparation")
+		return
 	}
 
 	if len([]rune(input)) > 80 {
 		input = string([]rune(input)[:80])
 	}
-	wav, err := a.ttsManager.SynthesizeText(input)
+	wav, err := manager.SynthesizeText(input)
 	if err != nil {
 		fmt.Printf("[tts] synthesize error: %v\n", err)
 		return
@@ -445,13 +561,11 @@ func (a *App) SynthesizeTTSPreview(text string) (string, error) {
 	if err := a.ensureTTSAssetsForUse(cfg.RemoteHubURL, true); err != nil {
 		return "", err
 	}
-	if a.ttsManager == nil {
-		a.initTTSManager()
-	}
-	if a.ttsManager == nil {
+	manager := a.ensureTTSManagerForSynthesis()
+	if manager == nil {
 		return "", fmt.Errorf("TTS is unavailable after preparing its assets")
 	}
-	wav, err := a.ttsManager.SynthesizeText(text)
+	wav, err := manager.SynthesizeText(text)
 	if err != nil {
 		return "", err
 	}
@@ -473,12 +587,10 @@ func (a *App) speakTextAsync(input string) {
 		fmt.Printf("[tts] on-demand asset preparation failed: %v\n", err)
 		return
 	}
-	if a.ttsManager == nil {
-		a.initTTSManager()
-		if a.ttsManager == nil {
-			fmt.Println("[tts] manager unavailable after asset preparation")
-			return
-		}
+	manager := a.ensureTTSManagerForSynthesis()
+	if manager == nil {
+		fmt.Println("[tts] manager unavailable after asset preparation")
+		return
 	}
 
 	summary := tts.GenerateVoiceSummary(input, 150)
@@ -486,7 +598,7 @@ func (a *App) speakTextAsync(input string) {
 		return
 	}
 
-	wav, err := a.ttsManager.SynthesizeText(summary)
+	wav, err := manager.SynthesizeText(summary)
 	if err != nil {
 		fmt.Printf("[tts] synthesize error: %v\n", err)
 		return

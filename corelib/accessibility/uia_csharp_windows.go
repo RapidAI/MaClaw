@@ -3,12 +3,14 @@
 package accessibility
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -142,10 +144,16 @@ func compileUIACsharp() (string, error) {
 		args = append(args, "/r:"+r)
 	}
 	args = append(args, src)
-	cmd := exec.Command(csc, args...)
+	// Bound the compile: a wedged csc must not hang UIA startup forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, csc, args...)
 	coretool.HideCommandWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("csc timed out after 60s")
+		}
 		return "", fmt.Errorf("csc failed: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	if st, err := os.Stat(outExe); err != nil || st.Size() == 0 {

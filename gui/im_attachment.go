@@ -13,6 +13,17 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
+// imImageTextRecognizer extracts image text with the local OCR engine for
+// attachments bound to a non-vision model. Package var so tests can stub it;
+// production wires it to imageTextFromAttachment (gui/app_vision_ocr.go).
+var imImageTextRecognizer func(mimeType, base64Data string) (string, error) = imageTextFromAttachment
+
+// imImageOCRNote formats the local-OCR note appended to an image attachment
+// description when the current model cannot see images. "" when unavailable.
+func imImageOCRNote(att *MessageAttachment, displayName string) string {
+	return agent.RecognizeImageTextNote(imImageTextRecognizer, att, displayName)
+}
+
 // buildUserContent constructs the user message content for the LLM.
 // For text-only messages, returns a plain string.
 // For messages with image attachments, returns a multimodal content array
@@ -44,7 +55,13 @@ func buildUserContentWithLocalStaging(userText string, attachments []MessageAtta
 	for i := range attachments {
 		att := &attachments[i]
 		attKind := normalizeIMMediaKind(att.Type)
-		if isImageMime(att.MimeType) || attKind.IsImage() {
+		// Attachment MIME and media type are supplied by the remote channel.
+		// A binary document renamed only in its metadata as image/png must still
+		// reach the normal file staging + shared read_document boundary rather
+		// than being embedded as a vision data URL. File-name routing here is
+		// deliberately limited to binary documents; actual parsing remains
+		// signature/preflight controlled by the downstream document extractor.
+		if !agent.IsBinaryDocumentAttachment(att.FileName, att.MimeType) && (isImageMime(att.MimeType) || attKind.IsImage()) {
 			if supportsVision {
 				imageAttachments = append(imageAttachments, *att)
 			} else if !allowLocalStaging {
@@ -52,19 +69,20 @@ func buildUserContentWithLocalStaging(userText string, attachments []MessageAtta
 				if displayName == "" {
 					displayName = "image"
 				}
-				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s；当前群聊权限不允许将图片保存到本机，且当前模型不支持图片理解。请在私聊中发送图片。]", displayName))
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s；当前群聊权限不允许将图片保存到本机，且当前模型不支持图片理解。请在私聊中发送图片。]%s", displayName, imImageOCRNote(att, displayName)))
 			} else {
 				// Vision not supported — save image to local file instead.
 				displayName := att.FileName
 				if displayName == "" {
 					displayName = "image"
 				}
+				ocrNote := imImageOCRNote(att, displayName)
 				path, err := saveAttachmentToLocal(att)
 				if err != nil {
 					log.Printf("[IM] save image %q failed: %v", att.FileName, err)
-					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s，保存失败: %v，当前模型不支持图片理解]", displayName, err))
+					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s，保存失败: %v，当前模型不支持图片理解]%s", displayName, err, ocrNote))
 				} else {
-					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s，已保存到 %s，当前模型不支持图片理解]", displayName, path))
+					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s，已保存到 %s，当前模型不支持图片理解]%s", displayName, path, ocrNote))
 				}
 			}
 		} else if attKind.IsVoice() {
@@ -222,9 +240,12 @@ func saveAttachmentToLocal(att *MessageAttachment) (string, error) {
 		return "", fmt.Errorf("cannot create im_files directory: %w", err)
 	}
 
-	name := att.FileName
+	name := agent.NormalizeBinaryDocumentAttachmentFilename(att.FileName, att.MimeType)
 	if name == "" {
 		name = fmt.Sprintf("attachment_%s_%d", time.Now().Format("20060102_150405"), time.Now().UnixMilli()%1000)
+		if ext := agent.BinaryDocumentAttachmentExtension("", att.MimeType); ext != "" {
+			name += ext
+		}
 	}
 	name = filepath.Base(name)
 	if name == "." || name == ".." {

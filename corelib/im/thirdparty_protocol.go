@@ -765,6 +765,9 @@ func NormalizeThirdPartyMediaPrepareRequest(req *ThirdPartyMediaPrepareRequest, 
 	}
 	req.FileName = strings.TrimSpace(req.FileName)
 	req.MimeType = strings.TrimSpace(req.MimeType)
+	if documentMaxBytes := ThirdPartyMediaMaxBytesFor(req.FileName, req.MimeType); maxMediaBytes > documentMaxBytes {
+		maxMediaBytes = documentMaxBytes
+	}
 	if req.ClientID == "" {
 		return errors.New("clientId is required")
 	}
@@ -781,6 +784,18 @@ func NormalizeThirdPartyMediaPrepareRequest(req *ThirdPartyMediaPrepareRequest, 
 		return errors.New("durationMs must be non-negative")
 	}
 	return nil
+}
+
+// ThirdPartyMediaMaxBytesFor returns the upload budget for a third-party media
+// object. PDF and the six Office formats must enter the same bounded extraction
+// path as local attachments, so their transport budget cannot exceed the
+// OfficeRead input limit. This classification is only an upload-budget label;
+// the document readers still validate signatures and container contents.
+func ThirdPartyMediaMaxBytesFor(fileName, mimeType string) int64 {
+	if agent.BinaryDocumentAttachmentExtension(fileName, mimeType) != "" {
+		return agent.MaxOfficeReadFileBytes
+	}
+	return ThirdPartyMaxMediaBytes
 }
 
 func NormalizeThirdPartyAckRequest(req *ThirdPartyAckRequest, maxAckIDs int) error {
@@ -1289,6 +1304,9 @@ func NormalizeThirdPartyMediaReference(att *ThirdPartyMediaReference, fallbackTy
 	}
 	att.Data = strings.TrimSpace(att.Data)
 	att.URL = strings.TrimSpace(att.URL)
+	if att.FileName != "" {
+		att.FileName = SafeThirdPartyFileName(att.FileName)
+	}
 	att.SHA256 = strings.TrimSpace(att.SHA256)
 	if att.Type == "" || att.Type == "text" {
 		return fmt.Errorf("message.attachments[%d].type must be image, file, voice, or audio", index)
@@ -1315,6 +1333,9 @@ func NormalizeThirdPartyMediaReference(att *ThirdPartyMediaReference, fallbackTy
 	}
 	if utf8.RuneCountInString(att.URL) > ThirdPartyMaxURLChars {
 		return fmt.Errorf("message.attachments[%d].url exceeds %d characters", index, ThirdPartyMaxURLChars)
+	}
+	if att.SizeBytes > ThirdPartyMediaMaxBytesFor(att.FileName, att.MimeType) {
+		return fmt.Errorf("message.attachments[%d].sizeBytes exceeds %d bytes", index, ThirdPartyMediaMaxBytesFor(att.FileName, att.MimeType))
 	}
 	if att.SizeBytes < 0 {
 		return fmt.Errorf("message.attachments[%d].sizeBytes must be non-negative", index)

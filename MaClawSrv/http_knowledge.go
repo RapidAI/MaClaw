@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -56,6 +58,31 @@ func (s *HTTPServer) requireKnowledge(w http.ResponseWriter) bool {
 	return true
 }
 
+// knowledgeOfficeReadConfigForPrincipal snapshots the authenticated user's
+// trusted OfficeRead rollout policy before an asynchronous import starts.
+// Knowledge import payloads intentionally cannot carry this setting: doing so
+// would let a model or API caller alter rich Markdown/image ingestion policy.
+func (s *HTTPServer) knowledgeOfficeReadConfigForPrincipal(ctx context.Context, p agentservice.Principal) (*agent.OfficeReadConfig, error) {
+	config := agent.OfficeReadConfig{}
+	if s == nil || s.svc == nil {
+		return &config, nil
+	}
+	userConfig, err := s.svc.GetUserConfig(ctx, p)
+	if err != nil {
+		if errors.Is(err, agentservice.ErrUserConfigNotFound) || errors.Is(err, agentservice.ErrUserNotFound) {
+			return &config, nil
+		}
+		return nil, err
+	}
+	config = agent.CloneOfficeReadConfig(agent.OfficeReadConfig{
+		Engine:       userConfig.AppConfig.OfficeReadEngine,
+		Formats:      userConfig.AppConfig.OfficeReadFormats,
+		Fallback:     userConfig.AppConfig.OfficeReadFallback,
+		EmitMarkdown: userConfig.AppConfig.OfficeReadEmitMarkdown,
+	})
+	return &config, nil
+}
+
 // --- Import endpoints ---
 
 func (s *HTTPServer) handleKnowledgeImportFile(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -79,15 +106,21 @@ func (s *HTTPServer) handleKnowledgeImportFile(w http.ResponseWriter, r *http.Re
 	title := strings.TrimSpace(r.FormValue("title"))
 	labels := strings.TrimSpace(r.FormValue("labels"))
 	topicHint := strings.TrimSpace(r.FormValue("topic_hint"))
+	officeReadConfig, err := s.knowledgeOfficeReadConfigForPrincipal(r.Context(), p)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load knowledge import policy"})
+		return
+	}
 
 	// Create async job for import
 	job := s.jobs.createUserJob("knowledge_import_file", p, func(ctx context.Context) (any, error) {
 		store := s.knowledgeMgr.Store()
 		importReq := knowledge.DirectoryImportRequest{
-			OwnerID:   p.UserID,
-			TenantID:  p.TenantID,
-			TopicHint: topicHint,
-			Labels:    splitLabels(labels),
+			OwnerID:          p.UserID,
+			TenantID:         p.TenantID,
+			TopicHint:        topicHint,
+			Labels:           splitLabels(labels),
+			OfficeReadConfig: officeReadConfig,
 		}
 		result, err := importKnowledgeUploadedFiles(ctx, store, uploads, tmpDir, maxSize, importReq)
 		if err != nil {
@@ -639,16 +672,22 @@ func (s *HTTPServer) handleKnowledgeImportDirectory(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "directory does not exist"})
 		return
 	}
+	officeReadConfig, err := s.knowledgeOfficeReadConfigForPrincipal(r.Context(), p)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load knowledge import policy"})
+		return
+	}
 
 	job := s.jobs.createUserJob("knowledge_import_directory", p, func(ctx context.Context) (any, error) {
 		store := s.knowledgeMgr.Store()
 		result, err := store.ImportDirectory(ctx, knowledge.DirectoryImportRequest{
-			RootPath:  req.Path,
-			OwnerID:   p.UserID,
-			TenantID:  p.TenantID,
-			TopicHint: req.TopicHint,
-			Labels:    splitLabels(req.Labels),
-			Recursive: true,
+			RootPath:         req.Path,
+			OwnerID:          p.UserID,
+			TenantID:         p.TenantID,
+			TopicHint:        req.TopicHint,
+			Labels:           splitLabels(req.Labels),
+			Recursive:        true,
+			OfficeReadConfig: officeReadConfig,
 		})
 		return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), err
 	})
@@ -727,6 +766,11 @@ func (s *HTTPServer) handleKnowledgeExport(w http.ResponseWriter, r *http.Reques
 	// nodes for each source to include inline content. Large knowledge bases may take time.
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
+	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
 	opts := knowledge.ListSourcesOptions{
 		TenantID:  p.TenantID,
 		OwnerID:   p.UserID,
@@ -738,12 +782,12 @@ func (s *HTTPServer) handleKnowledgeExport(w http.ResponseWriter, r *http.Reques
 	} else {
 		opts.IncludeDisabled = true
 	}
-	sources, err := s.knowledgeMgr.Store().ListSources(ctx, opts)
+	sources, err := store.ListSources(ctx, opts)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("export knowledge failed: %v", err))})
 		return
 	}
-	pkg := buildKnowledgeExportPackageWithStore(ctx, s.knowledgeMgr.Store(), s.svc.DataRoot(), p, strings.TrimSpace(req.Title), description, sources)
+	pkg := buildKnowledgeExportPackageWithStore(ctx, store, s.svc.DataRoot(), p, strings.TrimSpace(req.Title), description, sources)
 	filename := fmt.Sprintf("maclaw-knowledge-%s.json", pkg.Manifest.PackageID)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
@@ -1055,7 +1099,7 @@ func buildKnowledgeExportPackageWithStore(ctx context.Context, store *knowledge.
 				}
 			}
 		}
-		items = append(items, item)
+		items = append(items, projectKnowledgePackageImageSource(item))
 	}
 	pkg := knowledgePackage{
 		Manifest: knowledgePackageManifest{
@@ -1415,6 +1459,17 @@ func knowledgeBatchSampleFiles(items []knowledge.ImportItem) []string {
 
 // --- Query endpoints ---
 
+// handleKnowledgeCapabilities publishes stable knowledge retrieval contracts,
+// including whether text-to-image and image-to-image search are available.
+// It is authenticated because it describes the current user's knowledge tool
+// surface, even though it contains no source content or filesystem data.
+func (s *HTTPServer) handleKnowledgeCapabilities(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, knowledge.Capabilities())
+}
+
 func (s *HTTPServer) handleKnowledgeSearch(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if !s.requireKnowledge(w) {
 		return
@@ -1451,9 +1506,60 @@ func (s *HTTPServer) handleKnowledgeSearch(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("search failed: %v", err))})
 		return
 	}
+	// Merge Hub-synced enterprise digital assets (active libraries only).
+	if ent := s.searchEnterpriseForPrincipal(ctx, p, req.Query); len(ent) > 0 {
+		results = mergeKnowledgeAPIResults(results, ent, req.Limit)
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"results": sanitizeKnowledgeSearchResultsForAPI(s.svc.DataRoot(), results),
 		"total":   len(results),
+	})
+}
+
+// handleKnowledgeImageSearch performs text-to-image discovery over the OCR,
+// caption, filename, and document-context text indexed for knowledge images.
+// It does not accept an uploaded query image: without a shared multimodal
+// embedding model, treating arbitrary image bytes as a search key would give a
+// misleading image-to-image contract.
+func (s *HTTPServer) handleKnowledgeImageSearch(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	var req knowledge.ImageSearchOptions
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if strings.TrimSpace(req.Query) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "query is required"})
+		return
+	}
+	req.OwnerID = p.UserID
+	req.TenantID = p.TenantID
+	if req.Limit <= 0 {
+		req.Limit = 8
+	}
+	if req.Limit > 50 {
+		req.Limit = 50
+	}
+	store := s.knowledgeMgr.AgentStore()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	results, err := store.SearchImages(ctx, req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("image search failed: %v", err))})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"results":        sanitizeKnowledgeSearchResultsForAPI(s.svc.DataRoot(), results),
+		"total":          len(results),
+		"mode":           "text_to_image",
+		"ranking":        "hybrid_text_ocr_caption",
+		"image_to_image": false,
 	})
 }
 
@@ -1590,6 +1696,10 @@ func (s *HTTPServer) handleKnowledgeGetSource(w http.ResponseWriter, r *http.Req
 		return
 	}
 	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source not found"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -1615,6 +1725,10 @@ func (s *HTTPServer) handleKnowledgeDeleteSource(w http.ResponseWriter, r *http.
 		return
 	}
 	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -1653,6 +1767,10 @@ func (s *HTTPServer) handleKnowledgeUpdateSource(w http.ResponseWriter, r *http.
 		return
 	}
 	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -1693,6 +1811,10 @@ func (s *HTTPServer) handleKnowledgeDisableSource(w http.ResponseWriter, r *http
 		return
 	}
 	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -1722,6 +1844,10 @@ func (s *HTTPServer) handleKnowledgeEnableSource(w http.ResponseWriter, r *http.
 		return
 	}
 	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -1751,6 +1877,10 @@ func (s *HTTPServer) handleKnowledgeRefreshSource(w http.ResponseWriter, r *http
 		return
 	}
 	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
@@ -1763,7 +1893,12 @@ func (s *HTTPServer) handleKnowledgeRefreshSource(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source not found"})
 		return
 	}
-	if _, err := store.RefreshSource(ctx, sourceID); err != nil {
+	officeReadConfig, err := s.knowledgeOfficeReadConfigForPrincipal(ctx, p)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load knowledge refresh policy"})
+		return
+	}
+	if _, err := store.RefreshSourceWithOfficeReadConfig(ctx, sourceID, officeReadConfig); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("refresh failed: %v", err))})
 		return
 	}
@@ -1791,6 +1926,13 @@ func sanitizeKnowledgeDirectoryImportResultForAPI(dataRoot string, result knowle
 }
 
 func sanitizeKnowledgeSourceForAPI(dataRoot string, source knowledge.Source) knowledge.Source {
+	// An image source's URI and path-like bookkeeping are persistence
+	// provenance, not public API data. Even a basename-only redaction is an
+	// unnecessary host-side disclosure and differs from the agent-safe image
+	// contract. Keep only the display-safe, opaque source representation.
+	if source.Kind == knowledge.SourceKindImage {
+		return knowledge.ProjectImageSourceForTool(source)
+	}
 	source.URI = redactKnowledgeURIForAPI(dataRoot, source.URI)
 	source.CanonicalURI = redactKnowledgeURIForAPI(dataRoot, source.CanonicalURI)
 	source.Title = redactKnowledgeDisplayTextForAPI(dataRoot, source.Title)
@@ -1798,6 +1940,26 @@ func sanitizeKnowledgeSourceForAPI(dataRoot string, source knowledge.Source) kno
 	source.RelativePath = redactKnowledgePathForAPI(dataRoot, source.RelativePath)
 	source.ErrorMessage = redactSupportBundleText(dataRoot, source.ErrorMessage)
 	return source
+}
+
+// projectKnowledgePackageImageSource applies the same public/agent boundary to
+// exported packages. A package can be handed to another machine, so source
+// provenance from a locally imported image must not survive as a basename,
+// URI, relative path, or inline OCR/caption text. Image assets themselves are
+// intentionally not part of the JSON package format.
+func projectKnowledgePackageImageSource(item knowledgePackageSource) knowledgePackageSource {
+	if item.Kind != knowledge.SourceKindImage {
+		return item
+	}
+	return knowledgePackageSource{
+		ID:        item.ID,
+		Kind:      item.Kind,
+		Title:     knowledge.SafeImageDisplayText(item.Title),
+		Labels:    append([]string(nil), item.Labels...),
+		Status:    item.Status,
+		CreatedAt: item.CreatedAt,
+		UpdatedAt: item.UpdatedAt,
+	}
 }
 
 func sanitizeKnowledgeSourcesForAPI(dataRoot string, sources []knowledge.Source) []knowledge.Source {
@@ -1819,8 +1981,43 @@ func sanitizeKnowledgeSearchResultsForAPI(dataRoot string, results []knowledge.S
 		out[i].Claim = redactSupportBundleText(dataRoot, out[i].Claim)
 		out[i].Summary = redactSupportBundleText(dataRoot, out[i].Summary)
 		out[i].Snippet = redactSupportBundleText(dataRoot, out[i].Snippet)
+		if out[i].NodeType == knowledge.NodeTypeImage || out[i].Source.Kind == knowledge.SourceKindImage {
+			assetID := knowledgeImageAssetID(out[i])
+			if knowledge.IsSafeImageAssetID(assetID) {
+				base := "/api/v1/knowledge/images/" + url.PathEscape(assetID)
+				out[i].Media = &knowledge.SearchResultMedia{
+					AssetID:      assetID,
+					ThumbnailURL: base + "/thumbnail",
+					PreviewURL:   base + "/preview",
+					OriginalURL:  base,
+					Alt:          out[i].NodeTitle,
+					Caption:      out[i].Snippet,
+				}
+			} else {
+				// Metadata is persisted input. Do not echo an invalid asset token
+				// back through the public API, even without a generated URL.
+				out[i].Media = nil
+			}
+		}
 	}
 	return out
+}
+
+func knowledgeImageAssetID(result knowledge.SearchResult) string {
+	if result.Media != nil && result.Media.AssetID != "" {
+		assetID := result.Media.AssetID
+		if knowledge.ImageAssetIDBelongsToSourceID(assetID, result.Source.ID) {
+			return assetID
+		}
+		// An explicit media ID comes from persisted document metadata. Do not
+		// publish an ID that is malformed or belongs to another source, and do
+		// not silently reinterpret it as a source/node-derived asset.
+		return ""
+	}
+	if result.Source.Kind == knowledge.SourceKindImage && knowledge.IsSafeImageAssetID(result.Source.ID) {
+		return result.Source.ID
+	}
+	return ""
 }
 
 func sanitizeKnowledgeContextPackForAPI(dataRoot string, result knowledge.ContextPackResult) knowledge.ContextPackResult {
@@ -1861,6 +2058,16 @@ func redactKnowledgeURIForAPI(dataRoot, value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return value
+	}
+	// Imported image sources may be persisted as file:// URIs. They are valid
+	// storage provenance but must never expose the host directory through an
+	// API response; return only the final filename as a display-safe hint.
+	if u, err := url.Parse(value); err == nil && strings.EqualFold(u.Scheme, "file") {
+		pathValue := u.Path
+		if u.Host != "" {
+			pathValue = "//" + u.Host + pathValue
+		}
+		return supportBundlePathBase(pathValue)
 	}
 	if strings.Contains(value, "://") {
 		return redactEndpointForAPI(dataRoot, value)
@@ -2388,9 +2595,14 @@ func (s *HTTPServer) handleAdminPublicKnowledgeImportFile(w http.ResponseWriter,
 	}
 	topicHint := strings.TrimSpace(r.FormValue("topic_hint"))
 	labels := strings.TrimSpace(r.FormValue("labels"))
+	officeReadConfig, err := s.knowledgeOfficeReadConfigForPrincipal(r.Context(), agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load knowledge import policy"})
+		return
+	}
 	job := s.jobs.createUserJob("public_knowledge_import_file", agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID}, func(ctx context.Context) (any, error) {
 		store := s.knowledgeMgr.Store()
-		importReq := knowledge.DirectoryImportRequest{OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: topicHint, Labels: splitLabels(labels)}
+		importReq := knowledge.DirectoryImportRequest{OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: topicHint, Labels: splitLabels(labels), OfficeReadConfig: officeReadConfig}
 		result, err := importKnowledgeUploadedFiles(ctx, store, uploads, tmpDir, maxSize, importReq)
 		return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), err
 	})
@@ -2404,7 +2616,7 @@ func (s *HTTPServer) handleAdminKnowledgeStats(w http.ResponseWriter, r *http.Re
 	}
 	store := s.knowledgeMgr.Store()
 	if store == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "thumbnail not found"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -2423,6 +2635,10 @@ func (s *HTTPServer) handleAdminKnowledgeListSources(w http.ResponseWriter, r *h
 		return
 	}
 	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -2455,6 +2671,10 @@ func (s *HTTPServer) handleAdminKnowledgeClearTenant(w http.ResponseWriter, r *h
 		return
 	}
 	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
@@ -2505,6 +2725,55 @@ func readJSONBodyWithLimit(r *http.Request, v interface{}, limit int64) error {
 
 // --- Image asset endpoints ---
 
+func (s *HTTPServer) handleKnowledgeImageThumbnail(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	s.serveKnowledgeImageAsset(w, r, p, "thumbnail")
+}
+
+func (s *HTTPServer) handleKnowledgeImagePreview(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	s.serveKnowledgeImageAsset(w, r, p, "preview")
+}
+
+func (s *HTTPServer) handleKnowledgeImageOriginal(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	s.serveKnowledgeImageAsset(w, r, p, "original")
+}
+
+func (s *HTTPServer) serveKnowledgeImageAsset(w http.ResponseWriter, r *http.Request, p agentservice.Principal, variant string) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	assetID := r.PathValue("assetId")
+	if !knowledge.IsSafeImageAssetID(assetID) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image not found"})
+		return
+	}
+	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image not found"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	source, err := store.FindImageAssetSource(ctx, assetID)
+	if err != nil || !s.canReadSource(ctx, source, p) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image not found"})
+		return
+	}
+	assets := store.ImageAssets()
+	if assets == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image assets not configured"})
+		return
+	}
+	data, format, err := knowledge.ReadKnowledgeImageAsset(assets.BaseDir(), assetID, variant)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image not found"})
+		return
+	}
+	if !writeKnowledgeImageAssetBytes(w, r, data, format) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image not found"})
+		return
+	}
+}
+
 func (s *HTTPServer) handleKnowledgeSourceThumbnail(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if !s.requireKnowledge(w) {
 		return
@@ -2521,7 +2790,7 @@ func (s *HTTPServer) handleKnowledgeSourceThumbnail(w http.ResponseWriter, r *ht
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	if !s.canReadKnowledgeSourceID(ctx, store, sourceID, p) {
+	if !s.canReadKnowledgeImageSourceID(ctx, store, sourceID, p) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "thumbnail not found"})
 		return
 	}
@@ -2530,18 +2799,14 @@ func (s *HTTPServer) handleKnowledgeSourceThumbnail(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image assets not configured"})
 		return
 	}
-	thumbPath := assets.ThumbPath(sourceID)
-	if thumbPath == "" {
+	data, format, err := knowledge.ReadKnowledgeImageAsset(assets.BaseDir(), sourceID, "thumbnail")
+	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "thumbnail not found"})
 		return
 	}
-	if _, err := os.Stat(thumbPath); err != nil {
+	if !writeKnowledgeImageAssetBytes(w, r, data, format) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "thumbnail not found"})
-		return
 	}
-	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeFile(w, r, thumbPath)
 }
 
 func (s *HTTPServer) handleKnowledgeSourceImage(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -2554,9 +2819,13 @@ func (s *HTTPServer) handleKnowledgeSourceImage(w http.ResponseWriter, r *http.R
 		return
 	}
 	store := s.knowledgeMgr.Store()
+	if store == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image not found"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	if !s.canReadKnowledgeSourceID(ctx, store, sourceID, p) {
+	if !s.canReadKnowledgeImageSourceID(ctx, store, sourceID, p) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image not found"})
 		return
 	}
@@ -2565,44 +2834,50 @@ func (s *HTTPServer) handleKnowledgeSourceImage(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image assets not configured"})
 		return
 	}
-	assetDir := assets.AssetDir(sourceID)
-	if assetDir == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image not found"})
-		return
-	}
-	entries, err := os.ReadDir(assetDir)
+	data, format, err := knowledge.ReadKnowledgeImageAsset(assets.BaseDir(), sourceID, "original")
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image not found"})
-		return
-	}
-	var originalPath string
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "original") {
-			originalPath = filepath.Join(assetDir, entry.Name())
-			break
-		}
-	}
-	if originalPath == "" {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "original image not found"})
 		return
 	}
-	ext := strings.ToLower(filepath.Ext(originalPath))
-	contentType := "application/octet-stream"
-	switch ext {
-	case ".png":
-		contentType = "image/png"
-	case ".jpg", ".jpeg":
-		contentType = "image/jpeg"
-	case ".gif":
-		contentType = "image/gif"
-	case ".webp":
-		contentType = "image/webp"
-	case ".bmp":
-		contentType = "image/bmp"
+	if !writeKnowledgeImageAssetBytes(w, r, data, format) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "original image not found"})
+	}
+}
+
+// writeKnowledgeImageAssetBytes writes only media that has already been read
+// through knowledge's managed asset root. It deliberately does not reopen a
+// cache pathname after validation, which would reintroduce a symlink/replace
+// race between the asset boundary and HTTP response.
+func writeKnowledgeImageAssetBytes(w http.ResponseWriter, r *http.Request, data []byte, format string) bool {
+	contentType := knowledgeImageContentType(format)
+	if r == nil || contentType == "" || len(data) == 0 {
+		return false
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeFile(w, r, originalPath)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	// ServeContent preserves normal static-file protocol behavior (HEAD,
+	// Content-Length and byte ranges) while serving this already verified byte
+	// slice. Unlike ServeFile it never reopens a mutable host pathname.
+	http.ServeContent(w, r, "knowledge-image."+strings.ToLower(format), time.Time{}, bytes.NewReader(data))
+	return true
+}
+
+func knowledgeImageContentType(format string) string {
+	switch strings.ToLower(format) {
+	case "png":
+		return "image/png"
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	case "gif":
+		return "image/gif"
+	case "webp":
+		return "image/webp"
+	case "bmp":
+		return "image/bmp"
+	default:
+		return ""
+	}
 }
 
 func (s *HTTPServer) handleKnowledgeImportImage(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -2656,24 +2931,57 @@ func (s *HTTPServer) handleKnowledgeImportImage(w http.ResponseWriter, r *http.R
 	if title == "" {
 		title = strings.TrimSuffix(header.Filename, ext)
 	}
+	officeReadConfig, err := s.knowledgeOfficeReadConfigForPrincipal(r.Context(), p)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load knowledge import policy"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	result, err := store.ImportDirectory(ctx, knowledge.DirectoryImportRequest{
-		RootPath:    filepath.Dir(tmpPath),
-		OwnerID:     p.UserID,
-		TenantID:    p.TenantID,
-		TopicHint:   title,
-		IncludeExts: []string{ext},
-		Recursive:   false,
+		RootPath:         filepath.Dir(tmpPath),
+		OwnerID:          p.UserID,
+		TenantID:         p.TenantID,
+		TopicHint:        title,
+		IncludeExts:      []string{ext},
+		Recursive:        false,
+		OfficeReadConfig: officeReadConfig,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("import failed: %v", err)})
 		return
 	}
+	result = sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result)
+	assetIDs := make([]string, 0, len(result.Items))
+	media := make([]*knowledge.SearchResultMedia, 0, len(result.Items))
+	for _, item := range result.Items {
+		// Source IDs become model-visible image asset IDs in this response. Do
+		// not normalize a persisted or future importer-provided value: a padded
+		// token must not be reinterpreted as a different managed asset.
+		if item.Status != knowledge.ItemStatusImported || !knowledge.IsSafeImageAssetID(item.SourceID) {
+			continue
+		}
+		assetID := item.SourceID
+		base := "/api/v1/knowledge/images/" + url.PathEscape(assetID)
+		assetIDs = append(assetIDs, assetID)
+		media = append(media, &knowledge.SearchResultMedia{
+			AssetID:      assetID,
+			ThumbnailURL: base + "/thumbnail",
+			PreviewURL:   base + "/preview",
+			OriginalURL:  base,
+			Alt:          title,
+			Caption:      title,
+		})
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":   "ok",
-		"imported": result.ImportedFiles,
-		"title":    title,
+		"status":     result.Status,
+		"imported":   result.ImportedFiles,
+		"title":      title,
+		"batch_id":   result.BatchID,
+		"source_ids": assetIDs,
+		"asset_ids":  assetIDs,
+		"media":      media,
+		"result":     result,
 	})
 }
 
@@ -2683,6 +2991,22 @@ func (s *HTTPServer) canReadKnowledgeSourceID(ctx context.Context, store *knowle
 	}
 	source, err := store.GetSource(ctx, sourceID)
 	if err != nil {
+		return false
+	}
+	return s.canReadSource(ctx, source, p)
+}
+
+// canReadKnowledgeImageSourceID is for the legacy source-ID image aliases.
+// Unlike the canonical /images/{assetId} endpoints, an alias identifies a
+// standalone image source only; document-embedded assets must use their
+// explicit opaque asset ID. This prevents a managed cache directory named
+// after an otherwise unrelated source from becoming an image endpoint.
+func (s *HTTPServer) canReadKnowledgeImageSourceID(ctx context.Context, store *knowledge.SQLiteStore, sourceID string, p agentservice.Principal) bool {
+	if store == nil {
+		return false
+	}
+	source, err := store.GetSource(ctx, sourceID)
+	if err != nil || source.Kind != knowledge.SourceKindImage {
 		return false
 	}
 	return s.canReadSource(ctx, source, p)

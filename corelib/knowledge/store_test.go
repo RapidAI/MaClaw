@@ -255,6 +255,9 @@ func TestSQLiteStoreImportDirectory(t *testing.T) {
 	if doctor.Status != "warning" || doctor.Score <= 0 || doctor.Stats.Sources != stats.Sources || !hasDoctorFinding(doctor, "unsupported_file_types") || !hasDoctorFinding(doctor, "duplicate_files") {
 		t.Fatalf("unexpected doctor result: %#v", doctor)
 	}
+	if finding, ok := doctorFinding(doctor, "unsupported_file_types"); !ok || !strings.Contains(finding.Action, "DOC/DOCX") || !strings.Contains(finding.Action, "PPT/PPTX") || !strings.Contains(finding.Action, "XLS/XLSX") {
+		t.Fatalf("unsupported file guidance must list the six Office formats: %#v", finding)
+	}
 
 	results, err := store.Search(ctx, SearchOptions{Query: "external brain", ProjectPath: "D:/project", Limit: 5})
 	if err != nil {
@@ -418,6 +421,47 @@ func TestSQLiteStoreImportDirectory(t *testing.T) {
 	}
 	if len(staleDirectoryResults) != 0 {
 		t.Fatalf("stale directory content leaked into search: %#v", staleDirectoryResults)
+	}
+}
+
+func TestListNodePreviewsBySourceBoundsPayloadAndOmitsMetadata(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	longTitle := strings.Repeat("T", maxSourceNodePreviewTitle+1)
+	longText := strings.Repeat("文", maxSourceNodePreviewRunes+1)
+	if err := store.SaveSource(ctx, Source{ID: "preview-source", Kind: SourceKindText, URI: "memory://preview-source", Title: "Preview source", ContentHash: "preview-hash", Status: StatusParsed}); err != nil {
+		t.Fatalf("SaveSource: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO document_nodes
+		(id, source_id, parent_id, type, title, text, level, page, sheet_name, row_range, col_range, xpath, offset, metadata_json, token_count)
+		VALUES (?, ?, '', ?, ?, ?, 0, ?, ?, '', '', '', ?, ?, 0)`,
+		"preview-node", "preview-source", "section", longTitle, longText, 2, "Summary", 4,
+		`{"extractor":"officeread_structured_markdown","secret":"must-not-cross-preview-boundary"}`,
+	); err != nil {
+		t.Fatalf("insert preview node: %v", err)
+	}
+
+	previews, err := store.ListNodePreviewsBySource(ctx, "preview-source", maxSourceNodePreviewCount+1)
+	if err != nil {
+		t.Fatalf("ListNodePreviewsBySource: %v", err)
+	}
+	if len(previews) != 1 {
+		t.Fatalf("preview count = %d, want 1", len(previews))
+	}
+	preview := previews[0]
+	if preview.ID != "preview-node" || preview.Page != 2 || preview.SheetName != "Summary" || preview.Offset != 4 || preview.Extractor != "officeread_structured_markdown" {
+		t.Fatalf("unexpected preview metadata: %#v", preview)
+	}
+	if !preview.Truncated || len([]rune(preview.Title)) > maxSourceNodePreviewTitle+3 || len([]rune(preview.Text)) > maxSourceNodePreviewRunes+3 {
+		t.Fatalf("preview was not bounded: title=%d text=%d preview=%#v", len([]rune(preview.Title)), len([]rune(preview.Text)), preview)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", preview), "must-not-cross-preview-boundary") {
+		t.Fatalf("arbitrary node metadata leaked into preview: %#v", preview)
 	}
 }
 
@@ -693,6 +737,9 @@ func TestImportProgressEmitsLastItemReasonAndFailedItems(t *testing.T) {
 	if res.SkippedFiles < 1 {
 		t.Fatalf("expected at least one skipped file, got %#v", res)
 	}
+	// Import progress continues through asynchronous post-work. Wait before
+	// inspecting callback-owned state so the test models the public lifecycle.
+	store.WaitBackground()
 
 	var sawSkippedReason bool
 	var sawImported bool

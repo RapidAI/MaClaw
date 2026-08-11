@@ -16,10 +16,14 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (a *App) hubClient() *RemoteHubClient {
-	if a == nil || a.remoteSessions == nil {
+	if a == nil {
 		return nil
 	}
-	return a.remoteSessions.GetHubClient()
+	sessions := a.remoteSessionManagerIfReady()
+	if sessions == nil {
+		return nil
+	}
+	return sessions.GetHubClient()
 }
 
 func (a *App) ensureHubClient() *RemoteHubClient {
@@ -27,15 +31,16 @@ func (a *App) ensureHubClient() *RemoteHubClient {
 		return nil
 	}
 	a.ensureRemoteInfra()
-	if a.remoteSessions == nil {
+	sessions := a.remoteSessionManagerIfReady()
+	if sessions == nil {
 		return nil
 	}
-	if client := a.remoteSessions.GetHubClient(); client != nil {
+	if client := sessions.GetHubClient(); client != nil {
 		return client
 	}
 	log.Printf("[AI assistant] hubClient missing; preparing local/degraded Hub client")
 	a.prepareHubClientSync()
-	return a.remoteSessions.GetHubClient()
+	return sessions.GetHubClient()
 }
 
 // awaitHubClient waits for the Hub client to become available (up to timeout).

@@ -45,11 +45,23 @@ func buildMediaAttachment(mediaType string, mediaData []byte, mediaName, mimeTyp
 // "qq", "tg") and the namePrefix is used for the file name (e.g. "wx_").
 // Voice media is automatically converted to WAV before saving.
 func saveMediaToTempDir(subDir, namePrefix, userID, mediaType string, mediaData []byte, mediaName string) (string, error) {
+	return saveMediaToTempDirForScope(subDir, namePrefix, userID, mediaType, mediaData, mediaName, "")
+}
+
+// saveMediaToTempDirForScope persists inbound media under a caller-owned
+// scope. Profile-bound Lansenger bots pass their stable profile ID so files
+// from two bots receiving the same user/name cannot co-locate in the shared
+// gateway temp directory. An empty scope preserves the historical layout for
+// every other transport.
+func saveMediaToTempDirForScope(subDir, namePrefix, userID, mediaType string, mediaData []byte, mediaName, scope string) (string, error) {
 	// Convert voice to WAV for unified ASR processing.
 	if normalizeIMMediaKind(mediaType).IsVoice() {
 		mediaData, mediaName, _ = convertVoiceToWAV(mediaData, mediaName)
 	}
 	dir := filepath.Join(corelib.MaclawBaseDir(), "temp", subDir)
+	if scope = strings.TrimSpace(scope); scope != "" {
+		dir = filepath.Join(dir, safeFileToken(scope))
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -66,7 +78,10 @@ func saveMediaToTempDir(subDir, namePrefix, userID, mediaType string, mediaData 
 			name = namePrefix + userID + "_" + time.Now().Format("20060102_150405.000") + ext
 		}
 	}
-	p := filepath.Join(dir, name)
+	// Remote IM clients commonly reuse display names (for example "image.jpg"
+	// or "report.pdf"). Never let a newer attachment overwrite a path that an
+	// active agent turn may still be reading.
+	p := uniqueLocalDeliveryPath(dir, name)
 	if err := os.WriteFile(p, mediaData, 0o644); err != nil {
 		return "", err
 	}
@@ -162,6 +177,10 @@ func guessMimeFromMedia(mediaType, fileName string) string {
 			return "application/vnd.ms-excel"
 		case ".xlsx":
 			return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		case ".ppt":
+			return "application/vnd.ms-powerpoint"
+		case ".pptx":
+			return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 		case ".png":
 			return "image/png"
 		case ".jpg", ".jpeg":

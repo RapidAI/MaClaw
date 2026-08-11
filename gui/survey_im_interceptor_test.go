@@ -3,8 +3,28 @@ package main
 import (
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 )
+
+func TestLansengerProfileBotDoesNotUseUnscopedSurveyHubProtocol(t *testing.T) {
+	legacy := newLansengerGatewayManager(nil)
+	if !legacy.supportsSurveyInterception() {
+		t.Fatal("legacy singleton should retain survey support")
+	}
+
+	profile := newLansengerGatewayManagerForProfile(nil, corelib.LansengerBotProfile{ID: "support"})
+	if profile.supportsSurveyInterception() {
+		t.Fatal("profile bot must not use the unscoped survey Hub protocol")
+	}
+	msg := lansenger.IncomingMessage{ChatType: "group", GroupID: "g1", FromUserID: "u1", Text: "/survey abc"}
+	if profile.surveyCandidateBypassesMention(msg) {
+		t.Fatal("profile bot must not bypass @mention for survey")
+	}
+	if profile.tryHandleSurveyMessage(msg) {
+		t.Fatal("profile bot must not claim survey traffic")
+	}
+}
 
 func TestStripLansengerBotMentions(t *testing.T) {
 	msg := lansenger.IncomingMessage{

@@ -32,6 +32,14 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 }
 
 func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) (result *IMAgentResponse) {
+	bindingScope, bindingErr := prepareAssistantBindingTurn(msg)
+	if bindingScope != nil {
+		// Continue the entire queued turn with its validated, immutable binding
+		// snapshot. Besides tool policy, the binding also contributes paths and
+		// initial instructions to the system prompt, so retaining the transport
+		// pointer here could make prompt behavior diverge from the cache key.
+		msg.AssistantBinding = cloneAssistantBinding(&bindingScope.binding)
+	}
 	msgReceivedAt := time.Now()
 	requestID := imRequestID(msg)
 	defer func() {
@@ -44,6 +52,16 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	lifecycle := h.beginIMMessageLifecycle(msg, &result)
 	defer lifecycle.Cleanup()
 	trimmed := lifecycle.Trimmed
+	if bindingErr != "" {
+		return finalizeIMEntryHostResponse(&IMAgentResponse{Text: bindingErr}, requestID, msg.UserID)
+	}
+	// A profile queue can be stopped while a turn is waiting to enter the IM
+	// pipeline. Check before command handling, audit, memory warmup or any
+	// session mutation so a canceled turn cannot produce a late reply after the
+	// bot was removed or reconfigured.
+	if err := contextErr(msg.CancelCtx); err != nil {
+		return &IMAgentResponse{Error: err.Error()}
+	}
 
 	// Notify goal continuation engine that a user message arrived.
 	// This cancels any pending continuation (user takes priority) and resets
@@ -170,6 +188,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return serialization.Response
 	}
 	defer serialization.Unlock()
+	clearAssistantBinding := activateAssistantBindingForTurn(msg.UserID, bindingScope)
+	defer clearAssistantBinding()
 	entriesBeforeClear = serialization.EntriesBeforeClear
 	unfinishedSlot = serialization.UnfinishedSlot
 	decision = serialization.Decision
@@ -212,8 +232,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	pendingUserReplyContext := entryContext.PendingUserReplyContext
 	capabilityGapContext := entryContext.CapabilityGapContext
 	clearUIAfterContextSwitch = clearUIAfterContextSwitch || entryContext.ClearUIAfterContextSwitch
-
-	return h.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+	cached, cacheKey, finishCacheFlight := h.answerCacheLookup(msg, entryContext, bindingScope)
+	if cached != nil {
+		return cached
+	}
+	if finishCacheFlight != nil {
+		defer finishCacheFlight()
+	}
+	result = h.executePreparedIMEntry(preparedIMEntryExecutionOptions{
 		Message:                   msg,
 		Trimmed:                   trimmed,
 		ProvidedLoopContext:       providedLoopCtx,
@@ -236,6 +262,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		OnNewRound:                onNewRound,
 		OnStreamDone:              onStreamDone,
 	})
+	h.storeAnswerCacheResult(msg, cacheKey, bindingScope, result)
+	return result
 }
 
 // finalizeIMEntryHostResponse fills request/session routing fields for short-circuit

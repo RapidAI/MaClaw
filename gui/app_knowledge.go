@@ -25,7 +25,9 @@ import (
 	"golang.org/x/crypto/scrypt"
 
 	corelib "github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/enterpriseknowledge"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
@@ -362,9 +364,19 @@ func (a *App) openKnowledgeStoreWithRetry(ctx context.Context) (*knowledge.SQLit
 		if err != nil {
 			return nil, err
 		}
+		// Image nodes are useful only when their assets can be persisted and later
+		// rendered by the agent UI. Configure this for every store instance, not
+		// only for the callers that happen to import images.
+		assets, err := knowledge.NewImageAssetManager(a.GetDataDir())
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+		store.SetImageAssetManager(assets)
 		if distiller := a.buildKnowledgeCardDistiller(); distiller != nil {
 			store.SetCardDistiller(distiller)
 		}
+		a.configureKnowledgeImageDescriber(store)
 		// Attach the app embedding runtime when available so Search() can hybrid
 		// FTS + vector (auto-recall embedding fallback). Without this, stores opened
 		// after activateEmbedderAsync never receive an embedder.
@@ -523,7 +535,7 @@ func (a *App) SelectKnowledgeFiles() []string {
 	selections, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select Knowledge Documents",
 		Filters: []runtime.FileFilter{
-			{DisplayName: "Documents (*.docx, *.pdf, *.pptx, *.xlsx, *.md, *.txt, *.doc, *.xls)", Pattern: "*.docx;*.pdf;*.pptx;*.xlsx;*.md;*.txt;*.doc;*.xls"},
+			{DisplayName: "Documents (*.docx, *.pdf, *.ppt, *.pptx, *.xlsx, *.csv, *.md, *.txt, *.doc, *.xls)", Pattern: "*.docx;*.pdf;*.ppt;*.pptx;*.xlsx;*.csv;*.md;*.txt;*.doc;*.xls"},
 		},
 	})
 	if err != nil {
@@ -2679,7 +2691,37 @@ func (a *App) KnowledgeSearch(opts knowledge.SearchOptions) ([]knowledge.SearchR
 	}
 	defer store.Close()
 	opts = a.normalizeKnowledgeSearchOptions(opts)
-	return store.Search(a.knowledgeContext(), opts)
+	results, personalErr := store.Search(a.knowledgeContext(), opts)
+	// Merge enterprise digital assets (active libraries only) into UI search.
+	// Still attempt enterprise when personal search fails so Hub cache remains usable.
+	if q := strings.TrimSpace(opts.Query); q != "" {
+		if ent, entErr := a.EnterpriseKnowledgeSearch(q, ""); entErr == nil && len(ent) > 0 {
+			limit := opts.Limit
+			if limit <= 0 {
+				limit = 20
+			}
+			results = enterpriseknowledge.MergeSearchResults(results, ent, limit, true)
+			return results, nil
+		}
+	}
+	if personalErr != nil {
+		return nil, personalErr
+	}
+	return results, nil
+}
+
+// KnowledgeSearchImages searches only locally imported image nodes. Enterprise
+// digital assets currently synchronize textual evidence only, so their search
+// results cannot be rendered as authenticated local image assets and are not
+// mixed into this display-capable route.
+func (a *App) KnowledgeSearchImages(opts knowledge.ImageSearchOptions) ([]knowledge.SearchResult, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	opts.SearchOptions = a.normalizeKnowledgeSearchOptions(opts.SearchOptions)
+	return store.SearchImages(a.knowledgeContext(), opts)
 }
 
 func (a *App) KnowledgeSearchStructured(opts knowledge.StructuredSearchOptions) ([]knowledge.SearchResult, error) {
@@ -2863,7 +2905,7 @@ func (a *App) KnowledgeRefreshSource(id string) (knowledge.Source, error) {
 		return knowledge.Source{}, err
 	}
 	defer store.Close()
-	return store.RefreshSource(a.knowledgeContext(), id)
+	return store.RefreshSourceWithOfficeReadConfig(a.knowledgeContext(), id, guiOfficeReadConfigPtr(a.peekConfigOrEmpty()))
 }
 
 func (a *App) KnowledgePreviewSourceRefresh(id string) (knowledge.SourceChangePreview, error) {
@@ -2872,7 +2914,7 @@ func (a *App) KnowledgePreviewSourceRefresh(id string) (knowledge.SourceChangePr
 		return knowledge.SourceChangePreview{}, err
 	}
 	defer store.Close()
-	return store.PreviewSourceRefresh(a.knowledgeContext(), id)
+	return store.PreviewSourceRefreshWithOfficeReadConfig(a.knowledgeContext(), id, guiOfficeReadConfigPtr(a.peekConfigOrEmpty()))
 }
 
 func (a *App) KnowledgePreviewSourcesRefresh(ids []string) (knowledge.SourceChangePreviewResult, error) {
@@ -2881,7 +2923,7 @@ func (a *App) KnowledgePreviewSourcesRefresh(ids []string) (knowledge.SourceChan
 		return knowledge.SourceChangePreviewResult{}, err
 	}
 	defer store.Close()
-	return store.PreviewSourcesRefresh(a.knowledgeContext(), ids), nil
+	return store.PreviewSourcesRefreshWithOfficeReadConfig(a.knowledgeContext(), ids, guiOfficeReadConfigPtr(a.peekConfigOrEmpty())), nil
 }
 
 func (a *App) KnowledgePreviewSourcesRefreshByFilter(opts knowledge.ListSourcesOptions) (knowledge.SourceChangePreviewResult, error) {
@@ -2893,7 +2935,7 @@ func (a *App) KnowledgePreviewSourcesRefreshByFilter(opts knowledge.ListSourcesO
 	if opts.Limit <= 0 {
 		opts.Limit = 100
 	}
-	return store.PreviewSourcesRefreshByFilter(a.knowledgeContext(), opts)
+	return store.PreviewSourcesRefreshByFilterWithOfficeReadConfig(a.knowledgeContext(), opts, guiOfficeReadConfigPtr(a.peekConfigOrEmpty()))
 }
 
 func (a *App) KnowledgeRefreshChangedSources(ids []string) (knowledge.ChangedSourceRefreshResult, error) {
@@ -2902,7 +2944,7 @@ func (a *App) KnowledgeRefreshChangedSources(ids []string) (knowledge.ChangedSou
 		return knowledge.ChangedSourceRefreshResult{}, err
 	}
 	defer store.Close()
-	return store.RefreshChangedSources(a.knowledgeContext(), ids), nil
+	return store.RefreshChangedSourcesWithOfficeReadConfig(a.knowledgeContext(), ids, guiOfficeReadConfigPtr(a.peekConfigOrEmpty())), nil
 }
 
 func (a *App) KnowledgeRefreshChangedSourcesByFilter(opts knowledge.ListSourcesOptions) (knowledge.ChangedSourceRefreshResult, error) {
@@ -2914,7 +2956,7 @@ func (a *App) KnowledgeRefreshChangedSourcesByFilter(opts knowledge.ListSourcesO
 	if opts.Limit <= 0 {
 		opts.Limit = 100
 	}
-	return store.RefreshChangedSourcesByFilter(a.knowledgeContext(), opts)
+	return store.RefreshChangedSourcesByFilterWithOfficeReadConfig(a.knowledgeContext(), opts, guiOfficeReadConfigPtr(a.peekConfigOrEmpty()))
 }
 
 func (a *App) KnowledgeRefreshSources(ids []string) (knowledge.SourceRefreshResult, error) {
@@ -2923,7 +2965,7 @@ func (a *App) KnowledgeRefreshSources(ids []string) (knowledge.SourceRefreshResu
 		return knowledge.SourceRefreshResult{}, err
 	}
 	defer store.Close()
-	return store.RefreshSources(a.knowledgeContext(), ids), nil
+	return store.RefreshSourcesWithOfficeReadConfig(a.knowledgeContext(), ids, guiOfficeReadConfigPtr(a.peekConfigOrEmpty())), nil
 }
 
 func (a *App) KnowledgeRefreshSourcesByFilter(opts knowledge.ListSourcesOptions) (knowledge.SourceRefreshResult, error) {
@@ -2935,7 +2977,19 @@ func (a *App) KnowledgeRefreshSourcesByFilter(opts knowledge.ListSourcesOptions)
 	if opts.Limit <= 0 {
 		opts.Limit = 100
 	}
-	return store.RefreshSourcesByFilter(a.knowledgeContext(), opts)
+	return store.RefreshSourcesByFilterWithOfficeReadConfig(a.knowledgeContext(), opts, guiOfficeReadConfigPtr(a.peekConfigOrEmpty()))
+}
+
+// guiOfficeReadConfigPtr snapshots the live GUI policy for a single knowledge
+// operation. A copy prevents later settings changes from mutating a refresh
+// that is already parsing its private document snapshot.
+func guiOfficeReadConfigPtr(cfg corelib.AppConfig) *agent.OfficeReadConfig {
+	return agent.CloneOfficeReadConfigPtr(&agent.OfficeReadConfig{
+		Engine:       cfg.OfficeReadEngine,
+		Formats:      cfg.OfficeReadFormats,
+		Fallback:     cfg.OfficeReadFallback,
+		EmitMarkdown: cfg.OfficeReadEmitMarkdown,
+	})
 }
 
 func (a *App) KnowledgeRebuildSourceDerived(sourceID string, distillMode string) (knowledge.Source, error) {
@@ -3079,6 +3133,18 @@ func (a *App) KnowledgeListNodesBySource(sourceID string, limit int) ([]knowledg
 	}
 	defer store.Close()
 	return store.ListNodesBySource(a.knowledgeContext(), sourceID, limit)
+}
+
+// KnowledgePreviewNodesBySource returns bounded display data for the GUI
+// source inspector. It intentionally does not reopen a source file or expose
+// full node metadata and text through the Wails bridge.
+func (a *App) KnowledgePreviewNodesBySource(sourceID string, limit int) ([]knowledge.DocumentNodePreview, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.ListNodePreviewsBySource(a.knowledgeContext(), sourceID, limit)
 }
 
 func (a *App) KnowledgeListSourceVersions(sourceID string, limit int) ([]knowledge.SourceVersion, error) {
@@ -4130,73 +4196,91 @@ func (a *App) KnowledgeDeepCrawlCancel() error {
 	return nil
 }
 
-// KnowledgeGetImageAssetPaths returns the thumbnail (as base64 data URL for WebView display),
-// preview path, and original image path for a knowledge source.
-// Returns: {"thumb_data_url": "data:image/jpeg;base64,...", "preview": "path", "original": "path"}
-// Empty map if the source has no image assets.
-func (a *App) KnowledgeGetImageAssetPaths(sourceID string) map[string]string {
+// KnowledgeGetImageAssetPaths returns a display-safe thumbnail data URL only
+// for an image asset that is currently registered in the local knowledge
+// store. Opening the original remains a separate asset-ID-only operation via
+// KnowledgeOpenImageAsset, so no host file path crosses the WebView boundary.
+func (a *App) KnowledgeGetImageAssetPaths(assetID string) map[string]string {
 	result := map[string]string{}
-	if sourceID == "" {
+	if !knowledge.IsSafeImageAssetID(assetID) {
 		return result
 	}
-	// Security: reject path traversal attempts in sourceID.
-	if strings.ContainsAny(sourceID, `/\`) || strings.Contains(sourceID, "..") {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
 		return result
 	}
-	dataDir := a.GetDataDir()
-	baseDir := filepath.Join(dataDir, "knowledge_assets")
-	assetDir := filepath.Join(baseDir, sourceID)
-
-	// Double-check the resolved path is still within baseDir.
-	if !strings.HasPrefix(filepath.Clean(assetDir)+string(filepath.Separator), filepath.Clean(baseDir)+string(filepath.Separator)) {
+	defer store.Close()
+	if _, err := store.FindImageAssetSource(a.knowledgeContext(), assetID); err != nil {
 		return result
 	}
-
-	// Quick check: does the asset directory exist?
-	info, err := os.Stat(assetDir)
-	if err != nil || !info.IsDir() {
+	assets := store.ImageAssets()
+	if assets == nil {
 		return result
 	}
-
-	// Thumbnail: read file and return as base64 data URL (for WebView display).
-	thumbPath := filepath.Join(assetDir, "thumb_120.jpg")
-	if thumbData, err := os.ReadFile(thumbPath); err == nil && len(thumbData) > 0 {
+	// Keep the WebView boundary on the same managed-asset reader as agent
+	// markers and HTTP endpoints; never rebuild a thumbnail path from an ID.
+	if thumbData, err := knowledge.ReadKnowledgeImageThumbnail(assets.BaseDir(), assetID); err == nil {
 		result["thumb_data_url"] = "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(thumbData)
-	}
-	// Preview and original: return file paths (for opening with system viewer).
-	previewPath := filepath.Join(assetDir, "preview_480.jpg")
-	if _, err := os.Stat(previewPath); err == nil {
-		result["preview"] = previewPath
-	}
-	// Find original (extension varies).
-	entries, err := os.ReadDir(assetDir)
-	if err == nil {
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), "original") {
-				result["original"] = filepath.Join(assetDir, entry.Name())
-				break
-			}
-		}
 	}
 	return result
 }
 
-// KnowledgeOpenImageFile opens an image file with the system default viewer.
-// Security: only allows opening files within the knowledge_assets directory.
+// KnowledgeOpenImageFile is retained only as a Wails bridge compatibility
+// shim. Presentation callers must use KnowledgeOpenImageAsset: accepting a
+// host path from a WebView or model response would weaken the opaque-ID asset
+// boundary, even when that path appears to be below knowledge_assets.
 func (a *App) KnowledgeOpenImageFile(path string) error {
-	if path == "" {
-		return fmt.Errorf("path is required")
+	_ = path
+	return fmt.Errorf("opening knowledge images by path is not supported; use an image asset ID")
+}
+
+// KnowledgeOpenImageAsset opens an imported image by its opaque asset ID.
+// Unlike KnowledgeOpenImageFile, this is safe to call from agent-rendered
+// content because callers never supply a filesystem path.
+func (a *App) KnowledgeOpenImageAsset(assetID string) error {
+	if !knowledge.IsSafeImageAssetID(assetID) {
+		return fmt.Errorf("invalid image asset ID")
 	}
-	// Security: validate the path is within knowledge_assets.
-	dataDir := a.GetDataDir()
-	allowedBase := filepath.Clean(filepath.Join(dataDir, "knowledge_assets"))
-	cleanPath := filepath.Clean(path)
-	if !strings.HasPrefix(cleanPath+string(filepath.Separator), allowedBase+string(filepath.Separator)) &&
-		!strings.HasPrefix(cleanPath, allowedBase+string(filepath.Separator)) {
-		return fmt.Errorf("access denied: path must be within knowledge assets directory")
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return err
 	}
-	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("file not found: %s", path)
+	defer store.Close()
+	if _, err := store.FindImageAssetSource(a.knowledgeContext(), assetID); err != nil {
+		return fmt.Errorf("image asset not found")
+	}
+	assets := store.ImageAssets()
+	if assets == nil {
+		return fmt.Errorf("image assets not configured")
+	}
+	path, err := knowledgeImageAssetOriginalPathFromManager(assets, assetID)
+	if err != nil {
+		return err
 	}
 	return a.OpenFileOrShowInFolder(path)
+}
+
+// knowledgeImageAssetOriginalPath resolves an imported image's original file
+// from its opaque asset ID. It is deliberately path-free at the caller
+// boundary, so agent-rendered content cannot select an arbitrary local file.
+func knowledgeImageAssetOriginalPath(dataDir, assetID string) (string, error) {
+	if !knowledge.IsSafeImageAssetID(assetID) {
+		return "", fmt.Errorf("invalid image asset ID")
+	}
+	assets, err := knowledge.NewImageAssetManager(dataDir)
+	if err != nil {
+		return "", err
+	}
+	return knowledgeImageAssetOriginalPathFromManager(assets, assetID)
+}
+
+func knowledgeImageAssetOriginalPathFromManager(assets *knowledge.ImageAssetManager, assetID string) (string, error) {
+	if assets == nil {
+		return "", fmt.Errorf("image assets not configured")
+	}
+	path, err := assets.OriginalImagePath(assetID)
+	if err != nil {
+		return "", fmt.Errorf("image original not found")
+	}
+	return path, nil
 }

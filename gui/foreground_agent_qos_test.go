@@ -118,7 +118,7 @@ func TestForegroundAgentStartCancelsActiveMemoryPipeline(t *testing.T) {
 		t.Fatalf("NewStoreWithMode: %v", err)
 	}
 	defer store.Stop()
-	app.memPipeline = memory.NewMaintenance(store, nil, nil).Pipeline()
+	app.setMemoryPipeline(memory.NewMaintenance(store, nil, nil).Pipeline())
 	cancelled := make(chan struct{})
 	app.memoryPipelineScheduleMu.Lock()
 	app.memoryPipelineScheduleSeq = 7

@@ -12,9 +12,10 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	excelread "github.com/RapidAI/CodeClaw/corelib/excel"
+	"github.com/RapidAI/CodeClaw/corelib/pdfinspector"
 	"github.com/RapidAI/CodeClaw/corelib/pptx"
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
@@ -25,7 +26,122 @@ const maxNodeTextRunes = 1_000_000
 const targetTextNodeRunes = 6000
 const targetSheetNodeRunes = 8000
 
+const maxKnowledgePDFPages = pdfinspector.MaxPages
+
 func ParseDocumentNodes(source Source, filePath, kind string) ([]DocumentNode, error) {
+	return parseDocumentNodes(source, filePath, kind, nil)
+}
+
+// knowledgeDocumentInput is a private, preflighted parser pathname. Office
+// parsers reopen paths internally, so an import that needs both text and
+// legacy embedded images must retain this input until both phases finish.
+// It must never be persisted in Source, node metadata, or diagnostics.
+type knowledgeDocumentInput struct {
+	path    string
+	cleanup func()
+}
+
+func (in *knowledgeDocumentInput) close() {
+	if in == nil || in.cleanup == nil {
+		return
+	}
+	cleanup := in.cleanup
+	in.cleanup = nil
+	cleanup()
+}
+
+// prepareKnowledgeDocumentInput applies the parser preflight and, for Office
+// formats, creates the private snapshot that every path-based parser must use.
+// The caller owns close and may deliberately keep it through the optional
+// legacy image phase of one import/refresh operation.
+func prepareKnowledgeDocumentInput(filePath, kind string) (*knowledgeDocumentInput, error) {
+	if isKnowledgeOfficeKind(kind) {
+		snapshot, cleanup, err := agent.SnapshotOfficeReadInput(filePath, kind)
+		if err != nil {
+			return nil, sanitizeOfficeReadKnowledgeError(err)
+		}
+		return &knowledgeDocumentInput{path: snapshot, cleanup: cleanup}, nil
+	}
+	if kind == SourceKindCSV || kind == SourceKindPDF {
+		// CSV and PDF are not Office containers, but their parser pipelines
+		// reopen a pathname. PDF additionally runs native extraction followed by
+		// classification, rendering, and OCR. Bind every phase to one private,
+		// bounded copy so a refresh cannot mix text from version A with OCR or
+		// image evidence from a replacement at the same user-controlled path.
+		var snapshot string
+		var cleanup func()
+		var err error
+		if kind == SourceKindCSV {
+			snapshot, cleanup, err = agent.SnapshotCSVInput(filePath)
+		} else {
+			snapshot, cleanup, err = agent.SnapshotBoundedDocumentInput(filePath, "."+kind)
+		}
+		if err != nil {
+			return nil, sanitizeOfficeReadKnowledgeError(err)
+		}
+		if err := preflightKnowledgeParserInput(snapshot, kind); err != nil {
+			cleanup()
+			return nil, err
+		}
+		return &knowledgeDocumentInput{path: snapshot, cleanup: cleanup}, nil
+	}
+	if kind == SourceKindMarkdown || kind == SourceKindText {
+		// Plain-text labels are not a security property. A ZIP/OLE Office
+		// container can be renamed to .md/.txt, and direct os.ReadFile below
+		// would otherwise persist its binary payload outside the shared document
+		// boundary. Probe the owned copy through ExtractOfficeText first: normal
+		// text retains its existing parser, while a present container gets the
+		// same bounded signature/preflight decision as every Office entry point.
+		snapshot, cleanup, err := agent.SnapshotBoundedDocumentInput(filePath, "."+kind)
+		if err != nil {
+			return nil, sanitizeOfficeReadKnowledgeError(err)
+		}
+		_, resolvedFormat, err := agent.ExtractOfficeText(snapshot)
+		if err != nil {
+			cleanup()
+			return nil, sanitizeOfficeReadKnowledgeError(err)
+		}
+		if !knowledgePlainTextFormatMatchesKind(kind, resolvedFormat) {
+			cleanup()
+			return nil, agent.ErrOfficeReadFormatMismatch
+		}
+		return &knowledgeDocumentInput{path: snapshot, cleanup: cleanup}, nil
+	}
+	if err := preflightKnowledgeParserInput(filePath, kind); err != nil {
+		return nil, err
+	}
+	return &knowledgeDocumentInput{path: filePath}, nil
+}
+
+// knowledgePlainTextFormatMatchesKind prevents a valid Office/PDF container
+// renamed as text from being successfully signature-routed and then reopened
+// by the Markdown/plain-text reader. The source kind remains extension-led;
+// only its own harmless aliases may pass this compatibility check.
+func knowledgePlainTextFormatMatchesKind(kind, format string) bool {
+	format = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".")
+	switch kind {
+	case SourceKindMarkdown:
+		return format == "md" || format == "markdown"
+	case SourceKindText:
+		return format == "txt" || format == "text"
+	default:
+		return false
+	}
+}
+
+func parseDocumentNodes(source Source, filePath, kind string, officeReadExtraction *officeReadRichExtraction) ([]DocumentNode, error) {
+	input, err := prepareKnowledgeDocumentInput(filePath, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer input.close()
+	return parseDocumentNodesFromInput(source, input.path, kind, officeReadExtraction)
+}
+
+// parseDocumentNodesFromInput assumes filePath is already preflighted. It is
+// kept separate from parseDocumentNodes so import-only callers can retain the
+// same private Office snapshot for the subsequent legacy image parser.
+func parseDocumentNodesFromInput(source Source, filePath, kind string, officeReadExtraction *officeReadRichExtraction) ([]DocumentNode, error) {
 	var nodes []DocumentNode
 	var err error
 	switch kind {
@@ -42,17 +158,25 @@ func ParseDocumentNodes(source Source, filePath, kind string) ([]DocumentNode, e
 		}
 		nodes = parsePlainTextNodes(source, normalizeKnowledgeText(string(data)), "text")
 	case SourceKindDOCX:
-		nodes, err = parseDOCXNodes(source, filePath)
+		nodes, err = parseOfficeReadOrLegacyNodes(source, filePath, kind, parseDOCXNodes, officeReadExtraction)
 	case SourceKindPDF:
 		nodes, err = parsePDFNodes(source, filePath)
 	case SourceKindPPTX:
-		nodes, err = parsePPTXNodes(source, filePath)
-	case SourceKindXLSX, SourceKindCSV:
+		nodes, err = parseOfficeReadOrLegacyNodes(source, filePath, kind, parsePPTXNodes, officeReadExtraction)
+	case SourceKindPPT:
+		nodes, err = parseOfficeReadOrLegacyNodes(source, filePath, kind, func(Source, string) ([]DocumentNode, error) {
+			return nil, fmt.Errorf("legacy PowerPoint parser is unavailable")
+		}, officeReadExtraction)
+	case SourceKindXLSX:
+		nodes, err = parseOfficeReadOrLegacyNodes(source, filePath, kind, func(source Source, filePath string) ([]DocumentNode, error) {
+			return parseSpreadsheetNodes(source, filePath, kind)
+		}, officeReadExtraction)
+	case SourceKindCSV:
 		nodes, err = parseSpreadsheetNodes(source, filePath, kind)
 	case SourceKindDOC:
-		nodes, err = parseDOCFallbackNodes(source, filePath)
+		nodes, err = parseOfficeReadOrLegacyNodes(source, filePath, kind, parseDOCFallbackNodes, officeReadExtraction)
 	case SourceKindXLS:
-		nodes, err = parseXLSTextFallback(source, filePath)
+		nodes, err = parseOfficeReadOrLegacyNodes(source, filePath, kind, parseXLSTextFallback, officeReadExtraction)
 	case SourceKindImage:
 		// Standalone images have no text nodes from parsing.
 		// Image processing (asset save + description) is handled by
@@ -65,6 +189,90 @@ func ParseDocumentNodes(source Source, filePath, kind string) ([]DocumentNode, e
 		return nil, err
 	}
 	return annotateMultilingualNodeMetadata(nodes), nil
+}
+
+func isKnowledgeOfficeKind(kind string) bool {
+	switch kind {
+	case SourceKindDOC, SourceKindDOCX, SourceKindXLS, SourceKindXLSX, SourceKindPPT, SourceKindPPTX:
+		return true
+	default:
+		return false
+	}
+}
+
+// isSnapshotBoundKnowledgeKind identifies pathname-based formats whose
+// parsers perform multiple reads during one import. Every such read must use
+// the same owned snapshot so scan, text-node, and structured-index identities
+// cannot diverge if the user-controlled source path is replaced.
+func isSnapshotBoundKnowledgeKind(kind string) bool {
+	return isKnowledgeOfficeKind(kind) || kind == SourceKindCSV || kind == SourceKindPDF ||
+		kind == SourceKindMarkdown || kind == SourceKindText
+}
+
+// preflightKnowledgeParserInput keeps parser-heavy knowledge paths inside the
+// common 32 MiB boundary. CSV and PDF are size-only cases: they are not Office
+// containers, but their parsers retain the source in memory; PDF may also be
+// rasterized for OCR after native extraction fails.
+func preflightKnowledgeParserInput(filePath, kind string) error {
+	switch kind {
+	case SourceKindDOC, SourceKindDOCX, SourceKindXLS, SourceKindXLSX, SourceKindPPT, SourceKindPPTX:
+		if err := agent.PreflightOfficeReadInput(filePath, kind); err != nil {
+			return sanitizeOfficeReadKnowledgeError(err)
+		}
+	case SourceKindCSV, SourceKindPDF:
+		info, err := os.Stat(filePath)
+		if err != nil || info.IsDir() {
+			return agent.ErrOfficeReadExtractionFailed
+		}
+		if info.Size() > agent.MaxOfficeReadFileBytes {
+			return agent.ErrOfficeReadInputTooLarge
+		}
+	}
+	return nil
+}
+
+type legacyOfficeNodeParser func(Source, string) ([]DocumentNode, error)
+
+// parseOfficeReadOrLegacyNodes keeps legacy semantics authoritative until the
+// rich-consumption flag is explicitly enabled for a format. The generic
+// fallback is important: knowledge imports retain their current behavior even
+// if structured Markdown is unavailable for one document.
+func parseOfficeReadOrLegacyNodes(source Source, filePath, kind string, legacy legacyOfficeNodeParser, extraction *officeReadRichExtraction) ([]DocumentNode, error) {
+	nodes, err := parseOfficeReadNodesFromExtraction(source, filePath, kind, extraction)
+	if err == nil {
+		return nodes, nil
+	}
+	// A container rejected at the shared OfficeRead rich boundary is either
+	// unsafe/encrypted or has a reliable signature that conflicts with its
+	// extension-led source kind. Do not reopen either case through a legacy
+	// parser: the former bypasses preflight and the latter persists content
+	// under the wrong document type.
+	if agent.IsOfficeReadRichContentBlocked(err) {
+		return nil, sanitizeOfficeReadKnowledgeError(err)
+	}
+	if errors.Is(err, agent.ErrOfficeReadOutputTooLarge) {
+		// A rich Markdown heading storm is a knowledge persistence resource
+		// decision. Falling back to a legacy node parser would reopen the same
+		// document and can bypass the cap by creating a different unbounded node
+		// shape. Keep the import fail-closed just like the shared adapter's text
+		// output bound.
+		return nil, sanitizeOfficeReadKnowledgeError(err)
+	}
+	// Rich-content failure must not turn a previously-importable document into
+	// a failed import during staged rollout. The legacy parser processes the
+	// same untrusted Office bytes, so isolate its entire call rather than only
+	// the DOC/XLS libraries that currently expose a convenient open seam.
+	return safeLegacyOfficeNodeParse(source, filePath, legacy)
+}
+
+func safeLegacyOfficeNodeParse(source Source, filePath string, legacy legacyOfficeNodeParser) (nodes []DocumentNode, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			nodes = nil
+			err = fmt.Errorf("legacy Office parser panicked: %v", recovered)
+		}
+	}()
+	return legacy(source, filePath)
 }
 
 func IsUnsupportedParserError(err error) bool {
@@ -289,7 +497,6 @@ func parseDOCXNodes(source Source, filePath string) ([]DocumentNode, error) {
 		return nil, err
 	}
 	defer r.Close()
-	var documentXML []byte
 	for _, f := range r.File {
 		if f.Name != "word/document.xml" {
 			continue
@@ -298,31 +505,44 @@ func parseDOCXNodes(source Source, filePath string) ([]DocumentNode, error) {
 		if err != nil {
 			return nil, err
 		}
-		documentXML, err = io.ReadAll(rc)
-		_ = rc.Close()
+		paragraphs, err := docxParagraphsFromReader(rc)
+		closeErr := rc.Close()
 		if err != nil {
 			return nil, err
 		}
-		break
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if !hasReadableParagraph(paragraphs) {
+			return nil, fmt.Errorf("docx has no readable text")
+		}
+		return nodesFromParagraphs(source, paragraphs, "docx"), nil
 	}
-	if len(documentXML) == 0 {
-		return nil, fmt.Errorf("docx document.xml not found")
-	}
-	paragraphs, err := docxParagraphs(documentXML)
-	if err != nil {
-		return nil, err
-	}
-	text := trimNodeText(strings.Join(paragraphs, "\n"))
-	if strings.TrimSpace(text) == "" {
-		return nil, fmt.Errorf("docx has no readable text")
-	}
-	return nodesFromParagraphs(source, paragraphs, "docx"), nil
+	return nil, fmt.Errorf("docx document.xml not found")
 }
 
+func hasReadableParagraph(paragraphs []string) bool {
+	for _, paragraph := range paragraphs {
+		if strings.TrimSpace(paragraph) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// docxParagraphs is retained for focused parser tests and callers with an
+// in-memory part. Production DOCX parsing uses docxParagraphsFromReader so
+// document.xml is not duplicated as one large byte slice before tokenizing.
 func docxParagraphs(data []byte) ([]string, error) {
-	decoder := xml.NewDecoder(bytes.NewReader(data))
-	var paragraphs []string
+	return docxParagraphsFromReader(bytes.NewReader(data))
+}
+
+func docxParagraphsFromReader(reader io.Reader) ([]string, error) {
+	decoder := xml.NewDecoder(reader)
+	paragraphs := make([]string, 0)
 	var paragraph strings.Builder
+	paragraphRunes := 0
+	totalRunes := 0
 	inParagraph := false
 	for {
 		tok, err := decoder.Token()
@@ -340,23 +560,35 @@ func docxParagraphs(data []byte) ([]string, error) {
 					flushParagraph(&paragraphs, &paragraph)
 				}
 				inParagraph = true
+				paragraphRunes = 0
 			case "tab":
 				if inParagraph {
 					paragraph.WriteString("\t")
+					paragraphRunes++
+					totalRunes++
 				}
 			case "br", "cr":
 				if inParagraph {
 					paragraph.WriteString("\n")
+					paragraphRunes++
+					totalRunes++
 				}
 			}
 		case xml.EndElement:
 			if t.Name.Local == "p" && inParagraph {
 				flushParagraph(&paragraphs, &paragraph)
+				paragraphRunes = 0
 				inParagraph = false
 			}
 		case xml.CharData:
 			if inParagraph {
+				runeCount := len([]rune(string(t)))
+				if paragraphRunes+runeCount > maxNodeTextRunes || totalRunes+runeCount > agent.MaxOfficeReadTextRunes {
+					return nil, agent.ErrOfficeReadOutputTooLarge
+				}
 				paragraph.Write([]byte(t))
+				paragraphRunes += runeCount
+				totalRunes += runeCount
 			}
 		}
 	}
@@ -502,16 +734,29 @@ func pptxShapeText(shape pptx.Shape) string {
 }
 
 func parsePDFNodes(source Source, filePath string) ([]DocumentNode, error) {
+	return parsePDFNodesWith(source, filePath, gopdf2.GetSourcePDFPageCountFromBytes, gopdf2.ExtractAllPagesText)
+}
+
+// parsePDFNodesWith keeps the document-level parser boundaries testable and
+// panic-safe. Per-page extraction has its own isolation below; this covers the
+// initial page-tree probe and the all-pages compatibility fallback.
+func parsePDFNodesWith(source Source, filePath string, pageCount func([]byte) (int, error), extractAll func([]byte) (string, error)) (nodes []DocumentNode, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			nodes = nil
+			err = fmt.Errorf("parse PDF panicked: %v", recovered)
+		}
+	}()
 	pdfData, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
 	}
-	nodes := make([]DocumentNode, 0)
+	nodes = make([]DocumentNode, 0)
 	// Determine number of pages
-	numPages, err := gopdf2.GetSourcePDFPageCountFromBytes(pdfData)
+	numPages, err := pageCount(pdfData)
 	if err != nil {
 		// Fallback: try extracting all text as single page
-		allText, err2 := gopdf2.ExtractAllPagesText(pdfData)
+		allText, err2 := extractAll(pdfData)
 		if err2 != nil {
 			return nil, fmt.Errorf("pdf parse failed: %w (fallback: %v)", err, err2)
 		}
@@ -531,8 +776,13 @@ func parsePDFNodes(source Source, filePath string) ([]DocumentNode, error) {
 		})
 		return nodes, nil
 	}
+	if numPages > maxKnowledgePDFPages {
+		return nil, fmt.Errorf("PDF has too many pages (%d; maximum %d)", numPages, maxKnowledgePDFPages)
+	}
 
-	// Extract page text (parallel with panic-safe sequential fallback).
+	// Extract page text with the reader-ordering helper. It preserves word and
+	// line boundaries more faithfully than the low-level fragment API used by
+	// the inspector, which is essential for search and card generation.
 	pageTexts := extractPDFPageTexts(pdfData, numPages)
 
 	// Segment + node construction (order-preserving).
@@ -572,15 +822,23 @@ func parsePDFNodes(source Source, filePath string) ([]DocumentNode, error) {
 	return nodes, nil
 }
 
-// extractPDFPageTexts pulls text for each page. Multi-page PDFs use a worker
-// pool; if any worker panics (non-thread-safe parser edge cases), the whole
-// extraction is retried sequentially.
+// extractPDFPageTexts pulls text for each page. Pages are independent and are
+// extracted concurrently, while the output slice keeps their original order.
 func extractPDFPageTexts(pdfData []byte, numPages int) []string {
+	return extractPDFPageTextsWith(pdfData, numPages, gopdf2.ExtractPageText)
+}
+
+// extractPDFPageTextsWith keeps native PDF text extraction isolated per page.
+// GoPDF2 handles most malformed PDFs as errors, but a malformed content stream
+// must not be able to unwind an import worker. A failed page is left empty; the
+// PDF inspector will subsequently route that page to the OCR fallback when it
+// finds recoverable page content.
+func extractPDFPageTextsWith(pdfData []byte, numPages int, extract func([]byte, int) (string, error)) []string {
 	if numPages <= 0 {
 		return nil
 	}
 	if numPages == 1 {
-		text, err := gopdf2.ExtractPageText(pdfData, 0)
+		text, err := safeExtractPDFPageText(extract, pdfData, 0)
 		if err != nil {
 			return []string{""}
 		}
@@ -600,7 +858,6 @@ func extractPDFPageTexts(pdfData []byte, numPages int) []string {
 	}
 
 	var wg sync.WaitGroup
-	var panicked atomic.Bool
 	pageCh := make(chan int, numPages)
 	for p := 0; p < numPages; p++ {
 		pageCh <- p
@@ -610,16 +867,8 @@ func extractPDFPageTexts(pdfData []byte, numPages int) []string {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() {
-				if rec := recover(); rec != nil {
-					panicked.Store(true)
-				}
-			}()
 			for i := range pageCh {
-				if panicked.Load() {
-					return
-				}
-				text, err := gopdf2.ExtractPageText(pdfData, i)
+				text, err := safeExtractPDFPageText(extract, pdfData, i)
 				if err != nil {
 					continue
 				}
@@ -628,20 +877,17 @@ func extractPDFPageTexts(pdfData []byte, numPages int) []string {
 		}()
 	}
 	wg.Wait()
+	return pageTexts
+}
 
-	if !panicked.Load() {
-		return pageTexts
-	}
-	// Sequential fallback after parallel panic.
-	out := make([]string, numPages)
-	for i := 0; i < numPages; i++ {
-		text, err := gopdf2.ExtractPageText(pdfData, i)
-		if err != nil {
-			continue
+func safeExtractPDFPageText(extract func([]byte, int) (string, error), pdfData []byte, pageIndex int) (text string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("PDF page %d text extraction panicked: %v", pageIndex+1, recovered)
+			text = ""
 		}
-		out[i] = strings.TrimSpace(trimNodeText(text))
-	}
-	return out
+	}()
+	return extract(pdfData, pageIndex)
 }
 
 // splitPDFPageIntoSegments splits a long PDF page text into smaller segments.
@@ -802,19 +1048,15 @@ func splitListIntoChunks(lines []string, targetRunes int) []string {
 }
 
 func parseSpreadsheetNodes(source Source, filePath string, kind string) ([]DocumentNode, error) {
-	sheets, err := excelread.ListSheets(filePath)
+	results, err := excelread.ReadAllSheets(filePath)
 	if err != nil {
 		return nil, err
 	}
-	if len(sheets) == 0 {
+	if len(results) == 0 {
 		return nil, fmt.Errorf("%s has no sheets", kind)
 	}
-	nodes := make([]DocumentNode, 0, len(sheets))
-	for _, sheet := range sheets {
-		result, err := excelread.ReadFile(filePath, excelread.ReadOptions{SheetName: sheet})
-		if err != nil {
-			return nil, err
-		}
+	nodes := make([]DocumentNode, 0, len(results))
+	for _, result := range results {
 		nodes = append(nodes, sheetToNodes(source, result, kind)...)
 	}
 	if len(nodes) == 0 {

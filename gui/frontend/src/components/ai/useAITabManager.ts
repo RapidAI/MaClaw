@@ -1,13 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { AITab, AITabType, AITabState, AIAssistantPanelTabState } from "./AITabTypes";
+import type { AIExecutionProfile, AITab, AITabType, AITabState, AIAssistantPanelTabState } from "./AITabTypes";
 import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
-import { LoadProjectTabIndex, CloseProjectTabSession, CreateProjectTabSession, SaveProjectTabConversation, LoadProjectTabConversation } from "../../../wailsjs/go/main/App";
+import { LoadProjectTabIndex, CloseAssistantTabSession, CreateProjectTabSession, SaveProjectTabConversation, LoadProjectTabConversation, ClearAIAssistantHistoryForSession } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
-import { normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
+import { expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import type { ExpertDefinition } from "./expertTypes";
 import { expertTabId } from "./expertTypes";
 
@@ -72,8 +72,13 @@ interface BackendTabIndexEntry {
     agentMode?: string;
     remoteHost?: string;
     remoteSafety?: string;
+    executionProfile?: string;
     lastActiveAt?: number;
     archived?: boolean;
+}
+
+function executionProfileForProjectMode(agentMode?: string): AIExecutionProfile {
+    return agentMode === "coding_dev" || agentMode === "remote_coding_dev" ? "coding" : "none";
 }
 
 function normalizeTabParticipantId(value: string | undefined): string {
@@ -199,6 +204,8 @@ export interface UseAITabManagerResult {
     closeTab: (tabId: string) => void;
     /** Remove a deleted project's tabs without persisting an archived session. */
     discardDeletedProjectTabs: (projectPath: string) => void;
+    /** Remove a deleted expert's tab and history without re-persisting conversation. */
+    discardDeletedExpertTabs: (expertId: string) => void;
     /** Clear a VE/group conversation explicitly, resetting cached and visible state. */
     clearTabConversation: (tabId: string) => void;
     /** Save state for the current active tab before switching */
@@ -320,6 +327,7 @@ function persistProjectTabs(tabs: AITab[]) {
                 expertId: t.expertId,
                 expertIcon: t.expertIcon,
                 expertDescription: t.expertDescription,
+                executionProfile: t.executionProfile,
             }
             : {
                 id: t.id,
@@ -329,6 +337,7 @@ function persistProjectTabs(tabs: AITab[]) {
                 agentMode: t.agentMode,
                 remoteHost: t.remoteHost,
                 remoteSafety: t.remoteSafety,
+                executionProfile: t.executionProfile,
             });
         if (serialized.length === 0) {
             localStorage.removeItem(PROJECT_TABS_STORAGE_KEY);
@@ -349,7 +358,7 @@ function loadPersistedProjectTabs(): AITab[] {
     try {
         const raw = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
         if (!raw) return [];
-        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string }>;
+        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string; executionProfile?: string }>;
         if (!Array.isArray(parsed)) return [];
         return parsed
             .filter(t => t.id && !String(t.id).startsWith("acp-") && (t.projectPath || (t.type === "expert" && t.expertId)))
@@ -363,6 +372,7 @@ function loadPersistedProjectTabs(): AITab[] {
                         expertId,
                         expertIcon: String(t.expertIcon || "").trim() || undefined,
                         expertDescription: String(t.expertDescription || "").trim() || undefined,
+                        executionProfile: t.executionProfile === "assistant" ? "assistant" as const : "none" as const,
                         closable: true,
                     };
                 }
@@ -382,6 +392,7 @@ function loadPersistedProjectTabs(): AITab[] {
                     agentMode,
                     remoteHost,
                     remoteSafety,
+                    executionProfile: executionProfileForProjectMode(agentMode),
                     closable: true,
                 };
             })
@@ -457,6 +468,7 @@ function loadPersistedVETabs(): Array<{ tab: AITab; sessionId?: string }> {
                     participants: t.participants,
                     participantNames: t.participantNames,
                     discussionId: t.discussionId || t.sessionId,
+                    executionProfile: "assistant" as const,
                     closable: true,
                 },
                 sessionId: t.sessionId,
@@ -579,9 +591,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                     const remoteSafety = agentMode === "remote_coding_dev" && backendEntry?.remoteSafety === "diagnosis"
                         ? "diagnosis" as const
                         : tab.remoteSafety;
-                    if (backendTitle === tab.title && agentMode === tab.agentMode && remoteHost === tab.remoteHost && remoteSafety === tab.remoteSafety) return tab;
+                    const executionProfile = executionProfileForProjectMode(agentMode);
+                    if (backendTitle === tab.title && agentMode === tab.agentMode && remoteHost === tab.remoteHost && remoteSafety === tab.remoteSafety && executionProfile === tab.executionProfile) return tab;
                     titleChanged = true;
-                    return { ...tab, title: backendTitle || tab.title, agentMode, remoteHost, remoteSafety };
+                    return { ...tab, title: backendTitle || tab.title, agentMode, remoteHost, remoteSafety, executionProfile };
                 });
 
                 const newTabs: AITab[] = [];
@@ -608,6 +621,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                         agentMode,
                         remoteHost,
                         remoteSafety,
+                        executionProfile: executionProfileForProjectMode(agentMode),
                         closable: true,
                     });
                 }
@@ -904,6 +918,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             title: veName,
             veId: canonicalVEId,
             onlineStatus: onlineStatus || "online",
+            executionProfile: "assistant",
             avatarDataURL: safeAvatar,
             veSkillDescription: normalizedSkillDescription || undefined,
             closable: true,
@@ -964,6 +979,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             readOnly: options.readOnly,
             role: options.role,
             participantNames: options.participantNames,
+            executionProfile: "assistant",
             closable: true,
         };
 
@@ -998,7 +1014,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             const safetyChanged = nextRemoteSafety !== existing.remoteSafety;
             const reconnectChanged = nextNeedsReconnect !== existing.remoteNeedsReconnect;
             if (modeChanged || hostChanged || safetyChanged || reconnectChanged) {
-                const patched = { ...existing, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteSafety: nextRemoteSafety, remoteNeedsReconnect: nextNeedsReconnect };
+                const patched = { ...existing, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteSafety: nextRemoteSafety, remoteNeedsReconnect: nextNeedsReconnect, executionProfile: executionProfileForProjectMode(nextAgentMode) };
                 updateTabState(() => ({
                     ...prev,
                     activeTabId: existing.id,
@@ -1031,6 +1047,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             remoteHost: options?.remoteHost,
             remoteSafety: options?.remoteSafety,
             remoteNeedsReconnect: options?.remoteNeedsReconnect,
+            executionProfile: executionProfileForProjectMode(options?.agentMode),
             closable: true,
         };
         restoredProjectPathsRef.current.delete(projectPath);
@@ -1130,6 +1147,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             expertId,
             expertIcon: icon,
             expertDescription: description,
+            executionProfile: "assistant",
             closable: true,
         };
         const cachedState = tabStatesRef.current.get(tabId);
@@ -1155,10 +1173,12 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             const tab = prev.tabs.find(t => t.id === tabId);
             if (!tab || !tab.closable) return prev;
 
-            // For project tabs, call backend to persist session state.
-            if (tab.type === "project" && !tab.sessionKey) {
+            // Release a closed tab's runtime workdir. Project tabs also archive
+            // their backend index entry; expert tabs only need the private
+            // runtime binding cleared (their session file remains resumable).
+            if ((tab.type === "project" && !tab.sessionKey) || tab.type === "expert") {
                 const closePromise = Promise.resolve()
-                    .then(() => CloseProjectTabSession(tabId))
+                    .then(() => CloseAssistantTabSession(tabId))
                     .catch(() => {})
                     .then(() => undefined);
                 pendingProjectTabCloseByIDRef.current.set(tabId, closePromise);
@@ -1214,15 +1234,52 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         persistProjectTabHistories(tabStatesRef.current, next.tabs);
     }, [updateTabState]);
 
+    const discardDeletedExpertTabs = useCallback((expertId: string) => {
+        const id = String(expertId || "").trim();
+        if (!id) return;
+        const tabId = expertTabId(id);
+        const current = tabStateRef.current;
+        // Open tabs matching this expert, plus the canonical closed-cache id.
+        // Closing alone keeps orphan history for resume; deletion must wipe both.
+        const openTabIDs = current.tabs
+            .filter(tab => tab.type === "expert" && (tab.expertId === id || tab.id === tabId))
+            .map(tab => tab.id);
+        const deletedIDs = new Set<string>([tabId, ...openTabIDs]);
+        for (const tabID of deletedIDs) {
+            tabStatesRef.current.delete(tabID);
+            // Drop dirty flags so a pending debounced flush cannot re-save this expert.
+            dirtyTabIdsRef.current.delete(tabID);
+            pendingProjectTabCloseByIDRef.current.delete(tabID);
+        }
+        const next = openTabIDs.length > 0
+            ? {
+                ...current,
+                tabs: current.tabs.filter(tab => !deletedIDs.has(tab.id)),
+                activeTabId: deletedIDs.has(current.activeTabId) ? "local" : current.activeTabId,
+            }
+            : current;
+        if (openTabIDs.length > 0) updateTabState(() => next);
+        // Self-contained localStorage purge (callers may also purge; idempotent).
+        purgeDeletedExpertTabLocalCache(id);
+        // Always rewrite history storage so a closed-tab orphan cannot resurrect.
+        persistProjectTabHistories(tabStatesRef.current, next.tabs);
+        // Expert sessions use the same backend session-file API as project tabs.
+        SaveProjectTabConversation(tabId, []).catch(() => {});
+        // Wipe agent conversation memory too. Task deletion already does this
+        // server-side; definition-delete (maclaw:expert-deleted) relies on this.
+        const sessionKey = expertSessionKey(id);
+        if (sessionKey) ClearAIAssistantHistoryForSession(sessionKey).catch(() => {});
+    }, [updateTabState]);
+
     // Sync open expert tabs with expert definition changes from the utilities page:
-    // "maclaw:expert-deleted" closes the tab; "maclaw:expert-updated" patches its
+    // "maclaw:expert-deleted" discards tab + history; "maclaw:expert-updated" patches
     // title/icon/description in place (no foreground switch).
     useEffect(() => {
         const onDeleted = (e: Event) => {
             const expertId = String((e as CustomEvent)?.detail?.expertId || "").trim();
             if (!expertId) return;
-            const tab = tabStateRef.current.tabs.find(t => t.type === "expert" && t.expertId === expertId);
-            if (tab) closeTab(tab.id);
+            // Drop open tab, closed-tab cache, and session file — same as task delete.
+            discardDeletedExpertTabs(expertId);
         };
         const onUpdated = (e: Event) => {
             const expert = (e as CustomEvent)?.detail?.expert;
@@ -1252,7 +1309,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             window.removeEventListener("maclaw:expert-deleted", onDeleted);
             window.removeEventListener("maclaw:expert-updated", onUpdated);
         };
-    }, [closeTab, updateTabState]);
+    }, [discardDeletedExpertTabs, updateTabState]);
 
     const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const dirtyTabIdsRef = useRef<Set<string>>(new Set());
@@ -1399,6 +1456,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         createExpertTab,
         closeTab,
         discardDeletedProjectTabs,
+        discardDeletedExpertTabs,
         clearTabConversation,
         saveTabState,
         getTabState,

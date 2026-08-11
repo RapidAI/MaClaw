@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
@@ -541,6 +543,88 @@ func TestMaterializePlatformTextAttachmentUsesUniquePaths(t *testing.T) {
 	}
 	if first == second {
 		t.Fatalf("expected unique paths, got %q", first)
+	}
+}
+
+func TestMaterializePlatformTextAttachmentNormalizesBinaryDocumentSuffix(t *testing.T) {
+	workspace := t.TempDir()
+	att := platformTextAttachment{
+		Filename: "report.png",
+		MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		Content:  base64.RawURLEncoding.EncodeToString([]byte("binary document bytes")),
+	}
+	path, err := materializePlatformTextAttachment(workspace, "discussion-1", att)
+	if err != nil {
+		t.Fatalf("materialize binary document: %v", err)
+	}
+	if !strings.HasSuffix(path, ".docx") {
+		t.Fatalf("materialized Office path = %q, want .docx suffix", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "binary document bytes" {
+		t.Fatalf("materialized Office data = %q, %v", data, err)
+	}
+}
+
+func TestPlatformAttachmentMaxBytesForUsesSharedDocumentLimit(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		fileName string
+		mimeType string
+		want     int64
+	}{
+		{"legacy word", "report.doc", "application/msword", agent.MaxOfficeReadFileBytes},
+		{"modern word", "report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", agent.MaxOfficeReadFileBytes},
+		{"legacy excel", "report.xls", "application/vnd.ms-excel", agent.MaxOfficeReadFileBytes},
+		{"modern excel", "report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", agent.MaxOfficeReadFileBytes},
+		{"legacy powerpoint", "report.ppt", "application/vnd.ms-powerpoint", agent.MaxOfficeReadFileBytes},
+		{"modern powerpoint", "report.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", agent.MaxOfficeReadFileBytes},
+		{"pdf", "report.pdf", "application/pdf", agent.MaxOfficeReadFileBytes},
+		{"ordinary relay file", "archive.zip", "application/zip", platformAttachmentMaxBytes},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := platformAttachmentMaxBytesFor(test.fileName, test.mimeType); got != test.want {
+				t.Fatalf("limit(%q, %q) = %d, want %d", test.fileName, test.mimeType, got, test.want)
+			}
+		})
+	}
+}
+func TestEnrichPlatformMessageTreatsMislabelledOfficeTextAttachmentAsFile(t *testing.T) {
+	server := &HTTPServer{}
+	content := server.enrichPlatformMessageContentWithAttachments(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		platformRuntimeBinding{Instance: agentservice.Instance{Workspace: t.TempDir()}},
+		platformVirtualEmployeeMessageRequest{HubDiscussionID: "discussion-1"},
+		"inspect",
+		platformMessageAttachments{Text: []platformTextAttachment{{
+			Filename: "cover.png",
+			MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			Content:  base64.RawURLEncoding.EncodeToString([]byte("Office bytes remain a local artifact")),
+		}}},
+		nil,
+	)
+	if strings.Contains(content, "- text: cover.png") || !strings.Contains(content, "- file: cover.docx") {
+		t.Fatalf("mislabelled Office text attachment context = %q", content)
+	}
+	if !strings.Contains(content, "local_path=") || !strings.Contains(content, ".docx") {
+		t.Fatalf("mislabelled Office text attachment lacks normalized local path: %q", content)
+	}
+}
+
+func TestPlatformFileAttachmentLineTreatsMislabelledOfficeImageAsFile(t *testing.T) {
+	server := &HTTPServer{}
+	line := server.platformFileAttachmentLine(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		platformRuntimeBinding{},
+		"discussion-1",
+		"image",
+		platformFileAttachment{
+			Filename: "cover.png",
+			MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		},
+	)
+	if !strings.HasPrefix(line, "- file: cover.docx") || strings.HasPrefix(line, "- image:") {
+		t.Fatalf("mislabelled Office image attachment line = %q", line)
 	}
 }
 
@@ -1635,7 +1719,9 @@ func TestPlatformSourceUserProvisioningPersistsSSHHosts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	defer func() { _ = svc.Close() }()
 	server := NewHTTPServer(svc, "admin-secret", nil)
+	defer server.Close()
 	sourceUser := map[string]any{"id": "src-ssh", "external_id": "real-ssh", "email": "ssh@example.test", "display_name": "SSH User"}
 	payload := map[string]any{
 		"tenant_id":            "ve-tenant-a",
@@ -1710,7 +1796,9 @@ func TestPlatformUserSSHHostsCanBeClearedExplicitly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	defer func() { _ = svc.Close() }()
 	server := NewHTTPServer(svc, "admin-secret", nil)
+	defer server.Close()
 	tenant, err := svc.CreateTenant(t.Context(), agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)

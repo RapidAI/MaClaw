@@ -190,6 +190,60 @@ func TestParseScheduleDeliveryArgsCanonicalizesLocalGatewayPlatform(t *testing.T
 	}
 }
 
+func TestBindLansengerDeliveryBotProfileUsesTrustedHandlerIdentity(t *testing.T) {
+	d := &scheduler.TaskDelivery{
+		Enabled:      true,
+		Channel:      scheduler.DeliveryChannelLansenger,
+		BotProfileID: "model-selected-other-bot",
+		Targets:      []scheduler.DeliveryTarget{{Kind: scheduler.DeliveryKindUser, UserID: "u1"}},
+	}
+	bindLansengerDeliveryBotProfile(d, "support")
+	if d.BotProfileID != "support" {
+		t.Fatalf("bot profile = %q, want trusted profile", d.BotProfileID)
+	}
+	bindLansengerDeliveryBotProfile(d, "")
+	if d.BotProfileID != "" {
+		t.Fatalf("untrusted profile should be cleared, got %q", d.BotProfileID)
+	}
+}
+
+func TestProfileHandlerScopesScheduledTaskManagement(t *testing.T) {
+	manager, err := scheduler.NewManager(filepath.Join(t.TempDir(), "scheduled_tasks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Stop)
+	for _, task := range []scheduler.ScheduledTask{
+		{Name: "support-only", BotProfileID: "support", Action: "support action", Hour: 9, Minute: 0, DayOfWeek: -1, DayOfMonth: -1},
+		{Name: "sales-only", BotProfileID: "sales", Action: "sales action", Hour: 9, Minute: 0, DayOfWeek: -1, DayOfMonth: -1},
+		{Name: "desktop-only", Action: "desktop action", Hour: 9, Minute: 0, DayOfWeek: -1, DayOfMonth: -1},
+	} {
+		if _, err := manager.Add(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := &IMMessageHandler{scheduledTaskManager: manager, lansengerBotProfileID: "support"}
+	listed := h.toolListScheduledTasks()
+	if !strings.Contains(listed, "support-only") || strings.Contains(listed, "sales-only") || strings.Contains(listed, "desktop-only") {
+		t.Fatalf("scoped task list = %q", listed)
+	}
+	var salesID string
+	for _, task := range manager.List() {
+		if task.BotProfileID == "sales" {
+			salesID = task.ID
+		}
+	}
+	if salesID == "" {
+		t.Fatal("sales task missing")
+	}
+	if out := h.toolSetScheduledTaskPaused(map[string]interface{}{"id": salesID}, true); !strings.Contains(out, "未找到") {
+		t.Fatalf("cross-profile pause = %q", out)
+	}
+	if task := manager.Get(salesID); task == nil || task.Status != "active" {
+		t.Fatalf("sales task mutated across profile boundary: %#v", task)
+	}
+}
+
 func TestScheduledTaskManagerForToolConcurrentSharedBinding(t *testing.T) {
 	manager, err := scheduler.NewManager(filepath.Join(t.TempDir(), "scheduled_tasks.json"))
 	if err != nil {

@@ -167,3 +167,16 @@ func TestDetectCapabilityNeeds_Empty(t *testing.T) {
 		t.Fatalf("expected empty needs, got %v", needs)
 	}
 }
+
+func TestDetectCapabilityNeeds_RecognizesAllOfficeFormats(t *testing.T) {
+	for _, format := range []string{"doc", "docx", "xls", "xlsx", "ppt", "pptx"} {
+		t.Run(format, func(t *testing.T) {
+			needs := DetectCapabilityNeeds(map[string]any{
+				"messages": []any{map[string]any{"role": "user", "content": "summarize this report." + format}},
+			})
+			if needs["document"] == 0 {
+				t.Fatalf("%q did not request document capability: %#v", format, needs)
+			}
+		})
+	}
+}

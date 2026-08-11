@@ -153,6 +153,15 @@ describe('SettingsActiveContent', () => {
         await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('llm'));
     });
 
+    it('mounts OCR alongside the sibling model panels in the AI Model (embedding) tab', async () => {
+        render(<SettingsActiveContent {...baseProps} settingsTab="embedding" />);
+        expect(await screen.findByText('Embedding')).toBeTruthy();
+        expect(screen.getByText('ASR')).toBeTruthy();
+        expect(screen.getByText('Diarization')).toBeTruthy();
+        expect(screen.getByText('OCR')).toBeTruthy();
+        expect(screen.getByText('TTS')).toBeTruthy();
+    });
+
     it('falls back to general when virtualEmployee is requested but unavailable', async () => {
         render(
             <SettingsActiveContent

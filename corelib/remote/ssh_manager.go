@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,9 +27,9 @@ type SSHManagedSession struct {
 	droppedLines int
 	// pendingLine 缓存跨 chunk 的不完整行，避免半行被当成完整行导致
 	// prompt/EXIT 检测失败、行号错乱。
-	pendingLine string
-	CreatedAt   time.Time
-	ExitCode    *int
+	pendingLine  string
+	CreatedAt    time.Time
+	ExitCode     *int
 	LastOutputAt time.Time
 
 	// consecutiveExecFailures 记录连续 exec 失败次数（无输出或错误）。
@@ -433,15 +434,27 @@ func (m *SSHSessionManager) RecordExecFailure(sessionID string) int {
 //  3. Shell prompt 出现在新输出最后一行 → 收尾后返回
 //
 // 重要：
-//  - 绝不能在未见 prompt/EXIT 时仅凭短时沉默判定完成（会导致命令踩踏）。
-//  - 完成信号只扫描 afterLine 之后的行，避免上一命令残留的 EXIT/prompt 误触发。
-//  - 热路径只读尾部行，不每轮复制全部新输出。
+//   - 绝不能在未见 prompt/EXIT 时仅凭短时沉默判定完成（会导致命令踩踏）。
+//   - 完成信号只扫描 afterLine 之后的行，避免上一命令残留的 EXIT/prompt 误触发。
+//   - 热路径只读尾部行，不每轮复制全部新输出。
 //
 // maxWait 是最大等待时间上限。超时后发送 Ctrl+C 防止 shell 被锁住。
 func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWait time.Duration) ([]string, SessionStatus) {
+	return m.WaitForOutputContext(context.Background(), sessionID, afterLine, maxWait)
+}
+
+// WaitForOutputContext is the cancellation-aware form of WaitForOutput. It
+// returns the lines observed so far when ctx ends and deliberately does not
+// interrupt the shared SSH session: a caller that owns an exclusive command
+// may decide to send Ctrl+C, while a read-only child cancellation must never
+// disrupt another host operation attached to the same session.
+func (m *SSHSessionManager) WaitForOutputContext(ctx context.Context, sessionID string, afterLine int, maxWait time.Duration) ([]string, SessionStatus) {
 	s, ok := m.Get(sessionID)
 	if !ok {
 		return nil, SessionError
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	if maxWait <= 0 {
@@ -466,6 +479,10 @@ func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWa
 	firstIter := true
 
 	for {
+		if ctx.Err() != nil {
+			lines, status := s.NewLinesSince(afterLine)
+			return lines, status
+		}
 		if !firstIter {
 			// 在 sleep 前检查 deadline，避免超时后仍多睡一轮
 			if time.Now().After(deadline) {
@@ -478,7 +495,12 @@ func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWa
 				sleepFor = remain
 			}
 			if sleepFor > 0 {
-				time.Sleep(sleepFor)
+				select {
+				case <-ctx.Done():
+					lines, status := s.NewLinesSince(afterLine)
+					return lines, status
+				case <-time.After(sleepFor):
+				}
 			}
 		}
 		firstIter = false

@@ -53,6 +53,19 @@ func TestWritePlanRejectsOutOfRangeAndOverlappingImagesBeforeFlash(t *testing.T)
 	}
 }
 
+func TestFlashPipelineRequiresExactObservedProfileCapacity(t *testing.T) {
+	source := flashSecurityGateSource(t)
+	for _, required := range []string{
+		"j.request.ExpectedFlashBytes != required",
+		"observed.SizeBytes != required",
+		"does not exactly match required",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("exact capacity preflight is missing %q", required)
+		}
+	}
+}
+
 func TestSignedWriteOrderDoesNotUseArchiveOffsetOrder(t *testing.T) {
 	// fwpack emits data first, then the App, then partition-table and
 	// bootloader. This must remain an explicit signed sequence rather than a

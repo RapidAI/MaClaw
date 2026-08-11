@@ -32,9 +32,10 @@ const (
 
 var procGetAsyncKeyState = floatUser32.NewProc("GetAsyncKeyState")
 
-// BeginWindowDrag starts a native window move for the main window. Called by
-// the frontend after the pointer has actually travelled past a small
-// threshold on a data-window-drag region.
+// BeginWindowDrag is a fallback native window move for the main window.
+// Preferred path is frontend window.WailsInvoke("drag"), which runs on the
+// WebView host thread (required for ReleaseCapture to release WebView2's
+// capture). This binding may run off the UI thread, so it is less reliable.
 func (a *App) BeginWindowDrag() {
 	if a.ctx == nil || runtime.WindowIsFullscreen(a.ctx) {
 		return

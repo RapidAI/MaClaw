@@ -17,6 +17,10 @@ import (
 // Targets should already be name-resolved (group_id filled). channel defaults to lansenger.
 // Remembers successful private peers for user_id=self resolution (same as schedule delivery).
 func (a *App) DeliverIMText(ctx context.Context, channel string, targets []scheduler.DeliveryTarget, text string) error {
+	return a.deliverIMTextForBot(ctx, channel, "", targets, text)
+}
+
+func (a *App) deliverIMTextForBot(ctx context.Context, channel, botProfileID string, targets []scheduler.DeliveryTarget, text string) error {
 	if a == nil {
 		return fmt.Errorf("app unavailable")
 	}
@@ -34,12 +38,12 @@ func (a *App) DeliverIMText(ctx context.Context, channel string, targets []sched
 
 	store := a.deliveryStateStore()
 	_, err := scheduler.FanOutDeliveryTargets(targets, func(i int, target scheduler.DeliveryTarget) error {
-		peer, sendErr := a.deliverScheduledTaskTarget(ctx, channel, target, text)
+		peer, sendErr := a.deliverScheduledTaskTarget(ctx, channel, botProfileID, target, text)
 		if sendErr != nil {
 			log.Printf("[im-delivery] failed channel=%s target=%d: %v", channel, i, sendErr)
 			return sendErr
 		}
-		if store != nil && peer != "" && scheduler.CanRememberAsSelfPeer(target) {
+		if store != nil && strings.TrimSpace(botProfileID) == "" && peer != "" && scheduler.CanRememberAsSelfPeer(target) {
 			store.RememberPeer(channel, peer)
 		}
 		return nil
@@ -53,7 +57,7 @@ func (a *App) DeliverIMFromTaskDelivery(ctx context.Context, d *scheduler.TaskDe
 	if d == nil || !d.Active() {
 		return fmt.Errorf("delivery not active")
 	}
-	return a.DeliverIMText(ctx, d.Channel, d.Targets, text)
+	return a.deliverIMTextForBot(ctx, d.Channel, d.BotProfileID, d.Targets, text)
 }
 
 // DeliverIMFile immediately uploads a local file to one or more IM channel targets.
@@ -61,6 +65,10 @@ func (a *App) DeliverIMFromTaskDelivery(ctx context.Context, d *scheduler.TaskDe
 // (Lansenger media messages carry no caption field). Returns the display name and
 // size actually sent. Currently only the lansenger channel supports file upload.
 func (a *App) DeliverIMFile(ctx context.Context, channel string, targets []scheduler.DeliveryTarget, path, fileName, caption string) (string, int64, error) {
+	return a.deliverIMFileForBot(ctx, channel, "", targets, path, fileName, caption)
+}
+
+func (a *App) deliverIMFileForBot(ctx context.Context, channel, botProfileID string, targets []scheduler.DeliveryTarget, path, fileName, caption string) (string, int64, error) {
 	if a == nil {
 		return "", 0, fmt.Errorf("app unavailable")
 	}
@@ -105,12 +113,12 @@ func (a *App) DeliverIMFile(ctx context.Context, channel string, targets []sched
 
 	store := a.deliveryStateStore()
 	_, err = scheduler.FanOutDeliveryTargets(targets, func(i int, target scheduler.DeliveryTarget) error {
-		peer, sendErr := a.deliverLansengerFileTarget(ctx, target, data, name, caption)
+		peer, sendErr := a.deliverLansengerFileTarget(ctx, botProfileID, target, data, name, caption)
 		if sendErr != nil {
 			log.Printf("[im-delivery] file failed channel=%s target=%d: %v", channel, i, sendErr)
 			return sendErr
 		}
-		if store != nil && peer != "" && scheduler.CanRememberAsSelfPeer(target) {
+		if store != nil && strings.TrimSpace(botProfileID) == "" && peer != "" && scheduler.CanRememberAsSelfPeer(target) {
 			store.RememberPeer(channel, peer)
 		}
 		return nil
@@ -126,12 +134,12 @@ func (a *App) DeliverIMFileFromTaskDelivery(ctx context.Context, d *scheduler.Ta
 	if d == nil || !d.Active() {
 		return "", 0, fmt.Errorf("delivery not active")
 	}
-	return a.DeliverIMFile(ctx, d.Channel, d.Targets, path, fileName, caption)
+	return a.deliverIMFileForBot(ctx, d.Channel, d.BotProfileID, d.Targets, path, fileName, caption)
 }
 
 // deliverLansengerFileTarget uploads one file to a single lansenger target and
 // returns the concrete peer id used (for memory), mirroring deliverLansengerScheduledTarget.
-func (a *App) deliverLansengerFileTarget(ctx context.Context, target scheduler.DeliveryTarget, data []byte, name, caption string) (string, error) {
+func (a *App) deliverLansengerFileTarget(ctx context.Context, botProfileID string, target scheduler.DeliveryTarget, data []byte, name, caption string) (string, error) {
 	send := func(gw *lansenger.Gateway, peer string, isGroup bool) error {
 		if strings.TrimSpace(caption) != "" {
 			text := lansenger.OutgoingText{ToUserID: peer, Text: caption, IsGroup: isGroup}
@@ -161,7 +169,7 @@ func (a *App) deliverLansengerFileTarget(ctx context.Context, target scheduler.D
 		if strings.TrimSpace(target.GroupID) == "" {
 			return "", fmt.Errorf("lansenger group target missing group_id")
 		}
-		gw, err := a.lansengerGatewayForSend()
+		gw, err := a.lansengerGatewayForSend(botProfileID)
 		if err != nil {
 			return "", err
 		}
@@ -175,19 +183,22 @@ func (a *App) deliverLansengerFileTarget(ctx context.Context, target scheduler.D
 			return "", fmt.Errorf("lansenger user target missing user_id")
 		}
 		// user_id=self → remembered peer, else live private session.
-		userID = a.deliveryStateStore().ResolveSelfPeer(scheduler.DeliveryChannelLansenger, userID)
+		userID = a.resolveLansengerDeliverySelfPeer(botProfileID, userID)
 		if scheduler.IsSelfPeerID(userID) {
-			a.ensureLansengerGateway()
-			if a.lansengerGateway == nil {
+			manager, err := a.lansengerGatewayManagerForSend(botProfileID)
+			if err != nil {
+				return "", err
+			}
+			if manager == nil {
 				return "", fmt.Errorf("lansenger: user_id=self 需要 staffId，或先用蓝信私聊机器人一次")
 			}
-			peer := a.lansengerGateway.LastPrivatePeerID()
+			peer := manager.LastPrivatePeerID()
 			if peer == "" {
 				return "", fmt.Errorf("lansenger: user_id=self 需要 staffId，或先用蓝信私聊机器人一次")
 			}
-			a.lansengerGateway.mu.Lock()
-			gw := a.lansengerGateway.gateway
-			a.lansengerGateway.mu.Unlock()
+			manager.mu.Lock()
+			gw := manager.gateway
+			manager.mu.Unlock()
 			if gw == nil {
 				return "", fmt.Errorf("lansenger gateway not running")
 			}
@@ -196,7 +207,7 @@ func (a *App) deliverLansengerFileTarget(ctx context.Context, target scheduler.D
 			}
 			return peer, nil
 		}
-		gw, err := a.lansengerGatewayForSend()
+		gw, err := a.lansengerGatewayForSend(botProfileID)
 		if err != nil {
 			return "", err
 		}

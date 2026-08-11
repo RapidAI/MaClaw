@@ -19,12 +19,16 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 	if text == "" {
 		return "缺少 text 参数"
 	}
-	if h.app == nil || h.app.ttsManager == nil {
+	if h.app == nil {
 		return "语音合成不可用（TTS 模型未加载）。请在设置中启用 TTS，并等待模型下载完成。"
 	}
 	cfg, err := h.app.LoadConfig()
 	if err != nil || !cfg.TTSEnabled {
 		return "语音合成未启用。请在设置 → 语音合成中开启。"
+	}
+	manager := h.app.ttsManagerForSynthesis()
+	if manager == nil {
+		return "语音合成不可用（TTS 模型未加载）。请在设置中启用 TTS，并等待模型下载完成。"
 	}
 
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
@@ -46,7 +50,7 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 	// Serialize with ttsSpeakMu so concurrent tts calls don't interleave audio chunks.
 	if shouldEmitDesktopTTSPlayback(platform) {
 		app := h.app
-		mgr := app.ttsManager // capture before goroutine to avoid nil race
+		mgr := manager // capture before goroutine to avoid a voice-change race
 		chunkCopy := append([]string(nil), chunks...)
 		go func() {
 			ttsSpeakMu.Lock()
@@ -73,7 +77,7 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 	}
 
 	// IM channels: reuse pre-split parts (no second SplitSpeechChunks pass).
-	wav, nChunks, err := tts.SynthesizeSpeechParts(h.app.ttsManager, chunks)
+	wav, nChunks, err := tts.SynthesizeSpeechParts(manager, chunks)
 	if err != nil {
 		log.Printf("[tts-tool] error: %v", err)
 		return fmt.Sprintf("语音合成失败: %v", err)

@@ -10,6 +10,12 @@
  * proven DISPLAY_OFF state, never rails, GPIOs, display geometry, or wake
  * sources. */
 device_status_t power_lease_service_init(void);
+/* Stops new foreground claims while preserving already-issued handles so their
+ * owners can still release during a bounded composition-root drain. */
+void power_lease_service_close_admission(void);
+/* Finishes a closed generation once every previously issued lease is released.
+ * On timeout admission remains closed and a later init is refused. */
+device_status_t power_lease_service_deinit(uint32_t timeout_ms);
 device_status_t power_lease_service_acquire(device_power_lease_owner_t owner,
                                             device_power_lease_t *out_lease);
 void power_lease_service_release(device_power_lease_t lease);

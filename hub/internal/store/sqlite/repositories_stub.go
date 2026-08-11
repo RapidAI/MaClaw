@@ -105,6 +105,7 @@ func NewStore(p *Provider) *store.Store {
 		WorkflowRepo:    &workflowRepo{db: p.Write, readDB: p.Read},
 		LLMPromptCache:  &llmPromptCacheRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		KnowledgeShares: &knowledgeShareRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		DigitalAssets:   &digitalAssetRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
 }
 
@@ -1310,7 +1311,7 @@ func (r *machineRepo) Create(ctx context.Context, machine *store.Machine) error 
 func (r *machineRepo) GetByID(ctx context.Context, id string) (*store.Machine, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, tenant_id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		`SELECT id, tenant_id, user_id, client_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
 		 FROM machines WHERE id = ?`,
 		id,
 	)
@@ -1323,6 +1324,7 @@ func (r *machineRepo) GetByID(ctx context.Context, id string) (*store.Machine, e
 		&machine.ID,
 		&machine.TenantID,
 		&machine.UserID,
+		&machine.ClientID,
 		&machine.Name,
 		&machine.Alias,
 		&machine.Platform,
@@ -1358,7 +1360,7 @@ func (r *machineRepo) GetByID(ctx context.Context, id string) (*store.Machine, e
 func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store.Machine, error) {
 	rows, err := r.readDB.QueryContext(
 		ctx,
-		`SELECT id, tenant_id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		`SELECT id, tenant_id, user_id, client_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
 		 FROM machines WHERE user_id = ? ORDER BY updated_at DESC`,
 		userID,
 	)
@@ -1377,6 +1379,7 @@ func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store
 			&machine.ID,
 			&machine.TenantID,
 			&machine.UserID,
+			&machine.ClientID,
 			&machine.Name,
 			&machine.Alias,
 			&machine.Platform,
@@ -1476,7 +1479,7 @@ func (r *machineRepo) UpdateHeartbeat(ctx context.Context, machineID string, at 
 func (r *machineRepo) GetByUserAndClientID(ctx context.Context, userID, clientID string) (*store.Machine, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, tenant_id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		`SELECT id, tenant_id, user_id, client_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
 		 FROM machines WHERE user_id = ? AND client_id = ?`,
 		userID, clientID,
 	)
@@ -1489,6 +1492,7 @@ func (r *machineRepo) GetByUserAndClientID(ctx context.Context, userID, clientID
 		&machine.ID,
 		&machine.TenantID,
 		&machine.UserID,
+		&machine.ClientID,
 		&machine.Name,
 		&machine.Alias,
 		&machine.Platform,
@@ -1518,7 +1522,6 @@ func (r *machineRepo) GetByUserAndClientID(ctx context.Context, userID, clientID
 	if updatedAt.Valid {
 		machine.UpdatedAt = mustParseTime(updatedAt.String)
 	}
-	machine.ClientID = clientID
 	return &machine, nil
 }
 
@@ -1563,7 +1566,7 @@ func (r *machineRepo) listMachines(ctx context.Context, tenantID string) ([]*sto
 	}
 	rows, err := r.readDB.QueryContext(
 		ctx,
-		`SELECT id, tenant_id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		`SELECT id, tenant_id, user_id, client_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
 		 FROM machines `+where+` ORDER BY updated_at DESC`,
 		args...,
 	)
@@ -1582,6 +1585,7 @@ func (r *machineRepo) listMachines(ctx context.Context, tenantID string) ([]*sto
 			&machine.ID,
 			&machine.TenantID,
 			&machine.UserID,
+			&machine.ClientID,
 			&machine.Name,
 			&machine.Alias,
 			&machine.Platform,

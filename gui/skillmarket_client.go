@@ -271,8 +271,10 @@ func (c *SkillMarketClient) submitSkillToHubCenter(ctx context.Context, bases []
 	// All registered candidates failed with connectivity/server errors.
 	// Invalidate discovery cache (used by search/download) and re-resolve
 	// registered submit targets only — never expand to global HA defaults.
-	if c.app != nil && c.app.hubCenterCache != nil {
-		c.app.hubCenterCache.Invalidate()
+	if c.app != nil {
+		if cache := c.app.hubCenterSelectionCache(); cache != nil {
+			cache.Invalidate()
+		}
 	}
 	freshBases, resolveErr := c.app.resolveHubCenterSubmitCandidates(ctx, c.client)
 	if resolveErr != nil || len(freshBases) == 0 {

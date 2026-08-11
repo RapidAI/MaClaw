@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ExpertDefinition, ExpertOptimizeDraft, GeneratedExpertProfile } from '../ai/expertTypes';
+import { buildPromptLineDiff, changedNames, omitOptimizationReviewFields, summarizePromptDiff } from '../ai/expertOptimizationDiff';
 import './UtilitiesPage.css';
 import {
     CAPABILITY_TIER_ORDER,
@@ -75,6 +77,22 @@ type ExpertEditorDialogProps = {
     onSaved: (saved: ExpertDefinition) => void;
 };
 
+/**
+ * The only fields that may cross the editor's save boundary. Review-only
+ * source/diff data must remain in the dialog and never become expert context.
+ */
+type ExpertSavePayload = {
+    id?: string;
+    name: string;
+    icon: string;
+    description: string;
+    system_prompt: string;
+    tools: string[];
+    skills: string[];
+    optimized_from_id: string;
+    about: string;
+};
+
 function parseToolNames(raw: string | null | undefined): ToolNameEntry[] {
     if (!raw) return [];
     try {
@@ -113,6 +131,22 @@ function riskClass(risk: ToolRisk): string {
     return 'expert-editor__risk expert-editor__risk--safe';
 }
 
+function dialogFocusableElements(dialog: HTMLElement): HTMLElement[] {
+    const selector = [
+        'a[href]',
+        'button:not([disabled])',
+        'input:not([disabled])',
+        'select:not([disabled])',
+        'textarea:not([disabled])',
+        '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
+    return Array.from(dialog.querySelectorAll<HTMLElement>(selector)).filter((element) => (
+        !element.hasAttribute('disabled')
+        && element.getAttribute('aria-hidden') !== 'true'
+        && element.tabIndex >= 0
+    ));
+}
+
 /**
  * Expert create/edit dialog.
  * - Create mode: optional starter template + multi-line brief + AI generate.
@@ -125,6 +159,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
     const t = useMemo(() => ({
         titleNew: lang === 'zh-Hant' ? '新建專家' : isZh ? '新建专家' : 'New expert',
         titleEdit: lang === 'zh-Hant' ? '編輯專家' : isZh ? '编辑专家' : 'Edit expert',
+        titleOptimizationReview: lang === 'zh-Hant' ? '檢視優化專家' : isZh ? '审核优化专家' : 'Review optimized expert',
         ideaLabel: lang === 'zh-Hant' ? '一句話描述你想要的專家' : isZh ? '一句话描述你想要的专家' : 'Describe the expert you want in one sentence',
         ideaPlaceholder: lang === 'zh-Hant'
             ? '例如：幫我把中文論文翻譯成地道英文'
@@ -146,6 +181,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         save: lang === 'zh-Hant' ? '保存' : isZh ? '保存' : 'Save',
         saving: lang === 'zh-Hant' ? '保存中…' : isZh ? '保存中…' : 'Saving…',
         cancel: lang === 'zh-Hant' ? '取消' : isZh ? '取消' : 'Cancel',
+        discard: lang === 'zh-Hant' ? '放棄修改並關閉' : isZh ? '放弃修改并关闭' : 'Discard changes',
         nameRequired: lang === 'zh-Hant' ? '請填寫名稱' : isZh ? '请填写名称' : 'Name is required',
         nameMustDifferFromSource: (sourceName: string) => lang === 'zh-Hant'
             ? `優化後的專家不能與來源專家「${sourceName}」同名，請換一個名稱`
@@ -239,6 +275,44 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         accessCardDanger: lang === 'zh-Hant' ? '高風險項' : isZh ? '高风险项' : 'High-risk items',
         accessCardNoDanger: lang === 'zh-Hant' ? '未包含高風險工具/技能' : isZh ? '未包含高风险工具/技能' : 'No high-risk tools/skills selected',
         accessCardOpenAdvanced: lang === 'zh-Hant' ? '查看白名單' : isZh ? '查看白名单' : 'Review whitelist',
+        unsavedChanges: lang === 'zh-Hant' ? '尚有未儲存的修改，確定要關閉嗎？' : isZh ? '有未保存的修改，确定关闭吗？' : 'You have unsaved changes. Close anyway?',
+        optimizationChanges: lang === 'zh-Hant' ? '本次優化變更' : isZh ? '本次优化变更' : 'Optimization changes',
+        optimizationChangesHint: lang === 'zh-Hant'
+            ? '綠色為新增，紅色為相對原專家移除；下方內容仍可直接編輯。'
+            : isZh
+                ? '绿色为新增，红色为相对原专家移除；下方内容仍可直接编辑。'
+                : 'Green is added and red is removed compared with the source expert. You can still edit the fields below.',
+        promptChanges: lang === 'zh-Hant' ? '提示詞差異' : isZh ? '提示词差异' : 'Prompt changes',
+        promptChangeSummary: (added: number, removed: number) => lang === 'zh-Hant'
+            ? `新增 ${added} 行 · 移除 ${removed} 行`
+            : isZh
+                ? `新增 ${added} 行 · 移除 ${removed} 行`
+                : `${added} added · ${removed} removed`,
+        noPromptChanges: lang === 'zh-Hant' ? '提示詞沒有變更' : isZh ? '提示词没有变更' : 'No prompt changes',
+        capabilityChanges: lang === 'zh-Hant' ? '工具與技能差異' : isZh ? '工具与技能差异' : 'Tool and skill changes',
+        added: lang === 'zh-Hant' ? '新增' : isZh ? '新增' : 'Added',
+        removed: lang === 'zh-Hant' ? '移除' : isZh ? '移除' : 'Removed',
+        toolAccessRestricted: (count: number) => lang === 'zh-Hant'
+            ? `工具存取改為白名單（${count} 項）`
+            : isZh
+                ? `工具访问改为白名单（${count} 项）`
+                : `Tools changed to a ${count}-item allow-list`,
+        toolAccessUnrestricted: lang === 'zh-Hant'
+            ? '工具存取改為不限制'
+            : isZh
+                ? '工具访问改为不限制'
+                : 'Tools changed to unrestricted access',
+        skillAccessRestricted: (count: number) => lang === 'zh-Hant'
+            ? `技能存取改為白名單（${count} 項）`
+            : isZh
+                ? `技能访问改为白名单（${count} 项）`
+                : `Skills changed to a ${count}-item allow-list`,
+        skillAccessUnrestricted: lang === 'zh-Hant'
+            ? '技能存取改為不限制'
+            : isZh
+                ? '技能访问改为不限制'
+                : 'Skills changed to unrestricted access',
+        noCapabilityChanges: lang === 'zh-Hant' ? '工具與技能沒有變更' : isZh ? '工具与技能没有变更' : 'No tool or skill changes',
     }), [isZh, lang]);
 
     /** Update mode for an optimize draft: reuse the existing optimized expert's id. */
@@ -250,6 +324,19 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
     /** Lineage carried into the save payload (专家优化). */
     const optimizedFromId = String(expert?.optimized_from_id || optimizeDraft?.optimized_from_id || '').trim();
     const draftSourceName = String(optimizeDraft?.source_name || '').trim();
+    const sourceSystemPrompt = String(optimizeDraft?.source_system_prompt || '');
+    const sourceTools = Array.isArray(optimizeDraft?.source_tools) ? optimizeDraft.source_tools : [];
+    const sourceSkills = Array.isArray(optimizeDraft?.source_skills) ? optimizeDraft.source_skills : [];
+    // Optimization already has a generated draft to review. Creation aids can
+    // overwrite it and consume valuable dialog space, so keep this surface
+    // focused on reviewing and editing the optimized expert.
+    const isOptimizationDraft = !!optimizeDraft;
+    const showCreationAids = !editing && !isOptimizationDraft;
+    const isOptimizationReview = !!optimizeDraft && (
+        Object.prototype.hasOwnProperty.call(optimizeDraft, 'source_system_prompt')
+        || Object.prototype.hasOwnProperty.call(optimizeDraft, 'source_tools')
+        || Object.prototype.hasOwnProperty.call(optimizeDraft, 'source_skills')
+    );
 
     const [idea, setIdea] = useState('');
     const [generating, setGenerating] = useState(false);
@@ -278,6 +365,10 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
     const [advancedOpen, setAdvancedOpen] = useState(hadInitialRestrictions);
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState('');
+    const [confirmDiscard, setConfirmDiscard] = useState(false);
+    // Prompt diffs are quadratic in line count. Keep editing immediate even for
+    // lengthy expert prompts, while React refreshes the visual review shortly after.
+    const deferredSystemPrompt = useDeferredValue(systemPrompt);
 
     /** Invalidates in-flight applyTier backend refinements (race / manual edit). */
     const tierApplySeq = useRef(0);
@@ -289,16 +380,30 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
     const savingRef = useRef(false);
     /** Invalidates a late save completion after the editor has been closed. */
     const saveSeq = useRef(0);
+    const dialogRef = useRef<HTMLDivElement | null>(null);
+    const previouslyFocusedRef = useRef<HTMLElement | null>(null);
     const toolsRef = useRef(tools);
     const skillsRef = useRef(skills);
     const capabilityTierRef = useRef(capabilityTier);
     const availableToolsRef = useRef(availableTools);
     const availableSkillsRef = useRef(availableSkills);
+    const initialEditorStateRef = useRef('');
     toolsRef.current = tools;
     skillsRef.current = skills;
     capabilityTierRef.current = capabilityTier;
     availableToolsRef.current = availableTools;
     availableSkillsRef.current = availableSkills;
+
+    const editorStateSignature = JSON.stringify({
+        name: name.trim(),
+        icon: icon.trim(),
+        description: description.trim(),
+        systemPrompt,
+        about: about.trim(),
+        tools,
+        skills,
+    });
+    const isDirty = initialEditorStateRef.current !== '' && initialEditorStateRef.current !== editorStateSignature;
 
     const knownToolSet = useMemo(() => {
         if (availableTools.length === 0) return null;
@@ -338,6 +443,10 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         return () => { cancelled = true; };
     }, []);
 
+    useEffect(() => {
+        if (!initialEditorStateRef.current) initialEditorStateRef.current = editorStateSignature;
+    }, [editorStateSignature]);
+
     const setToolsStable = (next: string[]) => {
         setTools((prev) => (sameStringList(prev, next) ? prev : next));
     };
@@ -375,14 +484,63 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [availableTools, availableSkills, editing, hadInitialRestrictions]);
 
-    // Esc closes the dialog (suppressed while AI generation is in flight).
+    // Keep keyboard focus in the review surface while it is open. The overlay
+    // is portalled outside the transformed app-scale layer, so restoring focus
+    // here also returns users to the exact control that launched it.
+    useEffect(() => {
+        previouslyFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        dialogRef.current?.focus();
+        return () => previouslyFocusedRef.current?.focus();
+    }, []);
+
+    const requestClose = () => {
+        if (generating || saving) return;
+        if (isDirty) {
+            setConfirmDiscard(true);
+            return;
+        }
+        onClose();
+    };
+
+    // Esc closes the dialog unless an operation is in flight; Tab cycles within
+    // the modal so keyboard users cannot interact with obscured page controls.
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && !generating) onClose();
+            if (e.key === 'Escape') {
+                if (!generating && !saving) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    requestClose();
+                }
+                return;
+            }
+            if (e.key !== 'Tab') return;
+            // Do not steal an IME candidate-list navigation keystroke from an
+            // active text editor. This is especially important for Chinese
+            // prompt authoring in the desktop WebView.
+            if ((e as KeyboardEvent & { isComposing?: boolean }).isComposing) return;
+            const dialog = dialogRef.current;
+            if (!dialog) return;
+            const focusable = dialogFocusableElements(dialog);
+            if (focusable.length === 0) {
+                e.preventDefault();
+                dialog.focus();
+                return;
+            }
+            const active = document.activeElement;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (e.shiftKey && (active === dialog || active === first || !dialog.contains(active))) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && (active === last || !dialog.contains(active))) {
+                e.preventDefault();
+                first.focus();
+            }
         };
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
-    }, [generating, onClose]);
+    }, [generating, isDirty, onClose, saving]);
 
     useEffect(() => () => {
         generateSeq.current += 1;
@@ -578,7 +736,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
             const mod = await getApp();
             if (!mod?.SaveExpert) throw new Error('SaveExpert unavailable');
             // Final guard: never persist names the backend doesn't know about; dedupe for stable store.
-            const payload: Record<string, unknown> = {
+            const payload: ExpertSavePayload = {
                 name: name.trim(),
                 icon: icon.trim(),
                 description: description.trim(),
@@ -591,12 +749,14 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
             };
             const editId = expert?.id || draftUpdateId;
             if (editing && editId) payload.id = editId;
-            const raw = await mod.SaveExpert(JSON.stringify(payload));
+            // Deliberately sanitize at the actual API boundary as a defense in
+            // depth measure: diff/source metadata must never reach persistence.
+            const raw = await mod.SaveExpert(JSON.stringify(omitOptimizationReviewFields(payload)));
             let saved: ExpertDefinition;
             try {
                 saved = JSON.parse(raw || '{}') as ExpertDefinition;
             } catch {
-                saved = { ...(expert || {}), ...payload, id: (payload.id as string) || '' } as ExpertDefinition;
+                saved = { ...(expert || {}), ...payload, id: payload.id || '' } as ExpertDefinition;
             }
             // Parent typically unmounts on success; reset saving so a stuck dialog can retry.
             if (seq !== saveSeq.current) return;
@@ -611,7 +771,10 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         }
     };
 
-    const showSuggestionPanel = hasGeneratedSuggestions;
+    // Suggestions and unmatched-suggestion notices belong exclusively to the
+    // creation flow. Keep optimization review free of every AI-generation
+    // surface even if this component later receives prefilled suggestion state.
+    const showSuggestionPanel = showCreationAids && hasGeneratedSuggestions;
     const hasMatchedSuggestions = suggestedTools.length > 0 || suggestedSkills.length > 0;
     const isRestricted = tools.length > 0 || skills.length > 0;
     const toolGroups = useMemo(() => groupTools(availableTools), [availableTools]);
@@ -621,6 +784,20 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         for (const tool of availableTools) map.set(tool.name, tool);
         return map;
     }, [availableTools]);
+    const promptDiff = useMemo(
+        () => isOptimizationReview ? buildPromptLineDiff(sourceSystemPrompt, deferredSystemPrompt) : [],
+        [isOptimizationReview, sourceSystemPrompt, deferredSystemPrompt],
+    );
+    const hasPromptChanges = useMemo(
+        () => promptDiff.some((line) => line.kind !== 'same'),
+        [promptDiff],
+    );
+    const promptDiffSummary = useMemo(() => summarizePromptDiff(promptDiff), [promptDiff]);
+    const toolChanges = useMemo(() => changedNames(sourceTools, tools), [sourceTools, tools]);
+    const skillChanges = useMemo(() => changedNames(sourceSkills, skills), [sourceSkills, skills]);
+    const toolAccessModeChanged = (sourceTools.length > 0) !== (tools.length > 0);
+    const skillAccessModeChanged = (sourceSkills.length > 0) !== (skills.length > 0);
+    const hasCapabilityChanges = toolAccessModeChanged || skillAccessModeChanged || toolChanges.added.length > 0 || toolChanges.removed.length > 0 || skillChanges.added.length > 0 || skillChanges.removed.length > 0;
 
     const dangerCounts = useMemo(
         () => countDangerousSelections(tools, skills, availableTools),
@@ -681,12 +858,20 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         });
     };
 
-    return (
-        <div className="expert-editor-overlay" data-testid="expert-editor-overlay">
-            <div className="expert-editor" role="dialog" aria-modal="true" aria-label={editing ? t.titleEdit : t.titleNew}>
-                <h3 className="expert-editor__title">{editing ? t.titleEdit : t.titleNew}</h3>
+    const dialogTitle = isOptimizationDraft ? t.titleOptimizationReview : editing ? t.titleEdit : t.titleNew;
+    const dialog = (
+        <div
+            className="expert-editor-overlay"
+            data-testid="expert-editor-overlay"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) requestClose();
+            }}
+        >
+            <div ref={dialogRef} className="expert-editor" role="dialog" aria-modal="true" aria-labelledby="expert-editor-title" aria-busy={saving || generating || undefined} tabIndex={-1}>
+                <h3 id="expert-editor-title" className="expert-editor__title">{dialogTitle}</h3>
+                <fieldset className="expert-editor__body" data-testid="expert-editor-scroll-body" disabled={saving || undefined}>
 
-                {!editing && (
+                {showCreationAids && (
                     <div className="expert-editor__starters" data-testid="expert-starters">
                         <div className="expert-editor__label">{t.startersLabel}</div>
                         <p className="expert-editor__hint">{t.startersHint}</p>
@@ -713,7 +898,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                     </div>
                 )}
 
-                {!editing && (
+                {showCreationAids && (
                     <div className="expert-editor__idea">
                         <label className="expert-editor__label" htmlFor="expert-idea-input">{t.ideaLabel}</label>
                         <div className="expert-editor__idea-row">
@@ -751,7 +936,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                     </div>
                 )}
 
-                {ignoredSuggestions.length > 0 && (
+                {showCreationAids && ignoredSuggestions.length > 0 && (
                     <div className="expert-editor__ignored" data-testid="expert-ignored-suggestions">
                         <p className="expert-editor__hint">{t.ignoredSuggestions(ignoredSuggestions.length)}</p>
                         <div className="expert-editor__ignored-chips">
@@ -771,6 +956,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                             className="expert-editor__input"
                             type="text"
                             value={name}
+                            disabled={saving}
                             onChange={(e) => {
                                 cancelPendingGeneration();
                                 setName(e.target.value);
@@ -785,6 +971,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                             className="expert-editor__input"
                             type="text"
                             value={icon}
+                            disabled={saving}
                             onChange={(e) => {
                                 cancelPendingGeneration();
                                 setIcon(e.target.value);
@@ -801,6 +988,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                         className="expert-editor__textarea expert-editor__textarea--description"
                         rows={3}
                         value={description}
+                        disabled={saving}
                         onChange={(e) => {
                             cancelPendingGeneration();
                             setDescription(e.target.value);
@@ -816,6 +1004,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                         className="expert-editor__textarea expert-editor__textarea--description"
                         rows={3}
                         value={about}
+                        disabled={saving}
                         placeholder={t.aboutPlaceholder}
                         onChange={(e) => {
                             cancelPendingGeneration();
@@ -826,12 +1015,47 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
 
                 <div className="expert-editor__field">
                     <label className="expert-editor__label" htmlFor="expert-prompt-input">{t.promptLabel}</label>
+                    {isOptimizationReview ? (
+                        <section className="expert-editor__optimization-diff" data-testid="expert-optimization-diff" aria-label={t.optimizationChanges}>
+                            <div className="expert-editor__optimization-diff-title">{t.optimizationChanges}</div>
+                            <p className="expert-editor__hint">{t.optimizationChangesHint}</p>
+                            <div className="expert-editor__diff-section">
+                                <div className="expert-editor__diff-heading">
+                                    <div className="expert-editor__diff-label">{t.promptChanges}</div>
+                                    {hasPromptChanges ? <span className="expert-editor__diff-summary">{t.promptChangeSummary(promptDiffSummary.added, promptDiffSummary.removed)}</span> : null}
+                                </div>
+                                {hasPromptChanges ? (
+                                    <pre className="expert-editor__prompt-diff" data-testid="expert-prompt-diff">
+                                        {promptDiff.map((line, index) => (
+                                            <span key={`${line.kind}-${index}-${line.text}`} className={`expert-editor__prompt-diff-line expert-editor__prompt-diff-line--${line.kind}`}>
+                                                <span aria-hidden="true">{line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' '}</span>{line.text || ' '}
+                                            </span>
+                                        ))}
+                                    </pre>
+                                ) : <p className="expert-editor__hint" data-testid="expert-prompt-diff-empty">{t.noPromptChanges}</p>}
+                            </div>
+                            <div className="expert-editor__diff-section" data-testid="expert-capability-diff">
+                                <div className="expert-editor__diff-label">{t.capabilityChanges}</div>
+                                {hasCapabilityChanges ? (
+                                    <div className="expert-editor__diff-chips">
+                                        {toolAccessModeChanged ? <span className="expert-editor__diff-chip expert-editor__diff-chip--access">{tools.length > 0 ? t.toolAccessRestricted(tools.length) : t.toolAccessUnrestricted}</span> : null}
+                                        {skillAccessModeChanged ? <span className="expert-editor__diff-chip expert-editor__diff-chip--access">{skills.length > 0 ? t.skillAccessRestricted(skills.length) : t.skillAccessUnrestricted}</span> : null}
+                                        {toolChanges.added.map((name) => <span key={`tool-add-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--added">{t.added} · {t.toolsChipPrefix}: {toolDisplayLabel(name, isZh, toolDescByName.get(name), toolEntryByName.get(name))}</span>)}
+                                        {toolChanges.removed.map((name) => <span key={`tool-remove-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--removed">{t.removed} · {t.toolsChipPrefix}: {toolDisplayLabel(name, isZh, toolDescByName.get(name), toolEntryByName.get(name))}</span>)}
+                                        {skillChanges.added.map((name) => <span key={`skill-add-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--added">{t.added} · {t.skillsChipPrefix}: {skillDisplayLabel(name, isZh)}</span>)}
+                                        {skillChanges.removed.map((name) => <span key={`skill-remove-${name}`} className="expert-editor__diff-chip expert-editor__diff-chip--removed">{t.removed} · {t.skillsChipPrefix}: {skillDisplayLabel(name, isZh)}</span>)}
+                                    </div>
+                                ) : <p className="expert-editor__hint">{t.noCapabilityChanges}</p>}
+                            </div>
+                        </section>
+                    ) : null}
                     <textarea
                         id="expert-prompt-input"
                         data-testid="expert-prompt-input"
                         className="expert-editor__textarea"
                         rows={8}
                         value={systemPrompt}
+                        disabled={saving}
                         onChange={(e) => {
                             cancelPendingGeneration();
                             setSystemPrompt(e.target.value);
@@ -1022,10 +1246,13 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                                     {group.items.map((tool) => {
                                                         const risk = toolRisk(tool.name, tool);
                                                         const label = toolDisplayLabel(tool.name, isZh, tool.description, tool);
+                                                        const wasSelected = sourceTools.includes(tool.name);
+                                                        const isAdded = isOptimizationReview && tools.includes(tool.name) && !wasSelected;
+                                                        const isRemoved = isOptimizationReview && wasSelected && !tools.includes(tool.name);
                                                         return (
                                                             <label
                                                                 key={tool.name}
-                                                                className={`expert-editor__check expert-editor__check--meta${risk === 'dangerous' ? ' expert-editor__check--danger' : ''}`}
+                                                                className={`expert-editor__check expert-editor__check--meta${risk === 'dangerous' ? ' expert-editor__check--danger' : ''}${isAdded ? ' expert-editor__check--added' : ''}${isRemoved ? ' expert-editor__check--removed' : ''}`}
                                                                 title={`${tool.name}${tool.description ? ` — ${tool.description}` : ''}`}
                                                             >
                                                                 <input
@@ -1043,6 +1270,8 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                                                     <span className="expert-editor__check-label">{label}</span>
                                                                     <span className="expert-editor__check-id">{tool.name}</span>
                                                                     <span className={riskClass(risk)}>{riskLabel(risk, isZh)}</span>
+                                                                    {isAdded ? <span className="expert-editor__change-tag expert-editor__change-tag--added">{t.added}</span> : null}
+                                                                    {isRemoved ? <span className="expert-editor__change-tag expert-editor__change-tag--removed">{t.removed}</span> : null}
                                                                     {tool.deferred ? (
                                                                         <span className="expert-editor__deferred">{t.deferredTag}</span>
                                                                     ) : null}
@@ -1098,10 +1327,13 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                                     {group.items.map((skill) => {
                                                         const risk = skillRisk(skill);
                                                         const label = skillDisplayLabel(skill, isZh);
+                                                        const wasSelected = sourceSkills.includes(skill);
+                                                        const isAdded = isOptimizationReview && skills.includes(skill) && !wasSelected;
+                                                        const isRemoved = isOptimizationReview && wasSelected && !skills.includes(skill);
                                                         return (
                                                             <label
                                                                 key={skill}
-                                                                className={`expert-editor__check expert-editor__check--meta${risk === 'dangerous' ? ' expert-editor__check--danger' : ''}`}
+                                                                className={`expert-editor__check expert-editor__check--meta${risk === 'dangerous' ? ' expert-editor__check--danger' : ''}${isAdded ? ' expert-editor__check--added' : ''}${isRemoved ? ' expert-editor__check--removed' : ''}`}
                                                                 title={skill}
                                                             >
                                                                 <input
@@ -1121,6 +1353,8 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                                                                         <span className="expert-editor__check-id">{skill}</span>
                                                                     ) : null}
                                                                     <span className={riskClass(risk)}>{riskLabel(risk, isZh)}</span>
+                                                                    {isAdded ? <span className="expert-editor__change-tag expert-editor__change-tag--added">{t.added}</span> : null}
+                                                                    {isRemoved ? <span className="expert-editor__change-tag expert-editor__change-tag--removed">{t.removed}</span> : null}
                                                                 </span>
                                                             </label>
                                                         );
@@ -1136,12 +1370,13 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                 </div>
 
                 {saveError ? <p className="expert-editor__error" role="alert">{saveError}</p> : null}
+                </fieldset>
 
                 <div className="expert-editor__actions">
                     <button
                         type="button"
                         className="expert-editor__button expert-editor__button--secondary"
-                        onClick={onClose}
+                        onClick={requestClose}
                         disabled={saving}
                     >
                         {t.cancel}
@@ -1157,7 +1392,28 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                         {saving ? t.saving : t.save}
                     </button>
                 </div>
+                {confirmDiscard ? (
+                    <div className="expert-editor__discard-confirm" role="alertdialog" aria-modal="true" aria-label={t.unsavedChanges}>
+                        <p>{t.unsavedChanges}</p>
+                        <div className="expert-editor__discard-actions">
+                            <button type="button" className="expert-editor__button expert-editor__button--secondary" onClick={() => setConfirmDiscard(false)}>
+                                {t.cancel}
+                            </button>
+                            <button type="button" className="expert-editor__button expert-editor__button--danger" onClick={onClose}>
+                                {t.discard}
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
             </div>
         </div>
     );
+    // `.app-scale-layer` intentionally uses transform for DPI scaling. A fixed
+    // descendant of a transformed element is fixed to that element, not the
+    // WebView, which is why this dialog could be clipped by the app frame.
+    // The viewport keeps the current theme variables but is outside that
+    // transform and its overflow boundary.
+    if (typeof document === 'undefined') return dialog;
+    const overlayHost = document.querySelector<HTMLElement>('.app-viewport') || document.body;
+    return createPortal(dialog, overlayHost);
 };

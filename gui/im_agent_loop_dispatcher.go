@@ -60,6 +60,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		status, _ := classifyIMAgentResponseOutcome(result)
 		if result != nil {
+			if trajRunState != nil {
+				result.ToolCallsInTurn = trajRunState.TotalToolCallsInLoop
+			}
 			if result.RequestID == "" {
 				result.RequestID = requestID
 			}

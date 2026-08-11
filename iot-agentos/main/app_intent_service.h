@@ -11,7 +11,7 @@
 
 #include "device_api.h"
 
-#define APP_INTENT_ABI_VERSION 1u
+#define APP_INTENT_ABI_VERSION 2u
 
 typedef enum {
     APP_INTENT_PRIMARY_ACTIVATE = 0,
@@ -26,6 +26,10 @@ typedef enum {
 typedef struct {
     uint32_t struct_size;
     uint32_t abi_version;
+    /* Preserves the producer lifetime together with input_sequence, so
+     * asynchronous policy/diagnostic consumers never conflate a reused
+     * sequence from a later Input Service generation with an older event. */
+    uint32_t input_generation;
     uint32_t input_sequence;
     uint64_t timestamp_us;
     app_intent_type_t type;

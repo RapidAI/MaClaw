@@ -92,7 +92,7 @@ func (m *lansengerGatewayManager) recordGroupMessage(msg lansenger.IncomingMessa
 		}
 	}
 	if _, err := svc.store.Append(
-		groupID,
+		m.groupSummaryScopeID(groupID),
 		msg.GroupName,
 		msg.MessageID,
 		msg.FromUserID,
@@ -139,18 +139,19 @@ func (m *lansengerGatewayManager) tryHandleGroupSummaryCommand(msg lansenger.Inc
 			msg, "无法识别群 ID，无法处理摘要命令。", opts, true))
 		return true
 	}
+	summaryKey := m.groupSummaryScopeID(groupID)
 
 	switch kind {
 	case lansengergroupsummary.SummaryCmdStart:
 		// Serialize with in-flight summary so cursor moves are not racing a mark.
-		if !svc.tryBegin(groupID) {
+		if !svc.tryBegin(summaryKey) {
 			_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
 				msg, "该群正在生成摘要，请稍后再试。", opts, true))
 			return true
 		}
 		// defer runs when tryHandle returns (this case returns immediately after).
-		defer svc.end(groupID)
-		body := svc.markSummaryStart(groupID, msg.GroupName)
+		defer svc.end(summaryKey)
+		body := svc.markSummaryStart(summaryKey, msg.GroupName)
 		_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(msg, body, opts, true))
 		return true
 
@@ -162,7 +163,7 @@ func (m *lansengerGatewayManager) tryHandleGroupSummaryCommand(msg lansenger.Inc
 	case lansengergroupsummary.SummaryCmdRun:
 		// Claim the in-flight slot before acknowledging, so concurrent /summary
 		// gets a clear busy reply instead of duplicate "正在生成…".
-		if !svc.tryBegin(groupID) {
+		if !svc.tryBegin(summaryKey) {
 			_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
 				msg, "该群正在生成摘要，请稍后再试。", opts, true))
 			return true
@@ -172,13 +173,13 @@ func (m *lansengerGatewayManager) tryHandleGroupSummaryCommand(msg lansenger.Inc
 			msg, "正在生成群讨论摘要…", opts, true))
 
 		go func() {
-			defer svc.end(groupID)
+			defer svc.end(summaryKey)
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("[lansenger-summary] panic: %v", r)
 				}
 			}()
-			body := svc.generateSummary(groupID, msg.GroupName)
+			body := svc.generateSummary(summaryKey, msg.GroupName)
 			if err := gw.SendText(context.Background(), buildLansengerOutgoingText(msg, body, opts)); err != nil {
 				log.Printf("[lansenger-summary] send group=%s: %v", groupID, err)
 			}
@@ -186,6 +187,19 @@ func (m *lansengerGatewayManager) tryHandleGroupSummaryCommand(msg lansenger.Inc
 		return true
 	}
 	return false
+}
+
+// groupSummaryScopeID isolates the otherwise group-keyed summary store across
+// bot profiles. The legacy singleton keeps its historical raw group key so an
+// upgrade does not silently hide existing summaries; every profile runtime gets
+// an unambiguous profile-qualified key instead.
+func (m *lansengerGatewayManager) groupSummaryScopeID(groupID string) string {
+	groupID = strings.TrimSpace(groupID)
+	if m == nil || m.profile == nil {
+		return groupID
+	}
+	profileID := strings.TrimSpace(m.profileID())
+	return fmt.Sprintf("lansenger-summary:%d:%s:group:%d:%s", len(profileID), profileID, len(groupID), groupID)
 }
 
 // markSummaryStart advances the summary cursor through the latest buffered

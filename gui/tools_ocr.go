@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
@@ -21,7 +22,8 @@ func registerOCRTools(registry *ToolRegistry, app *App) {
 		Name: "ocr_recognize",
 		Description: "Recognize text in an image using the built-in local PP-OCRv6 engine (fully offline, no Python or cloud). " +
 			"Provide image_path (local PNG/JPEG file) or image_base64 (base64-encoded PNG/JPEG, data-URI allowed) — at least one is required. " +
-			"Returns recognized text regions with bounding boxes [x,y,w,h] and confidence.",
+			"Returns recognized text regions with bounding boxes [x,y,w,h] and confidence. " +
+			"When the full result is needed downstream (e.g. saving to a file), pass output_path: the complete result is written there directly, avoiding truncation of large in-context tool results.",
 		Category: ToolCategoryBuiltin,
 		Tags:     []string{"ocr", "image", "text", "recognition"},
 		Priority: 5,
@@ -29,6 +31,7 @@ func registerOCRTools(registry *ToolRegistry, app *App) {
 		InputSchema: map[string]interface{}{
 			"image_path":   map[string]interface{}{"type": "string", "description": "Local file path to a PNG/JPEG image"},
 			"image_base64": map[string]interface{}{"type": "string", "description": "Base64-encoded PNG/JPEG image (data-URI prefix allowed)"},
+			"output_path":  map[string]interface{}{"type": "string", "description": "Optional: write the full recognition result text to this local file instead of returning it inline"},
 		},
 		Source: "builtin:ocr",
 		Handler: func(args map[string]interface{}) string {
@@ -61,7 +64,42 @@ func runOCRRecognizeTool(app *App, args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("ocr_recognize failed: %v", err)
 	}
-	return browser.FormatOCRForLLM(results)
+	text := browser.FormatOCRForLLM(results)
+
+	// output_path: persist the full result to a file so large outputs never
+	// depend on (truncated) in-context tool results.
+	if outPath := strings.TrimSpace(stringVal(args, "output_path")); outPath != "" {
+		written, wErr := writeOCRResultFile(outPath, text)
+		if wErr != nil {
+			return fmt.Sprintf("ocr_recognize: write output file: %v", wErr)
+		}
+		return fmt.Sprintf("OCR 完成：%d 个文本区域，完整结果已写入 %s（%d 字节）。", len(results), written, len(text))
+	}
+	return text
+}
+
+// writeOCRResultFile writes the OCR result text to path, creating parent
+// directories as needed, via a <path>.tmp sibling + atomic rename (same
+// pattern as the model file installers).
+func writeOCRResultFile(path, content string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	if dir := filepath.Dir(abs); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", fmt.Errorf("create directory: %w", err)
+		}
+	}
+	tmp := abs + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		return "", fmt.Errorf("write: %w", err)
+	}
+	if err := os.Rename(tmp, abs); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("install: %w", err)
+	}
+	return abs, nil
 }
 
 // ocrToolMaxImageBytes caps the image input size accepted by ocr_recognize.

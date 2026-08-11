@@ -65,12 +65,21 @@ typedef struct {
     bool started;
     bool accepting;
     bool stopping;
+    /* A timeout keeps this generation closed, but releases the stop owner so
+     * the composition root can resume the bounded teardown transaction. */
+    bool stop_in_progress;
     bool stop_enqueued;
     uint32_t publishers_in_flight;
 } app_intent_service_state_t;
 
 static app_intent_service_state_t s_service;
 static portMUX_TYPE s_service_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void app_intent_service_release_stop_owner(void) {
+    taskENTER_CRITICAL(&s_service_lock);
+    s_service.stop_in_progress = false;
+    taskEXIT_CRITICAL(&s_service_lock);
+}
 
 static bool is_control_intent(app_intent_type_t intent) {
     return intent != APP_INTENT_INCREASE_VOLUME &&
@@ -145,10 +154,12 @@ static void app_interaction_task(void *arg) {
         if (event.kind == APP_INTENT_QUEUE_EVENT_STOP) break;
         if (s_service.stopping) continue;
         if (event.intent.struct_size != sizeof(app_intent_event_t) ||
-            event.intent.abi_version != APP_INTENT_ABI_VERSION) {
-            ESP_LOGW(TAG, "discarded incompatible app intent: size=%lu abi=%lu",
+            event.intent.abi_version != APP_INTENT_ABI_VERSION ||
+            event.intent.input_generation == 0) {
+            ESP_LOGW(TAG, "discarded incompatible app intent: size=%lu abi=%lu generation=%lu",
                      (unsigned long)event.intent.struct_size,
-                     (unsigned long)event.intent.abi_version);
+                     (unsigned long)event.intent.abi_version,
+                     (unsigned long)event.intent.input_generation);
             continue;
         }
         if (s_service.consumer) {
@@ -162,7 +173,8 @@ static void app_interaction_task(void *arg) {
 static void on_device_input(const device_input_event_t *input, void *context) {
     (void)context;
     if (!input || input->struct_size != sizeof(*input) ||
-        input->abi_version != DEVICE_PROFILE_ABI_VERSION) {
+        input->abi_version != DEVICE_INPUT_EVENT_ABI_VERSION ||
+        input->generation == 0) {
         ESP_LOGW(TAG, "discarded invalid Device Input event");
         return;
     }
@@ -182,6 +194,7 @@ static void on_device_input(const device_input_event_t *input, void *context) {
     app_intent_event_t event = {
         .struct_size = sizeof(app_intent_event_t),
         .abi_version = APP_INTENT_ABI_VERSION,
+        .input_generation = input->generation,
         .input_sequence = input->sequence,
         .timestamp_us = input->timestamp_us,
         .type = intent,
@@ -308,29 +321,43 @@ device_status_t app_intent_service_stop(uint32_t timeout_ms) {
         taskEXIT_CRITICAL(&s_service_lock);
         return DEVICE_STATUS_OK;
     }
+    if (s_service.stop_in_progress) {
+        taskEXIT_CRITICAL(&s_service_lock);
+        return DEVICE_STATUS_BUSY;
+    }
     if (!s_service.stopping) {
         s_service.accepting = false;
         s_service.stopping = true;
     }
-    if (!s_service.stop_enqueued) {
-        s_service.stop_enqueued = true;
-        enqueue_stop = true;
-    }
+    s_service.stop_in_progress = true;
+    enqueue_stop = !s_service.stop_enqueued;
     taskEXIT_CRITICAL(&s_service_lock);
-    if (!enqueue_stop) return DEVICE_STATUS_BUSY;
 
     const TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
     const TickType_t started_at = xTaskGetTickCount();
     /* First stop Device Input. Its bounded join guarantees no binding callback
      * remains in flight before this service releases its own queues. */
-    device_status_t input_status = device_input_stop(timeout_ms);
-    if (input_status != DEVICE_STATUS_OK) return input_status;
+    TickType_t elapsed = xTaskGetTickCount() - started_at;
+    TickType_t remaining = elapsed >= deadline ? 0 : deadline - elapsed;
+    if (remaining == 0) {
+        app_intent_service_release_stop_owner();
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    device_status_t input_status = device_input_stop(
+        (uint32_t)remaining * portTICK_PERIOD_MS);
+    if (input_status != DEVICE_STATUS_OK) {
+        app_intent_service_release_stop_owner();
+        return input_status;
+    }
     for (;;) {
         taskENTER_CRITICAL(&s_service_lock);
         uint32_t publishers = s_service.publishers_in_flight;
         taskEXIT_CRITICAL(&s_service_lock);
         if (publishers == 0) break;
-        if ((xTaskGetTickCount() - started_at) >= deadline) return DEVICE_STATUS_TIMEOUT;
+        if ((xTaskGetTickCount() - started_at) >= deadline) {
+            app_intent_service_release_stop_owner();
+            return DEVICE_STATUS_TIMEOUT;
+        }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
     app_intent_queue_event_t stop_event = {
@@ -340,12 +367,22 @@ device_status_t app_intent_service_stop(uint32_t timeout_ms) {
         },
         .kind = APP_INTENT_QUEUE_EVENT_STOP,
     };
-    if (xQueueSend(s_service.critical_queue, &stop_event, deadline) != pdPASS) {
-        return DEVICE_STATUS_TIMEOUT;
+    elapsed = xTaskGetTickCount() - started_at;
+    remaining = elapsed >= deadline ? 0 : deadline - elapsed;
+    if (enqueue_stop) {
+        if (remaining == 0 ||
+            xQueueSend(s_service.critical_queue, &stop_event, remaining) != pdPASS) {
+            app_intent_service_release_stop_owner();
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        taskENTER_CRITICAL(&s_service_lock);
+        s_service.stop_enqueued = true;
+        taskEXIT_CRITICAL(&s_service_lock);
     }
-    TickType_t elapsed = xTaskGetTickCount() - started_at;
-    TickType_t remaining = elapsed >= deadline ? 0 : deadline - elapsed;
+    elapsed = xTaskGetTickCount() - started_at;
+    remaining = elapsed >= deadline ? 0 : deadline - elapsed;
     if (xSemaphoreTake(s_service.stopped, remaining) != pdTRUE) {
+        app_intent_service_release_stop_owner();
         return DEVICE_STATUS_TIMEOUT;
     }
     vQueueDelete(s_service.queue_set);
@@ -353,7 +390,9 @@ device_status_t app_intent_service_stop(uint32_t timeout_ms) {
     vQueueDelete(s_service.control_queue);
     vQueueDelete(s_service.critical_queue);
     vSemaphoreDelete(s_service.stopped);
+    taskENTER_CRITICAL(&s_service_lock);
     memset(&s_service, 0, sizeof(s_service));
+    taskEXIT_CRITICAL(&s_service_lock);
     ESP_LOGI(TAG, "app interaction task stopped");
     return DEVICE_STATUS_OK;
 }

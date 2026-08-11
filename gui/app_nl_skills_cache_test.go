@@ -227,14 +227,21 @@ func TestCachedSkillScannerRemoveByDirCancelsPendingUpsert(t *testing.T) {
 		Status:   "active",
 		SkillDir: dir,
 	}})
-	if len(scanner.pendingUpserts) != 1 {
-		t.Fatalf("pendingUpserts before remove = %d, want 1", len(scanner.pendingUpserts))
+	scanner.removalsMu.Lock()
+	pendingBeforeRemove := len(scanner.pendingUpserts)
+	scanner.removalsMu.Unlock()
+	if pendingBeforeRemove != 1 {
+		t.Fatalf("pendingUpserts before remove = %d, want 1", pendingBeforeRemove)
 	}
 	scanner.RemoveByDir(dir)
-	if len(scanner.pendingUpserts) != 0 {
-		t.Fatalf("pendingUpserts after remove = %d, want 0", len(scanner.pendingUpserts))
+	scanner.removalsMu.Lock()
+	pendingAfterRemove := len(scanner.pendingUpserts)
+	_, removed := scanner.pendingRemovals[skillDirIdentityKey(dir)]
+	scanner.removalsMu.Unlock()
+	if pendingAfterRemove != 0 {
+		t.Fatalf("pendingUpserts after remove = %d, want 0", pendingAfterRemove)
 	}
-	if _, removed := scanner.pendingRemovals[skillDirIdentityKey(dir)]; !removed {
+	if !removed {
 		t.Fatalf("pendingRemovals missing %s", dir)
 	}
 	for _, s := range scanner.Get() {

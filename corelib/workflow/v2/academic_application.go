@@ -148,10 +148,10 @@ func BuildAcademicApplicationTemplate(p FundingProfile) *WorkflowTemplate {
 				Description:   formDesc,
 				AcceptsResume: true,
 				AcceptsSupplementary: &SupplementaryDocConfig{
-					Label:       "研究方向相关材料（可选）",
-					Description: "可上传研究计划初稿、代表性论文列表、课题组简介、获奖证书扫描件等，系统将在后续阶段参考这些材料生成更精准的内容。支持 PDF、Word、Markdown、TXT 格式，可上传 0~5 份。",
-					MaxFiles:    5,
-					AcceptedTypes: []string{".pdf", ".docx", ".doc", ".md", ".txt"},
+					Label:         "研究方向相关材料（可选）",
+					Description:   "可上传研究计划初稿、代表性论文列表、课题组简介、获奖证书扫描件等，系统将在后续阶段参考这些材料生成更精准的内容。支持 PDF、Word、PowerPoint、Excel、Markdown、TXT 格式，可上传 0~5 份。",
+					MaxFiles:      5,
+					AcceptedTypes: []string{".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".md", ".txt"},
 				},
 				// Common fields shared across both variants (always visible)
 				Fields: []PhaseInputField{},
@@ -162,7 +162,7 @@ func BuildAcademicApplicationTemplate(p FundingProfile) *WorkflowTemplate {
 						Label: "上传简历/CV（自动提取填充）",
 						Fields: []PhaseInputField{
 							{Name: "resume_file", Label: "简历文件", Type: "file", Required: true,
-								Description: "支持 PDF、Word、Markdown 格式的简历或CV",
+								Description: "支持 PDF、Word、PowerPoint、Excel、Markdown、TXT 格式的简历或 CV",
 								Placeholder: "选择简历文件"},
 						},
 					},

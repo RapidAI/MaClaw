@@ -1414,6 +1414,20 @@ func (a *App) forwardDesktopFileToIM(hubClient *RemoteHubClient, b64Data, fileNa
 // behavior.
 func (a *App) forwardDesktopFileToIMRequest(hubClient *RemoteHubClient, req agent.IMFileDeliveryRequest) error {
 	req.Target = req.Target.Normalize()
+	req.BotProfileID = strings.TrimSpace(req.BotProfileID)
+	// A Lansenger profile is an isolated sender. Hub proactive-file messages do
+	// not carry a trusted profile identity, so they must not become a fallback
+	// route for a profile-owned artifact. Require an explicit Lansenger target
+	// and deliver only through that profile's local gateway.
+	if req.BotProfileID != "" {
+		if !req.Target.Active() || scheduler.CanonicalDeliveryChannel(req.Target.Channel) != scheduler.DeliveryChannelLansenger {
+			return fmt.Errorf("lansenger bot profile %q requires an explicit lansenger file target", req.BotProfileID)
+		}
+		if err := a.resolveIMFileDeliveryTargetForBot(&req.Target, req.BotProfileID); err != nil {
+			return err
+		}
+		return a.sendLocalIMFileToTarget(req)
+	}
 	if req.Target.Active() {
 		if err := a.resolveIMFileDeliveryTarget(&req.Target); err != nil {
 			return err
@@ -1461,16 +1475,40 @@ func (a *App) forwardDesktopFileToIMRequest(hubClient *RemoteHubClient, req agen
 }
 
 func (a *App) resolveIMFileDeliveryTarget(target *agent.IMFileDeliveryTarget) error {
+	return a.resolveIMFileDeliveryTargetForBot(target, "")
+}
+
+// resolveIMFileDeliveryTargetForBot resolves a name-only Lansenger group from
+// the sender bot's own visible directory. The profile identity comes from the
+// private runtime, never from an artifact/tool payload.
+func (a *App) resolveIMFileDeliveryTargetForBot(target *agent.IMFileDeliveryTarget, botProfileID string) error {
 	if target == nil {
 		return fmt.Errorf("IM file target is nil")
 	}
 	*target = target.Normalize()
+	botProfileID = strings.TrimSpace(botProfileID)
 	if strings.TrimSpace(target.Channel) == "" {
 		return fmt.Errorf("target channel is required")
 	}
 	if target.GroupID == "" && target.UserID == "" && target.GroupName != "" {
+		var (
+			refs []scheduler.TargetRef
+			err  error
+		)
+		if botProfileID != "" && scheduler.CanonicalDeliveryChannel(target.Channel) == scheduler.DeliveryChannelLansenger {
+			refs, err = a.listLansengerDeliveryTargetsForBot("", botProfileID)
+		} else {
+			reg := a.scheduleTargetCatalogRegistry()
+			if reg == nil {
+				return fmt.Errorf("delivery target catalog unavailable")
+			}
+			refs, err = reg.ListTargets(context.Background(), target.Channel, "")
+		}
+		if err != nil {
+			return fmt.Errorf("resolve IM file target %q: %w", target.GroupName, err)
+		}
 		d := &scheduler.TaskDelivery{Enabled: true, Channel: target.Channel, Targets: []scheduler.DeliveryTarget{{Kind: scheduler.DeliveryKindGroup, GroupName: target.GroupName}}}
-		if err := a.resolveScheduleDelivery(d); err != nil {
+		if err := scheduler.ResolveDeliveryGroupNames(d, scheduler.TargetRefsToGroupRefs(refs, scheduler.DeliveryKindGroup)); err != nil {
 			return fmt.Errorf("resolve IM file target %q: %w", target.GroupName, err)
 		}
 		if len(d.Targets) != 1 || strings.TrimSpace(d.Targets[0].GroupID) == "" {
@@ -1495,6 +1533,7 @@ func (a *App) sendLocalIMFileToTarget(req agent.IMFileDeliveryRequest) error {
 		return fmt.Errorf("file payload is empty")
 	}
 	target := req.Target.Normalize()
+	botProfileID := strings.TrimSpace(req.BotProfileID)
 	channel := scheduler.CanonicalDeliveryChannel(target.Channel)
 	peer := strings.TrimSpace(target.UserID)
 	isGroup := false
@@ -1515,14 +1554,18 @@ func (a *App) sendLocalIMFileToTarget(req agent.IMFileDeliveryRequest) error {
 	case scheduler.DeliveryChannelLansenger:
 		if scheduler.IsSelfPeerID(peer) {
 			peer = ""
-			if a.lansengerGateway != nil {
-				peer = a.lansengerGateway.LastPrivatePeerID()
+			manager, managerErr := a.lansengerGatewayManagerForSend(botProfileID)
+			if managerErr != nil {
+				return managerErr
+			}
+			if manager != nil {
+				peer = manager.LastPrivatePeerID()
 			}
 		}
 		if peer == "" {
 			return fmt.Errorf("lansenger target is unavailable")
 		}
-		gw, err := a.lansengerGatewayForSend()
+		gw, err := a.lansengerGatewayForSend(botProfileID)
 		if err != nil {
 			return err
 		}
@@ -1531,7 +1574,7 @@ func (a *App) sendLocalIMFileToTarget(req agent.IMFileDeliveryRequest) error {
 				return err
 			}
 		}
-		return gw.SendMedia(context.Background(), lansenger.OutgoingMedia{ToUserID: peer, FileData: raw, FileName: req.FileName, MediaType: mediaTypeForProactiveFile(req.MIMEType, req.FileName), IsGroup: isGroup})
+		return gw.SendMedia(context.Background(), lansenger.OutgoingMedia{ToUserID: peer, FileData: raw, FileName: req.FileName, MediaType: mediaTypeForProactiveFile(req.MIMEType, req.FileName), IsGroup: isGroup, Strict: botProfileID != ""})
 	case scheduler.DeliveryChannelTelegram:
 		var chatID int64
 		if scheduler.IsSelfPeerID(peer) {

@@ -34,6 +34,12 @@ const (
 	// without sending a CloseProjectTabSession write back to the backend.
 	EventProjectTaskDeleted = "project-task:deleted"
 
+	// EventExpertTaskDeleted is emitted with the expert id when a durable
+	// expert task is permanently removed. Expert conversation state is keyed
+	// by expert id (not the task workspace path), so the frontend needs this
+	// signal to drop orphaned tab/history caches.
+	EventExpertTaskDeleted = "expert-task:deleted"
+
 	// EventAppUpdateAvailable is emitted when the background update checker
 	// (startup delay + periodic re-check) finds a newer application release.
 	EventAppUpdateAvailable = "app-update-available"

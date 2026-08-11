@@ -586,10 +586,6 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
         0%, 100% { transform: scale(1); opacity: 1; }
         50% { transform: scale(1.03); opacity: 0.92; }
     }
-    @keyframes maclaw-brand-shimmer {
-        0%, 100% { filter: drop-shadow(0 0 3px rgba(47, 111, 188, 0.28)) brightness(1); }
-        50% { filter: drop-shadow(0 0 7px rgba(47, 111, 188, 0.38)) brightness(1.08); }
-    }
     @keyframes ai-update-notice-pulse {
         0%, 100% { box-shadow: inset 0 0 0 1px rgba(79, 127, 111, 0.34), 0 0 0 0 rgba(79, 127, 111, 0.28); }
         50% { box-shadow: inset 0 0 0 1px rgba(79, 127, 111, 0.52), 0 0 0 5px rgba(79, 127, 111, 0.10); }

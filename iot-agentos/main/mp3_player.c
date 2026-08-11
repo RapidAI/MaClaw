@@ -294,8 +294,12 @@ esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
                                      : ESP_ERR_INVALID_RESPONSE;
     }
     if (state.playback_started) {
-        result = device_status_to_esp_err(
+        /* Preserve a decoder/write failure. The physical end transaction is
+         * still mandatory for codec/session cleanup, but a successful cleanup
+         * must not turn a corrupt or truncated MP3 into a false success. */
+        esp_err_t end_result = device_status_to_esp_err(
             device_audio_playback_end(result == ESP_OK));
+        if (result == ESP_OK) result = end_result;
     }
     free(output);
     esp_audio_simple_dec_close(decoder);

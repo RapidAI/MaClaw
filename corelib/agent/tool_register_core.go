@@ -370,7 +370,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "read_document",
-		Description: "Read text from office/PDF documents using native parsers (no Python/Word required). Supports PDF (.pdf), Word (.docx/.doc), Excel (.xlsx/.xls/.csv), PowerPoint (.pptx), and plain text (.txt/.md). Prefer this over read_file/bash for documents. For long docs, use offset+max_chars to page through (# next_offset in the result).",
+		Description: "Read text from office/PDF documents using native parsers (no Python/Word required). Supports PDF (.pdf), Word (.docx/.doc), Excel (.xlsx/.xls/.csv), PowerPoint (.ppt/.pptx), and plain text (.txt/.md). Prefer this over read_file/bash for documents. For long docs, use offset+max_chars to page through (# next_offset in the result).",
 		Properties: map[string]interface{}{
 			"file_path":    map[string]string{"type": "string", "description": "Document file path (alias: path)"},
 			"path":         map[string]string{"type": "string", "description": "Alias for file_path"},
@@ -384,12 +384,13 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "read_excel",
-		Description: "Read an Excel file (.xlsx/.csv modern, .xls legacy). Returns cell data as JSON. Supports optional sheet selection and A1-notation range filtering (.xlsx/.csv only).",
+		Description: "Read an Excel file (.xlsx/.csv modern, .xls legacy). Returns bounded cell data as JSON. Supports optional sheet selection, A1-notation range filtering, and max_rows (default 1000, max 5000). truncated=true means more rows remain.",
 		Properties: map[string]interface{}{
 			"file_path": map[string]string{"type": "string", "description": "Excel file path (alias: path)"},
 			"path":      map[string]string{"type": "string", "description": "Alias for file_path"},
 			"sheet":     map[string]string{"type": "string", "description": "Optional sheet name (defaults to first sheet)"},
-			"range":     map[string]string{"type": "string", "description": "Optional A1-notation cell range, e.g. A1:D10 (.xlsx/.csv only)"},
+			"range":     map[string]string{"type": "string", "description": "Optional A1-notation cell range, e.g. A1:D10"},
+			"max_rows":  map[string]string{"type": "integer", "description": "Maximum returned rows (default 1000, max 5000); response sets truncated=true when additional rows remain."},
 		},
 		Required: []string{},
 		Handler:  func(args map[string]interface{}) string { return ToolReadExcel(args) },
@@ -409,10 +410,12 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "read_pptx",
-		Description: "Read a PowerPoint PPTX file. Returns structured JSON with slides, shapes, text (with formatting), tables, charts, and speaker notes. Legacy .ppt is not supported — convert to .pptx first, or use read_document for text extraction from .pptx.",
+		Description: "Read a PowerPoint PPTX file. Returns bounded structured JSON with slides, shapes, text (with formatting), tables, charts, and speaker notes. max_slides defaults to 100 (max 500); use slide_offset=next_offset when truncated=true. This structured reader is PPTX-only; use read_document for six-format text extraction, including legacy .ppt.",
 		Properties: map[string]interface{}{
-			"file_path": map[string]string{"type": "string", "description": "PPTX file path (alias: path)"},
-			"path":      map[string]string{"type": "string", "description": "Alias for file_path"},
+			"file_path":    map[string]string{"type": "string", "description": "PPTX file path (alias: path)"},
+			"path":         map[string]string{"type": "string", "description": "Alias for file_path"},
+			"max_slides":   map[string]string{"type": "integer", "description": "Maximum returned slides (default 100, max 500); response sets truncated=true when additional slides remain."},
+			"slide_offset": map[string]string{"type": "integer", "description": "Zero-based slide offset for a follow-up structured page; use next_offset from a truncated response."},
 		},
 		Required: []string{},
 		Handler:  func(args map[string]interface{}) string { return ToolReadPPTX(args) },
@@ -693,7 +696,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "knowledge_import_directory",
-		Description: "Scan or import a local directory/folder of documents into the local knowledge base. Only use after the user explicitly provides or approves the directory path.",
+		Description: "Scan or import a local directory/folder of documents into the local knowledge base. Supports DOC/DOCX, PPT/PPTX, XLS/XLSX, PDF, CSV, Markdown, and TXT; PPT rich knowledge content requires the OfficeRead Knowledge opt-in. Only use after the user explicitly provides or approves the directory path.",
 		Properties: map[string]interface{}{
 			"root_path":    map[string]string{"type": "string", "description": "Directory containing documents"},
 			"path":         map[string]string{"type": "string", "description": "Alias for root_path."},
@@ -705,7 +708,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"save_scope":   map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
 			"topic_hint":   map[string]string{"type": "string", "description": "Optional topic hint"},
 			"recursive":    map[string]string{"type": "boolean", "description": "Include subdirectories, default true"},
-			"include_exts": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx, .md"},
+			"include_exts": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
 			"max_file_mb":  map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
 			"start_async":  map[string]string{"type": "boolean", "description": "For import action, start async job. Default true."},
 		},
@@ -714,7 +717,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "knowledge_import_files",
-		Description: "Scan or import explicitly provided local document file paths into the local knowledge base. Use for importing files/documents/PDFs into the knowledge base / external brain. Only use after the user explicitly provides or approves the file paths.",
+		Description: "Scan or import explicitly provided local document file paths into the local knowledge base. Supports DOC/DOCX, PPT/PPTX, XLS/XLSX, PDF, CSV, Markdown, and TXT; PPT rich knowledge content requires the OfficeRead Knowledge opt-in. Only use after the user explicitly provides or approves the file paths.",
 		Properties: map[string]interface{}{
 			"file_paths":   map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Explicit local document file paths to scan or import"},
 			"paths":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for file_paths."},
@@ -724,7 +727,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"action":       map[string]string{"type": "string", "description": "scan | import. Default import."},
 			"save_scope":   map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
 			"topic_hint":   map[string]string{"type": "string", "description": "Optional topic hint"},
-			"include_exts": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx, .md"},
+			"include_exts": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
 			"max_file_mb":  map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
 			"start_async":  map[string]string{"type": "boolean", "description": "For import action, start async job when the host handler supports it. Default true."},
 		},

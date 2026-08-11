@@ -7,7 +7,7 @@ import { localizeText } from '../../i18n';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { agentModeFromTaskTags, CODING_TASK_COMMAND_MAX_LEN, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, type PureCodingAgentMode } from '../ai/codingTaskMode';
-import { normalizeProjectSessionPath } from '../ai/aiAssistantPanelSessionUtils';
+import { expertIDFromTaskTags, normalizeProjectSessionPath } from '../ai/aiAssistantPanelSessionUtils';
 import { extractErrorMessage } from '../ai/participantAddError';
 import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
 import { SidebarTaskEvidencePanel } from './SidebarTaskEvidencePanel';
@@ -45,18 +45,8 @@ export type TaskContextMenu = {
     tags?: string[];
 } | null;
 
-const EXPERT_TASK_SOURCE_PREFIX = 'source:expert:';
-
-/** Return the expert identity carried by a durable task-management row. */
-export function expertIDFromTaskTags(tags?: string[] | null): string {
-    for (const rawTag of tags || []) {
-        const tag = String(rawTag || '').trim();
-        if (!tag.startsWith(EXPERT_TASK_SOURCE_PREFIX)) continue;
-        const expertID = tag.slice(EXPERT_TASK_SOURCE_PREFIX.length).trim();
-        if (expertID) return expertID;
-    }
-    return '';
-}
+/** Re-export for task sidebar consumers that already import from this module. */
+export { expertIDFromTaskTags };
 
 type TaskIconKind = 'pin' | 'reference' | 'coding' | 'remote_coding' | 'task';
 

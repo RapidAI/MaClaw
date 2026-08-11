@@ -18,7 +18,9 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	defer svc.Close()
 	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	defer server.Close()
 
 	req := httptest.NewRequest(http.MethodGet, "/app/", nil)
 	w := httptest.NewRecorder()
@@ -643,7 +645,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		`knowledgeButton("knowledgeFileImportBtn"`,
 		"files.forEach((file) => form.append(\"file\", file))",
 		`knowledgeButton("knowledgeURLImportBtn"`,
-		"accept=\".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar\"",
+		"accept=\".doc,.docx,.pdf,.ppt,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar\"",
 		"role=\"search\"",
 		"id=\"skillSearchBtn\" type=\"button\"",
 		"data-install-skill",

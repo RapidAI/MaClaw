@@ -31,6 +31,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/doctor"
@@ -116,6 +117,8 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	if configLoadErr != nil {
 		logger.Warn("config load failed, using defaults: %v", configLoadErr)
 	}
+
+	installTUIOfficeReadConfigProvider(dataDir)
 
 	// Build LLM config from the shared config file.
 	llmCfg := buildLLMConfigFromAppConfig(appCfg)
@@ -352,6 +355,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	if app.knowledgeStore != nil {
 		app.knowledgeStore.Close()
 	}
+	if app.codingRuntimeStore != nil {
+		_ = app.codingRuntimeStore.Close()
+	}
 	sshMgr.Close()
 	logger.Info("%s-tui stopped", strings.ToLower(brand.Current().DisplayName))
 }
@@ -446,6 +452,9 @@ type TUIApp struct {
 	// V2 workflow engine — StateMachine + Router + SQLiteStore.
 	// This is the sole workflow engine for TUI runtime operations.
 	workflowV2 *tuiWorkflowV2State
+	// codingRuntimeStore owns durable coding attempts and recovery records.
+	// Workflow V2 remains responsible for business phase orchestration.
+	codingRuntimeStore *codingruntime.SQLiteStore
 
 	// workflowEngine is DEPRECATED — retained only for test backward compat.
 	// Production code MUST NOT use this field. Tests that still reference it
@@ -466,6 +475,31 @@ type TUIApp struct {
 	// evolutionPipeline schedules TUI skill self-repair after runs.
 	evolutionPipeline *skill.EvolutionPipeline
 	evolutionOnce     sync.Once
+}
+
+// installTUIOfficeReadConfigProvider makes every TUI runtime entry point use
+// the same persisted OfficeRead policy as the desktop GUI. Reading the small
+// config file at extraction time keeps format-level and global rollback
+// changes effective without rebuilding the tool registry. Environment
+// variables remain the highest-priority emergency override in corelib/agent.
+func installTUIOfficeReadConfigProvider(dataDir string) func() {
+	store := commands.NewFileConfigStore(dataDir)
+	return agent.SetOfficeReadConfigProvider(func() agent.OfficeReadConfig {
+		cfg, err := store.LoadConfig()
+		if err != nil {
+			return agent.OfficeReadConfig{}
+		}
+		return tuiOfficeReadConfig(cfg)
+	})
+}
+
+func tuiOfficeReadConfig(cfg corelib.AppConfig) agent.OfficeReadConfig {
+	return agent.CloneOfficeReadConfig(agent.OfficeReadConfig{
+		Engine:       cfg.OfficeReadEngine,
+		Formats:      cfg.OfficeReadFormats,
+		Fallback:     cfg.OfficeReadFallback,
+		EmitMarkdown: cfg.OfficeReadEmitMarkdown,
+	})
 }
 
 // initKnowledgeStore opens the knowledge DB if it exists.
@@ -1168,6 +1202,9 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 	cmdName := fields[0]
 	args := fields[1:]
 	switch {
+	case cmdName == "/coding-recovery":
+		return m.handleCodingRecoverySlashCommand(args)
+
 	case cmdName == "/new" || cmdName == "/clear":
 		m.app.history.Clear("tui-user")
 		// Cancel active V2 workflow + understanding session.
@@ -1426,6 +1463,45 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 		m.root.Chat.AppendSystemMessage(tuiFormat(m.uiLang(), "unknownCommand", text))
 		return nil
 	}
+}
+
+func (m *tuiModel) handleCodingRecoverySlashCommand(args []string) tea.Cmd {
+	if m == nil || m.app == nil {
+		return nil
+	}
+	if len(args) == 0 {
+		m.root.Chat.AppendSystemMessage("usage: /coding-recovery <task-id> [confirm|decline]\n  inspect an interrupted local coding task; confirmation only queues a new attempt and never replays it")
+		return nil
+	}
+	taskID := strings.TrimSpace(args[0])
+	action := "inspect"
+	if len(args) > 1 {
+		action = strings.ToLower(strings.TrimSpace(args[1]))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var message string
+	var err error
+	switch action {
+	case "", "inspect", "review":
+		plan, summary, inspectErr := m.app.prepareTUIWorkflowCodingRecovery(ctx, taskID)
+		err = inspectErr
+		if plan != nil {
+			message = fmt.Sprintf("coding recovery review\n  task: %s\n  attempt: %s\n  workspace changed: %t\n  %s\n\nConfirm explicitly with: /coding-recovery %s confirm", plan.Task.TaskID, plan.Interrupted.AttemptID, plan.WorkspaceChanged, summary, plan.Task.TaskID)
+		}
+	case "confirm", "continue":
+		message, err = m.app.confirmTUIWorkflowCodingRecovery(ctx, taskID, true)
+	case "decline", "cancel":
+		message, err = m.app.confirmTUIWorkflowCodingRecovery(ctx, taskID, false)
+	default:
+		err = fmt.Errorf("unknown coding recovery action %q (use inspect, confirm, or decline)", action)
+	}
+	if err != nil {
+		message = "coding recovery: " + err.Error()
+	}
+	m.root.Chat.AppendSystemMessage(message)
+	m.root.StatusBar.SetMessage(strings.Split(message, "\n")[0])
+	return nil
 }
 
 func memoryCategorySummary(categories map[string]int) string {
@@ -1709,7 +1785,39 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 		}
 		cb.history = history
 
-		result := agent.RunLoop(cb, text, history, nil)
+		result := agent.LoopResult{}
+		var runtimeTask *codingruntime.Task
+		var runtimeAttempt *codingruntime.Attempt
+		workflowState := (*v2.WorkflowState)(nil)
+		workflowPhase := (*v2.Phase)(nil)
+		if wasWorkflowLoop && phasePrompt != "" {
+			if wf := app.getWorkflowV2TUI(); wf != nil && wf.machine != nil {
+				workflowState = wf.machine.GetActive("tui-user")
+				if workflowState != nil {
+					workflowPhase = workflowState.ActivePhase()
+				}
+			}
+		}
+		if tuiWorkflowPhaseUsesCodingRuntime(workflowState, workflowPhase) {
+			// The V2 phase remains the orchestration source of truth, while the
+			// runtime owns the durable attempt/lease fact. Mark it before calling
+			// the executor so UI state never claims completion while an attempt is
+			// active. A stale/cancelled workflow fails closed here.
+			if wf := app.getWorkflowV2TUI(); wf != nil && wf.machine != nil {
+				if err := wf.machine.MarkPhaseExecuting("tui-user"); err != nil {
+					return views.ChatResponseMsg{Error: "unable to mark coding phase executing: " + err.Error()}
+				}
+			}
+			runtimeCtx, cancelRuntime := contextFromCancelCh(cb.cancelCh)
+			var runtimeErr error
+			result, runtimeTask, runtimeAttempt, runtimeErr = app.runTUIWorkflowCodingAttempt(runtimeCtx, cb, workflowState, workflowPhase, text, history)
+			cancelRuntime()
+			if runtimeErr != nil {
+				return views.ChatResponseMsg{Error: "coding runtime execution failed: " + runtimeErr.Error()}
+			}
+		} else {
+			result = agent.RunLoop(cb, text, history, nil)
+		}
 
 		// Budget hard-stop: surface gate message even when assistant text is set.
 		if result.Error == "daily_llm_budget_exceeded" {
@@ -1728,13 +1836,25 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 		history = append(history, agent.ConversationEntry{Role: "user", Content: text})
 		if result.Text != "" {
 			history = append(history, agent.ConversationEntry{Role: "assistant", Content: result.Text})
+		}
 
-			// --- Workflow doc capture ---
-			// When the agent loop ran on behalf of the workflow engine,
-			// save the output as the phase document.
-			if cb.phasePromptOverride != "" {
-				// Record output in V2 state machine (SQLite persistence).
-				if wf := app.getWorkflowV2TUI(); wf != nil {
+		// --- Workflow phase projection ---
+		// Workflow V2 and the Ledger own separate facts. A non-completed runtime
+		// task is projected as execution progress even when the loop produced no
+		// visible text, so it cannot accidentally advance the workflow phase.
+		if cb.phasePromptOverride != "" {
+			if wf := app.getWorkflowV2TUI(); wf != nil {
+				if runtimeTask != nil && runtimeTask.Status != codingruntime.TaskCompleted {
+					status := string(runtimeTask.Status)
+					attemptID := ""
+					if runtimeAttempt != nil {
+						attemptID = runtimeAttempt.AttemptID
+					}
+					progress := "Coding runtime attempt " + attemptID + " ended as " + status + "; no automatic replay was performed."
+					if err := wf.machine.SaveExecutionProgress("tui-user", progress); err != nil {
+						log.Printf("[TUI-coding-runtime] SaveExecutionProgress failed: %v", err)
+					}
+				} else if strings.TrimSpace(result.Text) != "" {
 					if err := wf.machine.RecordOutput("tui-user", result.Text); err != nil {
 						log.Printf("[TUI-workflow-v2] RecordOutput failed: %v", err)
 					} else {
@@ -3213,6 +3333,26 @@ type tuiCallbacks struct {
 	moaAuto      bool
 	lastUserText string
 	lastRoute    agent.RouteDecision
+
+	// runtimeStore/runtimeAttempt exist only while a ledger-backed Workflow V2
+	// coding parent owns a lease. They let the host expose child admission
+	// without turning the TUI callback or its conversation into durable state.
+	runtimeMu            sync.Mutex
+	runtimeStore         codingruntime.Store
+	runtimeAttempt       *codingruntime.Attempt
+	runtimeTaskID        string
+	runtimeReadOnlyChild bool
+	runtimeChildApp      *TUIApp
+	// childExecutions contains only live detached child cancel handles. The
+	// durable Store remains authoritative for task state/recovery; this small
+	// registry lets Esc interrupt a child currently blocked in an LLM or tool
+	// call instead of waiting for its callback to return.
+	childExecutions *codingruntime.ChildExecutionRegistry
+	// executionCtx is set only on a detached read-only child. It is purposely
+	// not the parent's cancel channel: normal admission closes the parent
+	// Attempt as waiting_child, while explicit Runtime cancellation closes this
+	// child context as well as its durable task subtree.
+	executionCtx context.Context
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -3261,6 +3401,45 @@ func (c *tuiCallbacks) Cancel() {
 		close(c.cancelCh)
 		c.stopped = true
 	}
+	// The channel interrupts the active RunLoop. The ledger transition is
+	// separate: it cancels any admitted child subtree and prevents a late
+	// callback from committing a completion after the UI has acknowledged Esc.
+	c.cancelRuntimeTask()
+}
+
+func (c *tuiCallbacks) bindRuntimeTask(store codingruntime.Store, attempt codingruntime.Attempt) {
+	if c == nil {
+		return
+	}
+	c.runtimeMu.Lock()
+	c.runtimeStore = store
+	c.runtimeAttempt = &attempt
+	c.runtimeTaskID = attempt.TaskID
+	c.runtimeMu.Unlock()
+}
+
+func (c *tuiCallbacks) clearRuntimeTask() {
+	if c == nil {
+		return
+	}
+	c.runtimeMu.Lock()
+	c.runtimeStore, c.runtimeAttempt, c.runtimeTaskID, c.runtimeChildApp = nil, nil, "", nil
+	c.runtimeMu.Unlock()
+}
+
+func (c *tuiCallbacks) cancelRuntimeTask() {
+	if c == nil {
+		return
+	}
+	c.runtimeMu.Lock()
+	store, taskID, childExecutions := c.runtimeStore, c.runtimeTaskID, c.childExecutions
+	c.runtimeMu.Unlock()
+	if store != nil && strings.TrimSpace(taskID) != "" {
+		_, _ = store.CancelTask(taskID, time.Now().UTC())
+	}
+	if childExecutions != nil {
+		childExecutions.CancelParent(taskID)
+	}
 }
 
 func (c *tuiCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
@@ -3286,6 +3465,9 @@ func (c *tuiCallbacks) GetMaxIterations() int {
 }
 
 func (c *tuiCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
+	if c != nil && c.runtimeReadOnlyChild {
+		return tuiReadOnlyChildSystemPrompt(userText)
+	}
 	deps := c.app.buildSystemPromptDeps()
 	// Multi-turn knowledge auto-recall: blend prior user turns when history is available.
 	if c.app != nil && c.app.knowledgeStore != nil {
@@ -3320,6 +3502,9 @@ func (c *tuiCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) stri
 		})
 	}
 	prompt := agent.BuildSystemPrompt(deps, userText, isFirstTurn)
+	if c.hasRuntimeParentBinding() {
+		prompt += "\n\nRuntime child delegation: for independent repository inspection, use spawn_coding_agent with explorer or reviewer only. Admission ends this attempt; children return bounded durable summaries for a fresh, explicit parent attempt."
+	}
 
 	// Inject workflow phase prompt when the agent loop runs on behalf of
 	// the workflow engine (e.g., generating a requirements document).
@@ -3348,6 +3533,12 @@ func (c *tuiCallbacks) resolvePromptProfile(userText string) (agent.PromptProfil
 
 func (c *tuiCallbacks) BuildTools(userText string) []map[string]interface{} {
 	defs := c.app.toolRegistry.BuildDefinitions()
+	if c != nil && c.runtimeReadOnlyChild {
+		return tuiFilterReadOnlyChildToolDefinitions(defs)
+	}
+	if c.hasRuntimeParentBinding() {
+		defs = append(defs, tuiReadOnlyChildSpawnToolDefinition())
+	}
 	// Align tool surface with light system prompt (no bash/coding/files).
 	profile, _ := c.resolvePromptProfile(userText)
 	if profile.IsLight() {
@@ -3357,12 +3548,23 @@ func (c *tuiCallbacks) BuildTools(userText string) []map[string]interface{} {
 }
 
 func (c *tuiCallbacks) ExecuteTool(name, argsJSON string) string {
+	if strings.TrimSpace(name) == tuiReadOnlyChildSpawnToolName {
+		return c.executeTUIReadOnlyChildSpawn(argsJSON)
+	}
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return tuiFormat(tuiConfigLang(c.app.appConfig), "toolArgParseFailed", err.Error())
 	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	if c != nil && c.runtimeReadOnlyChild {
+		if allowed, reason := tuiReadOnlyChildToolCallAllowed(name, args); !allowed {
+			return "Error: " + reason
+		}
+	}
 	start := time.Now()
-	ctx, cancel := contextFromCancelCh(c.cancelCh)
+	ctx, cancel := c.executionContext()
 	defer cancel()
 	// Inject context into args so handlers that support cancellation (e.g.
 	// manage_skill's skillRunDetailed) can extract it via the "_ctx" key.
@@ -3383,7 +3585,35 @@ func (c *tuiCallbacks) ExecuteTool(name, argsJSON string) string {
 	return result
 }
 
+func (c *tuiCallbacks) executionContext() (context.Context, context.CancelFunc) {
+	if c != nil && c.executionCtx != nil {
+		return c.executionCtx, func() {}
+	}
+	if c == nil {
+		return context.Background(), func() {}
+	}
+	return contextFromCancelCh(c.cancelCh)
+}
+
+// LLMRequestContext makes a detached child model request observe the same
+// execution context as its tools. Parent callbacks keep their existing
+// cancel-channel behavior.
+func (c *tuiCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	ctx, cancel := c.executionContext()
+	if err := ctx.Err(); err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return ctx, func(error) { cancel() }, nil
+}
+
 func (c *tuiCallbacks) IsToolAllowed(name string) bool {
+	if strings.TrimSpace(name) == tuiReadOnlyChildSpawnToolName {
+		return c.hasRuntimeParentBinding()
+	}
+	if c != nil && c.runtimeReadOnlyChild {
+		return tuiReadOnlyChildToolAllowed(name)
+	}
 	return c.app.isWorkflowToolAllowedTUI(name)
 }
 
@@ -3391,7 +3621,35 @@ func (c *tuiCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
 	if c == nil {
 		return true, ""
 	}
+	if strings.TrimSpace(name) == tuiReadOnlyChildSpawnToolName {
+		if !c.hasRuntimeParentBinding() {
+			return false, "read-only child delegation is unavailable outside a ledger-backed parent coding attempt"
+		}
+		if _, err := parseTUIReadOnlyChildSpawn(argsJSON); err != nil {
+			return false, err.Error()
+		}
+		return true, ""
+	}
+	if c.runtimeReadOnlyChild {
+		var args map[string]interface{}
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return false, tuiFormat(tuiConfigLang(c.app.appConfig), "toolArgParseFailed", err.Error())
+		}
+		if args == nil {
+			args = map[string]interface{}{}
+		}
+		return tuiReadOnlyChildToolCallAllowed(name, args)
+	}
 	return c.app.isWorkflowToolCallAllowedTUI(name, argsJSON)
+}
+
+func (c *tuiCallbacks) hasRuntimeParentBinding() bool {
+	if c == nil {
+		return false
+	}
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
+	return c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild
 }
 
 func (app *TUIApp) isWorkflowToolAllowedTUI(name string) bool {
@@ -3506,6 +3764,20 @@ func (c *tuiCallbacks) OnToolResult(name string) {
 }
 
 func (c *tuiCallbacks) ShouldStop() bool {
+	if c != nil && c.executionCtx != nil && c.executionCtx.Err() != nil {
+		return true
+	}
+	if c != nil {
+		c.runtimeMu.Lock()
+		store, attempt := c.runtimeStore, c.runtimeAttempt
+		c.runtimeMu.Unlock()
+		if store != nil && attempt != nil {
+			current, err := store.GetAttempt(attempt.AttemptID)
+			if err != nil || current.Status == codingruntime.TaskWaitingChild {
+				return true
+			}
+		}
+	}
 	select {
 	case <-c.cancelCh:
 		return true

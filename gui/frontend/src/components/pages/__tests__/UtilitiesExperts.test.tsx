@@ -56,8 +56,9 @@ type AppSpies = {
     ListAvailableToolNames: ReturnType<typeof vi.fn>;
     ListNLSkills: ReturnType<typeof vi.fn>;
     GetACPHostStatus: ReturnType<typeof vi.fn>;
-    GetExpertMarketAccount: ReturnType<typeof vi.fn>;
-    WithdrawExpertMarketListing: ReturnType<typeof vi.fn>;
+	GetExpertMarketAccount: ReturnType<typeof vi.fn>;
+	WithdrawExpertMarketListing: ReturnType<typeof vi.fn>;
+	DeletePrivateExpertMarketListing: ReturnType<typeof vi.fn>;
     SubmitExpertMarketListing: ReturnType<typeof vi.fn>;
 };
 
@@ -78,7 +79,8 @@ function installAppSpies(experts: unknown[] = [builtinExpert, userExpert]): AppS
         ListNLSkills: vi.fn().mockResolvedValue([]),
         GetACPHostStatus: vi.fn().mockRejectedValue(new Error('no backend')),
         GetExpertMarketAccount: vi.fn().mockResolvedValue({ uploads: [] }),
-        WithdrawExpertMarketListing: vi.fn().mockResolvedValue(undefined),
+		WithdrawExpertMarketListing: vi.fn().mockResolvedValue(undefined),
+		DeletePrivateExpertMarketListing: vi.fn().mockResolvedValue(undefined),
         SubmitExpertMarketListing: vi.fn().mockResolvedValue({ id: 'listing-new' }),
     };
     (window as any).go = { main: { App: spies } };
@@ -128,7 +130,7 @@ describe('UtilitiesPage AI expert section', () => {
         await waitFor(() => expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy());
         const cardButton = screen.getByRole('button', { name: '论文润色' });
         expect(cardButton).toBeTruthy();
-        expect(cardButton.getAttribute('title')).toBe('双击打开');
+        expect(cardButton.getAttribute('title')).toBe('点击打开');
     });
 
     it('keeps expert-management actions keyboard-reachable', async () => {
@@ -150,11 +152,11 @@ describe('UtilitiesPage AI expert section', () => {
         await waitFor(() => expect(screen.getByTestId('expert-editor-overlay')).toBeTruthy());
     });
 
-    it('double-clicking an expert card invokes onOpenExpert with the full definition', async () => {
+    it('clicking an expert card invokes onOpenExpert with the full definition', async () => {
         const onOpenExpert = vi.fn();
         render(<UtilitiesPage lang="zh-Hans" onOpenExpert={onOpenExpert} />);
         await waitFor(() => expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy());
-        fireEvent.doubleClick(screen.getByText('论文润色'));
+        fireEvent.click(screen.getByRole('button', { name: '论文润色' }));
         expect(onOpenExpert).toHaveBeenCalledTimes(1);
         expect(onOpenExpert.mock.calls[0][0].id).toBe('builtin-paper-polish');
     });
@@ -205,7 +207,7 @@ describe('UtilitiesPage AI expert section', () => {
         expect(dialog.textContent).toContain(userExpert.name);
         expect(screen.queryByRole('dialog', { name: 'AI Expert Market' })).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
-        await waitFor(() => expect((window as any).go.main.App.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0));
+        await waitFor(() => expect((window as any).go.main.App.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public'));
     });
 
     it('removes Share after submission and does not offer the expert in a marketplace share list', async () => {
@@ -219,6 +221,15 @@ describe('UtilitiesPage AI expert section', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Submit to AI Expert Market' }));
         await waitFor(() => expect(screen.getByTestId('utilities-expert-unlist-user-exp-1')).toBeTruthy());
         expect(screen.queryByTestId('utilities-expert-share-user-exp-1')).toBeNull();
+    });
+
+    it('submits a private share without the public review flow', async () => {
+        const spies = installAppSpies();
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        fireEvent.click(screen.getByRole('radio', { name: 'Private (no review, only you can see it)' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
+        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'private'));
     });
 
     it('keeps Share hidden from the successful submission response when the account refresh fails', async () => {
@@ -272,7 +283,7 @@ describe('UtilitiesPage AI expert section', () => {
         expect(screen.queryByTestId('utilities-expert-unlist-user-exp-1')).toBeNull();
     });
 
-    it('does not let a stale account response restore Unlist after a successful withdrawal', async () => {
+	it('does not let a stale account response restore Unlist after a successful withdrawal', async () => {
         const spies = installAppSpies();
         let resolveRefresh!: (account: { uploads: unknown[] }) => void;
         spies.GetExpertMarketAccount
@@ -287,6 +298,38 @@ describe('UtilitiesPage AI expert section', () => {
         resolveRefresh({ uploads: [{ id: 'listing-1', local_expert_id: 'user-exp-1', status: 'listed' }] });
         await waitFor(() => expect(screen.getByTestId('utilities-expert-unlisted-user-exp-1')).toBeTruthy());
         expect(screen.queryByTestId('utilities-expert-unlist-user-exp-1')).toBeNull();
+	});
+
+    it('deletes a private share and restores the Share action', async () => {
+        const spies = installAppSpies();
+        spies.GetExpertMarketAccount.mockResolvedValue({ uploads: [{ id: 'listing-private', local_expert_id: 'user-exp-1', status: 'private', visibility: 'private' }] });
+		render(<DialogProvider><UtilitiesPage lang="en" /></DialogProvider>);
+		fireEvent.click(await screen.findByTestId('utilities-expert-delete-private-share-user-exp-1'));
+		const confirm = await screen.findByRole('dialog', { name: 'Delete private share' });
+		fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!);
+
+        await waitFor(() => expect(spies.DeletePrivateExpertMarketListing).toHaveBeenCalledWith('listing-private'));
+        expect(await screen.findByTestId('utilities-expert-share-user-exp-1')).toBeTruthy();
+    });
+
+    it('allows an expert to be shared again after its private share is deleted', async () => {
+        const spies = installAppSpies();
+        // Simulate a stale account replica that still returns the deleted
+        // listing while the publisher immediately creates a replacement.
+        spies.GetExpertMarketAccount.mockResolvedValue({ uploads: [{ id: 'listing-private', local_expert_id: 'user-exp-1', status: 'private', visibility: 'private' }] });
+        spies.SubmitExpertMarketListing.mockResolvedValue({ id: 'listing-replacement', status: 'pending_review', visibility: 'public' });
+        render(<DialogProvider><UtilitiesPage lang="en" /></DialogProvider>);
+        fireEvent.click(await screen.findByTestId('utilities-expert-delete-private-share-user-exp-1'));
+        const confirm = await screen.findByRole('dialog', { name: 'Delete private share' });
+        fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!);
+        const share = await screen.findByTestId('utilities-expert-share-user-exp-1');
+
+        fireEvent.click(share);
+        fireEvent.click(await screen.findByRole('button', { name: 'Submit to AI Expert Market' }));
+
+        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public'));
+        expect(await screen.findByTestId('utilities-expert-unlist-user-exp-1')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-expert-share-user-exp-1')).toBeNull();
     });
 
     it('imports an expert package and refreshes the expert cards', async () => {

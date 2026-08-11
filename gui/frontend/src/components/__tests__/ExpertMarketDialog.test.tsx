@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { StrictMode } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as AppAPI from '../../../wailsjs/go/main/App';
@@ -9,10 +9,13 @@ import { ExpertMarketDialog } from '../ExpertMarketDialog';
 import { OPEN_SETTINGS_EVENT } from '../../utils/settingsNavigation';
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
-    GetExpertMarketAccount: vi.fn(),
-    InstallExpertMarketListing: vi.fn(),
-    ListExpertMarketListings: vi.fn(),
+	GetExpertMarketAccount: vi.fn(),
+	InstallExpertMarketListing: vi.fn(),
+	ListExpertMarketListings: vi.fn(),
+	DeletePrivateExpertMarketListing: vi.fn(),
+    MakeExpertMarketListingPrivate: vi.fn(),
     PurchaseExpertMarketListing: vi.fn(),
+    PublishExpertMarketListing: vi.fn(),
     SubmitExpertMarketListing: vi.fn(),
     UninstallExpertMarketListing: vi.fn(),
     WithdrawExpertMarketListing: vi.fn(),
@@ -96,6 +99,17 @@ describe('ExpertMarketDialog', () => {
         await act(async () => { fireEvent.click(install); });
         await waitFor(() => expect(AppAPI.GetExpertMarketAccount).toHaveBeenCalledTimes(2));
         expect(await screen.findByRole('button', { name: 'Uninstall' })).toBeTruthy();
+    });
+
+    it('does not report success or hide the retry action when installation lacks a local expert ID', async () => {
+        vi.mocked(AppAPI.InstallExpertMarketListing).mockResolvedValue({ expert: {} } as any);
+        const onInstalled = vi.fn();
+        render(<DialogProvider><ExpertMarketDialog lang="en" onClose={vi.fn()} onInstalled={onInstalled} /></DialogProvider>);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Install' }));
+        expect((await screen.findByRole('dialog', { name: 'Install failed' })).textContent).toContain('Installation did not return a local expert ID. Please try again.');
+        expect(onInstalled).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'Install' })).toBeTruthy();
     });
 
 
@@ -284,6 +298,32 @@ describe('ExpertMarketDialog', () => {
         expect(screen.getByText('Pending review')).toBeTruthy();
     });
 
+    it('offers Install for a submitted expert that is no longer installed locally', async () => {
+        vi.mocked(AppAPI.GetExpertMarketAccount).mockResolvedValue({
+            credits: 80,
+            purchases: [],
+            uploads: [{ ...listing, id: 'expert-submitted', name: 'My private expert', status: 'private' }],
+        });
+        render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Install' }));
+        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-submitted'));
+        expect(within(screen.getByRole('group', { name: 'Actions for My private expert' })).queryByRole('button', { name: 'Install' })).toBeNull();
+    });
+
+    it('keeps a restored submitted expert installed when a stale account refresh completes', async () => {
+        const submitted = { ...listing, id: 'expert-submitted', name: 'My submitted expert', status: 'private' };
+        vi.mocked(AppAPI.GetExpertMarketAccount)
+            .mockResolvedValueOnce({ credits: 80, purchases: [], uploads: [submitted] })
+            .mockResolvedValueOnce({ credits: 80, purchases: [], uploads: [submitted] });
+        vi.mocked(AppAPI.InstallExpertMarketListing).mockResolvedValue({ expert: { id: 'pkgexp-submitted' } } as any);
+        render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Install' }));
+        await waitFor(() => expect(AppAPI.GetExpertMarketAccount).toHaveBeenCalledTimes(2));
+        expect(within(screen.getByRole('group', { name: 'Actions for My submitted expert' })).queryByRole('button', { name: 'Install' })).toBeNull();
+    });
+
     it('shows submissions as eight cards per page and paginates the remaining cards', async () => {
         const uploads = Array.from({ length: 9 }, (_, index) => ({
             ...listing,
@@ -319,7 +359,7 @@ describe('ExpertMarketDialog', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Next' }));
         expect(await screen.findByText('Submitted expert 9')).toBeTruthy();
 
-        fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+        fireEvent.click(within(screen.getByText('Reviewed analyst').closest('.expert-market-row')!).getByRole('button', { name: 'Install' }));
         await waitFor(() => expect(AppAPI.GetExpertMarketAccount).toHaveBeenCalledTimes(2));
         expect(await screen.findByText('Submitted expert 1')).toBeTruthy();
         expect(screen.queryByText('Submitted expert 9')).toBeNull();
@@ -340,15 +380,58 @@ describe('ExpertMarketDialog', () => {
 
         resolveAccount({ credits: 80, purchases: [], uploads: [submitted] });
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Unlist' })).toBeNull());
-        expect(screen.getByText('unlisted')).toBeTruthy();
+        expect(screen.getByText('Unlisted')).toBeTruthy();
     });
+
+    it('makes a listed submission private immediately and keeps the owner-only state after refresh', async () => {
+        const submitted = { ...listing, id: 'expert-private', name: 'My listed expert', status: 'listed', visibility: 'public' };
+        vi.mocked(AppAPI.GetExpertMarketAccount).mockResolvedValue({ credits: 80, purchases: [], uploads: [submitted] });
+        render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Make private' }));
+        const confirm = await screen.findByRole('dialog', { name: 'Make private' });
+        fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!);
+
+        await waitFor(() => expect(AppAPI.MakeExpertMarketListingPrivate).toHaveBeenCalledWith('expert-private'));
+        expect(await screen.findByText('Private · only you can see it')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Make public' })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: 'Unlist' })).toBeNull();
+    });
+
+	it('submits a private expert for review when it is made public', async () => {
+        const submitted = { ...listing, id: 'expert-public', name: 'My private expert', status: 'private', visibility: 'private' };
+        vi.mocked(AppAPI.GetExpertMarketAccount).mockResolvedValue({ credits: 80, purchases: [], uploads: [submitted] });
+        render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Make public' }));
+        const confirm = await screen.findByRole('dialog', { name: 'Make AI Expert public' });
+        fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!);
+
+        await waitFor(() => expect(AppAPI.PublishExpertMarketListing).toHaveBeenCalledWith('expert-public'));
+        expect(await screen.findByText('Pending review')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Make private' })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: 'Make public' })).toBeNull();
+	});
+
+	it('permanently removes a private share after confirmation', async () => {
+		const submitted = { ...listing, id: 'expert-private-delete', name: 'My private expert', status: 'private', visibility: 'private' };
+		vi.mocked(AppAPI.GetExpertMarketAccount).mockResolvedValue({ credits: 80, purchases: [], uploads: [submitted] });
+		render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
+
+		fireEvent.click(await screen.findByRole('button', { name: 'Delete private share' }));
+		const confirm = await screen.findByRole('dialog', { name: 'Delete private share' });
+		fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!);
+
+		await waitFor(() => expect(AppAPI.DeletePrivateExpertMarketListing).toHaveBeenCalledWith('expert-private-delete'));
+		expect(screen.queryByText('My private expert')).toBeNull();
+	});
 
     it('keeps the last confirmed library visible when a background account refresh fails', async () => {
         vi.mocked(AppAPI.GetExpertMarketAccount)
             .mockResolvedValueOnce({ credits: 80, uploads: [{ ...listing, id: 'expert-submitted', name: 'My pending expert', status: 'pending_review' }], purchases: [listing] })
             .mockRejectedValueOnce(new Error('temporary account outage'));
         render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
-        const install = await screen.findByRole('button', { name: 'Install' });
+        const install = within((await screen.findByText('Reviewed analyst')).closest('.expert-market-row')!).getByRole('button', { name: 'Install' });
         await act(async () => { fireEvent.click(install); });
         await waitFor(() => expect(AppAPI.GetExpertMarketAccount).toHaveBeenCalledTimes(2));
         expect(screen.getByText('My pending expert')).toBeTruthy();

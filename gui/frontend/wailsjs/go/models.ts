@@ -1,5 +1,5 @@
 export namespace a2a {
-	
+
 	export class GroupConsultationRequest {
 	    id: string;
 	    from_id: string;
@@ -878,7 +878,59 @@ export namespace agent {
 }
 
 export namespace corelib {
-	
+
+	export class AnswerCacheConfig {
+	    enabled: boolean;
+	    ttl_days?: number;
+
+	    static createFrom(source: any = {}) {
+	        return new AnswerCacheConfig(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.ttl_days = source["ttl_days"];
+	    }
+	}
+
+	export class LansengerBotProfile {
+	    id!: string;
+	    name!: string;
+	    enabled!: boolean;
+	    app_id!: string;
+	    app_secret!: string;
+	    gateway_url?: string;
+	    wss_url?: string;
+	    assistant_mode?: string;
+	    expert_id?: string;
+	    initial_prompt?: string;
+	    working_directory?: string;
+	    document_directories?: string[];
+	    knowledge_source_ids?: string[];
+	    group_policy?: string;
+	    allowed_group_ids?: string[];
+	    ignored_group_ids?: string[];
+	    group_file_max_bytes?: Record<string, number>;
+	    require_mention?: boolean;
+	    respond_to_at_all?: boolean;
+	    auto_mention_reply?: boolean;
+	    auto_quote_reply?: boolean;
+	    allow_web_search?: boolean;
+	    allow_all_directories?: boolean;
+	    allowed_directories?: string[];
+	    answer_cache?: AnswerCacheConfig;
+
+	    static createFrom(source: any = {}) {
+	        return new LansengerBotProfile(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        Object.assign(this, source);
+	    }
+	}
+
 	export class MoAModelRef {
 	    provider?: string;
 	    task_route?: string;
@@ -2212,6 +2264,11 @@ export namespace corelib {
 	    maclaw_llm_providers?: MaclawLLMProvider[];
 	    maclaw_llm_current_provider?: string;
 	    llm_prompt_cache?: LLMPromptCacheConfig;
+	    office_read_engine?: string;
+	    office_read_formats?: string[];
+	    office_read_scope_migrated?: boolean;
+	    office_read_fallback?: boolean;
+	    office_read_emit_markdown?: boolean;
 	    tool_cache_maintenance?: ToolCacheMaintenanceConfig;
 	    web_search_providers?: WebSearchProvider[];
 	    web_search_current_provider?: string;
@@ -2477,6 +2534,11 @@ export namespace corelib {
 	        this.maclaw_llm_providers = this.convertValues(source["maclaw_llm_providers"], MaclawLLMProvider);
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
 	        this.llm_prompt_cache = this.convertValues(source["llm_prompt_cache"], LLMPromptCacheConfig);
+	        this.office_read_engine = source["office_read_engine"];
+	        this.office_read_formats = source["office_read_formats"];
+	        this.office_read_scope_migrated = source["office_read_scope_migrated"];
+	        this.office_read_fallback = source["office_read_fallback"];
+	        this.office_read_emit_markdown = source["office_read_emit_markdown"];
 	        this.tool_cache_maintenance = this.convertValues(source["tool_cache_maintenance"], ToolCacheMaintenanceConfig);
 	        this.web_search_providers = this.convertValues(source["web_search_providers"], WebSearchProvider);
 	        this.web_search_current_provider = source["web_search_current_provider"];
@@ -3104,7 +3166,27 @@ export namespace experience {
 }
 
 export namespace knowledge {
-	
+
+	export class CodingExperienceLifecycleEvent {
+	    action: string;
+	    reason?: string;
+	    related_id?: string;
+	    // Go type: time
+	    occurred_at: any;
+
+	    static createFrom(source: any = {}) {
+	        return new CodingExperienceLifecycleEvent(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.action = source["action"];
+	        this.reason = source["reason"];
+	        this.related_id = source["related_id"];
+	        this.occurred_at = source["occurred_at"];
+	    }
+	}
+
 	export class Fact {
 	    id: string;
 	    card_id: string;
@@ -12391,6 +12473,41 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class LansengerBotProfileView {
+	    id!: string;
+	    name!: string;
+	    enabled!: boolean;
+	    app_id!: string;
+	    gateway_url?: string;
+	    wss_url?: string;
+	    assistant_mode!: string;
+	    expert_id?: string;
+	    initial_prompt?: string;
+	    working_directory?: string;
+	    document_directories?: string[];
+	    knowledge_source_ids?: string[];
+	    group_policy?: string;
+	    allowed_group_ids?: string[];
+	    ignored_group_ids?: string[];
+	    group_file_max_bytes?: Record<string, number>;
+	    require_mention?: boolean;
+	    respond_to_at_all?: boolean;
+	    auto_mention_reply?: boolean;
+	    auto_quote_reply?: boolean;
+	    allow_web_search?: boolean;
+	    allow_all_directories?: boolean;
+	    allowed_directories?: string[];
+	    answer_cache?: corelib.AnswerCacheConfig;
+	    status?: string;
+	    status_reason?: string;
+	    secret_configured!: boolean;
+
+	    static createFrom(source: any = {}) { return new LansengerBotProfileView(source); }
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        Object.assign(this, source);
+	    }
 	}
 	export class IMAuditMessage {
 	    id: number;

@@ -55,6 +55,82 @@ function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction
 }
 
 describe('SidebarSystemStatus Hub credits', () => {
+    it('always shows assistant and coding effective-profile summaries together', () => {
+        render(
+            <SidebarSystemStatus
+                lang="en" maclawLLMOnline={true} remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'Assistant Provider', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }} sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="Unlimited" noHubAuthorizationText="None" showHubCreditAction={false} openHubCreditsPage={vi.fn()}
+                profileSummaries={{
+                    assistant: { profile: 'assistant', provider_name: 'Assistant Provider', model: 'assistant-model', health: 'configured' },
+                    coding: { profile: 'coding', provider_name: 'Assistant Provider', model: 'assistant-model', inherit_assistant: true, health: 'configured' },
+                }}
+                activeProfile="coding"
+            />,
+        );
+        const block = screen.getByTestId('sidebar-llm-profile-statuses');
+        expect(block.textContent).toContain('Assistant Provider · assistant-model');
+        expect(block.textContent).toContain('Follows assistant');
+        expect(screen.getByText('Follows assistant').textContent).toBe('Follows assistant');
+        expect(screen.queryByTestId('sidebar-llm-active-profile')).toBeNull();
+        const codingProfile = screen.getByRole('button', { name: /Coding: Follows assistant.*Assistant Provider.*assistant-model.*current/ });
+        expect(codingProfile.getAttribute('title')).toContain('Follows assistant · Assistant Provider · assistant-model');
+    });
+
+    it('derives the LLM headline from the active profile instead of assistant-only online state', () => {
+        render(
+            <SidebarSystemStatus
+                lang="en" maclawLLMOnline remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'Coding Provider', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }} sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="Unlimited" noHubAuthorizationText="None" showHubCreditAction={false} openHubCreditsPage={vi.fn()} openLLMSettingsPage={vi.fn()}
+                profileSummaries={{
+                    assistant: { profile: 'assistant', provider_name: 'Assistant Provider', model: 'assistant-model', health: 'configured' },
+                    coding: { profile: 'coding', provider_name: 'Coding Provider', model: 'coding-model', health: 'unavailable' },
+                }}
+                activeProfile="coding"
+            />,
+        );
+        expect(screen.getByText('LLM · Coding')).toBeTruthy();
+        expect(screen.getByLabelText('LLM: Coding · Unavailable')).toBeTruthy();
+        expect(screen.getByTestId('sidebar-llm-profile-statuses').textContent).toContain('Coding Provider · coding-model · Unavailable');
+    });
+
+    it('uses the connectivity result when the active task has no execution profile', () => {
+        render(
+            <SidebarSystemStatus
+                lang="en" maclawLLMOnline remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'Assistant Provider', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }} sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="Unlimited" noHubAuthorizationText="None" showHubCreditAction={false} openHubCreditsPage={vi.fn()}
+                profileSummaries={{
+                    assistant: { profile: 'assistant', provider_name: 'Assistant Provider', model: 'assistant-model', health: 'configured' },
+                    coding: { profile: 'coding', provider_name: 'Coding Provider', model: 'coding-model', health: 'unverified' },
+                }}
+                activeProfile="none"
+            />,
+        );
+
+        expect(screen.getByLabelText('LLM: Online').getAttribute('data-online')).toBe('true');
+    });
+
+    it('keeps service health and background tasks in one fixed row', () => {
+        renderStatus(baseCredits);
+
+        const signals = screen.getByLabelText('System status');
+        const llm = signals.querySelector('.sidebar-system-status__signal--llm');
+        const hub = signals.querySelector('.sidebar-system-status__signal--hub');
+        const im = signals.querySelector('.sidebar-system-status__signal--im');
+        const backgroundTasks = signals.querySelector('.sidebar-system-status__background-tasks');
+        expect(llm).toBeTruthy();
+        expect(hub).toBeTruthy();
+        expect(im).toBeTruthy();
+        expect(backgroundTasks).toBeTruthy();
+        expect(signals.querySelectorAll('.sidebar-system-status__signal:not(.sidebar-system-status__background-tasks)')).toHaveLength(3);
+        expect(backgroundTasks?.classList.contains('sidebar-system-status__background-tasks')).toBe(true);
+    });
+
     it('opens the background task monitor from the background-task status', () => {
         const onOpenBackgroundTasks = vi.fn();
         const { unmount } = renderStatus(baseCredits, { onOpenBackgroundTasks });

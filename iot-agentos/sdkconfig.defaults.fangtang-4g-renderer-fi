@@ -1,0 +1,5 @@
+# Dedicated non-release configuration for compact-renderer lifecycle HIL.
+# It deliberately injects after panel acquisition, before regular input starts.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_STAGE=1

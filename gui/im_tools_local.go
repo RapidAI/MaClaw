@@ -216,6 +216,21 @@ func resolveFileToolPathWithBase(path string, baseResolver coretool.PathResolver
 }
 
 func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (string, error) {
+	if binding := assistantBindingForUserID(ownerID); binding != nil {
+		resolved, err := resolveFileToolPathWithBase(path, func() string {
+			if workDir := strings.TrimSpace(binding.WorkingDirectory); workDir != "" {
+				return workDir
+			}
+			return corelib.EffectiveWorkspaceDir()
+		})
+		if err != nil {
+			return "", err
+		}
+		if err := validateAssistantBindingFilePath(resolved, binding); err != nil {
+			return "", err
+		}
+		return resolved, nil
+	}
 	return resolveFileToolPathWithBase(path, func() string {
 		if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {
 			return dir
@@ -229,6 +244,30 @@ func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (st
 		// maclaw installation directory on Windows.
 		return corelib.EffectiveWorkspaceDir()
 	})
+}
+
+// validateAssistantBindingFilePath keeps a bot profile from escaping its
+// configured filesystem boundary through an absolute tool argument. Prompt
+// instructions are useful context but are not a security control; this check
+// is performed after relative paths have been resolved against the profile
+// working directory.
+func validateAssistantBindingFilePath(path string, binding *agent.AssistantBinding) error {
+	if binding == nil || strings.TrimSpace(binding.BotProfileID) == "" || binding.AllowAllDirectories {
+		return nil
+	}
+	allowed := make([]string, 0, 1+len(binding.AllowedDirectories)+len(binding.DocumentDirectories))
+	if workDir := strings.TrimSpace(binding.WorkingDirectory); workDir != "" {
+		allowed = append(allowed, workDir)
+	}
+	allowed = append(allowed, binding.AllowedDirectories...)
+	allowed = append(allowed, binding.DocumentDirectories...)
+	if len(allowed) == 0 {
+		return fmt.Errorf("bot profile has no authorized local directories")
+	}
+	if _, err := IsWithinAllowedDirs(path, allowed); err != nil {
+		return fmt.Errorf("bot profile path is outside its authorized directories: %w", err)
+	}
+	return nil
 }
 
 // projectPathFromUserID extracts the projectPath from a synthesized Project Tab
@@ -282,7 +321,16 @@ func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
 		if info, err := os.Stat(rawProjectPath); err != nil || !info.IsDir() {
 			_ = h.ensureRecentTaskWorkspaceForProjectPath(rawProjectPath)
 		}
-		exec := h.executionProjectPathForOwner(ownerID)
+		// An unbound task owner must use its own execution workspace.  Calling
+		// EffectiveWorkingDirForOwner here would otherwise return the desktop
+		// default for an owner with no tab-local override, making relative tool
+		// paths (including read_document) escape the task workspace.
+		exec := h.app.recentTaskExecutionProjectPath(rawProjectPath)
+		if value, ok := h.app.assistantSessionWorkingDirs.Load(strings.TrimSpace(ownerID)); ok {
+			if override, ok := value.(string); ok && strings.TrimSpace(override) != "" {
+				exec = normalizeProjectSessionPath(override)
+			}
+		}
 		if exec == "" {
 			exec = filepath.Join(rawProjectPath, "workspace")
 		}
@@ -355,6 +403,18 @@ func (h *IMMessageHandler) resolveToolWorkDir(workingDir string) string {
 }
 
 func (h *IMMessageHandler) resolveToolWorkDirForOwner(workingDir, ownerID string) string {
+	if binding := assistantBindingForUserID(ownerID); binding != nil && strings.TrimSpace(binding.WorkingDirectory) != "" {
+		// A configured bot directory is an isolation boundary. An explicit path
+		// is still resolved relative to that directory; the group permission
+		// execution gate performs the containment check where applicable.
+		if workingDir != "" {
+			if filepath.IsAbs(workingDir) {
+				return filepath.Clean(workingDir)
+			}
+			return filepath.Join(strings.TrimSpace(binding.WorkingDirectory), workingDir)
+		}
+		return filepath.Clean(strings.TrimSpace(binding.WorkingDirectory))
+	}
 	if workingDir != "" {
 		return resolvePath(workingDir)
 	}

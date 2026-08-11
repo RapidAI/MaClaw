@@ -183,7 +183,43 @@ describe('AboutPanel', () => {
         expect(baseProps.onOpenGithub).toHaveBeenCalledTimes(1);
     });
 
-    it('renders MetaStaff about product name with the stylized 6 pattern', () => {
+    it('renders the bundled display treatment for version 7 in the default brand name', () => {
+        render(
+            <AboutPanel
+                {...baseProps}
+                t={(key) => key === 'aboutProductName' ? '码卡龙 7 万变' : baseProps.t(key)}
+            />,
+        );
+
+        const versionMark = screen.getByLabelText('7');
+        expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
+        expect(screen.getByRole('heading', { name: '码卡龙 7 万变' })).toBeTruthy();
+    });
+
+    it('renders the TigerClaw product name with the version 7 display treatment', () => {
+        render(
+            <AboutPanel
+                {...baseProps}
+                brandInfo={{
+                    id: 'qianxin',
+                    displayName: 'TigerClaw',
+                    displayNameCN: '虎爪',
+                    slogan: 'Master your code, seize the machine.',
+                    author: 'Dr. Daniel',
+                    businessContact: 'Contact: QianXin',
+                    websiteURL: 'https://www.qianxin.com',
+                    githubURL: '',
+                    iconPath: 'assets/qianxin.png',
+                }}
+            />,
+        );
+
+        const versionMark = screen.getByLabelText('7');
+        expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
+        expect(screen.getByRole('heading', { name: '虎爪 7 万变' })).toBeTruthy();
+    });
+
+    it('renders the MetaStaff product name', () => {
         render(
             <AboutPanel
                 {...baseProps}

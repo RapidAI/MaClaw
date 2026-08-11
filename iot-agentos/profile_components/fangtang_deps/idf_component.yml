@@ -1,0 +1,9 @@
+## Fangtang-4G-only controller and cellular transport dependencies.
+dependencies:
+  idf:
+    version: '>=4.1.0'
+  78/esp_lcd_nv3023: ~1.0.0
+  # ML307 uses its own AT transport, not ESP-IDF PPP.
+  78/esp-ml307: ~3.6.6
+  # Required explicitly because esp-ml307's public at_uart.h exposes it.
+  78/uart-uhci: ~0.3.2

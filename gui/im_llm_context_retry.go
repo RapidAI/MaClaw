@@ -55,7 +55,7 @@ func (h *IMMessageHandler) retryLLMRequestAfterContextWindowExceeded(
 			if streamDoneCallback != nil {
 				streamDoneCallback()
 			}
-			result.Usage = h.recordLLMUsageSnapshot("context_trim_retry", resp, conversation)
+			result.Usage = h.recordLLMUsageSnapshot("context_trim_retry", cfg, resp, conversation)
 			return result
 		}
 		if !classifyLLMRetryError(retryErr).ContextWindowExceeded() {

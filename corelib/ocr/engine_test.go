@@ -11,7 +11,7 @@ import (
 
 const testModelDir = "../../.tmp/ocr-models"
 
-func testEngine(t *testing.T) *Engine {
+func testEngine(t testing.TB) *Engine {
 	t.Helper()
 	det := filepath.Join(testModelDir, "ppocrv6_small_det.onnx")
 	rec := filepath.Join(testModelDir, "ppocrv6_small_rec.onnx")
@@ -29,7 +29,7 @@ func testEngine(t *testing.T) *Engine {
 	return e
 }
 
-func loadTestImage(t *testing.T, name string) image.Image {
+func loadTestImage(t testing.TB, name string) image.Image {
 	t.Helper()
 	f, err := os.Open(filepath.Join("testdata", name))
 	if err != nil {

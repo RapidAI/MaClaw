@@ -1,6 +1,6 @@
 package v2
 
-// types.go — Workflow domain types.
+// types.go 鈥?Workflow domain types.
 //
 // This file contains domain-level types used across the workflow system:
 // WorkflowType constants, StructuredIntent, tool policy maps and functions,
@@ -74,7 +74,7 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// ToolFilterPolicy — legacy alias for ToolPolicy
+// ToolFilterPolicy 鈥?legacy alias for ToolPolicy
 // ---------------------------------------------------------------------------
 
 // ToolFilterPolicy is a legacy alias for ToolPolicy. Kept as a type alias so
@@ -146,6 +146,7 @@ const (
 var DocOnlyAllowedTools = map[string]bool{
 	"bash":                     true,
 	"read_file":                true,
+	"read_document":            true,
 	"read_tool_result":         true,
 	"memory":                   true,
 	"generate_pdf":             true,
@@ -168,6 +169,7 @@ var DocOnlyAllowedTools = map[string]bool{
 // PlanningAllowedTools is the canonical set for reviewable coding-planning phases.
 var PlanningAllowedTools = map[string]bool{
 	"read_file":                true,
+	"read_document":            true,
 	"read_tool_result":         true,
 	"write_file":               true,
 	"list_directory":           true,
@@ -651,7 +653,7 @@ func (NullPersistenceStore) ListActiveWorkflows() ([]*EngineState, error)     { 
 func (NullPersistenceStore) CleanupExpired(_ time.Duration) error             { return nil }
 
 // ---------------------------------------------------------------------------
-// EngineState — GUI runtime state (distinct from WorkflowState in state.go)
+// EngineState 鈥?GUI runtime state (distinct from WorkflowState in state.go)
 // ---------------------------------------------------------------------------
 
 // EngineState holds the runtime state used by the WorkflowEngine adapter layer
@@ -688,7 +690,7 @@ func (ws *EngineState) IsWaitingForInput(tmpl *TemplateSpec) bool {
 }
 
 // ---------------------------------------------------------------------------
-// TemplateSpec / PhaseSpec — extended template types for WorkflowEngine
+// TemplateSpec / PhaseSpec 鈥?extended template types for WorkflowEngine
 // ---------------------------------------------------------------------------
 
 // PhaseSpec defines a single phase within a TemplateSpec.

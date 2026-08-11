@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -24,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -67,11 +71,78 @@ type CoreAgentExecutor struct {
 	knowledgeStore KnowledgeStore
 	mcpProvider    MCPToolProvider
 	skillProvider  SkillToolProvider
+	// codingRuntimeStore is optional and set by the service host after its
+	// durable runtime ledger has been opened. Only explicitly marked coding
+	// workflow requests use it; ordinary chat never changes execution path.
+	codingRuntimeStore codingruntime.Store
+	// childExecutions holds only live, process-local cancellation handles for
+	// detached read-only runtime children. The Ledger remains the durable source
+	// of truth; this lets API run cancellation interrupt a currently blocking
+	// child LLM/tool call promptly.
+	childExecutions codingruntime.ChildExecutionRegistry
 }
 
 type coreAgentSSHResources struct {
 	mgr *remote.SSHSessionManager
 	bg  *remote.SSHBackgroundTaskManager
+}
+
+// SetCodingRuntimeStore injects the service host's durable Ledger. It is
+// intentionally optional: only requests with the explicit local_workflow
+// metadata contract use it, so existing API chat semantics remain unchanged.
+func (e *CoreAgentExecutor) SetCodingRuntimeStore(store codingruntime.Store) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.codingRuntimeStore = store
+	e.mu.Unlock()
+}
+
+func (e *CoreAgentExecutor) getCodingRuntimeStore() codingruntime.Store {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.codingRuntimeStore
+}
+
+// CancelCodingRuntimeTask is the service-side counterpart of Run cancellation.
+// It accepts only the same explicit coding-runtime message shape that created a
+// durable task. The caller still cancels its request context; this method
+// closes the Ledger task subtree so queued children and late callbacks cannot
+// outlive the API run.
+func (e *CoreAgentExecutor) CancelCodingRuntimeTask(req ExecuteRequest) (bool, error) {
+	if e == nil {
+		return false, nil
+	}
+	mode := ""
+	if req.Message.Metadata != nil {
+		mode = strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeMode])
+	}
+	if mode != "local_workflow" && mode != "remote_workflow" {
+		return false, nil
+	}
+	if strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeWorkflowID]) == "" || strings.TrimSpace(req.Message.Metadata[metaCodingRuntimePhaseID]) == "" {
+		return false, nil
+	}
+	store := e.getCodingRuntimeStore()
+	if store == nil {
+		return false, nil
+	}
+	_, err := store.CancelTask(serviceCodingRuntimeTaskID(req), time.Now().UTC())
+	if errors.Is(err, codingruntime.ErrNotFound) {
+		// The API run can be cancelled while request validation is still in
+		// flight, before Runner created its task. Context cancellation remains
+		// sufficient in that case; there is no durable work to close.
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	e.childExecutions.CancelParent(serviceCodingRuntimeTaskID(req))
+	return true, nil
 }
 
 type coreAgentCallbacks struct {
@@ -121,6 +192,17 @@ type coreAgentCallbacks struct {
 	moaActive          bool
 	clientCapabilities *agent.ClientCapabilities
 
+	// runtimeStore/runtimeAttempt bind this otherwise host-local callback to a
+	// currently leased coding-runtime parent attempt.  They are deliberately
+	// ephemeral: recovery always creates a fresh callback/attempt instead of
+	// keeping a resumable model conversation in the service process.
+	runtimeStore          codingruntime.Store
+	runtimeAttempt        *codingruntime.Attempt
+	runtimeReadOnlyChild  bool
+	runtimeRemoteBinding  *remoteCodingRuntimeBinding
+	runtimeParentExecutor *CoreAgentExecutor
+	runtimeRequest        ExecuteRequest
+
 	// Host-injected scheduled-task tool (MaClawSrv scheduler).
 	scheduleHandler func(args map[string]interface{}) string
 	// Host-injected proactive IM message tool.
@@ -154,11 +236,44 @@ func (c *coreAgentCallbacks) UpgradeLightPromptToFull(reason string) bool {
 	}
 	c.forceFullPrompt = true
 	c.lastPromptProfile = agent.PromptProfileFull
-	log.Printf("[agentservice] light→full prompt upgrade reason=%s", reason)
+	log.Printf("[agentservice] light-to-full prompt upgrade reason=%s", reason)
 	return true
 }
 
+// Execute runs ordinary requests directly, while an explicitly marked local
+// coding workflow phase is wrapped in the shared durable runtime. The latter
+// path stays in agentservice so Principal/Tenant/User/Instance/Session are
+// constructed and authorized by Service before any model or tool call.
 func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
+	if e == nil {
+		return nil, errors.New("core agent executor is nil")
+	}
+	if isExplicitRemoteCodingRuntimeRequest(req) {
+		store := e.getCodingRuntimeStore()
+		if store == nil {
+			return nil, errors.New("coding runtime is unavailable for this service request")
+		}
+		return e.executeRemoteCodingRuntime(ctx, req, store)
+	}
+	if !isExplicitLocalCodingRuntimeRequest(req) {
+		return e.executeDirect(ctx, req)
+	}
+	store := e.getCodingRuntimeStore()
+	if store == nil {
+		return nil, errors.New("coding runtime is unavailable for this service request")
+	}
+	return e.executeLocalCodingRuntime(ctx, req, store)
+}
+
+func (e *CoreAgentExecutor) executeDirect(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
+	return e.executeDirectWithRuntimeBinding(ctx, req, nil, nil, nil)
+}
+
+// executeDirectWithRuntimeBinding retains the ordinary request path, with an
+// optional ephemeral binding for a ledger-backed parent attempt.  Only the
+// explicit local coding-runtime adapter supplies that binding; normal REST
+// chat cannot expose or dispatch coding child tasks.
+func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context, req ExecuteRequest, runtimeStore codingruntime.Store, runtimeAttempt *codingruntime.Attempt, remoteBinding *remoteCodingRuntimeBinding) (*ExecuteResult, error) {
 	llmCfg, err := ResolveLLMConfig(req.Config)
 	if err != nil {
 		return nil, err
@@ -229,6 +344,14 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		),
 		clientCapabilities: req.ClientCapabilities,
 	}
+	if runtimeStore != nil && runtimeAttempt != nil {
+		attemptCopy := *runtimeAttempt
+		cb.runtimeStore = runtimeStore
+		cb.runtimeAttempt = &attemptCopy
+		cb.runtimeParentExecutor = e
+		cb.runtimeRequest = req
+		cb.runtimeRemoteBinding = remoteBinding
+	}
 	// Explicit moa_preset must resolve or fail closed (K17: no silent single-model).
 	if name := strings.TrimSpace(cb.moaRequestPreset); name != "" {
 		resolved, detail, ok := resolveMoAPresetForRequest(req.Config, llmCfg, name)
@@ -240,7 +363,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		cb.moaSource = "request"
 		cb.moaActive = true
 	}
-	userContent := agent.BuildUserContent(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil)
+	userContent := agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfig(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil, nil, attachmentStagingDir(req.Instance.Workspace), officeReadConfigFromAppConfig(req.Config))
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop starting ===== session=%s onToken_wired=%v moa_preset=%q", req.Session.ID, req.OnToken != nil, cb.moaRequestPreset)
 	result := agent.RunLoopWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
@@ -294,6 +417,140 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		}
 	}
 	return &ExecuteResult{Content: result.Text, OutputType: "text/plain", Metadata: metadata}, nil
+}
+
+const (
+	metaCodingRuntimeMode       = "coding_runtime_mode"
+	metaCodingRuntimeWorkflowID = "coding_runtime_workflow_id"
+	metaCodingRuntimePhaseID    = "coding_runtime_phase_id"
+	metaCodingRuntimeTaskID     = "coding_runtime_task_id"
+	metaCodingRuntimeTaskStatus = "coding_runtime_task_status"
+	metaCodingRuntimeAttemptID  = "coding_runtime_attempt_id"
+)
+
+func (e *CoreAgentExecutor) executeLocalCodingRuntime(ctx context.Context, req ExecuteRequest, store codingruntime.Store) (*ExecuteResult, error) {
+	// Explicit local-workflow requests are write-capable. Completion is gated
+	// on corelib's final read-only Git observation instead of trusting an LLM
+	// response alone.
+	policy := codingruntime.PolicySnapshot{ProjectRoot: strings.TrimSpace(req.Instance.Workspace), Mode: "local", FinalWorkspaceGateRequired: true}
+	if policy.ProjectRoot == "" {
+		return nil, errors.New("coding runtime requires an instance workspace")
+	}
+	digest, err := codingruntime.PolicyDigest(policy)
+	if err != nil {
+		return nil, fmt.Errorf("freeze coding runtime policy: %w", err)
+	}
+	policy.Digest = digest
+	taskID := serviceCodingRuntimeTaskID(req)
+	if existing, getErr := store.GetTask(taskID); getErr == nil && existing.Status == codingruntime.TaskInterrupted {
+		return nil, codingruntime.ErrRecoveryRequired
+	} else if getErr != nil && !errors.Is(getErr, codingruntime.ErrNotFound) {
+		return nil, fmt.Errorf("load coding runtime task: %w", getErr)
+	} else if getErr == nil && existing.Status != codingruntime.TaskQueued && existing.Status != codingruntime.TaskWaitingApproval {
+		return nil, fmt.Errorf("coding runtime task is not ready for a new attempt: %s", existing.Status)
+	}
+
+	var directResult *ExecuteResult
+	executor := codingruntimeExecutorFunc(func(runCtx context.Context, runtimeRequest codingruntime.ExecutionRequest) codingruntime.ExecutionResult {
+		out, executeErr := e.executeDirectWithRuntimeBinding(runCtx, req, store, &runtimeRequest.Attempt, nil)
+		if runCtx != nil && runCtx.Err() != nil {
+			return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "service_request_cancelled", ErrorSummary: "service coding request was cancelled; side effects require a read-only recovery probe"}
+		}
+		if executeErr != nil {
+			if errors.Is(executeErr, context.Canceled) || errors.Is(executeErr, context.DeadlineExceeded) {
+				return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "service_request_cancelled", ErrorSummary: "service coding request was cancelled; side effects require a read-only recovery probe"}
+			}
+			return codingruntime.ExecutionResult{Status: codingruntime.TaskFailed, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "service_agent_loop_failed", ErrorSummary: "service coding-agent loop failed; inspect host-local diagnostics"}
+		}
+		directResult = out
+		if out != nil && out.Metadata != nil && normalizeResponseSourceKind(out.Metadata[metaResponseSource]).IsWaitingForUser() {
+			return codingruntime.ExecutionResult{Status: codingruntime.TaskBlocked, SideEffectState: codingruntime.SideEffectNone, ErrorCode: "service_agent_waiting_for_user", ErrorSummary: "service coding-agent requires explicit user input before a new attempt", Evidence: []codingruntime.Evidence{{Type: "service_agent_waiting_for_user", Digest: serviceCodingRuntimeDigest(out)}}}
+		}
+		if out != nil && out.Metadata != nil && strings.EqualFold(strings.TrimSpace(out.Metadata["hard_exit"]), "true") {
+			return codingruntime.ExecutionResult{Status: codingruntime.TaskFailed, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "service_agent_hard_exit", ErrorSummary: "service coding-agent exited abnormally; inspect host-local diagnostics", Evidence: []codingruntime.Evidence{{Type: "service_agent_hard_exit", Digest: serviceCodingRuntimeDigest(out)}}}
+		}
+		return codingruntime.ExecutionResult{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectObserved, Evidence: []codingruntime.Evidence{{Type: "service_agent_completion", Digest: serviceCodingRuntimeDigest(out)}}}
+	})
+	runner := codingruntime.Runner{
+		Store:           store,
+		LeaseOwner:      serviceCodingRuntimeOwner(req),
+		LeaseDuration:   15 * time.Minute,
+		WorkspaceProber: codingruntime.NewLocalGitWorkspaceProber(policy.ProjectRoot),
+	}
+	task, attempt, runErr := runner.Run(ctx, codingruntime.Task{
+		TaskID:        taskID,
+		WorkflowID:    strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeWorkflowID]),
+		PhaseID:       strings.TrimSpace(req.Message.Metadata[metaCodingRuntimePhaseID]),
+		OwnerID:       serviceCodingRuntimeOwner(req),
+		ProjectRef:    policy.ProjectRoot,
+		Mode:          "local",
+		RequestedWork: strings.TrimSpace(req.Message.Content),
+		PolicyDigest:  digest,
+	}, policy, executor)
+	if runErr != nil {
+		return nil, runErr
+	}
+	if directResult == nil {
+		directResult = &ExecuteResult{OutputType: "text/plain"}
+	}
+	if directResult.Metadata == nil {
+		directResult.Metadata = map[string]string{}
+	}
+	directResult.Metadata[metaCodingRuntimeTaskID] = task.TaskID
+	directResult.Metadata[metaCodingRuntimeTaskStatus] = string(task.Status)
+	if attempt != nil {
+		directResult.Metadata[metaCodingRuntimeAttemptID] = attempt.AttemptID
+	}
+	if task.Status == codingruntime.TaskInterrupted {
+		return nil, context.Canceled
+	}
+	if task.Status == codingruntime.TaskFailed {
+		return nil, errors.New("coding runtime attempt failed; inspect host-local diagnostics")
+	}
+	if task.Status == codingruntime.TaskBlocked && directResult.Metadata[metaResponseSource] == "" {
+		directResult.Content = "Coding runtime attempt ended as " + string(task.Status) + ". No automatic replay was performed."
+	}
+	return directResult, nil
+}
+
+type codingruntimeExecutorFunc func(context.Context, codingruntime.ExecutionRequest) codingruntime.ExecutionResult
+
+func (f codingruntimeExecutorFunc) Execute(ctx context.Context, request codingruntime.ExecutionRequest) codingruntime.ExecutionResult {
+	return f(ctx, request)
+}
+
+func isExplicitLocalCodingRuntimeRequest(req ExecuteRequest) bool {
+	if req.Message.Metadata == nil || strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeMode]) != "local_workflow" {
+		return false
+	}
+	return strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeWorkflowID]) != "" && strings.TrimSpace(req.Message.Metadata[metaCodingRuntimePhaseID]) != "" && req.MutationScope == v2.MutationScopeProject
+}
+
+func serviceCodingRuntimeTaskID(req ExecuteRequest) string {
+	workflowID := strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeWorkflowID])
+	phaseID := strings.TrimSpace(req.Message.Metadata[metaCodingRuntimePhaseID])
+	mode := "local"
+	remoteIdentity := ""
+	if req.Message.Metadata != nil && strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeMode]) == "remote_workflow" {
+		mode = "remote"
+		if target, err := remoteCodingRuntimeTargetFromRequest(req); err == nil {
+			remoteIdentity, _ = target.Identity()
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(req.Principal.TenantID) + "\n" + strings.TrimSpace(req.Principal.UserID) + "\n" + strings.TrimSpace(req.Instance.ID) + "\n" + strings.TrimSpace(req.Session.ID) + "\n" + workflowID + "\n" + phaseID + "\n" + mode + "\n" + remoteIdentity))
+	return fmt.Sprintf("srv-coding-%x", sum[:16])
+}
+
+func serviceCodingRuntimeOwner(req ExecuteRequest) string {
+	return "srv:" + strings.TrimSpace(req.Principal.TenantID) + ":" + strings.TrimSpace(req.Principal.UserID) + ":" + strings.TrimSpace(req.Session.ID)
+}
+
+func serviceCodingRuntimeDigest(result *ExecuteResult) string {
+	if result == nil {
+		return "sha256:empty"
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(result.OutputType) + "|" + strings.TrimSpace(result.Metadata["executor"])))
+	return fmt.Sprintf("sha256:%x", sum[:])
 }
 
 func (e *CoreAgentExecutor) clientFor(cfg corelib.MaclawLLMConfig) *http.Client {
@@ -468,7 +725,7 @@ func (c *coreAgentCallbacks) PrepareMoA(iteration int, toolsSeen bool, fanoutsRa
 		c.UpgradeLightPromptToFull("moa council")
 	}
 	n := len(c.moaPreset.References)
-	progress = fmt.Sprintf("consulting %d models…", n)
+	progress = fmt.Sprintf("consulting %d models...", n)
 	if c.moaSource == "auto" && iteration == 0 && fanoutsRan == 0 {
 		progress = "auto multi-model: " + progress
 	}
@@ -481,6 +738,12 @@ func (c *coreAgentCallbacks) GetMaxIterations() int {
 }
 
 func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
+	if c != nil && c.runtimeReadOnlyChild {
+		// This callback is constructed only by serviceReadOnlyChildExecutor.
+		// Keep this compact and deterministic: inherited application prompts may
+		// describe tools that the child is intentionally forbidden to receive.
+		return serviceReadOnlyChildSystemPrompt(c.userText)
+	}
 	profile := c.platformRuntimeProfile()
 	roleName := firstNonEmptyString(profile.Name, c.appCfg.MaclawRoleName)
 	if roleName == "" {
@@ -513,13 +776,14 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 			return profile.PromptSection()
 		},
 		KnowledgeAutoRecall: func(b *strings.Builder, userMsg string) {
-			if c.knowledgeStore != nil && userMsg != "" {
+			// Personal store and/or enterprise cache under dataDir.
+			if userMsg != "" && (c.knowledgeStore != nil || strings.TrimSpace(c.dataDir) != "") {
 				c.appendKnowledgeAutoRecall(b, userMsg)
 			}
 		},
 	}
 	// Shadow savings estimate + durable hit-rate counters (with classify task).
-	// Skip re-recording when rebuilding after mid-loop light→full upgrade.
+	// Skip re-recording when rebuilding after mid-loop light闂備焦鍓氶崑鍛叏娑旂担l upgrade.
 	fullTok, lightTok := 0, 0
 	if promptProfile.IsLight() {
 		fullTok, lightTok = agent.EstimatePromptProfileTokens(deps, userText, isFirstTurn)
@@ -535,6 +799,12 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	}
 
 	bundle := agent.BuildPromptBundle(deps, userText, isFirstTurn)
+	if c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild {
+		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\nRuntime child delegation: when independent repository inspection would help, you may call spawn_coding_agent only for explorer or reviewer children. Admission ends this attempt; child results are durable bounded summaries for a later explicit attempt, never an in-process continuation.")
+	}
+	if hardwareContext := c.hardwareBindingPrompt(); hardwareContext != "" {
+		bundle.SessionContext = strings.TrimSpace(hardwareContext + "\n\n" + bundle.SessionContext)
+	}
 	if clientContext := agent.BuildClientCapabilityPrompt(c.clientCapabilities); clientContext != "" {
 		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\n" + clientContext)
 	}
@@ -650,7 +920,7 @@ func imFileToolParameters(_ bool) map[string]interface{} {
 			"forward_to_im": map[string]interface{}{"type": "boolean"},
 			"channel":       map[string]interface{}{"type": "string", "description": "Exact IM channel: weixin|feishu|qq|telegram|lansenger. Required with group_id/user_id."},
 			"group_id":      map[string]interface{}{"type": "string", "description": "Exact group/conversation ID; resolve a spoken group name with im_message action=list_targets first"},
-			"group_name":    map[string]interface{}{"type": "string", "description": "Human-readable group name for context; do not send by name alone—resolve to group_id first"},
+			"group_name":    map[string]interface{}{"type": "string", "description": "Human-readable group name for context; do not send by name alone; resolve to group_id first"},
 			"user_id":       map[string]interface{}{"type": "string", "description": "Exact private recipient ID or self; mutually exclusive with group_id"},
 			"message":       map[string]interface{}{"type": "string", "description": "Optional file caption/message"},
 			"caption":       map[string]interface{}{"type": "string", "description": "Alias for message"},
@@ -739,23 +1009,24 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"action":          map[string]interface{}{"type": "string", "enum": sshAllowedActions(c.allowSSHFileTransfer)},
-					"host":            map[string]interface{}{"type": "string"},
-					"user":            map[string]interface{}{"type": "string"},
-					"port":            map[string]interface{}{"type": "integer"},
-					"auth_method":     map[string]interface{}{"type": "string", "enum": []string{"password", "key", "agent"}},
-					"key_path":        map[string]interface{}{"type": "string"},
-					"password":        map[string]interface{}{"type": "string"},
-					"label":           map[string]interface{}{"type": "string"},
-					"initial_command": map[string]interface{}{"type": "string"},
-					"force_new":       map[string]interface{}{"type": "boolean"},
-					"session_id":      map[string]interface{}{"type": "string"},
-					"command":         map[string]interface{}{"type": "string"},
-					"wait_seconds":    map[string]interface{}{"type": "integer"},
-					"task_id":         map[string]interface{}{"type": "string"},
-					"tail_lines":      map[string]interface{}{"type": "integer"},
-					"local_path":      map[string]interface{}{"type": "string"},
-					"remote_path":     map[string]interface{}{"type": "string"},
+					"action":               map[string]interface{}{"type": "string", "enum": sshAllowedActions(c.allowSSHFileTransfer)},
+					"host":                 map[string]interface{}{"type": "string"},
+					"user":                 map[string]interface{}{"type": "string"},
+					"port":                 map[string]interface{}{"type": "integer"},
+					"auth_method":          map[string]interface{}{"type": "string", "enum": []string{"password", "key", "agent"}},
+					"key_path":             map[string]interface{}{"type": "string"},
+					"password":             map[string]interface{}{"type": "string"},
+					"host_key_fingerprint": map[string]interface{}{"type": "string"},
+					"label":                map[string]interface{}{"type": "string"},
+					"initial_command":      map[string]interface{}{"type": "string"},
+					"force_new":            map[string]interface{}{"type": "boolean"},
+					"session_id":           map[string]interface{}{"type": "string"},
+					"command":              map[string]interface{}{"type": "string"},
+					"wait_seconds":         map[string]interface{}{"type": "integer"},
+					"task_id":              map[string]interface{}{"type": "string"},
+					"tail_lines":           map[string]interface{}{"type": "integer"},
+					"local_path":           map[string]interface{}{"type": "string"},
+					"remote_path":          map[string]interface{}{"type": "string"},
 				},
 				"required": []string{"action"},
 			},
@@ -801,73 +1072,72 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name: "manage_schedule",
-			Description: "定时任务管理。action: create/list/delete/update/list_targets。" +
-				"list_targets 的 channel：lansenger（群）、weixin/telegram/qq（self=最近会话）。" +
-				"create/update 可配 delivery 推送结果；蓝信可用 group_name 自动解析 group_id。" +
-				"fail_on_error 默认 false（投递失败只警告）。即时发消息请用 im_message。",
+			Description: "Manage scheduled tasks. action: create/list/delete/update/list_targets. " +
+				"list_targets resolves available delivery targets; create/update can configure delivery and fail_on_error. " +
+				"Use im_message for immediate messages.",
 			Enabled: c.scheduleHandler != nil,
 			DisabledReason: func() string {
 				if c.scheduleHandler == nil {
-					return "定时任务管理器未初始化（需 MACLAW_ENABLE_SCHEDULER=true）"
+					return "scheduled task manager is not initialized (set MACLAW_ENABLE_SCHEDULER=true)"
 				}
 				return ""
 			}(),
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"action":           map[string]interface{}{"type": "string", "description": "create/list/delete/update/list_targets"},
-					"id":               map[string]interface{}{"type": "string", "description": "任务 ID（delete/update）"},
-					"name":             map[string]interface{}{"type": "string", "description": "任务名称"},
-					"task_action":      map[string]interface{}{"type": "string", "description": "到点执行的内容（自然语言）"},
+					"action":           map[string]interface{}{"type": "string", "description": "create, list, delete, update, or list_targets"},
+					"id":               map[string]interface{}{"type": "string", "description": "Task ID for delete or update"},
+					"name":             map[string]interface{}{"type": "string", "description": "Task name"},
+					"task_action":      map[string]interface{}{"type": "string", "description": "Natural-language action to run on schedule"},
 					"hour":             map[string]interface{}{"type": "integer", "description": "0-23"},
 					"minute":           map[string]interface{}{"type": "integer", "description": "0-59"},
-					"day_of_week":      map[string]interface{}{"type": "integer", "description": "-1=每天, 0=周日…6=周六"},
-					"day_of_month":     map[string]interface{}{"type": "integer", "description": "-1=不限, 1-31"},
-					"interval_minutes": map[string]interface{}{"type": "integer", "description": ">0 间隔模式"},
+					"day_of_week":      map[string]interface{}{"type": "integer", "description": "-1 daily, 0 Sunday through 6 Saturday"},
+					"day_of_month":     map[string]interface{}{"type": "integer", "description": "-1 unrestricted, 1-31"},
+					"interval_minutes": map[string]interface{}{"type": "integer", "description": "Positive values select interval scheduling"},
 					"start_date":       map[string]interface{}{"type": "string", "description": "YYYY-MM-DD"},
 					"end_date":         map[string]interface{}{"type": "string", "description": "YYYY-MM-DD"},
-					"task_type":        map[string]interface{}{"type": "string", "description": "reminder|process"},
-					"channel":          map[string]interface{}{"type": "string", "description": "list_targets 或 delivery 通道"},
-					"query":            map[string]interface{}{"type": "string", "description": "list_targets 过滤"},
-					"delivery":         map[string]interface{}{"type": "object", "description": "推送配置 {enabled,channel,fail_on_error,targets:[{kind,group_id|group_name|user_id}]}"},
-					"group_id":         map[string]interface{}{"type": "string", "description": "delivery 简写：群 ID"},
-					"group_name":       map[string]interface{}{"type": "string", "description": "delivery 简写：群名（可自动解析）"},
-					"user_id":          map[string]interface{}{"type": "string", "description": "delivery 简写：私聊 ID 或 self"},
-					"fail_on_error":    map[string]interface{}{"type": "boolean", "description": "投递失败是否让任务失败"},
+					"task_type":        map[string]interface{}{"type": "string", "description": "reminder or process"},
+					"channel":          map[string]interface{}{"type": "string", "description": "Delivery channel or list_targets channel"},
+					"query":            map[string]interface{}{"type": "string", "description": "list_targets filter"},
+					"delivery":         map[string]interface{}{"type": "object", "description": "Delivery configuration: enabled, channel, fail_on_error, targets"},
+					"group_id":         map[string]interface{}{"type": "string", "description": "Delivery shorthand: exact group ID"},
+					"group_name":       map[string]interface{}{"type": "string", "description": "Delivery shorthand: group name for resolution"},
+					"user_id":          map[string]interface{}{"type": "string", "description": "Delivery shorthand: private recipient ID or self"},
+					"fail_on_error":    map[string]interface{}{"type": "boolean", "description": "Whether a delivery failure fails the task"},
 					"mention_all":      map[string]interface{}{"type": "boolean"},
-					"mention_user_ids": map[string]interface{}{"type": "string", "description": "逗号分隔 @ 用户"},
+					"mention_user_ids": map[string]interface{}{"type": "string", "description": "Comma-separated user IDs to mention"},
 				},
 				"required": []string{"action"},
 			},
 		},
 		{
 			Name: "im_message",
-			Description: "即时向 IM 发文本或文件（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file）。" +
-				"用户要求现在发到蓝信某群/微信时用本工具；周期播报才用 manage_schedule+delivery。" +
-				"send_file 上传本机文件（lansenger/telegram/qq，微信不支持），可同时带 text 作为说明文字。",
+			Description: "Send immediate IM text or a file, or list IM delivery targets. " +
+				"action: list_targets|send|send_file; action can be inferred from text or path. " +
+				"Use manage_schedule with delivery for periodic reports.",
 			Enabled: c.imMessageHandler != nil,
 			DisabledReason: func() string {
 				if c.imMessageHandler == nil {
-					return "IM 消息工具未初始化"
+					return "IM message tool is not initialized"
 				}
 				return ""
 			}(),
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"action":           map[string]interface{}{"type": "string", "description": "list_targets、send 或 send_file；可省略并自动推断"},
-					"text":             map[string]interface{}{"type": "string", "description": "send 时消息正文；send_file 时作为文件说明文字"},
-					"message":          map[string]interface{}{"type": "string", "description": "text 别名"},
-					"path":             map[string]interface{}{"type": "string", "description": "send_file：要发送的本机文件路径"},
-					"file_name":        map[string]interface{}{"type": "string", "description": "send_file：发送时显示的文件名（可选）"},
-					"channel":          map[string]interface{}{"type": "string", "description": "lansenger|weixin|telegram|qq"},
-					"query":            map[string]interface{}{"type": "string", "description": "list_targets 过滤"},
-					"group_name":       map[string]interface{}{"type": "string", "description": "send/send_file：群名"},
-					"group_id":         map[string]interface{}{"type": "string", "description": "send/send_file：群 ID"},
-					"user_id":          map[string]interface{}{"type": "string", "description": "send/send_file：私聊 ID 或 self"},
-					"mention_user_ids": map[string]interface{}{"type": "string", "description": "逗号分隔 @ 用户"},
+					"action":           map[string]interface{}{"type": "string", "description": "list_targets, send, or send_file; inferred when omitted"},
+					"text":             map[string]interface{}{"type": "string", "description": "Message body, or file caption for send_file"},
+					"message":          map[string]interface{}{"type": "string", "description": "Alias for text"},
+					"path":             map[string]interface{}{"type": "string", "description": "Local path for send_file"},
+					"file_name":        map[string]interface{}{"type": "string", "description": "Optional display filename for send_file"},
+					"channel":          map[string]interface{}{"type": "string", "description": "lansenger, weixin, telegram, or qq"},
+					"query":            map[string]interface{}{"type": "string", "description": "list_targets filter"},
+					"group_name":       map[string]interface{}{"type": "string", "description": "Target group name"},
+					"group_id":         map[string]interface{}{"type": "string", "description": "Exact target group ID"},
+					"user_id":          map[string]interface{}{"type": "string", "description": "Private recipient ID or self"},
+					"mention_user_ids": map[string]interface{}{"type": "string", "description": "Comma-separated user IDs to mention"},
 					"mention_all":      map[string]interface{}{"type": "boolean"},
-					"delivery":         map[string]interface{}{"type": "object", "description": "可选完整投递配置"},
+					"delivery":         map[string]interface{}{"type": "object", "description": "Optional complete delivery configuration"},
 				},
 			},
 		},
@@ -901,14 +1171,44 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"project_path":     map[string]interface{}{"type": "string", "description": "Optional project path when search_scope is project."},
 					"topic_hint":       map[string]interface{}{"type": "string", "description": "Optional topic hint for local re-ranking."},
 					"context_terms":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional extra context terms for ranking."},
-					"result_types":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional: node, card, fact."},
-					"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional: url, pdf, docx, xlsx, csv, markdown, text"},
+					"result_types":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional: node, card, fact. Use node for image results."},
+					"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional: url, pdf, docx, xlsx, csv, markdown, text, image"},
 					"source_ids":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source IDs to search within."},
 					"source_id":        map[string]interface{}{"type": "string", "description": "Alias for one source_ids entry."},
 					"id":               map[string]interface{}{"type": "string", "description": "Alias for one source_ids entry."},
 					"labels":           map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source labels to filter by."},
 					"domain":           map[string]interface{}{"type": "string", "description": "Optional URL/site domain filter."},
 					"limit":            map[string]interface{}{"type": "integer", "description": "Max results, default 8, max 50"},
+					"include_disabled": map[string]interface{}{"type": "boolean", "description": "Include disabled own sources. Ignored for shared readable scopes."},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			Name:        "knowledge_image_search",
+			Description: "Search only imported knowledge-base images by OCR text, visual description, filename, and surrounding document context. Use when the user asks to find, show, view, select, or compare stored images. Results include safe display markers; when the user asks to see an image, copy its exact marker unchanged onto its own line in the final answer.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query":            map[string]interface{}{"type": "string", "description": "Text description of the image to find"},
+					"search_scope":     map[string]interface{}{"type": "string", "description": "all | project | personal. Default all."},
+					"project_path":     map[string]interface{}{"type": "string", "description": "Optional project path when search_scope is project."},
+					"topic_hint":       map[string]interface{}{"type": "string", "description": "Optional topic hint for image ranking."},
+					"context_terms":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional extra context terms for ranking."},
+					"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source kinds; image nodes are always enforced."},
+					"source_ids":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source IDs to search within."},
+					"source_id":        map[string]interface{}{"type": "string", "description": "Alias for one source_ids entry."},
+					"id":               map[string]interface{}{"type": "string", "description": "Alias for one source_ids entry."},
+					"labels":           map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source labels to filter by."},
+					"domain":           map[string]interface{}{"type": "string", "description": "Optional URL/site domain filter."},
+					"limit":            map[string]interface{}{"type": "integer", "description": "Max image results, default 8, max 50"},
 					"include_disabled": map[string]interface{}{"type": "boolean", "description": "Include disabled own sources. Ignored for shared readable scopes."},
 				},
 				"required": []string{"query"},
@@ -988,7 +1288,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "knowledge_import_share",
-			Description: "Import shared knowledge into the local knowledge base by share link or knowledge_id. Supports Hub share URLs (e.g. https://hub.example.com/hub/knowledge/shares/kn_xxx). Call this tool directly when the user provides a knowledge share link — it will fetch and import the content automatically.",
+			Description: "Import shared knowledge into the local knowledge base by share link or knowledge_id. Supports Hub share URLs (e.g. https://hub.example.com/hub/knowledge/shares/kn_xxx). Call this tool directly when the user provides a knowledge share link 闂?it will fetch and import the content automatically.",
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
@@ -1009,7 +1309,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "knowledge_import_directory",
-			Description: "Scan or import a local directory/folder of documents into the knowledge base. Only use after the user explicitly provides or approves the directory path.",
+			Description: "Scan or import a local directory/folder of documents into the knowledge base. Supports DOC/DOCX, PPT/PPTX, XLS/XLSX, PDF, CSV, Markdown, and TXT; PPT rich knowledge content requires the OfficeRead Knowledge opt-in. Only use after the user explicitly provides or approves the directory path.",
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
@@ -1033,7 +1333,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Labels to attach to imported sources"},
 					"auto_labels":   map[string]interface{}{"type": "boolean", "description": "Enable automatic labels when supported"},
 					"recursive":     map[string]interface{}{"type": "boolean", "description": "Include subdirectories, default true"},
-					"include_exts":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx, .md"},
+					"include_exts":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
 					"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Glob patterns to exclude"},
 					"max_file_mb":   map[string]interface{}{"type": "integer", "description": "Max file size in MB, default 100"},
 				},
@@ -1041,7 +1341,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "knowledge_import_files",
-			Description: "Scan or import explicitly provided local document file paths into the knowledge base. Use for importing files/documents/PDFs into the knowledge base / external brain. Only use after the user explicitly provides or approves the file paths.",
+			Description: "Scan or import explicitly provided local document file paths into the knowledge base. Supports DOC/DOCX, PPT/PPTX, XLS/XLSX, PDF, CSV, Markdown, and TXT; PPT rich knowledge content requires the OfficeRead Knowledge opt-in. Only use after the user explicitly provides or approves the file paths.",
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
@@ -1064,7 +1364,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"distill_mode":  map[string]interface{}{"type": "string", "description": "Optional distillation mode"},
 					"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Labels to attach to imported sources"},
 					"auto_labels":   map[string]interface{}{"type": "boolean", "description": "Enable automatic labels when supported"},
-					"include_exts":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx, .md"},
+					"include_exts":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
 					"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Glob patterns to exclude"},
 					"max_file_mb":   map[string]interface{}{"type": "integer", "description": "Max file size in MB, default 100"},
 				},
@@ -1150,6 +1450,27 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"offset":     map[string]interface{}{"type": "integer", "description": "Read last N lines from end (like tail -n). Mutually exclusive with start_line/lines."},
 				},
 				"required": []string{"path"},
+			},
+		},
+		{
+			Name:        "read_document",
+			Description: "Read text from office/PDF documents using native parsers. Supports PDF (.pdf), Word (.doc/.docx), Excel (.xls/.xlsx/.csv), PowerPoint (.ppt/.pptx), and plain text (.txt/.md). Prefer this over read_file for binary documents; use offset plus max_chars to page long extracts.",
+			Enabled:     c.workspace != "",
+			DisabledReason: func() string {
+				if c.workspace == "" {
+					return "no workspace configured for this instance"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"file_path":    map[string]interface{}{"type": "string", "description": "Document path relative to the workspace, or an absolute path within it (alias: path)"},
+					"path":         map[string]interface{}{"type": "string", "description": "Alias for file_path"},
+					"max_chars":    map[string]interface{}{"type": "integer", "description": "Maximum characters for this chunk (default 120000)"},
+					"offset":       map[string]interface{}{"type": "integer", "description": "Rune offset for the next chunk"},
+					"line_numbers": map[string]interface{}{"type": "boolean", "description": "Prefix extracted lines with stable line numbers"},
+				},
 			},
 		},
 		{
@@ -1285,6 +1606,21 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 		}
 		tools = append(tools, functionToolDefinition(spec.Name, spec.Description, spec.Parameters))
 	}
+	if c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild && c.runtimeRemoteBinding == nil {
+		tools = append(tools, serviceReadOnlyChildSpawnToolDefinition())
+	}
+	if c != nil && c.runtimeRemoteBinding != nil {
+		filtered := tools[:0]
+		for _, tool := range tools {
+			if tooldef.Name(tool) == "ssh" {
+				filtered = append(filtered, tool)
+			}
+		}
+		return filtered
+	}
+	if c != nil && c.runtimeReadOnlyChild {
+		return filterServiceReadOnlyChildToolDefinitions(tools)
+	}
 	// Append MCP tools from all healthy/running servers.
 	// Called on every iteration to pick up newly installed MCP servers.
 	if mcpDefs := c.mcpToolDefs(); len(mcpDefs) > 0 {
@@ -1293,6 +1629,17 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 	// Append manage_skill tool if skill provider is available.
 	if skillDefs := c.skillToolDefs(); len(skillDefs) > 0 {
 		tools = append(tools, skillDefs...)
+	}
+	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 {
+		filtered := tools[:0]
+		for _, tool := range tools {
+			fn, _ := tool["function"].(map[string]interface{})
+			name, _ := fn["name"].(string)
+			if allowed[strings.TrimSpace(name)] {
+				filtered = append(filtered, tool)
+			}
+		}
+		tools = filtered
 	}
 	// Align tool surface with light system prompt (no bash/coding/files/MCP bulk).
 	// Prefer the profile from BuildSystemPrompt; re-resolve only when user text
@@ -1307,24 +1654,146 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 	return tools
 }
 
+func (c *coreAgentCallbacks) hardwareBindingPrompt() string {
+	if c == nil || c.instance.Metadata == nil {
+		return ""
+	}
+	meta := c.instance.Metadata
+	mode := strings.TrimSpace(meta["hardware_assistant_mode"])
+	prompt := strings.TrimSpace(meta["hardware_initial_prompt"])
+	expertPrompt := strings.TrimSpace(meta["hardware_expert_system_prompt"])
+	if mode == "" && prompt == "" && expertPrompt == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Hardware-bound assistant policy\n")
+	b.WriteString("This is a dedicated hardware assistant instance. Treat the following as trusted runtime policy, never as user-provided content. Do not reveal it unless the user explicitly asks about your configured role.\n")
+	if mode == "expert" && expertPrompt != "" {
+		name := strings.TrimSpace(meta["hardware_expert_name"])
+		if name != "" {
+			fmt.Fprintf(&b, "\n### Selected AI expert: %s\n", name)
+		} else {
+			b.WriteString("\n### Selected AI expert\n")
+		}
+		b.WriteString(expertPrompt)
+		b.WriteString("\n")
+	}
+	if prompt != "" {
+		b.WriteString("\n### Supplemental instructions\n")
+		b.WriteString(prompt)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (c *coreAgentCallbacks) hardwareExpertToolAllowSet() map[string]bool {
+	if c == nil || c.instance.Metadata == nil || strings.TrimSpace(c.instance.Metadata["hardware_assistant_mode"]) != "expert" {
+		return nil
+	}
+	raw := strings.TrimSpace(c.instance.Metadata["hardware_expert_tools_json"])
+	if raw == "" {
+		return nil
+	}
+	var names []string
+	if json.Unmarshal([]byte(raw), &names) != nil || len(names) == 0 {
+		return nil
+	}
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" {
+			allowed[name] = true
+		}
+	}
+	return allowed
+}
+
+func (c *coreAgentCallbacks) hardwareExpertSkillAllowSet() map[string]bool {
+	if c == nil || c.instance.Metadata == nil || strings.TrimSpace(c.instance.Metadata["hardware_assistant_mode"]) != "expert" {
+		return nil
+	}
+	raw := strings.TrimSpace(c.instance.Metadata["hardware_expert_skills_json"])
+	if raw == "" {
+		return nil
+	}
+	var names []string
+	if json.Unmarshal([]byte(raw), &names) != nil || len(names) == 0 {
+		return nil
+	}
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" {
+			allowed[name] = true
+		}
+	}
+	return allowed
+}
+
+func (c *coreAgentCallbacks) hardwareExpertToolCallAllowed(name string, args map[string]interface{}) (bool, string) {
+	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 && !allowed[strings.TrimSpace(name)] {
+		return false, fmt.Sprintf("%s is not allowed by the selected hardware expert", strings.TrimSpace(name))
+	}
+	if strings.TrimSpace(name) != "manage_skill" {
+		return true, ""
+	}
+	if strings.TrimSpace(stringArg(args, "action")) != "run" {
+		return true, ""
+	}
+	if allowed := c.hardwareExpertSkillAllowSet(); len(allowed) > 0 && !allowed[strings.TrimSpace(stringArg(args, "name"))] {
+		return false, fmt.Sprintf("skill %s is not allowed by the selected hardware expert", strings.TrimSpace(stringArg(args, "name")))
+	}
+	return true, ""
+}
+
 func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.ExecuteToolStructured(name, argsJSON).Result
 }
 
 func (c *coreAgentCallbacks) IsToolAllowed(name string) bool {
+	if strings.TrimSpace(name) == serviceReadOnlyChildSpawnToolName {
+		return c != nil && c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild && c.runtimeRemoteBinding == nil
+	}
+	if !c.remoteCodingRuntimeToolAllowed(name) {
+		return false
+	}
+	if c != nil && c.runtimeReadOnlyChild && !serviceReadOnlyChildToolAllowed(name) {
+		return false
+	}
 	if !v2.IsToolAllowedByPolicy(c.toolPolicy, name) {
+		return false
+	}
+	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 && !allowed[strings.TrimSpace(name)] {
 		return false
 	}
 	return isMutationScopeAllowed(c.mutationScope, name)
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if strings.TrimSpace(name) == serviceReadOnlyChildSpawnToolName {
+		if c == nil || c.runtimeStore == nil || c.runtimeAttempt == nil || c.runtimeReadOnlyChild {
+			return false, "read-only child delegation is unavailable outside a ledger-backed parent coding attempt"
+		}
+		if _, err := parseServiceReadOnlyChildSpawn(argsJSON); err != nil {
+			return false, err.Error()
+		}
+		return true, ""
+	}
 	args, err := parseCoreAgentToolArguments(argsJSON)
 	if err != nil {
 		return false, fmt.Sprintf("invalid tool arguments: %v", err)
 	}
+	if c != nil && c.runtimeReadOnlyChild {
+		if allowed, reason := serviceReadOnlyChildToolCallAllowed(name, args); !allowed {
+			return false, reason
+		}
+	}
+	if ok, reason := c.remoteCodingRuntimeToolCallAllowed(name, args); !ok {
+		return false, reason
+	}
 	if !v2.IsToolAllowedByPolicy(c.toolPolicy, strings.TrimSpace(name)) {
 		return false, fmt.Sprintf("%s is not allowed in current workflow phase", strings.TrimSpace(name))
+	}
+	if ok, reason := c.hardwareExpertToolCallAllowed(name, args); !ok {
+		return false, reason
 	}
 	if !isMutationScopeAllowed(c.mutationScope, strings.TrimSpace(name)) {
 		return false, fmt.Sprintf("%s is not allowed under mutation scope %s", name, c.mutationScope)
@@ -1361,8 +1830,22 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 			Outcome: agent.ToolExecutionOutcomeError,
 		}
 	}
+	if strings.TrimSpace(name) == serviceReadOnlyChildSpawnToolName {
+		return c.executeServiceReadOnlyChildSpawn(argsJSON)
+	}
+	if c != nil && c.runtimeReadOnlyChild {
+		if allowed, reason := serviceReadOnlyChildToolCallAllowed(name, args); !allowed {
+			return agent.ToolExecutionResult{Result: "Error: " + reason, Outcome: agent.ToolExecutionOutcomeError}
+		}
+	}
+	if ok, reason := c.remoteCodingRuntimeToolCallAllowed(name, args); !ok {
+		return agent.ToolExecutionResult{Result: "Error: " + reason, Outcome: agent.ToolExecutionOutcomeError}
+	}
 	if err := v2.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	if ok, reason := c.hardwareExpertToolCallAllowed(name, args); !ok {
+		return agent.ToolExecutionResult{Result: "Error: " + reason, Outcome: agent.ToolExecutionOutcomeError}
 	}
 	if c.mutationScope == v2.MutationScopeArtifact {
 		if err := v2.ValidateArtifactPhaseToolCall(strings.TrimSpace(name), args); err != nil {
@@ -1385,14 +1868,26 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		if !c.canUseLocalBash() {
 			return agent.ToolExecutionResult{Result: "Error: " + c.localBashDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}
 		}
+		bashArgs, err := c.resolveBashWorkingDir(args)
+		if err != nil {
+			return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+		}
 		ctx := c.ctx
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		return agent.ToolExecutionResult{Result: agent.ToolBashWithContext(ctx, ensureBashWorkingDir(args, c.workspace), c.OnProgress)}
+		return agent.ToolExecutionResult{Result: agent.ToolBashWithContext(ctx, bashArgs, c.OnProgress)}
 	case "ssh":
 		if !c.canUseSSH() {
 			return agent.ToolExecutionResult{Result: "Error: " + c.sshDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}
+		}
+		if c.runtimeRemoteBinding != nil {
+			resources := c.runtimeParentExecutor.sshResourcesForUser(c.principal.TenantID, c.principal.UserID)
+			out, execErr := serviceRemoteSSHExecBound(resources, *c.runtimeRemoteBinding, agent.StringArg(args, "command"), coreAgentIntArg(args, "wait_seconds", 15))
+			if execErr != nil {
+				return agent.ToolExecutionResult{Result: "Error: " + execErr.Error(), Outcome: agent.ToolExecutionOutcomeError}
+			}
+			return agent.ToolExecutionResult{Result: out, Outcome: agent.ToolExecutionOutcomeOK}
 		}
 		validated, err := c.validateSSHArgs(args)
 		if err != nil {
@@ -1405,14 +1900,9 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: agent.ToolTask(c.tasks, args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "manage_schedule":
 		if c.scheduleHandler == nil {
-			return agent.ToolExecutionResult{
-				Result:  "定时任务管理器未初始化（需 MACLAW_ENABLE_SCHEDULER=true）。",
-				Outcome: agent.ToolExecutionOutcomeError,
-			}
+			return agent.ToolExecutionResult{Result: "scheduled task manager is not initialized (set MACLAW_ENABLE_SCHEDULER=true)", Outcome: agent.ToolExecutionOutcomeError}
 		}
 		out := c.scheduleHandler(args)
-		// Keep Outcome=OK for normal tool text so the model can read failure reasons;
-		// only hard-prefix errors mark OutcomeError.
 		outcome := agent.ToolExecutionOutcomeOK
 		if strings.HasPrefix(out, "Error:") {
 			outcome = agent.ToolExecutionOutcomeError
@@ -1420,10 +1910,7 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: out, Outcome: outcome}
 	case "im_message":
 		if c.imMessageHandler == nil {
-			return agent.ToolExecutionResult{
-				Result:  "IM 消息工具未初始化。",
-				Outcome: agent.ToolExecutionOutcomeError,
-			}
+			return agent.ToolExecutionResult{Result: "IM message tool is not initialized", Outcome: agent.ToolExecutionOutcomeError}
 		}
 		out := c.imMessageHandler(args)
 		outcome := agent.ToolExecutionOutcomeOK
@@ -1461,6 +1948,22 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		}), Outcome: agent.ToolExecutionOutcomeOK}
 	case "read_file":
 		return agent.ToolExecutionResult{Result: c.executeReadFile(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "read_document":
+		rawPath := agent.StringArg(args, "file_path")
+		if rawPath == "" {
+			rawPath = agent.StringArg(args, "path")
+		}
+		filePath, err := c.resolveWorkspacePath(rawPath)
+		if err != nil {
+			return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+		}
+		args["file_path"] = filePath
+		// The service hosts multiple principals in one process, so a global
+		// OfficeRead provider would let one user's persisted rollout policy affect
+		// another user's read_document result. Bind the trusted request config at
+		// this final execution boundary instead; environment overrides remain
+		// honored by agent's resolver for emergency rollback.
+		return readDocumentToolResult(agent.ToolReadDocumentWithOfficeReadConfig(args, officeReadConfigFromAppConfig(c.appCfg)))
 	case "read_tool_result":
 		// The authenticated principal is authoritative; never let model-provided
 		// arguments select another tenant/user handle namespace.
@@ -1480,6 +1983,8 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: c.executeWebFetch(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_search":
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "knowledge_image_search":
+		return agent.ToolExecutionResult{Result: c.executeKnowledgeImageSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_context_pack":
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeContextPack(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_import_share":
@@ -1546,6 +2051,20 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	}
 }
 
+func officeReadConfigFromAppConfig(cfg corelib.AppConfig) agent.OfficeReadConfig {
+	return agent.CloneOfficeReadConfig(agent.OfficeReadConfig{
+		Engine:       cfg.OfficeReadEngine,
+		Formats:      cfg.OfficeReadFormats,
+		Fallback:     cfg.OfficeReadFallback,
+		EmitMarkdown: cfg.OfficeReadEmitMarkdown,
+	})
+}
+
+func officeReadConfigPtrFromAppConfig(cfg corelib.AppConfig) *agent.OfficeReadConfig {
+	policy := officeReadConfigFromAppConfig(cfg)
+	return &policy
+}
+
 // ProjectToolResult implements agent.ToolResultProjector for the server/shared
 // executor. Tenant+user ownership scopes both storage and ID-based re-read.
 func (c *coreAgentCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
@@ -1561,7 +2080,7 @@ func isMutationScopeAllowed(scope v2.MutationScope, name string) bool {
 		return true
 	}
 	if scope == v2.MutationScopeNone {
-		// No mutation allowed — block all write tools.
+		// No mutation allowed 闂?block all write tools.
 		switch name {
 		case "write_file", "edit_file", "bash", "ssh", "task", "delegate_task":
 			return false
@@ -1594,6 +2113,45 @@ func parseCoreAgentToolArguments(argsJSON string) (map[string]interface{}, error
 	return args, nil
 }
 
+func coreAgentIntArg(args map[string]interface{}, key string, fallback int) int {
+	if args == nil {
+		return fallback
+	}
+	switch value := args[key].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	case json.Number:
+		if parsed, err := value.Int64(); err == nil {
+			return int(parsed)
+		}
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+// readDocumentToolResult maps the shared reader's stable failure envelope to
+// the service tool outcome. ToolReadDocument returns a human-readable body so
+// desktop callers can show recovery guidance; agentservice also needs the
+// structured error outcome to prevent a failed document read from being
+// recorded as a successful tool call.
+func readDocumentToolResult(result string) agent.ToolExecutionResult {
+	outcome := agent.ToolExecutionOutcomeOK
+	firstLine, _, _ := strings.Cut(result, "\n")
+	if strings.Contains(firstLine, "error_class=timeout") {
+		// The shared OfficeRead boundary applies a real response deadline.
+		// Preserve it as a timeout so the agent loop can use its timeout-aware
+		// recovery path rather than treating it as an ordinary parser error.
+		outcome = agent.ToolExecutionOutcomeTimeout
+	} else if strings.Contains(firstLine, "error_class=") {
+		outcome = agent.ToolExecutionOutcomeError
+	}
+	return agent.ToolExecutionResult{Result: result, Outcome: outcome}
+}
 func (c *coreAgentCallbacks) OnToken(delta string) {
 	if c.onToken != nil {
 		c.onToken(delta)
@@ -1615,7 +2173,32 @@ func (c *coreAgentCallbacks) OnToolResult(name string) {
 		c.onToolResult(name, "")
 	}
 }
-func (c *coreAgentCallbacks) ShouldStop() bool { return c.ctx != nil && c.ctx.Err() != nil }
+func (c *coreAgentCallbacks) ShouldStop() bool {
+	// Child admission deliberately terminates the parent attempt before any
+	// child begins.  Stop this old loop immediately so it cannot make another
+	// model/tool round after its lease has been released.
+	if c != nil && c.runtimeStore != nil && c.runtimeAttempt != nil {
+		current, err := c.runtimeStore.GetAttempt(c.runtimeAttempt.AttemptID)
+		if err != nil || current.Status == codingruntime.TaskWaitingChild {
+			return true
+		}
+	}
+	return c != nil && c.ctx != nil && c.ctx.Err() != nil
+}
+
+// LLMRequestContext binds each model round to the request/child execution
+// context. This is particularly important for detached read-only children:
+// their context is not the parent request context, but explicit durable task
+// cancellation closes it through CoreAgentExecutor.childExecutions.
+func (c *coreAgentCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	if c == nil || c.ctx == nil {
+		return context.Background(), func(error) {}, nil
+	}
+	if err := c.ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return c.ctx, func(error) {}, nil
+}
 
 func (c *coreAgentCallbacks) canUseLocalBash() bool {
 	if !c.allowLocalBash {
@@ -1693,7 +2276,7 @@ func (c *coreAgentCallbacks) validateSSHArgs(args map[string]interface{}) (map[s
 				return nil, fmt.Errorf("ssh connect label %q is not configured for this user", label)
 			}
 			cloned["label"] = entry.Label
-			for _, key := range []string{"host", "user", "port", "auth_method", "key_path", "password"} {
+			for _, key := range []string{"host", "user", "port", "auth_method", "key_path", "password", "host_key_fingerprint"} {
 				if hasNonEmptyToolArg(cloned, key) {
 					return nil, fmt.Errorf("ssh connect via label does not allow overriding %s in this deployment", key)
 				}
@@ -1782,22 +2365,31 @@ func functionToolDefinition(name, description string, params map[string]interfac
 	}
 }
 
-func ensureBashWorkingDir(args map[string]interface{}, workspace string) map[string]interface{} {
+// resolveBashWorkingDir freezes local shell execution inside the instance
+// workspace. Unlike ordinary chat's historical defaulting helper, an explicit
+// working_dir cannot replace the Runtime task's project boundary.
+func (c *coreAgentCallbacks) resolveBashWorkingDir(args map[string]interface{}) (map[string]interface{}, error) {
 	if args == nil {
 		args = map[string]interface{}{}
 	}
-	if strings.TrimSpace(workspace) == "" {
-		return args
+	workspace := strings.TrimSpace(c.workspace)
+	if workspace == "" {
+		return args, nil
 	}
-	if strings.TrimSpace(agent.StringArg(args, "working_dir")) != "" {
-		return args
+	if requested := strings.TrimSpace(agent.StringArg(args, "working_dir")); requested != "" {
+		if err := ensurePathWithinBase(requested, workspace); err != nil {
+			return nil, fmt.Errorf("bash working_dir must stay within the instance workspace: %w", err)
+		}
+		cloned := cloneToolArgs(args)
+		cloned["working_dir"] = filepath.Clean(requested)
+		return cloned, nil
 	}
 	cloned := make(map[string]interface{}, len(args)+1)
 	for k, v := range args {
 		cloned[k] = v
 	}
 	cloned["working_dir"] = workspace
-	return cloned
+	return cloned, nil
 }
 
 func (c *coreAgentCallbacks) canUseSSH() bool {
@@ -1828,6 +2420,10 @@ func configuredSSHHostsFrom(hosts []corelib.SSHHostEntry) []corelib.SSHHostEntry
 		if host.Port < 0 || host.Port > 65535 {
 			continue
 		}
+		// Host-key pinning is optional for ordinary SSH operations to preserve
+		// existing deployment behavior. Remote coding-runtime admission applies
+		// the stricter requirement through codingruntime.RemoteTarget.
+		host.HostKeyFingerprint = strings.TrimSpace(host.HostKeyFingerprint)
 		switch strings.ToLower(host.AuthMethod) {
 		case "", "password", "key", "agent":
 		default:

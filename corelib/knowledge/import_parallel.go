@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
@@ -77,18 +78,35 @@ type lightPreparedFact struct {
 }
 
 type lightPreparedItem struct {
-	index       int
-	item        ImportItem
-	source      Source
-	nodes       []lightPreparedNode
-	cards       []lightPreparedCard
-	facts       []lightPreparedFact
-	parseErr    error
-	unsupported bool
+	index  int
+	item   ImportItem
+	source Source
+	// parsedNodes originate from the pre-delete, scan-hash-verified private
+	// snapshot. Keeping this distinct from prepareLightImportItem's historical
+	// live-path parse prevents a markdown/text re-import from deleting version A
+	// and then indexing a replacement version B.
+	parsedNodes      []DocumentNode
+	parsedInputReady bool
+	preserveExisting bool
+	nodes            []lightPreparedNode
+	cards            []lightPreparedCard
+	facts            []lightPreparedFact
+	parseErr         error
+	unsupported      bool
 	// itemFailed means the item should be recorded as failed after prep.
 	itemFailed bool
 	failMsg    string
 }
+
+// lightImportBeforeParse is a narrow test seam for the scan-to-snapshot
+// boundary. Production leaves it as a no-op; tests use it to deterministically
+// replace a source after ScanFiles established its duplicate hash.
+var lightImportBeforeParse = func(ImportItem) {}
+
+// fileRefreshBeforeParse is the refresh equivalent of the import seam above.
+// Production leaves it as a no-op; tests use it to replace the live pathname
+// between its initial metadata checks and private snapshot creation.
+var fileRefreshBeforeParse = func(Source) {}
 
 // importLightItemsBatch prepares and inserts items[start:end] using parallel CPU
 // prep + sequential SQLite writes. Caller must ensure every item is queued and
@@ -123,9 +141,11 @@ func (s *SQLiteStore) importLightItemsBatch(
 		if emitStepProgress != nil {
 			emitStepProgress(item, "preparing", 1, 5)
 		}
-		if existingSource, ok, err := findExistingSourceForImport(ctx, tx, req, item); err != nil {
+		existingSource, exists, err := findExistingSourceForImport(ctx, tx, req, item)
+		if err != nil {
 			return err
-		} else if ok {
+		}
+		if exists {
 			source.ID = existingSource.ID
 			source.CreatedAt = existingSource.CreatedAt
 			if source.Title == "" {
@@ -134,6 +154,38 @@ func (s *SQLiteStore) importLightItemsBatch(
 			if source.SourceTrust == 0 {
 				source.SourceTrust = existingSource.SourceTrust
 			}
+		}
+		// Text and Markdown now share the scan-to-parse version contract of
+		// Office/PDF/CSV imports. Parse an owned snapshot before destructive
+		// replacement, bind Source.content_hash to those bytes, then reuse the
+		// already parsed nodes during the parallel CPU-prep phase.
+		lightImportBeforeParse(item)
+		parsed, parseErr := parseDocumentNodesForOfficeReadImportWithOfficeReadConfig(source, item.FilePath, item.Kind, req.OfficeReadConfig)
+		if parsed != nil && parsed.contentHash != item.FileHash {
+			parsed.close()
+			parsed = nil
+			parseErr = agent.ErrOfficeReadSourceChanged
+		}
+		if parseErr != nil {
+			if parsed != nil {
+				parsed.close()
+			}
+			item.SourceID = source.ID
+			item.Status = ItemStatusImported
+			item.UpdatedAt = time.Now().UTC()
+			jobs[i-start] = lightPreparedItem{
+				index: i, item: item, source: source, parseErr: parseErr,
+				preserveExisting: exists,
+			}
+			continue
+		}
+		if parsed == nil {
+			return fmt.Errorf("light document parser returned no result")
+		}
+		source.ContentHash = parsed.contentHash
+		parsedNodes := parsed.nodes
+		parsed.close()
+		if exists {
 			if err := deleteSourceDerivedRows(ctx, tx, existingSource.ID); err != nil {
 				return err
 			}
@@ -141,7 +193,7 @@ func (s *SQLiteStore) importLightItemsBatch(
 		item.SourceID = source.ID
 		item.Status = ItemStatusImported
 		item.UpdatedAt = time.Now().UTC()
-		jobs[i-start] = lightPreparedItem{index: i, item: item, source: source}
+		jobs[i-start] = lightPreparedItem{index: i, item: item, source: source, parsedNodes: parsedNodes, parsedInputReady: true}
 	}
 
 	// Phase 2: parallel parse + distill + FTS segmentation.
@@ -154,6 +206,9 @@ func (s *SQLiteStore) importLightItemsBatch(
 			if ctx.Err() != nil {
 				jobs[j].itemFailed = true
 				jobs[j].failMsg = ctx.Err().Error()
+				continue
+			}
+			if jobs[j].parseErr != nil {
 				continue
 			}
 			jobs[j] = s.prepareLightImportItem(ctx, req, jobs[j])
@@ -177,6 +232,9 @@ func (s *SQLiteStore) importLightItemsBatch(
 					if ctx.Err() != nil {
 						jobs[j].itemFailed = true
 						jobs[j].failMsg = ctx.Err().Error()
+						continue
+					}
+					if jobs[j].parseErr != nil {
 						continue
 					}
 					jobs[j] = s.prepareLightImportItem(ctx, req, jobs[j])
@@ -248,6 +306,27 @@ func (s *SQLiteStore) importLightItemsBatch(
 			continue
 		}
 
+		// A re-import whose scan-qualified source changed before the owned parse
+		// must preserve the currently indexed Source in full. In particular, do
+		// not let the generic early source write below overwrite its hash with the
+		// scan-time candidate before we record the failed import item.
+		if prep.parseErr != nil && prep.preserveExisting {
+			persistedParseErr := sanitizeKnowledgeParseError(item.Kind, prep.parseErr)
+			item.Status = ItemStatusFailed
+			item.ErrorMessage = persistedParseErr.Error()
+			*failed++
+			if recordFailedItem != nil {
+				recordFailedItem(item)
+			}
+			if err := insertImportItem(ctx, tx, item); err != nil {
+				return err
+			}
+			if markImportItemProcessed != nil {
+				markImportItemProcessed(prep.index, item)
+			}
+			continue
+		}
+
 		// Persist source row (may already reflect distilled status).
 		if err := insertSource(ctx, tx, source); err != nil {
 			item.Status = ItemStatusFailed
@@ -286,13 +365,14 @@ func (s *SQLiteStore) importLightItemsBatch(
 				return err
 			}
 		} else if prep.parseErr != nil {
+			persistedParseErr := sanitizeKnowledgeParseError(item.Kind, prep.parseErr)
 			source.Status = StatusFailed
-			source.ErrorMessage = prep.parseErr.Error()
+			source.ErrorMessage = persistedParseErr.Error()
 			if err := insertSource(ctx, tx, source); err != nil {
 				return err
 			}
 			item.Status = ItemStatusFailed
-			item.ErrorMessage = prep.parseErr.Error()
+			item.ErrorMessage = persistedParseErr.Error()
 			*failed++
 			if recordFailedItem != nil {
 				recordFailedItem(item)
@@ -379,7 +459,11 @@ func (s *SQLiteStore) prepareLightImportItem(ctx context.Context, req DirectoryI
 	}
 
 	source := prep.source
-	nodes, parseErr := ParseDocumentNodes(source, prep.item.FilePath, prep.item.Kind)
+	nodes := prep.parsedNodes
+	parseErr := prep.parseErr
+	if !prep.parsedInputReady {
+		nodes, parseErr = ParseDocumentNodes(source, prep.item.FilePath, prep.item.Kind)
+	}
 	if parseErr != nil {
 		if IsUnsupportedParserError(parseErr) {
 			prep.unsupported = true

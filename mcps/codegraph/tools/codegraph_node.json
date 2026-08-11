@@ -1,0 +1,44 @@
+{
+  "name": "codegraph_node",
+  "description": "Two modes. (1) READ A FILE — use INSTEAD of the Read tool: pass `file` (a path or basename) with no `symbol` and it returns that file's current on-disk source with line numbers, exactly the shape Read gives you (`<n>\\t<line>`, safe to Edit from), narrowable with `offset`/`limit` just like Read — PLUS a one-line note of which files depend on it. Same bytes as Read, faster (served from the index), with the blast radius attached. Use it whenever you would Read a source file. (2) ONE SYMBOL you can name — its location, signature, verbatim source (includeCode=true) and caller/callee trail in one call, so before changing it you see what calls it and what your edit would break. For an AMBIGUOUS name it returns EVERY matching definition's body in one call (so you never Read a file to find the right overload); pass `file`/`line` to pin one. Use codegraph_explore for several related symbols or the full flow.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol": {
+        "type": "string",
+        "description": "Name of the symbol to read (symbol mode). Omit it and pass `file` alone to read a whole file like Read."
+      },
+      "includeCode": {
+        "type": "boolean",
+        "description": "Symbol mode: include the symbol's full body (default: false). Ignored in file mode, which always returns source unless `symbolsOnly` is set.",
+        "default": false
+      },
+      "file": {
+        "type": "string",
+        "description": "A file path or basename (e.g. \"harness.rs\", \"src/auth/session.ts\"). Pass it ALONE (no symbol) to READ the file like the Read tool — its full source with line numbers + which files depend on it. Or pass it WITH a symbol to disambiguate an overloaded name to the definition in this file."
+      },
+      "offset": {
+        "type": "number",
+        "description": "File mode: 1-based line to start reading from, exactly like Read's offset. Defaults to the start of the file."
+      },
+      "limit": {
+        "type": "number",
+        "description": "File mode: maximum number of lines to return, exactly like Read's limit. Defaults to the whole file (capped at 2000 lines, like Read)."
+      },
+      "symbolsOnly": {
+        "type": "boolean",
+        "description": "File mode: return just the file's symbol map + dependents (a cheap structural overview) instead of its source.",
+        "default": false
+      },
+      "line": {
+        "type": "number",
+        "description": "Symbol mode only: disambiguate to the definition at/around this line (use with the file:line a trail showed you)."
+      },
+      "projectPath": {
+        "type": "string",
+        "description": "Path to a different project with .codegraph/ initialized. If omitted, uses current project. Use this to query other codebases."
+      }
+    },
+    "required": []
+  }
+}

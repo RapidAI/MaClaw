@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -17,7 +18,7 @@ func (s llmUsageSnapshot) HasAny() bool {
 	return s.Input > 0 || s.Output > 0 || s.CacheRead > 0 || s.CacheWrite > 0
 }
 
-func (h *IMMessageHandler) recordLLMUsageSnapshot(label string, resp *llm.Response, conversation []interface{}) llmUsageSnapshot {
+func (h *IMMessageHandler) recordLLMUsageSnapshot(label string, cfg corelib.MaclawLLMConfig, resp *llm.Response, conversation []interface{}) llmUsageSnapshot {
 	if resp == nil {
 		return llmUsageSnapshot{}
 	}
@@ -33,10 +34,16 @@ func (h *IMMessageHandler) recordLLMUsageSnapshot(label string, resp *llm.Respon
 		log.Printf("[LLM] finish_reason=%q content_len=%d tool_calls=%d", resp.Choices[0].FinishReason, len(resp.Choices[0].Message.Content), len(resp.Choices[0].Message.ToolCalls))
 	}
 	h.accumulateLLMTokenUsageWithCache(providerName, input, output, cacheRead, cacheWrite)
+	// Preserve the legacy provider roll-up above, but attribute profile usage
+	// from the request's captured config. Re-resolving the assistant config here
+	// races a live coding loop (and a user model switch), mislabelling coding
+	// tokens as assistant usage.
+	if h.app != nil {
+		h.app.AccumulateLLMProfileTokenUsageWithCache(cfg, input, output, cacheRead, cacheWrite)
+	}
 	// OpenHuman-inspired: record cost for budget tracking
 	if input > 0 || output > 0 {
-		model := h.getMaclawLLMConfig().Model
-		h.recordLLMCost(model, input, output)
+		h.recordLLMCost(cfg.Model, input, output)
 	}
 	return llmUsageSnapshot{Input: input, Output: output, CacheRead: cacheRead, CacheWrite: cacheWrite}
 }

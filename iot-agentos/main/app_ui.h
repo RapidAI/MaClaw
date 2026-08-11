@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "qrcode.h"
+#include "device_api.h"
 
 // Hardware-independent UI state.  Application code changes this model; the
 // selected board port only translates the model into pixels for its panel.
@@ -20,13 +20,19 @@ typedef enum {
 } app_ui_surface_t;
 
 typedef struct {
+    /* Monotonic UI-scene identity. It changes whenever the shared model
+     * accepts a presentation mutation and is diagnostic/correlation metadata,
+     * not a panel-present or DMA-completion counter. */
+    uint32_t revision;
     app_ui_surface_t surface;
     char pet_state[16];
+    char pet_skin[32];
     bool recording_active;
     bool meeting_recording;
     bool recording_paused;
     uint32_t elapsed_seconds;
     bool wifi_connected;
+    char wifi_ssid[64];
     bool service_ready;
     bool command_display_locked;
     bool command_cancel_enabled;
@@ -45,6 +51,9 @@ typedef struct {
 
 void app_ui_init(void);
 app_ui_model_t app_ui_snapshot(void);
+// Sets the idle duration before the ambient display enters DISPLAY_OFF.
+// Zero disables automatic display-off; it never requests MCU sleep.
+void app_ui_set_display_off_idle_ms(uint32_t idle_after_ms);
 
 // Holds the board's boot artwork as an exclusive foreground surface. Ambient,
 // pet-profile, and Wi-Fi updates may update their models while this is active,
@@ -57,8 +66,10 @@ void app_ui_set_command_cancel_enabled(bool enabled);
 /* These generic presentation updates are intentionally owned by the shared UI
  * model. The selected renderer decides how a profile/asset is displayed. */
 void app_ui_set_pet_profile(const char *skin, bool motion_enabled);
-esp_err_t app_ui_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
-                               size_t width, size_t height, uint32_t frame_ms);
+device_status_t app_ui_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
+                                     size_t width, size_t height, uint32_t frame_ms);
+device_status_t app_ui_set_pet_asset_consuming(uint8_t **frames, size_t frame_count,
+                                               size_t width, size_t height, uint32_t frame_ms);
 void app_ui_set_recording_mode(bool meeting);
 void app_ui_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds);
 void app_ui_set_audio_level(uint16_t level, uint32_t elapsed_seconds);
@@ -78,11 +89,23 @@ bool app_ui_dismiss_response(void);
 // response) to the animated ambient pet screen. This is used by cancellation,
 // where the terminal surface is a MESSAGE rather than a normal RESPONSE.
 void app_ui_restore_standby(void);
+/* Borrowed 72-byte 24x24 bitmap. App UI serializes the immediate display
+ * submission; the caller may release the source storage after this returns. */
 int app_ui_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]);
-void app_ui_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid);
+/* The UI owns a replay-safe copy of the module matrix. QR encoder handles
+ * stay with the producer (for example provisioning), keeping this common
+ * boundary independent of any QR encoder library. The same foreground-payload
+ * rule applies to text, images and ready prompts: callers retain no display
+ * buffer ownership after these calls return. */
+bool app_ui_show_qrcode_modules(const uint8_t *modules, size_t module_count,
+                                const char *ssid);
 void app_ui_show_ready_prompt(const char *title, const char *text);
 void app_ui_cancel_ready_prompt(void);
 bool app_ui_wake_from_idle(void);
+/* Applies a MaClaw GUI brightness update.  A non-zero level restores an
+ * already DISPLAY_OFF ambient panel only; it never synthesizes input or
+ * starts voice capture.  Zero remains a backlight-only update. */
+device_status_t app_ui_apply_remote_brightness(uint8_t percent);
 void app_ui_set_wifi_status(const char *ssid, bool connected);
 void app_ui_set_service_ready(bool ready);
 void app_ui_set_ambient(const char *time, const char *location, const char *date,

@@ -1,0 +1,158 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-08-09T05:45:51Z",
+  "engine": "dual",
+  "sample_provenance": "fixture",
+  "minimum_samples_per_format": 10,
+  "minimum_officeread_token_hit_rate": 0.95,
+  "formats": [
+    "doc",
+    "ppt",
+    "xls"
+  ],
+  "summary": {
+    "doc": {
+      "total": 2,
+      "office_read_ok": 2,
+      "legacy_ok": 0,
+      "office_tokens": 20059,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "max_elapsed_ms": 2209
+    },
+    "ppt": {
+      "total": 2,
+      "office_read_ok": 2,
+      "legacy_ok": 0,
+      "office_tokens": 1176,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "max_elapsed_ms": 80
+    },
+    "xls": {
+      "total": 2,
+      "office_read_ok": 2,
+      "legacy_ok": 1,
+      "office_tokens": 2728,
+      "legacy_tokens": 3902,
+      "shared_tokens": 2336,
+      "office_token_hit_rate": 0.5986673500768837,
+      "legacy_token_hit_rate": 0.8563049853372434,
+      "max_elapsed_ms": 30
+    }
+  },
+  "assessment": {
+    "doc": {
+      "quantitative_gate": "insufficient_evidence",
+      "reasons": [
+        "sample_provenance_is_not_internal_authorized",
+        "insufficient_sample_count",
+        "legacy_baseline_unavailable",
+        "legacy_token_baseline_unavailable"
+      ]
+    },
+    "ppt": {
+      "quantitative_gate": "insufficient_evidence",
+      "reasons": [
+        "sample_provenance_is_not_internal_authorized",
+        "insufficient_sample_count",
+        "legacy_baseline_unavailable",
+        "legacy_token_baseline_unavailable"
+      ]
+    },
+    "xls": {
+      "quantitative_gate": "fail",
+      "reasons": [
+        "sample_provenance_is_not_internal_authorized",
+        "insufficient_sample_count",
+        "officeread_token_coverage_below_threshold"
+      ]
+    }
+  },
+  "manual_review_required": [
+    "review_text_order_and_business_answer_quality",
+    "review_p1_p2_crash_hang_memory_and_pagination_diagnostics",
+    "review_gui_file_selection_attachment_tool_continuous_conversation_and_fallback",
+    "record_format_level_rollback_drill"
+  ],
+  "files": [
+    {
+      "sample_id": "sample-16eb6911f1059168",
+      "format": "ppt",
+      "source_bytes": 932864,
+      "office_read_ok": true,
+      "office_runes": 539,
+      "office_tokens": 78,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 13
+    },
+    {
+      "sample_id": "sample-8fa8a67f03dd35cd",
+      "format": "xls",
+      "source_bytes": 32768,
+      "office_read_ok": true,
+      "office_runes": 826,
+      "office_tokens": 388,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 14
+    },
+    {
+      "sample_id": "sample-c3f53ce1e3e3f3f8",
+      "format": "xls",
+      "source_bytes": 128512,
+      "office_read_ok": true,
+      "office_runes": 12002,
+      "office_tokens": 2340,
+      "legacy_ok": true,
+      "legacy_runes": 19992,
+      "legacy_tokens": 3902,
+      "shared_tokens": 2336,
+      "elapsed_ms": 30
+    },
+    {
+      "sample_id": "sample-220e46fa16c41a42",
+      "format": "doc",
+      "source_bytes": 1330176,
+      "office_read_ok": true,
+      "office_runes": 8294,
+      "office_tokens": 1119,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 216
+    },
+    {
+      "sample_id": "sample-c8060c2ceeb6a7a4",
+      "format": "doc",
+      "source_bytes": 6564352,
+      "office_read_ok": true,
+      "office_runes": 124703,
+      "office_tokens": 18940,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 2209
+    },
+    {
+      "sample_id": "sample-a15167f0df6e8f43",
+      "format": "ppt",
+      "source_bytes": 304640,
+      "office_read_ok": true,
+      "office_runes": 6706,
+      "office_tokens": 1098,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 80
+    }
+  ]
+}

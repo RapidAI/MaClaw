@@ -66,12 +66,20 @@ typedef struct {
 static const char *TAG = "alarm_manager";
 static alarm_store_t s_store = {.magic = ALARM_STORE_MAGIC, .next_id = 1};
 static SemaphoreHandle_t s_lock;
+/* Alarm tools, display dismissal and the deadline callback can all have
+ * sampled service state before rollback closes it.  Keep this mutex as a
+ * permanent lifecycle shell so an old waiter cannot obtain a freed FreeRTOS
+ * object. */
+static StaticSemaphore_t s_lock_storage;
+static SemaphoreHandle_t s_deinit_lock;
+static StaticSemaphore_t s_deinit_lock_storage;
 static TaskHandle_t s_task;
 static SemaphoreHandle_t s_stopped;
 static wake_deadline_handle_t s_deadline = WAKE_DEADLINE_HANDLE_INVALID;
 static volatile bool s_ringing;
 static volatile bool s_dismiss_requested;
 static volatile bool s_stop_requested;
+static volatile bool s_initialized;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
 /* Tool admission is separate from the store mutex.  Deinit closes admission
  * before joining the worker, then waits for callers that observed the old
@@ -82,6 +90,16 @@ static alarm_manager_ring_callback_t s_ring_callback;
 static void *s_ring_callback_arg;
 
 static esp_err_t persist_locked(void);
+
+static TickType_t stop_timeout_ticks(uint32_t timeout_ms) {
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    return ticks == 0 ? 1 : ticks;
+}
+
+static TickType_t stop_remaining_ticks(TickType_t started, TickType_t budget) {
+    const TickType_t elapsed = xTaskGetTickCount() - started;
+    return elapsed >= budget ? 0 : budget - elapsed;
+}
 
 /* Callers own s_lock.  The common dispatcher replaces the legacy 250 ms
  * polling loop: only the earliest queued alarm owns a wall-clock deadline. */
@@ -97,7 +115,10 @@ static void arm_next_deadline_locked(void) {
 
 static void alarm_deadline_callback(void *arg) {
     (void)arg;
-    if (s_task && !s_stop_requested) xTaskNotifyGive(s_task);
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    TaskHandle_t task = s_initialized && !s_stop_requested ? s_task : NULL;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (task) xTaskNotifyGive(task);
 }
 
 static bool stop_requested(void) {
@@ -107,7 +128,7 @@ static bool stop_requested(void) {
 static bool admit_tool(void) {
     bool admitted = false;
     taskENTER_CRITICAL(&s_lifecycle_lock);
-    if (s_lock && !s_stop_requested) {
+    if (s_lock && s_initialized && !s_stop_requested) {
         ++s_tool_admissions;
         admitted = true;
     }
@@ -337,21 +358,36 @@ static void alarm_task(void *arg) {
         }
     }
     set_ring_state(false, false);
+    taskENTER_CRITICAL(&s_lifecycle_lock);
     s_task = NULL;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    /* The completion semaphore is the final worker→deinit handoff.  Do not
+     * access service-owned deadline/store state after giving it. */
     if (s_stopped) xSemaphoreGive(s_stopped);
     vTaskDelete(NULL);
 }
 
 esp_err_t alarm_manager_init(void) {
-    if (s_lock || s_task) return ESP_ERR_INVALID_STATE;
     if (!persistence_service_is_initialized()) return ESP_ERR_INVALID_STATE;
-    s_stop_requested = false;
-    s_lock = xSemaphoreCreateMutex();
-    if (!s_lock) return ESP_ERR_NO_MEM;
+    if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_storage);
+    if (!s_deinit_lock) s_deinit_lock = xSemaphoreCreateMutexStatic(&s_deinit_lock_storage);
+    if (!s_lock || !s_deinit_lock) return ESP_ERR_NO_MEM;
+    if (xSemaphoreTake(s_deinit_lock, pdMS_TO_TICKS(3000)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool already_ready = s_initialized;
+    const bool closing = s_stop_requested || s_task || s_stopped;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (already_ready) {
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_OK;
+    }
+    if (closing) {
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     s_stopped = xSemaphoreCreateBinary();
     if (!s_stopped) {
-        vSemaphoreDelete(s_lock);
-        s_lock = NULL;
+        xSemaphoreGive(s_deinit_lock);
         return ESP_ERR_NO_MEM;
     }
     bool store_needs_persist = false;
@@ -359,10 +395,9 @@ esp_err_t alarm_manager_init(void) {
     esp_err_t size_err = persistence_service_read_blob("alarms", "store", NULL, &size);
     if (size_err != ESP_OK && size_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGE(TAG, "cannot inspect alarm store: %s", esp_err_to_name(size_err));
-        vSemaphoreDelete(s_lock);
         vSemaphoreDelete(s_stopped);
-        s_lock = NULL;
         s_stopped = NULL;
+        xSemaphoreGive(s_deinit_lock);
         return size_err;
     }
     if (size_err == ESP_OK && size == sizeof(alarm_store_t)) {
@@ -372,10 +407,9 @@ esp_err_t alarm_manager_init(void) {
                                                             &loaded, &loaded_size);
         if (read_err != ESP_OK) {
             ESP_LOGE(TAG, "cannot load alarm store: %s", esp_err_to_name(read_err));
-            vSemaphoreDelete(s_lock);
             vSemaphoreDelete(s_stopped);
-            s_lock = NULL;
             s_stopped = NULL;
+            xSemaphoreGive(s_deinit_lock);
             return read_err;
         }
         if (loaded.magic == ALARM_STORE_MAGIC && loaded.count <= ALARM_MAX_COUNT) {
@@ -390,10 +424,9 @@ esp_err_t alarm_manager_init(void) {
                                                             &loaded, &loaded_size);
         if (read_err != ESP_OK) {
             ESP_LOGE(TAG, "cannot load legacy alarm store: %s", esp_err_to_name(read_err));
-            vSemaphoreDelete(s_lock);
             vSemaphoreDelete(s_stopped);
-            s_lock = NULL;
             s_stopped = NULL;
+            xSemaphoreGive(s_deinit_lock);
             return read_err;
         }
         if (loaded.magic == ALARM_STORE_MAGIC_V1 && loaded.count <= ALARM_MAX_COUNT) {
@@ -419,9 +452,8 @@ esp_err_t alarm_manager_init(void) {
         if (s_store.count >= ALARM_MAX_COUNT) {
             ESP_LOGE(TAG, "cannot recover active alarm: capacity exhausted");
             vSemaphoreDelete(s_stopped);
-            vSemaphoreDelete(s_lock);
             s_stopped = NULL;
-            s_lock = NULL;
+            xSemaphoreGive(s_deinit_lock);
             return ESP_ERR_INVALID_SIZE;
         }
         s_store.items[s_store.count++] = recovered;
@@ -436,9 +468,8 @@ esp_err_t alarm_manager_init(void) {
             ESP_LOGE(TAG, "cannot persist migrated alarm store: %s",
                      esp_err_to_name(migration_err));
             vSemaphoreDelete(s_stopped);
-            vSemaphoreDelete(s_lock);
             s_stopped = NULL;
-            s_lock = NULL;
+            xSemaphoreGive(s_deinit_lock);
             return migration_err;
         }
     }
@@ -446,14 +477,17 @@ esp_err_t alarm_manager_init(void) {
                                                              &s_deadline);
     if (deadline_err != ESP_OK) {
         vSemaphoreDelete(s_stopped);
-        vSemaphoreDelete(s_lock);
         s_stopped = NULL;
-        s_lock = NULL;
+        xSemaphoreGive(s_deinit_lock);
         return deadline_err;
     }
     esp_err_t task_err = xTaskCreate(alarm_task, "maclaw_alarm", 5120, NULL, 7, &s_task) == pdPASS
                              ? ESP_OK : ESP_ERR_NO_MEM;
     if (task_err == ESP_OK) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        s_initialized = true;
+        s_stop_requested = false;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
         if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
             arm_next_deadline_locked();
             xSemaphoreGive(s_lock);
@@ -462,59 +496,112 @@ esp_err_t alarm_manager_init(void) {
         ESP_LOGI(TAG, "alarm scheduler ready: queued=%u active=%s",
                  (unsigned)s_store.count, s_store.active_valid ? "yes" : "no");
     } else {
-        wake_deadline_service_unregister(s_deadline);
+        /* A worker was never started.  Still close the registered callback
+         * with an explicit, bounded hand-off rather than the legacy 1-second
+         * convenience wrapper. */
+        (void)wake_deadline_service_unregister_with_timeout(s_deadline, 1000);
         s_deadline = WAKE_DEADLINE_HANDLE_INVALID;
         vSemaphoreDelete(s_stopped);
-        vSemaphoreDelete(s_lock);
-        s_lock = NULL;
         s_stopped = NULL;
     }
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (task_err != ESP_OK) s_stop_requested = false;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    xSemaphoreGive(s_deinit_lock);
     return task_err;
 }
 
 esp_err_t alarm_manager_deinit(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    if (!s_lock && !s_task) return ESP_OK;
-    if (!s_lock || !s_stopped) return ESP_ERR_INVALID_STATE;
+    if (!s_lock || !s_deinit_lock) return ESP_OK;
     if (s_task && xTaskGetCurrentTaskHandle() == s_task) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = stop_timeout_ticks(timeout_ms);
+    if (xSemaphoreTake(s_deinit_lock, budget) != pdTRUE) return ESP_ERR_TIMEOUT;
+    TickType_t remaining = stop_remaining_ticks(started, budget);
+    if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_ERR_TIMEOUT;
+    }
     taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (!s_initialized && !s_stop_requested) {
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        xSemaphoreGive(s_lock);
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_OK;
+    }
     s_stop_requested = true;
+    s_initialized = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
+    /* The parent deadline dispatcher is drained only after Alarm.  Stop its
+     * admission first, then release our slot while it is still accepting
+     * unregister calls; reversing this order would leave a stale client
+     * callback in the permanent dispatcher lock shell. */
     if (s_deadline) wake_deadline_service_cancel(s_deadline);
     TaskHandle_t task = s_task;
     xSemaphoreGive(s_lock);
     if (task) {
         xTaskNotifyGive(task);
-        if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return ESP_ERR_TIMEOUT;
+        remaining = stop_remaining_ticks(started, budget);
+        if (remaining == 0 || xSemaphoreTake(s_stopped, remaining) != pdTRUE) {
+            xSemaphoreGive(s_deinit_lock);
+            return ESP_ERR_TIMEOUT;
+        }
+    } else if (s_stopped) {
+        remaining = stop_remaining_ticks(started, budget);
+        if (remaining == 0 || xSemaphoreTake(s_stopped, remaining) != pdTRUE) {
+            xSemaphoreGive(s_deinit_lock);
+            return ESP_ERR_TIMEOUT;
+        }
     }
-    const TickType_t tool_drain_started = xTaskGetTickCount();
-    const TickType_t tool_drain_timeout = pdMS_TO_TICKS(timeout_ms);
     for (;;) {
         taskENTER_CRITICAL(&s_lifecycle_lock);
         uint32_t admissions = s_tool_admissions;
         taskEXIT_CRITICAL(&s_lifecycle_lock);
         if (admissions == 0) break;
-        if ((xTaskGetTickCount() - tool_drain_started) >= tool_drain_timeout) {
+        if (stop_remaining_ticks(started, budget) == 0) {
+            xSemaphoreGive(s_deinit_lock);
             return ESP_ERR_TIMEOUT;
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
     /* A tool call may have been waiting while stop was requested.  Re-acquire
      * the mutex before destruction so it observes the stop boundary first. */
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return ESP_ERR_TIMEOUT;
-    if (s_deadline) wake_deadline_service_unregister(s_deadline);
+    remaining = stop_remaining_ticks(started, budget);
+    if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
+        xSemaphoreGive(s_deinit_lock);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_deadline) {
+        /* A callback can have been copied out by the shared dispatcher just
+         * before the alarm worker was joined.  Drain that callback inside the
+         * same parent deadline before clearing the callback-owned state.  The
+         * alarm callback only takes s_lifecycle_lock, not s_lock, so holding
+         * this store mutex cannot deadlock the drain. */
+        remaining = stop_remaining_ticks(started, budget);
+        const uint32_t remaining_ms = (uint32_t)pdTICKS_TO_MS(remaining);
+        if (remaining == 0 || remaining_ms == 0 ||
+            wake_deadline_service_unregister_with_timeout(s_deadline, remaining_ms) != ESP_OK) {
+            xSemaphoreGive(s_lock);
+            xSemaphoreGive(s_deinit_lock);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
     s_deadline = WAKE_DEADLINE_HANDLE_INVALID;
+    /* The ring worker has joined, so its last callback copy is complete.
+     * Keep callback ownership under the same state lock used for invocation.
+     */
+    taskENTER_CRITICAL(&s_state_lock);
     s_ring_callback = NULL;
     s_ring_callback_arg = NULL;
+    taskEXIT_CRITICAL(&s_state_lock);
     xSemaphoreGive(s_lock);
     vSemaphoreDelete(s_stopped);
-    vSemaphoreDelete(s_lock);
     s_stopped = NULL;
-    s_lock = NULL;
     taskENTER_CRITICAL(&s_lifecycle_lock);
     s_stop_requested = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
+    xSemaphoreGive(s_deinit_lock);
     set_ring_state(false, false);
     ESP_LOGI(TAG, "alarm scheduler stopped");
     return ESP_OK;
@@ -522,6 +609,13 @@ esp_err_t alarm_manager_deinit(uint32_t timeout_ms) {
 
 void alarm_manager_set_ring_callback(alarm_manager_ring_callback_t callback,
                                      void *arg) {
+    /* Lifecycle registers this static application callback after init.  Do
+     * not let a late startup/recovery caller repopulate it once deinit has
+     * closed the scheduler; the worker owns the only invocation path. */
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool ready = s_initialized && !s_stop_requested;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (!ready) return;
     taskENTER_CRITICAL(&s_state_lock);
     s_ring_callback = callback;
     s_ring_callback_arg = arg;
@@ -537,7 +631,7 @@ bool alarm_manager_is_ringing(void) {
 
 bool alarm_manager_is_initialized(void) {
     taskENTER_CRITICAL(&s_lifecycle_lock);
-    bool initialized = s_lock != NULL && s_task != NULL && !s_stop_requested;
+    bool initialized = s_lock != NULL && s_task != NULL && s_initialized && !s_stop_requested;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     return initialized;
 }
@@ -797,7 +891,10 @@ esp_err_t alarm_manager_execute_tool(const char *name, cJSON *arguments,
     if (cacheable && store_dirty) {
         /* A new earlier alarm needs immediate dispatcher re-evaluation; an
          * expired alarm is delivered by this same notification. */
-        if (s_task) xTaskNotifyGive(s_task);
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        TaskHandle_t task = s_initialized && !s_stop_requested ? s_task : NULL;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        if (task) xTaskNotifyGive(task);
     }
     *out_result = result;
     release_tool();

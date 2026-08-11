@@ -14,6 +14,7 @@ import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { MobileQRCodeDialog } from "./MobileQRCodeDialog";
 import { MoAConfigSection } from "./MoAConfigSection";
 import { LLMConfigToast, type LLMConfigToastData } from "./LLMConfigToast";
+import { LLMProfileAssignments } from "./LLMProfileAssignments";
 
 interface Props {
     lang?: string;
@@ -249,7 +250,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             // after the other settings calls and must still populate the UI.
             // Normalize a bridge-side synchronous throw into the same error
             // path as an asynchronous rejection. Without this, a failed Wails
-            // bridge initialization could leave the Configure action disabled
+            // bridge initialization could leave the provider-management action disabled
             // forever on the first render.
             const providerRequest = Promise.resolve().then(() => GetMaclawLLMProviders());
             void providerRequest.then(data => {
@@ -379,6 +380,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgTested(false);
         setDlgOpen(true);
     }, [providers, currentName, hasHubEntitlement, providerListReady]);
+
+    const handleProfilesSaved = useCallback(() => {
+        void loadProviders();
+        onProviderChanged?.();
+    }, [loadProviders, onProviderChanged]);
 
     const closeDialog = useCallback(async () => {
         if (oauthBusy) return;
@@ -770,19 +776,23 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                         background: colors.primaryLight, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4,
                         opacity: canConfigureProviders ? 1 : 0.65,
                     }}>
-                        {t("Configure", "配置")}
+                    {t("Manage providers", "服务商管理")}
                     </button>
                 </div>
             </div>
 
-            {/* Current provider summary */}
+            <LLMProfileAssignments lang={lang} onSaved={handleProfilesSaved} />
+
+            {/* Legacy compatibility summary. The profile assignment above is
+                the source of truth; this remains useful provider-management
+                context until all related tools are migrated. */}
             <div className="llm-config-summary" aria-busy={providerListLoading} style={{
                 marginBottom: 16, padding: "10px 16px", borderRadius: 6,
                 border: `1px solid ${colors.border}`, background: colors.surface,
                 display: "flex", justifyContent: "space-between", alignItems: "center",
             }}>
                 <span className="llm-config-summary__label" style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
-                    {t("Provider", "当前服务商")}
+                    {t("Assistant provider", "助手服务商")}
                 </span>
                 <span className="llm-config-summary__value" style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubEntitlement ? colors.primaryDark : colors.danger) : colors.text }}>
                     {!providerListReady

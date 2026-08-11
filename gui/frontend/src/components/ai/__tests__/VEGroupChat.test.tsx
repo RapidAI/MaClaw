@@ -620,6 +620,22 @@ describe("GroupMessageBubble", () => {
         expect(screen.getByTestId("group-msg-att-msg-3-1")).toBeTruthy();
     });
 
+    it("renders a document MIME declared as an image as a file", () => {
+        const msg: GroupMessage = {
+            id: "msg-mislabelled-doc",
+            fromId: "ve-1",
+            fromName: "Digital employee",
+            content: "",
+            timestamp: 3000,
+            attachments: [{ type: "image", filename: "cover.png", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }],
+        };
+
+        render(<GroupMessageBubble message={msg} participantIndex={0} theme={testTheme} />);
+
+        expect(screen.getByTestId("group-msg-att-msg-mislabelled-doc-0").textContent).toContain("FILE");
+        expect(screen.getByTestId("group-msg-att-msg-mislabelled-doc-0").textContent).not.toContain("IMG");
+    });
+
     it("omits the empty text bubble for attachment-only messages", () => {
         const msg: GroupMessage = {
             id: "msg-attachment-only",

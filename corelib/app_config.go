@@ -78,17 +78,26 @@ type AppConfig struct {
 	RemoteClientID          string   `json:"remote_client_id"`
 	DefaultLaunchMode       string   `json:"default_launch_mode"`
 	// MaClaw LLM configuration
-	MaclawLLMUrl             string                     `json:"maclaw_llm_url"`
-	MaclawLLMKey             string                     `json:"maclaw_llm_key"`
-	MaclawLLMModel           string                     `json:"maclaw_llm_model"`
-	MaclawLLMProtocol        string                     `json:"maclaw_llm_protocol,omitempty"`
-	MaclawLLMContextLength   int                        `json:"maclaw_llm_context_length,omitempty"`
-	MaclawLLMTimeoutSec      int                        `json:"maclaw_llm_timeout_sec,omitempty"`
-	AgentResponseTimeoutSec  int                        `json:"agent_response_timeout_sec,omitempty"`
-	SkillRunnerTimeoutSec    int                        `json:"skill_runner_timeout_sec,omitempty"`
-	MaclawLLMProviders       []MaclawLLMProvider        `json:"maclaw_llm_providers,omitempty"`
-	MaclawLLMCurrentProvider string                     `json:"maclaw_llm_current_provider,omitempty"`
-	LLMPromptCache           LLMPromptCacheConfig       `json:"llm_prompt_cache,omitempty"`
+	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
+	MaclawLLMKey             string              `json:"maclaw_llm_key"`
+	MaclawLLMModel           string              `json:"maclaw_llm_model"`
+	MaclawLLMProtocol        string              `json:"maclaw_llm_protocol,omitempty"`
+	MaclawLLMContextLength   int                 `json:"maclaw_llm_context_length,omitempty"`
+	MaclawLLMTimeoutSec      int                 `json:"maclaw_llm_timeout_sec,omitempty"`
+	AgentResponseTimeoutSec  int                 `json:"agent_response_timeout_sec,omitempty"`
+	SkillRunnerTimeoutSec    int                 `json:"skill_runner_timeout_sec,omitempty"`
+	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
+	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
+	// MaclawLLMProfiles separates model selection for general assistance from
+	// coding work. A nil value means this is a legacy single-profile config and
+	// must be resolved lazily without changing it during reads.
+	MaclawLLMProfiles *MaclawLLMProfiles   `json:"maclaw_llm_profiles,omitempty"`
+	LLMPromptCache    LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`
+	// AnswerCache is retained only as the one-time migration source for legacy
+	// single-bot Lansenger installations. New reply-cache policies live on each
+	// LansengerBotProfile; runtime code must not use this application-wide value
+	// after the profile migration has completed.
+	AnswerCache              AnswerCacheConfig          `json:"answer_cache,omitempty"`
 	ToolCacheMaintenance     ToolCacheMaintenanceConfig `json:"tool_cache_maintenance,omitempty"`
 	WebSearchProviders       []WebSearchProvider        `json:"web_search_providers,omitempty"`
 	WebSearchCurrentProvider string                     `json:"web_search_current_provider,omitempty"`
@@ -223,11 +232,17 @@ type AppConfig struct {
 	WeixinAccountID string `json:"weixin_account_id,omitempty"`
 	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (闂備礁鎲￠〃鍡椕哄Ο琛℃敠闁?, false = remote/Hub (濠电姰鍨奸崺鏍枈瀹ュ應鏀﹂柍?
 	// IM 闂?Lansenger (闂備浇妫勯崯顖滄崲閳ь剙菐? client-side gateway
-	LansengerEnabled    bool   `json:"lansenger_enabled,omitempty"`
-	LansengerAppID      string `json:"lansenger_app_id,omitempty"`
-	LansengerAppSecret  string `json:"lansenger_app_secret,omitempty"`
-	LansengerGatewayURL string `json:"lansenger_gateway_url,omitempty"` // API gateway base URL, default https://apigw.lx.qianxin.com
-	LansengerWSSURL     string `json:"lansenger_wss_url,omitempty"`     // optional WebSocket gateway override
+	//
+	// LansengerBots is the multi-bot configuration. Each enabled profile owns a
+	// separate gateway and local agent runtime. The older singleton fields below
+	// remain only as migration input for existing installations.
+	LansengerBots         []LansengerBotProfile `json:"lansenger_bots,omitempty"`
+	LansengerBotsMigrated bool                  `json:"lansenger_bots_migrated,omitempty"`
+	LansengerEnabled      bool                  `json:"lansenger_enabled,omitempty"`
+	LansengerAppID        string                `json:"lansenger_app_id,omitempty"`
+	LansengerAppSecret    string                `json:"lansenger_app_secret,omitempty"`
+	LansengerGatewayURL   string                `json:"lansenger_gateway_url,omitempty"` // API gateway base URL, default https://apigw.lx.qianxin.com
+	LansengerWSSURL       string                `json:"lansenger_wss_url,omitempty"`     // optional WebSocket gateway override
 	// LansengerIgnoredGroupIDs lists group IDs the bot should not respond to.
 	// The bot remains in the group on the platform; only local handling is suppressed.
 	LansengerIgnoredGroupIDs []string `json:"lansenger_ignored_group_ids,omitempty"`
@@ -284,9 +299,14 @@ type AppConfig struct {
 	HardwareWelcomeVoiceID   string `json:"hardware_welcome_voice_id,omitempty"`
 	HardwareWelcomeAudioPath string `json:"hardware_welcome_audio_path,omitempty"`
 	HardwareVolume           int    `json:"hardware_volume,omitempty"`
+	HardwareBrightness       int    `json:"hardware_brightness,omitempty"`
 	// HardwareDeviceAliases stores local-only display names keyed by hardware
 	// client ID. These labels are never sent to the Hub or the ESP32.
 	HardwareDeviceAliases map[string]string `json:"hardware_device_aliases,omitempty"`
+	// HardwareAgentBindings stores the assistant policy selected for each paired
+	// physical device. It is intentionally local to this GUI: Hub owns pairing
+	// credentials, while the desktop owns the Agent instance that handles a turn.
+	HardwareAgentBindings map[string]HardwareAgentBinding `json:"hardware_agent_bindings,omitempty"`
 	// HardwareAllowCustomPets lets each Hub-bound hardware binding select its
 	// own pet. It is deliberately opt-in: the default behavior is to mirror the
 	// pet chosen in the desktop's system pet settings on every device.
@@ -350,18 +370,42 @@ type AppConfig struct {
 	LocalNeedleMinConfidence float64 `json:"local_needle_min_confidence,omitempty"`
 	// LLM token usage statistics.
 	LLMTokenUsage map[string]*TokenUsageStat `json:"llm_token_usage,omitempty"`
+	// LLMProfileTokenUsage is the profile-aware successor to LLMTokenUsage.
+	// Keys are opaque stable composites of execution profile, provider ID and
+	// final request model. LLMTokenUsage remains untouched as a read-only
+	// legacy/provider aggregate for older clients and historical data.
+	LLMProfileTokenUsage map[string]*TokenUsageStat `json:"llm_profile_token_usage,omitempty"`
 	// Onboarding completion flag. Must NOT use omitempty — a false value must
 	// be explicitly serialized so that full-config SaveConfig writes do not
 	// accidentally drop the field, causing the wizard to reappear on restart.
 	OnboardingDone bool `json:"onboarding_done"`
 	// Embedding / vector search toggle.
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
+	// OfficeRead controls the staged replacement of the native Office text
+	// extractors. It is intentionally independent from GUI settings so the
+	// same persisted policy is available to every document entry point.
+	// Environment variables remain the highest-priority operational override.
+	OfficeReadEngine  string   `json:"office_read_engine,omitempty"`
+	OfficeReadFormats []string `json:"office_read_formats,omitempty"`
+	// OfficeReadScopeMigrated records the one-time promotion from the historic
+	// default `.ppt`-only scope to the current six-format default. It keeps a
+	// user-selected narrow allowlist made after that promotion eligible for the
+	// normal format-level rollback contract.
+	// No omitempty: false means a legacy `.ppt`-only policy still needs its
+	// one-time promotion, and that state must survive a read/write cycle.
+	OfficeReadScopeMigrated bool  `json:"office_read_scope_migrated"`
+	OfficeReadFallback      *bool `json:"office_read_fallback,omitempty"`
+	// OfficeReadEmitMarkdown enables controlled structured Markdown/image
+	// consumption by the knowledge-base importer. Chat extraction remains
+	// text-only regardless of this setting.
+	OfficeReadEmitMarkdown *bool `json:"office_read_emit_markdown,omitempty"`
 	// ASR toggle.
 	ASREnabled bool `json:"asr_enabled"`
-	// OCR toggle — gates the ocr_recognize tool and the background model
-	// preload/download. It does NOT gate computer use / GUI automation /
-	// browser tasks: those use the shared native PP-OCRv6 provider (no Python
-	// sidecar required) whenever the model files are installed.
+	// OCR toggle — gates the ocr_recognize tool, the background model
+	// preload/download, and local OCR of chat image attachments for non-vision
+	// models. It does NOT gate computer use / GUI automation / browser tasks:
+	// those use the shared native PP-OCRv6 provider (no Python sidecar
+	// required) whenever the model files are installed.
 	OCREnabled bool `json:"ocr_enabled"`
 	// OCRModelTier selects the PP-OCRv6 model size: "tiny", "small" or
 	// "medium". Empty means the default tier (see NormalizeOCRModelTier).
@@ -488,6 +532,11 @@ type AppConfig struct {
 	CodingKnowledgeSaveStrategy  string `json:"coding_knowledge_save_strategy,omitempty"`   // always/on_success/on_retry_success/off
 	CodingKnowledgeMaxPerProject int    `json:"coding_knowledge_max_per_project,omitempty"` // single project limit, default 200
 	CodingKnowledgeMaxTotal      int    `json:"coding_knowledge_max_total,omitempty"`       // global limit, default 1000
+	// Reviewed project experiences are prompt-injectable after confirmation. Keep
+	// their count and aggregate local token estimate bounded independently from
+	// the broader candidate cache.
+	CodingKnowledgeMaxReviewedPerProject       int `json:"coding_knowledge_max_reviewed_per_project,omitempty"`        // default 100
+	CodingKnowledgeMaxReviewedTokensPerProject int `json:"coding_knowledge_max_reviewed_tokens_per_project,omitempty"` // default 30000
 
 	// FavoriteEmployees stores the IDs of up to 9 user-configured pinned digital
 	// employees shown as quick-access buttons in the sidebar nav rail. Order matters.
@@ -505,6 +554,198 @@ type AppConfig struct {
 	// VEApprovalConfigJSON stores the VE approval capability configuration as raw JSON.
 	// Parsed by the gui package into VEApprovalConfig struct.
 	VEApprovalConfigJSON string `json:"ve_approval_config,omitempty"`
+}
+
+// HardwareAgentBinding is the per-device assistant policy for a paired
+// hardware client. Empty mode selects the normal assistant; an empty voice
+// resolves to the hardware reply default (Xiaoxiao).
+type HardwareAgentBinding struct {
+	AssistantMode string `json:"assistant_mode,omitempty"` // general | expert
+	ExpertID      string `json:"expert_id,omitempty"`
+	TTSVoiceID    string `json:"tts_voice_id,omitempty"`
+}
+
+// DefaultHardwareTTSVoiceID is the reply voice used for newly paired hardware
+// when the user has not selected another voice.
+const DefaultHardwareTTSVoiceID = "zf_xiaoxiao"
+
+// EffectiveAssistantMode returns a safe, stable mode for old or incomplete
+// configurations. Devices start as a normal assistant unless explicitly bound
+// to an expert.
+func (b HardwareAgentBinding) EffectiveAssistantMode() string {
+	if strings.EqualFold(strings.TrimSpace(b.AssistantMode), LansengerAssistantModeExpert) {
+		return LansengerAssistantModeExpert
+	}
+	return LansengerAssistantModeGeneral
+}
+
+// Normalized returns the persisted representation used by local device policy
+// reads and writes.
+func (b HardwareAgentBinding) Normalized() HardwareAgentBinding {
+	b.AssistantMode = b.EffectiveAssistantMode()
+	b.ExpertID = strings.TrimSpace(b.ExpertID)
+	b.TTSVoiceID = strings.TrimSpace(b.TTSVoiceID)
+	if b.TTSVoiceID == "" {
+		b.TTSVoiceID = DefaultHardwareTTSVoiceID
+	}
+	if b.AssistantMode != LansengerAssistantModeExpert {
+		b.ExpertID = ""
+	}
+	return b
+}
+
+// LansengerAssistantMode selects the persona bound to a Lansenger bot.
+const (
+	LansengerAssistantModeGeneral = "general"
+	LansengerAssistantModeExpert  = "expert"
+)
+
+// LansengerBotProfile is a self-contained Lansenger bot binding. Secrets are
+// persisted with the normal application configuration; UI-facing APIs must
+// return a redacted DTO rather than this value directly.
+//
+// A profile is deliberately self-contained for all group policies. This keeps
+// one bot's permissions from changing another bot merely because both happen
+// to run in the same desktop process.
+type LansengerBotProfile struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Enabled    bool   `json:"enabled"`
+	AppID      string `json:"app_id"`
+	AppSecret  string `json:"app_secret"`
+	GatewayURL string `json:"gateway_url,omitempty"`
+	WSSURL     string `json:"wss_url,omitempty"`
+
+	AssistantMode       string   `json:"assistant_mode,omitempty"`
+	ExpertID            string   `json:"expert_id,omitempty"`
+	InitialPrompt       string   `json:"initial_prompt,omitempty"`
+	WorkingDirectory    string   `json:"working_directory,omitempty"`
+	DocumentDirectories []string `json:"document_directories,omitempty"`
+	KnowledgeSourceIDs  []string `json:"knowledge_source_ids,omitempty"`
+
+	GroupPolicy         string           `json:"group_policy,omitempty"`
+	AllowedGroupIDs     []string         `json:"allowed_group_ids,omitempty"`
+	IgnoredGroupIDs     []string         `json:"ignored_group_ids,omitempty"`
+	GroupFileMaxBytes   map[string]int64 `json:"group_file_max_bytes,omitempty"`
+	RequireMention      *bool            `json:"require_mention,omitempty"`
+	RespondToAtAll      bool             `json:"respond_to_at_all,omitempty"`
+	AutoMentionReply    *bool            `json:"auto_mention_reply,omitempty"`
+	AutoQuoteReply      bool             `json:"auto_quote_reply,omitempty"`
+	AllowWebSearch      bool             `json:"allow_web_search,omitempty"`
+	AllowAllDirectories bool             `json:"allow_all_directories,omitempty"`
+	AllowedDirectories  []string         `json:"allowed_directories,omitempty"`
+	// AnswerCache belongs to this bot profile rather than the application-wide
+	// reply-cache setting. A nil value is a profile created before this setting
+	// existed and resolves to the safe UI default: enabled with a zero-day TTL.
+	// The pointer preserves an explicit disabled zero-day policy on newer bots.
+	AnswerCache *AnswerCacheConfig `json:"answer_cache,omitempty"`
+}
+
+// DefaultLansengerBotProfileID is the stable identity assigned when a legacy
+// single-bot installation is upgraded. It is intentionally not derived from
+// AppID: credentials can be rotated without changing a bot's history scope.
+const DefaultLansengerBotProfileID = "lansenger-default"
+
+// EffectiveAssistantMode returns a valid mode. General assistant is the safe
+// default so creating a bot never requires creating an expert first.
+func (p LansengerBotProfile) EffectiveAssistantMode() string {
+	if strings.EqualFold(strings.TrimSpace(p.AssistantMode), LansengerAssistantModeExpert) {
+		return LansengerAssistantModeExpert
+	}
+	return LansengerAssistantModeGeneral
+}
+
+// IsConfigured reports whether this profile can make a Lansenger connection.
+func (p LansengerBotProfile) IsConfigured() bool {
+	return p.Enabled && strings.TrimSpace(p.ID) != "" && strings.TrimSpace(p.AppID) != "" && strings.TrimSpace(p.AppSecret) != ""
+}
+
+// EffectiveAutoMentionReply keeps new bot profiles safe and conversational in
+// group chats. Nil represents the product default (mention the asker); false
+// is an explicit administrator opt-out.
+func (p LansengerBotProfile) EffectiveAutoMentionReply() bool {
+	return p.AutoMentionReply == nil || *p.AutoMentionReply
+}
+
+// EffectiveAnswerCache returns this bot instance's reply-cache policy. Its
+// zero TTL remains the safe default: no completed answer is reused.
+func (p LansengerBotProfile) EffectiveAnswerCache() AnswerCacheConfig {
+	if p.AnswerCache == nil {
+		return DefaultAnswerCacheConfig()
+	}
+	return p.AnswerCache.WithDefaults()
+}
+
+// ApplyLansengerMultiBotMigration copies a legacy Lansenger configuration into
+// one independently-addressable bot profile. It is idempotent and deliberately
+// preserves legacy boolean values, including an explicit false for @ replies.
+// Callers own persistence so they can include it in their normal atomic config
+// write protocol.
+func ApplyLansengerMultiBotMigration(cfg *AppConfig) bool {
+	if cfg == nil || cfg.LansengerBotsMigrated {
+		return false
+	}
+	cfg.LansengerBotsMigrated = true
+	if len(cfg.LansengerBots) != 0 || !cfg.LansengerEnabled || strings.TrimSpace(cfg.LansengerAppID) == "" || strings.TrimSpace(cfg.LansengerAppSecret) == "" {
+		return true
+	}
+	autoMention := cfg.LansengerAutoMentionReply
+	cfg.LansengerBots = []LansengerBotProfile{{
+		ID:                  DefaultLansengerBotProfileID,
+		Name:                "默认蓝信机器人",
+		Enabled:             true,
+		AppID:               cfg.LansengerAppID,
+		AppSecret:           cfg.LansengerAppSecret,
+		GatewayURL:          cfg.LansengerGatewayURL,
+		WSSURL:              cfg.LansengerWSSURL,
+		AssistantMode:       LansengerAssistantModeGeneral,
+		GroupPolicy:         cfg.LansengerGroupPolicy,
+		AllowedGroupIDs:     append([]string(nil), cfg.LansengerAllowedGroupIDs...),
+		IgnoredGroupIDs:     append([]string(nil), cfg.LansengerIgnoredGroupIDs...),
+		GroupFileMaxBytes:   cloneLansengerGroupFileLimits(cfg.LansengerGroupFileMaxBytes),
+		RequireMention:      cfg.LansengerRequireMention,
+		RespondToAtAll:      cfg.LansengerRespondToAtAll,
+		AutoMentionReply:    &autoMention,
+		AutoQuoteReply:      cfg.LansengerAutoQuoteReply,
+		KnowledgeSourceIDs:  append([]string(nil), cfg.LansengerGroupKnowledgeSourceIDs...),
+		AllowWebSearch:      cfg.LansengerGroupAllowWebSearch,
+		AllowAllDirectories: cfg.LansengerGroupAllowAllDirectories,
+		AllowedDirectories:  append([]string(nil), cfg.LansengerGroupAllowedDirectories...),
+		AnswerCache:         answerCacheConfigPtr(cfg.AnswerCache.WithDefaults()),
+	}}
+	return true
+}
+
+func answerCacheConfigPtr(value AnswerCacheConfig) *AnswerCacheConfig {
+	return &value
+}
+
+func cloneLansengerGroupFileLimits(in map[string]int64) map[string]int64 {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]int64, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+// MaclawLLMProfile chooses a configured provider and model for one execution
+// profile. ProviderID deliberately refers to the provider's stable ID rather
+// than its editable display name, and never contains credentials.
+type MaclawLLMProfile struct {
+	ProviderID       string `json:"provider_id,omitempty"`
+	Model            string `json:"model,omitempty"`
+	InheritAssistant bool   `json:"inherit_assistant,omitempty"`
+}
+
+// MaclawLLMProfiles is the persisted dual-profile model assignment.
+// Coding defaults to following Assistant when this struct is first created.
+type MaclawLLMProfiles struct {
+	Version   int              `json:"version"`
+	Assistant MaclawLLMProfile `json:"assistant"`
+	Coding    MaclawLLMProfile `json:"coding"`
 }
 
 const (
@@ -528,6 +769,43 @@ type LLMPromptCacheConfig struct {
 	IgnoreUserField              bool   `json:"ignore_user_field,omitempty"`
 	IgnoreMetadataField          bool   `json:"ignore_metadata_field,omitempty"`
 	SingleflightWaitTimeoutMS    int    `json:"singleflight_wait_timeout_ms,omitempty"`
+}
+
+const (
+	// DefaultAnswerCacheTTLDays is zero so answer reuse is opt-in. A positive
+	// value enables caching for that many days.
+	DefaultAnswerCacheTTLDays = 0
+	MaxAnswerCacheTTLDays     = 365
+)
+
+// AnswerCacheConfig controls reusable, user-visible assistant answers. A
+// separate config keeps its longer, human-oriented lifetime independent from
+// low-level LLM request caching. TTLDays == 0 disables reuse.
+type AnswerCacheConfig struct {
+	Enabled bool `json:"enabled"`
+	TTLDays int  `json:"ttl_days,omitempty"`
+}
+
+func DefaultAnswerCacheConfig() AnswerCacheConfig {
+	return AnswerCacheConfig{Enabled: true, TTLDays: DefaultAnswerCacheTTLDays}
+}
+
+func (c AnswerCacheConfig) WithDefaults() AnswerCacheConfig {
+	if c.TTLDays < 0 {
+		c.TTLDays = 0
+	}
+	if c.TTLDays > MaxAnswerCacheTTLDays {
+		c.TTLDays = MaxAnswerCacheTTLDays
+	}
+	return c
+}
+
+// CanReuseAnswers reports whether answer reuse is effective. The persisted
+// Enabled switch remains a master opt-out; a zero TTL intentionally keeps the
+// default configuration inactive.
+func (c AnswerCacheConfig) CanReuseAnswers() bool {
+	c = c.WithDefaults()
+	return c.Enabled && c.TTLDays > 0
 }
 
 type ToolCacheMaintenanceConfig struct {
@@ -1052,15 +1330,40 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*alias)(c)); err != nil {
 		return err
 	}
+	// AppConfigDefaults seeds current-version values before decoding. Only the
+	// historical `.ppt`-only policy is eligible for the one-time scope
+	// migration. A missing marker alone is not enough: treating every older or
+	// partial JSON document as pre-migration would make the marker fail the
+	// normal default-true round-trip contract and needlessly rewrite configs
+	// which already resolve to the full current default.
+	var rawFields map[string]json.RawMessage
+	if json.Unmarshal(data, &rawFields) == nil {
+		if _, present := rawFields["office_read_scope_migrated"]; !present && rawOfficeReadFormatsAreHistoricPPTOnly(rawFields["office_read_formats"]) {
+			c.OfficeReadScopeMigrated = false
+		}
+	}
 
 	// Post-unmarshal normalization (not default-value logic, just clamping/validation).
 	c.SubAgentConcurrency = NormalizeSubAgentConcurrency(c.SubAgentConcurrency)
 	c.ensureDefaultProject()
 	c.applyGroupDiscussionFieldDefaults()
 	c.LLMPromptCache = c.LLMPromptCache.WithDefaults()
+	c.AnswerCache = c.AnswerCache.WithDefaults()
 	c.ToolCacheMaintenance = c.ToolCacheMaintenance.WithDefaults()
 	c.CapabilityMarketPolicy = c.CapabilityMarketPolicy.WithDefaults()
 	return nil
+}
+
+// rawOfficeReadFormatsAreHistoricPPTOnly detects the only legacy rollout
+// shape that should be promoted automatically. It operates on the source JSON
+// rather than the default-seeded config so a missing formats key remains the
+// current six-format default rather than being mistaken for historic policy.
+func rawOfficeReadFormatsAreHistoricPPTOnly(raw json.RawMessage) bool {
+	var formats []string
+	if len(raw) == 0 || json.Unmarshal(raw, &formats) != nil || len(formats) != 1 {
+		return false
+	}
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(formats[0])), ".") == "ppt"
 }
 
 // AppConfigDefaults returns an AppConfig with all default-true booleans and
@@ -1076,22 +1379,31 @@ func AppConfigDefaults() AppConfig {
 		// Keep configuration defaults independent of the TTS runtime package;
 		// corelib/tts already depends on corelib model packages and importing it
 		// here would create a package cycle. This is the stable Kokoro voice ID.
-		HardwareWelcomeVoiceID:     "af_heart",
-		HardwareVolume:             70,
-		ShowOpenCode:               true,
-		ShowCodeBuddy:              true,
-		ShowIFlow:                  true,
-		ShowKilo:                   true,
-		PowerOptimization:          true,
-		YoloModeAllowed:            true,
-		SmartRouteEnabled:          true,
-		GossipEnabled:              true,
-		GossipAutoPublish:          true,
-		FileOutboundEnabled:        true,
-		ImageOutboundEnabled:       true,
-		CheckUpdateOnStartup:       true,
-		UseWindowsTerminal:         true,
-		VectorSearchEnabled:        true,
+		HardwareWelcomeVoiceID: "af_heart",
+		HardwareVolume:         70,
+		HardwareBrightness:     70,
+		ShowOpenCode:           true,
+		ShowCodeBuddy:          true,
+		ShowIFlow:              true,
+		ShowKilo:               true,
+		PowerOptimization:      true,
+		YoloModeAllowed:        true,
+		SmartRouteEnabled:      true,
+		GossipEnabled:          true,
+		GossipAutoPublish:      true,
+		FileOutboundEnabled:    true,
+		ImageOutboundEnabled:   true,
+		CheckUpdateOnStartup:   true,
+		UseWindowsTerminal:     true,
+		VectorSearchEnabled:    true,
+		// OfficeRead is the default text extractor for every supported Office
+		// format. The legacy engine and the per-format allowlist remain available
+		// for an immediate global or narrow rollback.
+		OfficeReadEngine:           "officeread",
+		OfficeReadFormats:          []string{"doc", "docx", "ppt", "pptx", "xls", "xlsx"},
+		OfficeReadScopeMigrated:    true,
+		OfficeReadFallback:         boolPtrValue(true),
+		OfficeReadEmitMarkdown:     boolPtrValue(false),
 		ASREnabled:                 true,
 		OCREnabled:                 true,
 		OCRModelTier:               DefaultOCRModelTier,
@@ -1115,10 +1427,26 @@ func AppConfigDefaults() AppConfig {
 		PetSkin:              "clawmate",
 		GroupDiscussion:      defaultGroupDiscussionConfig(),
 		LLMPromptCache:       DefaultLLMPromptCacheConfig(),
+		AnswerCache:          DefaultAnswerCacheConfig(),
 		ToolCacheMaintenance: DefaultToolCacheMaintenanceConfig(),
 		Projects:             defaultProjects(),
 		CurrentProject:       "default",
 	}
+}
+
+// ApplyOfficeReadFullScopeMigration promotes the historical default `.ppt`
+// allowlist to the current full OfficeRead scope once. It deliberately keeps
+// an explicit legacy engine and other non-default partial allowlists intact:
+// they are valid rollback choices. The caller owns persistence.
+func ApplyOfficeReadFullScopeMigration(cfg *AppConfig) bool {
+	if cfg == nil || cfg.OfficeReadScopeMigrated {
+		return false
+	}
+	cfg.OfficeReadScopeMigrated = true
+	if len(cfg.OfficeReadFormats) == 1 && strings.TrimPrefix(strings.ToLower(strings.TrimSpace(cfg.OfficeReadFormats[0])), ".") == "ppt" {
+		cfg.OfficeReadFormats = []string{"doc", "docx", "ppt", "pptx", "xls", "xlsx"}
+	}
+	return true
 }
 
 // ApplyNewInstallPetDefaults sets figurative pet defaults for brand-new installs only.
@@ -1299,6 +1627,10 @@ type SSHHostEntry struct {
 	Password string `json:"password,omitempty"`
 	// Passphrase unlocks KeyPath when the private key is encrypted.
 	Passphrase string `json:"passphrase,omitempty"`
+	// HostKeyFingerprint pins the SSH host key (for example SHA256:...).
+	// Remote coding-runtime tasks require this immutable trust anchor; a
+	// display label or DNS name alone is not enough to safely recover work.
+	HostKeyFingerprint string `json:"host_key_fingerprint,omitempty"`
 }
 
 // IsWeixinLocalMode returns the effective WeChat local mode setting.

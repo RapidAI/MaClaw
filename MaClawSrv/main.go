@@ -78,6 +78,12 @@ func runServer(ctx context.Context) error {
 		log.Printf("[knowledge] initialized successfully")
 	}
 
+	// Hub→local enterprise digital assets sync (per-user data dirs; non-fatal).
+	enterpriseSync := startEnterpriseDigitalAssetSync(svc)
+	if enterpriseSync != nil {
+		defer enterpriseSync.Stop()
+	}
+
 	// Wire MCP tool provider — enables agent to discover and invoke MCP tools
 	// registered via the REST API. Newly installed MCP servers take effect on
 	// the next agent Execute() call without restart.
@@ -88,6 +94,9 @@ func runServer(ctx context.Context) error {
 	executor.SetSkillToolProvider(agentservice.NewSkillToolBridge(svc))
 
 	server := NewHTTPServer(svc, adminSecret, knowledgeMgr, skillSourceSvc)
+	if server != nil {
+		server.enterpriseSync = enterpriseSync
+	}
 	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
 
 	// Wire WeChat proactive push + catalog peers for scheduled-task delivery.

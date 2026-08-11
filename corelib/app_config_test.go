@@ -202,6 +202,21 @@ func TestAppConfigHardwareDefaultsSurviveLegacyUnmarshal(t *testing.T) {
 	}
 }
 
+func TestHardwareAgentBindingNormalizesDeviceDefaults(t *testing.T) {
+	if got := (HardwareAgentBinding{}).Normalized(); got.AssistantMode != LansengerAssistantModeGeneral || got.ExpertID != "" || got.TTSVoiceID != DefaultHardwareTTSVoiceID {
+		t.Fatalf("empty hardware binding = %#v, want general assistant with Xiaoxiao", got)
+	}
+
+	got := (HardwareAgentBinding{
+		AssistantMode: " GENERAL ",
+		ExpertID:      " stale-expert ",
+		TTSVoiceID:    " zm_yunxi ",
+	}).Normalized()
+	if got.AssistantMode != LansengerAssistantModeGeneral || got.ExpertID != "" || got.TTSVoiceID != "zm_yunxi" {
+		t.Fatalf("general hardware binding = %#v", got)
+	}
+}
+
 func TestAppConfigSubAgentConcurrencyDefaultsAndClamps(t *testing.T) {
 	tests := []struct {
 		name string
@@ -268,6 +283,34 @@ func TestAppConfigSecurityBoolDefaults(t *testing.T) {
 	}
 	if disabled.YoloModeAllowed || disabled.SmartRouteEnabled || disabled.GossipEnabled || disabled.FileOutboundEnabled || disabled.ImageOutboundEnabled {
 		t.Fatalf("explicit false security booleans should be preserved: %+v", disabled)
+	}
+}
+
+func TestAnswerCacheDefaultsDisableReuseUntilPositiveTTL(t *testing.T) {
+	defaults := AppConfigDefaults().AnswerCache
+	if !defaults.Enabled || defaults.TTLDays != 0 {
+		t.Fatalf("default answer cache = %#v, want enabled setting with zero TTL", defaults)
+	}
+
+	for input, want := range map[int]int{-1: 0, 0: 0, 14: 14, MaxAnswerCacheTTLDays + 1: MaxAnswerCacheTTLDays} {
+		config := AnswerCacheConfig{Enabled: true, TTLDays: input}
+		if got := config.WithDefaults().TTLDays; got != want {
+			t.Errorf("AnswerCacheConfig{TTLDays: %d}.WithDefaults().TTLDays = %d, want %d", input, got, want)
+		}
+		if got, wantReusable := config.CanReuseAnswers(), want > 0; got != wantReusable {
+			t.Errorf("AnswerCacheConfig{TTLDays: %d}.CanReuseAnswers() = %v, want %v", input, got, wantReusable)
+		}
+	}
+	if (AnswerCacheConfig{Enabled: false, TTLDays: 14}).CanReuseAnswers() {
+		t.Fatal("disabled answer-cache setting allowed reuse")
+	}
+
+	var decoded AppConfig
+	if err := json.Unmarshal([]byte(`{"answer_cache":{"enabled":true,"ttl_days":0}}`), &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !decoded.AnswerCache.Enabled || decoded.AnswerCache.TTLDays != 0 {
+		t.Fatalf("zero TTL changed while decoding: %#v", decoded.AnswerCache)
 	}
 }
 

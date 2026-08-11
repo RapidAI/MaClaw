@@ -270,6 +270,43 @@ const TENANT_MIGRATION_SETTINGS_I18N = {
   }
 };
 const tmgx = (key, vars = {}) => ((TENANT_MIGRATION_SETTINGS_I18N[currentLang] || TENANT_MIGRATION_SETTINGS_I18N.en)[key] || TENANT_MIGRATION_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const TENANT_DIGITAL_ASSETS_SETTINGS_I18N = {
+  en: {
+    title: 'Digital Assets',
+    desc: 'Enable enterprise knowledge libraries for this tenant. Default is off; turn on to use the Digital Assets admin tab and client one-way sync.',
+    reload: 'Reload',
+    enabledLabel: 'Enable Digital Assets',
+    enabledHintOn: 'Enabled - manage libraries under Digital Assets.',
+    enabledHintOff: 'Disabled - library APIs return feature disabled.',
+    syncLabel: 'Client sync',
+    syncHintOn: 'Clients may pull libraries they are allowed to access.',
+    syncHintOff: 'Sync paused - local caches stay readable; no new pulls.',
+    loadFailed: 'Load digital assets settings failed: {error}',
+    saveFailed: 'Save digital assets settings failed: {error}',
+    enabledSaved: 'Digital Assets enabled.',
+    disabledSaved: 'Digital Assets disabled.',
+    syncOnSaved: 'Client sync enabled.',
+    syncOffSaved: 'Client sync disabled.'
+  },
+  zh: {
+    title: '\u6570\u5b57\u8d44\u4ea7',
+    desc: '\u4e3a\u5f53\u524d\u79df\u6237\u5f00\u542f\u4f01\u4e1a\u77e5\u8bc6\u5e93\u3002\u9ed8\u8ba4\u5173\u95ed\uff1b\u5f00\u542f\u540e\u53ef\u5728\u300c\u6570\u5b57\u8d44\u4ea7\u300d\u7ba1\u7406\u5e93\u5e76\u5411\u5ba2\u6237\u7aef\u5355\u5411\u540c\u6b65\u3002',
+    reload: '\u5237\u65b0',
+    enabledLabel: '\u542f\u7528\u6570\u5b57\u8d44\u4ea7',
+    enabledHintOn: '\u5df2\u542f\u7528 \u2014 \u53ef\u5728\u300c\u6570\u5b57\u8d44\u4ea7\u300d\u7ba1\u7406\u5e93\u3002',
+    enabledHintOff: '\u5df2\u5173\u95ed \u2014 \u5e93\u76f8\u5173 API \u4f1a\u8fd4\u56de\u529f\u80fd\u672a\u5f00\u542f\u3002',
+    syncLabel: '\u5ba2\u6237\u7aef\u540c\u6b65',
+    syncHintOn: '\u5ba2\u6237\u7aef\u53ef\u62c9\u53d6\u5176\u6709\u6743\u8bbf\u95ee\u7684\u5e93\u3002',
+    syncHintOff: '\u540c\u6b65\u5df2\u6682\u505c \u2014 \u672c\u5730\u7f13\u5b58\u4ecd\u53ef\u53ea\u8bfb\u6d4f\u89c8\uff0c\u4e0d\u518d\u62c9\u53d6\u66f4\u65b0\u3002',
+    loadFailed: '\u52a0\u8f7d\u6570\u5b57\u8d44\u4ea7\u8bbe\u7f6e\u5931\u8d25: {error}',
+    saveFailed: '\u4fdd\u5b58\u6570\u5b57\u8d44\u4ea7\u8bbe\u7f6e\u5931\u8d25: {error}',
+    enabledSaved: '\u5df2\u542f\u7528\u6570\u5b57\u8d44\u4ea7\u3002',
+    disabledSaved: '\u5df2\u5173\u95ed\u6570\u5b57\u8d44\u4ea7\u3002',
+    syncOnSaved: '\u5df2\u542f\u7528\u5ba2\u6237\u7aef\u540c\u6b65\u3002',
+    syncOffSaved: '\u5df2\u5173\u95ed\u5ba2\u6237\u7aef\u540c\u6b65\u3002'
+  }
+};
+const tdax = (key, vars = {}) => ((TENANT_DIGITAL_ASSETS_SETTINGS_I18N[currentLang] || TENANT_DIGITAL_ASSETS_SETTINGS_I18N.en)[key] || TENANT_DIGITAL_ASSETS_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
   en: {
     title: 'System Free LLM (system-free)',
@@ -333,6 +370,17 @@ function applyTenantMigrationSettingsI18n() {
   _s('tenantMigrationMaxMBLabel', 'textContent', tmgx('label'));
   _s('tenantMigrationSettingsHint', 'textContent', tmgx('hint'));
   _s('tenantMigrationSettingsSaveBtn', 'textContent', tmgx('save'));
+}
+function applyTenantDigitalAssetsSettingsI18n() {
+  _s('tenantDigitalAssetsSettingsTitle', 'textContent', tdax('title'));
+  _s('tenantDigitalAssetsSettingsDesc', 'textContent', tdax('desc'));
+  _s('tenantDigitalAssetsSettingsReloadBtn', 'textContent', tdax('reload'));
+  _s('tenantDigitalAssetsEnabledLabel', 'textContent', tdax('enabledLabel'));
+  _s('tenantDigitalAssetsSyncLabel', 'textContent', tdax('syncLabel'));
+  const enabledToggle = document.getElementById('tenantDigitalAssetsEnabledToggle');
+  const syncToggle = document.getElementById('tenantDigitalAssetsSyncToggle');
+  _s('tenantDigitalAssetsEnabledHint', 'textContent', enabledToggle && enabledToggle.checked ? tdax('enabledHintOn') : tdax('enabledHintOff'));
+  _s('tenantDigitalAssetsSyncHint', 'textContent', syncToggle && syncToggle.checked ? tdax('syncHintOn') : tdax('syncHintOff'));
 }
 function applyTenantSystemLLMDefaultsI18n() {
   _s('tenantSystemLLMDefaultsTitle', 'textContent', tslx('title'));
@@ -592,6 +640,7 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
     applyRegistrationAuthI18n();
     applyTenantMailSenderI18n();
     applyTenantMigrationSettingsI18n();
+    applyTenantDigitalAssetsSettingsI18n();
     applyTenantSystemLLMDefaultsI18n();
   });
 }
@@ -600,6 +649,7 @@ applySystemRoutingI18n();
 applyRegistrationAuthI18n();
 applyTenantMailSenderI18n();
 applyTenantMigrationSettingsI18n();
+applyTenantDigitalAssetsSettingsI18n();
 applyTenantSystemLLMDefaultsI18n();
 function findMailPreset(provider) { return MAIL_PRESETS[provider] || MAIL_PRESETS.custom; }
 function detectMailProvider(cfg) { const host = String(cfg?.smtp_host || '').trim().toLowerCase(); const port = Number(cfg?.smtp_port || 0); const encryption = String(cfg?.smtp_encryption || '').trim().toLowerCase(); for (const [provider, preset] of Object.entries(MAIL_PRESETS)) { if (provider === 'custom') continue; if (host === preset.smtp_host && (!port || port === preset.smtp_port) && (!encryption || encryption === preset.smtp_encryption)) return provider; } return String(cfg?.provider || '').trim() || 'custom'; }
@@ -611,6 +661,70 @@ async function saveMailConfig() { try { const payload = collectMailConfig(); con
 async function loadTenantMailSenderName() { applyTenantMailSenderI18n(); try { const data = await api('/api/admin/mail/sender-name'); const input = document.getElementById('tenantMailFromName'); if (input) input.value = (data && data.from_name) || ''; return data || {}; } catch (err) { const msg = tmsx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function saveTenantMailSenderName() { try { const input = document.getElementById('tenantMailFromName'); const fromName = normalizeTenantMailSenderName(input ? input.value : ''); if (input) input.value = fromName; const data = await api('/api/admin/mail/sender-name', { method: 'POST', body: JSON.stringify({ from_name: fromName }) }); if (input) input.value = (data && data.from_name) || fromName; const msg = tmsx('saved'); setOutput(msg); showToast(msg, 'success'); return data || { from_name: fromName }; } catch (err) { const msg = tmsx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
 async function loadTenantMigrationSettings() { applyTenantMigrationSettingsI18n(); try { const data = await api('/api/admin/migration/settings'); const input = document.getElementById('tenantMigrationMaxMB'); if (input) { input.min = String(tenantMigrationBytesToMB(data && data.min_bytes) || TENANT_MIGRATION_MIN_MB); input.max = String(tenantMigrationBytesToMB(data && data.max_bytes) || TENANT_MIGRATION_MAX_MB); input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); } return data || {}; } catch (err) { const msg = tmgx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
+async function loadTenantDigitalAssetsSettings() {
+  applyTenantDigitalAssetsSettingsI18n();
+  try {
+    const data = await api('/api/admin/digital-assets/settings');
+    const enabledToggle = document.getElementById('tenantDigitalAssetsEnabledToggle');
+    const syncToggle = document.getElementById('tenantDigitalAssetsSyncToggle');
+    if (enabledToggle) enabledToggle.checked = !!(data && data.enabled);
+    if (syncToggle) {
+      syncToggle.checked = data && data.sync_enabled !== false;
+      syncToggle.disabled = !(data && data.enabled);
+    }
+    applyTenantDigitalAssetsSettingsI18n();
+    return data || {};
+  } catch (err) {
+    const msg = tdax('loadFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
+async function toggleTenantDigitalAssetsEnabled(enabled) {
+  const enabledToggle = document.getElementById('tenantDigitalAssetsEnabledToggle');
+  const syncToggle = document.getElementById('tenantDigitalAssetsSyncToggle');
+  try {
+    const data = await api('/api/admin/digital-assets/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: !!enabled })
+    });
+    if (enabledToggle) enabledToggle.checked = !!(data && data.enabled);
+    if (syncToggle) {
+      syncToggle.checked = data && data.sync_enabled !== false;
+      syncToggle.disabled = !(data && data.enabled);
+    }
+    applyTenantDigitalAssetsSettingsI18n();
+    const msg = data && data.enabled ? tdax('enabledSaved') : tdax('disabledSaved');
+    setOutput(msg);
+    showToast(msg, 'success');
+    return data || {};
+  } catch (err) {
+    if (enabledToggle) enabledToggle.checked = !enabled;
+    const msg = tdax('saveFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
+async function toggleTenantDigitalAssetsSync(syncEnabled) {
+  const syncToggle = document.getElementById('tenantDigitalAssetsSyncToggle');
+  try {
+    const data = await api('/api/admin/digital-assets/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ sync_enabled: !!syncEnabled })
+    });
+    if (syncToggle) syncToggle.checked = data && data.sync_enabled !== false;
+    applyTenantDigitalAssetsSettingsI18n();
+    const msg = data && data.sync_enabled !== false ? tdax('syncOnSaved') : tdax('syncOffSaved');
+    setOutput(msg);
+    showToast(msg, 'success');
+    return data || {};
+  } catch (err) {
+    if (syncToggle) syncToggle.checked = !syncEnabled;
+    const msg = tdax('saveFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
 async function saveTenantMigrationSettings() { const input = document.getElementById('tenantMigrationMaxMB'); const valueMB = normalizeTenantMigrationMB(input ? input.value : 0); if (valueMB < TENANT_MIGRATION_MIN_MB || valueMB > TENANT_MIGRATION_MAX_MB) { const msg = tmgx('invalid'); setOutput(msg); showToast(msg, 'error'); return; } const btn = document.getElementById('tenantMigrationSettingsSaveBtn'); const previousLabel = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = tmgx('saving'); } try { const data = await api('/api/admin/migration/settings', { method: 'PUT', body: JSON.stringify({ max_compressed_bytes: valueMB * 1024 * 1024 }) }); if (input) input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); const msg = tmgx('saved'); setOutput(msg); showToast(msg, 'success'); return data || {}; } catch (err) { const msg = tmgx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } finally { if (btn) { btn.disabled = false; btn.textContent = previousLabel || tmgx('save'); } } }
 function getTenantSystemFreeCache() {
   if (tenantSystemFreeStatusCache) return tenantSystemFreeStatusCache;
@@ -775,6 +889,9 @@ if (typeof window !== 'undefined') {
   window.saveTenantSystemLLMDefaults = saveTenantSystemLLMDefaults;
   window.renderTenantSystemFreeStatus = renderTenantSystemFreeStatus;
   window.applyTenantSystemFreeStatusUI = applyTenantSystemFreeStatusUI;
+  window.loadTenantDigitalAssetsSettings = loadTenantDigitalAssetsSettings;
+  window.toggleTenantDigitalAssetsEnabled = toggleTenantDigitalAssetsEnabled;
+  window.toggleTenantDigitalAssetsSync = toggleTenantDigitalAssetsSync;
 }
 // Machines runtime moved to machines-tab.js
 async function sendTestMail() { try { const email = document.getElementById('testMailEmail').value.trim(); if (!email) { const msg = tr('testRecipientRequired'); setOutput(msg); showToast(msg, 'error'); return; } await saveMailConfig(); const data = await api('/api/admin/mail/test', { method: 'POST', body: JSON.stringify({ email }) }); const msg = data.message || tr('mailSent'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = tr('mailFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }

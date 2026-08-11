@@ -47,7 +47,7 @@ var stressCorpus = []stressCase{
 		exactLines: []string{"[00] service-ok status=ok latency=9ms req=8048"}},
 }
 
-func loadStressImage(t *testing.T, name string) image.Image {
+func loadStressImage(t testing.TB, name string) image.Image {
 	t.Helper()
 	f, err := os.Open(filepath.Join("testdata", "stress", name))
 	if err != nil {
@@ -126,6 +126,35 @@ func firstN(s []string, n int) []string {
 		return s[:n]
 	}
 	return s
+}
+
+// BenchmarkEngineStressCorpus is the reproducible end-to-end performance
+// gate for the native PP-OCR pipeline. It measures warmed inference over the
+// same adversarial/production-shaped images used by TestStressCorpus, while
+// reporting allocations so scratch/arena regressions cannot hide behind a
+// throughput-only number. Run it with a fixed CPU setting when comparing
+// revisions, for example: go test ./corelib/ocr -run '^$' -bench
+// BenchmarkEngineStressCorpus -benchtime=3x -cpu=1.
+func BenchmarkEngineStressCorpus(b *testing.B) {
+	e := testEngine(b)
+	imgs := make([]image.Image, len(stressCorpus))
+	for i, tc := range stressCorpus {
+		imgs[i] = loadStressImage(b, tc.file)
+	}
+	// Warm each input once: model parsing, scratch high-water marks and the
+	// runtime worker pool are intentionally outside the timed section.
+	for _, img := range imgs {
+		if _, err := e.Recognize(img); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := e.Recognize(imgs[i%len(imgs)]); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 // memSnapshot is the memory state we assert on in the soak test.

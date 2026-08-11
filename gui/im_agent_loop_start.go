@@ -72,7 +72,14 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	cfg = routedCfg
 	phase := h.initialAgentLoopPhase(opts.UserText, ctx)
 
-	toolSet := h.prepareAgentLoopTools(opts.UserID, opts.UserText, ctx, phase)
+	// Attachments are only staged when the conversation is built below. Use the
+	// same current-turn marker here so Computer Use cannot be surfaced in the
+	// gap between tool routing and local attachment staging.
+	toolRoutingText := computerUseRoutingText(opts.UserText, opts.Attachments)
+	if ctx != nil {
+		ctx.ComputerUseBlockedForLocalFileWork = localFileWorkBlocksComputerUse(toolRoutingText)
+	}
+	toolSet := h.prepareAgentLoopTools(opts.UserID, toolRoutingText, ctx, phase)
 	tools := toolSet.Tools
 	toolsTokenBudget := toolSet.ToolsTokenBudget
 	if telemetry != nil {

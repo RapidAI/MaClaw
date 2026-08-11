@@ -881,6 +881,14 @@ func TestShouldRetainSkillRunWorkspaceStatusForWorkspaceArtifact(t *testing.T) {
 	}
 }
 
+func TestLooksLikeArtifactPathRecognizesLegacyOfficeFormats(t *testing.T) {
+	for _, path := range []string{"report.doc", "ledger.xls", "deck.ppt"} {
+		if !looksLikeArtifactPath(path) {
+			t.Fatalf("legacy Office artifact %q was not recognized", path)
+		}
+	}
+}
+
 func TestSkillRunnerRejectsShellBrowserAutomationSkill(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

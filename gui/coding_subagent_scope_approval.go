@@ -274,6 +274,8 @@ func shouldPersistLocalScopeFullAccess(req ScopeApprovalRequest, decision ScopeA
 // formatScopeRejection generates the rejection message shown to the LLM.
 func formatScopeRejection(toolName, path, projectPath string) string {
 	switch toolName {
+	case "task_scope":
+		return fmt.Sprintf("需要在启动编码任务前授权项目目录外的声明路径：%s。编码任务的冻结项目目录是 %s。", path, projectPath)
 	case "read_file", "Glob", "ripgrep", "list_directory":
 		return fmt.Sprintf("\u62d2\u7edd\u8bfb\u53d6\u9879\u76ee\u76ee\u5f55\u5916\u7684\u8def\u5f84\uff1a%s\u3002\u7f16\u7801 SubAgent \u53ea\u80fd\u7528 %s \u8bfb\u53d6/\u641c\u7d22\u9879\u76ee\u8def\u5f84 %s \u5185\u7684\u6587\u4ef6\u3002", path, toolName, projectPath)
 	case "bash":

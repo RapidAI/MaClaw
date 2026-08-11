@@ -22,6 +22,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	qrcode "github.com/skip2/go-qrcode"
@@ -73,6 +74,7 @@ type HTTPServer struct {
 	weixinRuntime        *srvWeixinGatewayManager
 	imRuntime            *srvIMGatewayManager
 	thirdPartyIM         *srvThirdPartyGatewayManager
+	hardwareBindings     *srvDeviceAgentBindingStore
 	devicePairings       *srvDevicePairingStore
 	devicePairLimit      *authLimiter
 	deviceUpdateBindings *srvDeviceUpdateBindingStore
@@ -80,8 +82,16 @@ type HTTPServer struct {
 	githubReleaseCatalog *srvGitHubReleaseCatalog
 	jobs                 *asyncJobManager
 	knowledgeMgr         *knowledgeStoreManager
+	enterpriseSync       *enterpriseSyncCoordinator
 	skillSourceSvc       *cskill.SourceControlService
 	aiModels             *srvAIModelManager
+	// codingRuntimeStore is transport-neutral task/attempt history. HTTP and
+	// future service executors use adapters; the server never imports GUI code.
+	codingRuntimeStore *codingruntime.SQLiteStore
+	// codingRuntimeRecoveryProber is a test seam around the otherwise fixed
+	// local, read-only workspace probe. Production leaves it nil and uses the
+	// local Git prober below; it must never supply a mutating probe.
+	codingRuntimeRecoveryProber func(codingruntime.Task) codingruntime.WorkspaceProber
 }
 
 type weixinQRTokenRecord struct {
@@ -159,7 +169,8 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
 	}
 	wireSkillSourceFilter(svc, sourceSvc)
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), deviceUpdateBindings: newSrvDeviceUpdateBindingStore(svc.DataRoot()), deviceUpdateCatalog: newSrvDeviceUpdateCatalog(svc.DataRoot()), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot())}
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), deviceUpdateBindings: newSrvDeviceUpdateBindingStore(svc.DataRoot()), deviceUpdateCatalog: newSrvDeviceUpdateCatalog(svc.DataRoot()), hardwareBindings: newSrvDeviceAgentBindingStore(svc.DataRoot()), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot())}
+	s.initCodingRuntimeStore()
 	if releaseCatalog, err := newSrvGitHubReleaseCatalogFromEnv(s.deviceUpdateCatalog); err != nil {
 		// An invalid trust anchor must disable this optional provider rather than
 		// silently accepting an unsigned/local substitute. Existing local
@@ -173,6 +184,7 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 		return s.defaultConfigForAIModels(context.Background())
 	})
 	if s.knowledgeMgr != nil {
+		s.knowledgeMgr.ConfigureImageDescriber(newSrvKnowledgeImageDescriber(svc, svc.DataRoot()))
 		s.knowledgeMgr.UseSharedAIModels(s.aiModels, func() corelib.AppConfig {
 			return s.defaultConfigForAIModels(context.Background())
 		})
@@ -180,7 +192,7 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	svc.AssistantMessageMetadataHook = s.decorateAssistantMessageMetadata
 	s.weixinRuntime = newSrvWeixinGatewayManager(svc, s.aiModels)
 	s.imRuntime = newSrvIMGatewayManager(svc, s.aiModels)
-	s.thirdPartyIM = newSrvThirdPartyGatewayManager(svc, s.aiModels)
+	s.thirdPartyIM = newSrvThirdPartyGatewayManager(svc, s.aiModels, s.hardwareBindings)
 	s.startConfiguredAIModelDownloads(context.Background())
 	s.startConfiguredWeixinRuntimes(context.Background())
 	s.startConfiguredIMRuntimes(context.Background())
@@ -207,6 +219,37 @@ func (s *HTTPServer) Close() {
 	}
 	if s.aiModels != nil {
 		s.aiModels.Close()
+	}
+	if s.codingRuntimeStore != nil {
+		_ = s.codingRuntimeStore.Close()
+	}
+}
+
+// initCodingRuntimeStore opens the shared corelib ledger once per server. It
+// marks only expired leases at startup; recovery must be initiated by an
+// authenticated host adapter using the read-only recovery protocol.
+func (s *HTTPServer) initCodingRuntimeStore() {
+	if s == nil || s.svc == nil || s.codingRuntimeStore != nil {
+		return
+	}
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(s.svc.DataRoot(), "coding_runtime.db"))
+	if err != nil {
+		fmt.Printf("[coding-runtime] disabled: %v\n", err)
+		return
+	}
+	if expired, err := store.ExpireLeases(time.Now().UTC()); err != nil {
+		fmt.Printf("[coding-runtime] stale lease sweep failed: %v\n", err)
+	} else if len(expired) > 0 {
+		fmt.Printf("[coding-runtime] marked %d stale attempt(s) interrupted; recovery requires a read-only probe\n", len(expired))
+	}
+	if interrupted, err := store.InterruptUnstartedChildren(time.Now().UTC()); err != nil {
+		fmt.Printf("[coding-runtime] unstarted child reconciliation failed: %v\n", err)
+	} else if len(interrupted) > 0 {
+		fmt.Printf("[coding-runtime] marked %d waiting parent attempt(s) interrupted; child dispatch is not replayed\n", len(interrupted))
+	}
+	s.codingRuntimeStore = store
+	if !s.svc.SetCodingRuntimeStore(store) {
+		fmt.Printf("[coding-runtime] executor does not support explicit coding workflow runtime adapter\n")
 	}
 }
 
@@ -747,6 +790,14 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/im/status", s.withPrincipal(s.handleGetIMRuntimeStatuses))
 	s.mux.HandleFunc("GET /api/im-gateway/v1/health", s.handleThirdPartyGatewayHealth)
 	s.mux.HandleFunc("POST /api/v1/device-pairings", s.withPrincipal(s.handleCreateDevicePairing))
+	s.mux.HandleFunc("GET /api/v1/hardware-devices", s.withPrincipal(s.handleListHardwareDevices))
+	s.mux.HandleFunc("GET /api/v1/hardware-devices/tts-voices", s.withPrincipal(s.handleListHardwareTTSVoices))
+	s.mux.HandleFunc("GET /api/v1/hardware-devices/experts", s.withPrincipal(s.handleListHardwareExperts))
+	s.mux.HandleFunc("POST /api/v1/hardware-devices/experts", s.withPrincipal(s.handleUpsertHardwareExpert))
+	s.mux.HandleFunc("DELETE /api/v1/hardware-devices/experts/{expertId}", s.withPrincipal(s.handleDeleteHardwareExpert))
+	s.mux.HandleFunc("GET /api/v1/hardware-devices/{deviceId}", s.withPrincipal(s.handleGetHardwareDevice))
+	s.mux.HandleFunc("PATCH /api/v1/hardware-devices/{deviceId}/agent-binding", s.withPrincipal(s.handleUpdateHardwareDeviceBinding))
+	s.mux.HandleFunc("DELETE /api/v1/hardware-devices/{deviceId}", s.withPrincipal(s.handleDeleteHardwareDevice))
 	s.mux.HandleFunc("POST /api/device-gateway/v1/pair", s.handleDeviceGatewayPair)
 	s.mux.HandleFunc("POST /api/device-gateway/v1/pair/voice", s.handleDeviceGatewayVoicePair)
 	s.mux.HandleFunc("POST /api/im-gateway/v1/handshake", s.handleThirdPartyGatewayHandshake)
@@ -826,6 +877,9 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/restore", s.withPrincipal(s.handleRestoreSession))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions/{sessionId}/messages", s.withPrincipal(s.handleListMessages))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/messages", s.withPrincipal(s.handlePostMessage))
+	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/coding-runtime/remote", s.withPrincipal(s.handleStartRemoteCodingRuntime))
+	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions/{sessionId}/coding-runtime/{taskId}/recovery", s.withPrincipal(s.handleGetCodingRuntimeRecovery))
+	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/coding-runtime/{taskId}/recovery", s.withPrincipal(s.handleConfirmCodingRuntimeRecovery))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs", s.withPrincipal(s.handleListRuns))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}", s.withPrincipal(s.handleGetRun))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}/events", s.withPrincipal(s.handleStreamRunEvents))
@@ -844,6 +898,8 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/knowledge/import/batches/{batchId}", s.withPrincipal(s.handleKnowledgeDeleteImportBatch))
 	s.mux.HandleFunc("GET /api/v1/knowledge/import/jobs/{jobId}", s.withPrincipal(s.handleKnowledgeImportJobStatus))
 	s.mux.HandleFunc("POST /api/v1/knowledge/search", s.withPrincipal(s.handleKnowledgeSearch))
+	s.mux.HandleFunc("POST /api/v1/knowledge/images/search", s.withPrincipal(s.handleKnowledgeImageSearch))
+	s.mux.HandleFunc("GET /api/v1/knowledge/capabilities", s.withPrincipal(s.handleKnowledgeCapabilities))
 	s.mux.HandleFunc("POST /api/v1/knowledge/search/structured", s.withPrincipal(s.handleKnowledgeSearchStructured))
 	s.mux.HandleFunc("POST /api/v1/knowledge/structured/catalog", s.withPrincipal(s.handleKnowledgeStructuredCatalog))
 	s.mux.HandleFunc("POST /api/v1/knowledge/context-pack", s.withPrincipal(s.handleKnowledgeContextPack))
@@ -857,6 +913,17 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/knowledge/stats", s.withPrincipal(s.handleKnowledgeStats))
 	s.mux.HandleFunc("GET /api/v1/knowledge/access", s.withPrincipal(s.handleKnowledgeAccessGetMe))
 	s.mux.HandleFunc("DELETE /api/v1/knowledge", s.withPrincipal(s.handleKnowledgeClearAll))
+
+	// Enterprise digital assets (Hub→local cache per user data dir).
+	s.mux.HandleFunc("GET /api/v1/enterprise-knowledge/libraries", s.withPrincipal(s.handleEnterpriseKnowledgeListLibraries))
+	s.mux.HandleFunc("GET /api/v1/enterprise-knowledge/sync/status", s.withPrincipal(s.handleEnterpriseKnowledgeSyncStatus))
+	s.mux.HandleFunc("POST /api/v1/enterprise-knowledge/sync/now", s.withPrincipal(s.handleEnterpriseKnowledgeSyncNow))
+	s.mux.HandleFunc("POST /api/v1/enterprise-knowledge/libraries/{libraryId}/user-sync", s.withPrincipal(s.handleEnterpriseKnowledgeSetUserSync))
+	s.mux.HandleFunc("DELETE /api/v1/enterprise-knowledge/libraries/{libraryId}", s.withPrincipal(s.handleEnterpriseKnowledgePurgeLibrary))
+	s.mux.HandleFunc("GET /api/v1/admin/enterprise-knowledge/sync/status", s.withAdmin(s.handleAdminEnterpriseKnowledgeSyncStatus))
+	s.mux.HandleFunc("POST /api/v1/admin/enterprise-knowledge/sync/now", s.withAdmin(s.handleAdminEnterpriseKnowledgeSyncNow))
+	s.mux.HandleFunc("GET /api/v1/admin/enterprise-knowledge/tenants", s.withAdmin(s.handleAdminEnterpriseKnowledgeTenantProgress))
+	s.mux.HandleFunc("DELETE /api/v1/admin/enterprise-knowledge/tenants/{tenantId}/users/{userId}/libraries/{libraryId}", s.withAdmin(s.handleAdminEnterpriseKnowledgePurgeLibrary))
 	s.mux.HandleFunc("GET /api/v1/admin/public-knowledge-libraries", s.withAdmin(s.handleAdminPublicKnowledgeLibraries))
 	s.mux.HandleFunc("POST /api/v1/admin/public-knowledge-libraries", s.withAdmin(s.handleAdminPublicKnowledgeCreate))
 	s.mux.HandleFunc("DELETE /api/v1/admin/public-knowledge-libraries/{libraryId}", s.withAdmin(s.handleAdminPublicKnowledgeDelete))
@@ -877,6 +944,9 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/resolve", s.withAdmin(s.handleAdminKnowledgeAccessResolveUser))
 
 	// Knowledge base image asset endpoints
+	s.mux.HandleFunc("GET /api/v1/knowledge/images/{assetId}/thumbnail", s.withPrincipal(s.handleKnowledgeImageThumbnail))
+	s.mux.HandleFunc("GET /api/v1/knowledge/images/{assetId}/preview", s.withPrincipal(s.handleKnowledgeImagePreview))
+	s.mux.HandleFunc("GET /api/v1/knowledge/images/{assetId}", s.withPrincipal(s.handleKnowledgeImageOriginal))
 	s.mux.HandleFunc("GET /api/v1/knowledge/sources/{sourceId}/thumbnail", s.withPrincipal(s.handleKnowledgeSourceThumbnail))
 	s.mux.HandleFunc("GET /api/v1/knowledge/sources/{sourceId}/image", s.withPrincipal(s.handleKnowledgeSourceImage))
 	s.mux.HandleFunc("POST /api/v1/knowledge/import/image", s.withPrincipal(s.handleKnowledgeImportImage))
@@ -4516,6 +4586,10 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	if isReservedCodingRuntimeMetadata(in.Metadata) || isReservedCodingRuntimeMetadata(in.SessionMetadata) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "coding runtime metadata must be created by an explicit workflow runtime endpoint"})
+		return
+	}
 	sess, run, msg, err := s.svc.SendMessage(r.Context(), p, r.PathValue("instanceId"), in)
 	if err != nil {
 		if run != nil {
@@ -4643,6 +4717,10 @@ func (s *HTTPServer) handleListMessages(w http.ResponseWriter, r *http.Request, 
 func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.PostMessageInput
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if isReservedCodingRuntimeMetadata(in.Metadata) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "coding runtime metadata must be created by an explicit workflow runtime endpoint"})
 		return
 	}
 	run, msg, err := s.svc.PostMessage(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)

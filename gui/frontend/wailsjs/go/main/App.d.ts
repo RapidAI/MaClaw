@@ -34,6 +34,7 @@ export function ActivateRemoteSMS(arg1:string,arg2:string,arg3:string,arg4:strin
 export function AddExternalSkillDir(arg1:string):Promise<number>;
 
 export function AddLansengerWatchMember(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function AddLansengerWatchMemberForBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function AddSkill(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 
@@ -78,6 +79,8 @@ export function BatchTriggerSkillOptimize(arg1:Array<string>,arg2:boolean):Promi
 export function BatchTriggerSkillSelfRepair(arg1:Array<string>,arg2:boolean):Promise<Record<string, any>>;
 
 export function BeginWindowDrag():Promise<void>;
+
+export function DeletePrivateExpertMarketListing(arg1:string):Promise<void>;
 
 export function BeginLiveRecordedAudioUpload(arg1:string):Promise<Record<string, any>>;
 
@@ -211,6 +214,8 @@ export function ClipboardGetText():Promise<string>;
 
 export function CloseProjectTabSession(arg1:string):Promise<void>;
 
+export function CloseAssistantTabSession(arg1:string):Promise<void>;
+
 export function CloseSurvey(arg1:string):Promise<string>;
 
 export function CloseVESession(arg1:string):Promise<void>;
@@ -218,6 +223,8 @@ export function CloseVESession(arg1:string):Promise<void>;
 export function CodingKnowledgeCapacity():Promise<main.CodingKnowledgeCapacityStatus>;
 
 export function CodingKnowledgeConfirm(arg1:string):Promise<void>;
+
+export function CodingKnowledgeCreateRevisionCandidate(arg1:string,arg2:string):Promise<knowledge.CodingExperience>;
 
 export function CodingKnowledgeDelete(arg1:string):Promise<void>;
 
@@ -236,6 +243,10 @@ export function CodingKnowledgeGraduateToSteering(arg1:string):Promise<string>;
 export function CodingKnowledgeImportFromFile(arg1:string):Promise<number>;
 
 export function CodingKnowledgeList(arg1:knowledge.CodingListFilter):Promise<Array<knowledge.CodingExperience>>;
+
+export function CodingKnowledgeLifecycle(arg1:string):Promise<Array<knowledge.CodingExperienceLifecycleEvent>>;
+
+export function CodingKnowledgeMarkConflict(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function CodingKnowledgeReset():Promise<void>;
 
@@ -319,9 +330,12 @@ export function DeleteComputerUseLogArtifact(arg1:string):Promise<Record<string,
 
 export function DeleteExpert(arg1:string):Promise<void>;
 
+export function DeleteLansengerBot(arg1:string):Promise<void>;
+
 export function DeleteIMAuditMessagesBefore(arg1:number):Promise<number>;
 
 export function DeleteLansengerWatchJob(arg1:string):Promise<void>;
+export function DeleteLansengerWatchJobForBot(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteMemory(arg1:string):Promise<void>;
 
@@ -425,6 +439,8 @@ export function ExportExpertPackageToFile(arg1:string,arg2:string):Promise<void>
 
 export function ExportIMAuditCSV(arg1:string,arg2:string,arg3:string):Promise<string>;
 
+export function ExportIMAuditCSVForBot(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function ExportLearnedSkillsZip(arg1:Array<string>):Promise<void>;
 
 export function ExportPassthroughCommand(arg1:string):Promise<string>;
@@ -442,6 +458,8 @@ export function FetchCodeGenModels():Promise<Array<main.CodeGenModelItem>>;
 export function FetchNews():Promise<Array<main.NewsArticle>>;
 
 export function FetchProviderModels(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Array<main.CodeGenModelItem>>;
+
+export function FetchMaclawLLMProfileModels(arg1:string):Promise<Array<main.CodeGenModelItem>>;
 
 export function FindRemoteCodingTaskByMeta(arg1:string,arg2:string,arg3:string):Promise<main.ProjectSearchResult>;
 
@@ -470,6 +488,8 @@ export function GetASREnabled():Promise<boolean>;
 export function GetAdaptiveWindowSize():Promise<Record<string, number>>;
 
 export function GetAllLLMTokenUsage():Promise<Record<string, corelib.TokenUsageStat>>;
+
+export function GetAllLLMProfileTokenUsage():Promise<Record<string, corelib.TokenUsageStat>>;
 
 export function GetAllowedSkillSources():Promise<Array<string>>;
 
@@ -575,6 +595,18 @@ export function GetHubCapability(arg1:string):Promise<main.HubCapabilitySummary>
 
 export function GetHubLLMServiceStatus():Promise<main.HubLLMServiceStatus>;
 
+export function EnterpriseKnowledgeListLibraries():Promise<Array<main.EnterpriseLibraryView>>;
+
+export function EnterpriseKnowledgeSetLibraryUserSync(arg1:string,arg2:boolean):Promise<void>;
+
+export function EnterprisePurgeRevokedLibrary(arg1:string):Promise<void>;
+
+export function EnterpriseSetSyncPaused(arg1:boolean):Promise<void>;
+
+export function EnterpriseSyncNow():Promise<main.EnterpriseSyncStatus>;
+
+export function EnterpriseSyncStatus():Promise<main.EnterpriseSyncStatus>;
+
 export function GetHubMCPHubSecrets(arg1:string):Promise<Array<main.HubMCPHubSecret>>;
 
 export function GetHubMCPSecretBindings(arg1:string):Promise<Array<main.HubMCPSecretBinding>>;
@@ -593,6 +625,8 @@ export function GetIMAuditStats():Promise<main.IMAuditStats>;
 
 export function GetIMAuditUsers(arg1:string):Promise<Array<string>>;
 
+export function GetIMAuditUsersForBot(arg1:string):Promise<Array<string>>;
+
 export function GetInferenceDiagnostics():Promise<memory.InferenceDiagnosticsData>;
 
 export function GetLLMSecurityReview():Promise<main.LLMSecurityReview>;
@@ -606,6 +640,8 @@ export function GetLansengerIgnoredGroups():Promise<Array<string>>;
 export function GetLansengerLocalMode():Promise<boolean>;
 
 export function GetLansengerStatus():Promise<string>;
+
+export function GetLansengerBotStatus(arg1:string):Promise<string>;
 
 export function GetLansengerWatchStorePath():Promise<string>;
 
@@ -636,6 +672,8 @@ export function GetMaclawBaseDir():Promise<string>;
 export function GetMaclawLLMConfig():Promise<corelib.MaclawLLMConfig>;
 
 export function GetMaclawLLMPanelState():Promise<any>;
+
+export function GetMaclawLLMProfilePanelState():Promise<main.MaclawLLMProfilePanelState>;
 
 export function GetMaclawLLMProviders():Promise<any>;
 
@@ -795,6 +833,10 @@ export function ListThirdPartyHardwareDevices():Promise<Array<Record<string, any
 
 export function ListThirdPartyHardwareDeviceBindings():Promise<Record<string, any>>;
 
+export function GetHardwareAgentBinding(arg1:string):Promise<corelib.HardwareAgentBinding>;
+
+export function SetHardwareAgentBinding(arg1:string,arg2:corelib.HardwareAgentBinding):Promise<void>;
+
 export function DeleteThirdPartyHardwareDevice(arg1:string):Promise<void>;
 
 export function GenerateHardwareWelcomeAudio(arg1:string,arg2:string):Promise<string>;
@@ -816,6 +858,10 @@ export function SyncHardwareWelcome():Promise<void>;
 export function SendHardwareVolume(arg1:number):Promise<void>;
 
 export function SendHardwareDeviceVolume(arg1:string,arg2:number):Promise<void>;
+
+export function SendHardwareDeviceBrightness(arg1:string,arg2:number):Promise<void>;
+
+export function SendHardwareDeviceScreenSleepTimeout(arg1:string,arg2:number):Promise<void>;
 
 export function SendHardwareDevicePetProfile(arg1:string,arg2:string):Promise<void>;
 
@@ -987,7 +1033,11 @@ export function ListExpertMarketListings(arg1:string,arg2:string,arg3:number,arg
 
 export function PurchaseExpertMarketListing(arg1:string):Promise<Record<string, any>>;
 
-export function SubmitExpertMarketListing(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
+export function SubmitExpertMarketListing(arg1:string,arg2:string,arg3:number,arg4:string):Promise<Record<string, any>>;
+
+export function PublishExpertMarketListing(arg1:string):Promise<Record<string, any>>;
+
+export function MakeExpertMarketListingPrivate(arg1:string):Promise<Record<string, any>>;
 
 export function WithdrawExpertMarketListing(arg1:string):Promise<void>;
 
@@ -1169,6 +1219,8 @@ export function KnowledgeListMyHubShares(arg1:main.KnowledgeHubShareListRequest)
 
 export function KnowledgeListNodesBySource(arg1:string,arg2:number):Promise<Array<knowledge.DocumentNode>>;
 
+export function KnowledgePreviewNodesBySource(arg1:string,arg2:number):Promise<Array<knowledge.DocumentNodePreview>>;
+
 export function KnowledgeListSourceLabels(arg1:knowledge.ListSourcesOptions):Promise<Array<knowledge.SourceLabelSummary>>;
 
 export function KnowledgeListSourceLinkEvents(arg1:string,arg2:number):Promise<Array<knowledge.SourceLinkEvent>>;
@@ -1186,6 +1238,8 @@ export function KnowledgeListURLDomainPolicies():Promise<Array<knowledge.URLDoma
 export function KnowledgeMaintain(arg1:boolean):Promise<knowledge.MaintenanceResult>;
 
 export function KnowledgeOpenImageFile(arg1:string):Promise<void>;
+
+export function KnowledgeOpenImageAsset(arg1:string):Promise<void>;
 
 export function KnowledgePreviewSourceRefresh(arg1:string):Promise<knowledge.SourceChangePreview>;
 
@@ -1325,13 +1379,23 @@ export function ListHubCapabilities(arg1:string,arg2:string):Promise<Array<main.
 
 export function ListLansengerGroups():Promise<main.LansengerGroupListResult>;
 
+export function ListLansengerGroupsForBot(arg1:string):Promise<main.LansengerGroupListResult>;
+
+export function ListLansengerBots():Promise<Array<main.LansengerBotProfileView>>;
+
 export function ListLansengerWatchChannels():Promise<string>;
+
+export function ListLansengerWatchChannelsForBot(arg1:string):Promise<string>;
 
 export function ListLansengerWatchForwardResults():Promise<string>;
 
+export function ListLansengerWatchForwardResultsForBot(arg1:string):Promise<string>;
+
 export function ListLansengerWatchJobs():Promise<string>;
+export function ListLansengerWatchJobsForBot(arg1:string):Promise<string>;
 
 export function ListLansengerWatchRoster(arg1:string,arg2:string):Promise<string>;
+export function ListLansengerWatchRosterForBot(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function ListLansengerWatchTranscripts(arg1:string):Promise<string>;
 
@@ -1551,6 +1615,8 @@ export function PinTask(arg1:string,arg2:boolean):Promise<void>;
 
 export function PingMaclawLLM():Promise<main.MaclawLLMStatus>;
 
+export function RefreshMaclawLLMProfileHealth():Promise<main.MaclawLLMProfilePanelState>;
+
 export function PingSkillHub(arg1:string):Promise<Record<string, any>>;
 
 export function PlanMaclawAppInstall(arg1:string):Promise<main.maclawAppInstallPlan>;
@@ -1618,6 +1684,8 @@ export function QueryExperienceToolRecoverySummaries(arg1:main.ExperienceToolRec
 export function QueryExperienceTraceDetails(arg1:main.ExperienceTraceDetailQuery):Promise<main.ExperienceTraceDetailQueryResult>;
 
 export function QueryIMAuditMessages(arg1:string,arg2:string,arg3:string,arg4:number):Promise<main.IMAuditQueryResult>;
+
+export function QueryIMAuditMessagesForBot(arg1:string,arg2:string,arg3:string,arg4:number):Promise<main.IMAuditQueryResult>;
 export function RevealIMAuditAttachment(arg1:string):Promise<void>;
 
 export function QuerySecurityEvents(arg1:number):Promise<Array<main.SecurityEventItem>>;
@@ -1732,6 +1800,8 @@ export function RestartACPHost():Promise<Record<string, any>>;
 
 export function RestartLansenger():Promise<string>;
 
+export function RestartLansengerBot(arg1:string):Promise<string>;
+
 export function RestartQQBot():Promise<string>;
 
 export function RestartTelegram():Promise<string>;
@@ -1810,6 +1880,8 @@ export function SaveDigitalEmployeeSensitiveQueryPolicy(arg1:string):Promise<voi
 
 export function SaveExpert(arg1:string):Promise<string>;
 
+export function SaveLansengerBot(arg1:corelib.LansengerBotProfile):Promise<main.LansengerBotProfileView>;
+
 export function SaveHubMCPHubSecret(arg1:main.HubMCPHubSecretInput):Promise<main.HubMCPHubSecret>;
 
 export function SaveHubMCPSecretBinding(arg1:main.HubMCPSecretBinding):Promise<void>;
@@ -1823,6 +1895,10 @@ export function SaveMaclawAppsPanelState(arg1:string):Promise<void>;
 export function SaveMaclawLLMConfig(arg1:corelib.MaclawLLMConfig):Promise<void>;
 
 export function SaveMaclawLLMProviders(arg1:Array<corelib.MaclawLLMProvider>,arg2:string):Promise<void>;
+
+export function SaveMaclawLLMProfiles(arg1:corelib.MaclawLLMProfiles,arg2:string):Promise<void>;
+
+export function QuickSaveMaclawLLMProfile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.MaclawLLMProfilePanelState>;
 
 export function SaveMemory(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
 
@@ -1975,9 +2051,15 @@ export function SetLLMTrajectoryLogging(arg1:boolean):Promise<void>;
 export function SetLanguage(arg1:string):Promise<void>;
 
 export function SetLansengerGroupAllowed(arg1:string,arg2:boolean):Promise<void>;
+
+export function SetLansengerBotGroupAllowed(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 export function SetLansengerGroupFileMaxBytes(arg1:string,arg2:number):Promise<void>;
 
+export function SetLansengerBotGroupFileMaxBytes(arg1:string,arg2:string,arg3:number):Promise<void>;
+
 export function SetLansengerGroupIgnored(arg1:string,arg2:boolean):Promise<void>;
+
+export function SetLansengerBotGroupIgnored(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function SetLansengerLocalMode(arg1:boolean):Promise<void>;
 
@@ -1998,6 +2080,8 @@ export function SetMoAStickyPreset(arg1:string):Promise<void>;
 export function SetNLSkillStatus(arg1:string,arg2:string):Promise<void>;
 
 export function SetOCREnabled(arg1:boolean):Promise<void>;
+
+export function SetOCRModelTier(arg1:string):Promise<void>;
 
 export function SetPassthroughCommandEnabled(arg1:string,arg2:boolean):Promise<void>;
 
@@ -2149,11 +2233,15 @@ export function TestInference(arg1:string):Promise<Array<memory.InferenceDiagnos
 
 export function TestLansengerWatchForward(arg1:string):Promise<void>;
 
+export function TestLansengerWatchForwardForBot(arg1:string,arg2:string):Promise<void>;
+
 export function TestMCPEndpoint(arg1:string,arg2:string,arg3:string,arg4:Record<string, string>):Promise<main.MCPEndpointTestResult>;
 
 export function TestMISDataConnection(arg1:corelib.MISDataConfig):Promise<main.MISDataConnectionStatus>;
 
 export function TestMaclawLLM(arg1:corelib.MaclawLLMConfig):Promise<corelib.MaclawLLMTestResult>;
+
+export function TestMaclawLLMProfile(arg1:string,arg2:string,arg3:string):Promise<main.MaclawLLMProfileProbeResult>;
 
 export function TestRemoteSSHConnection(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<string>;
 
@@ -2228,6 +2316,7 @@ export function UploadNLSkillToMarket(arg1:string):Promise<string>;
 export function UploadSupplementaryDocs(arg1:string):Promise<string>;
 
 export function UpsertLansengerWatchJob(arg1:string):Promise<string>;
+export function UpsertLansengerWatchJobForBot(arg1:string,arg2:string):Promise<string>;
 
 export function UserDataMigrationInstances():Promise<Record<string, any>>;
 

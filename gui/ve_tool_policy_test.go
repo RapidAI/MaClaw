@@ -13,6 +13,7 @@ func TestIsVEToolBlocked_BlockedTools(t *testing.T) {
 	blocked := []string{
 		"write_file", "edit_file", "edit_lines", "bash", "ssh", "browser",
 		"browser_navigate", "browser_click",
+		"computer_observe", "computer_click", "computer_future_action",
 		"create_session", "send_and_observe", "send_input",
 		"control_session", "interrupt_session", "kill_session",
 		"parallel_execute", "craft_tool",
@@ -25,6 +26,22 @@ func TestIsVEToolBlocked_BlockedTools(t *testing.T) {
 		if !isVEToolBlocked(name) {
 			t.Errorf("expected %q to be blocked in VE mode", name)
 		}
+	}
+}
+
+func TestFilterToolsForVEWithConfigNeverExposesComputerUse(t *testing.T) {
+	tools := []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "read_file"}},
+		{"function": map[string]interface{}{"name": "computer_observe"}},
+		{"function": map[string]interface{}{"name": "computer_future_action"}},
+	}
+	filtered := filterToolsForVEWithConfig(tools, []string{"C:\\approved"})
+	names := extractToolNames(filtered)
+	if names["computer_observe"] || names["computer_future_action"] {
+		t.Fatalf("VE tool list must not expose Computer Use: %#v", names)
+	}
+	if !names["read_file"] {
+		t.Fatalf("VE tool list should preserve safe file inspection: %#v", names)
 	}
 }
 

@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ClawMate Maker</title>
 <style>
 :root{--bg:#f5f8fc;--panel:#fff;--ink:#19324b;--muted:#63768a;--line:#d9e3ee;--blue:#2869a8;--green:#23865e;--amber:#9a6105;--red:#b83c45}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif}.app{max-width:1120px;margin:auto;padding:30px}.top,.head{display:flex;justify-content:space-between;align-items:start;gap:12px}.top{align-items:center;margin-bottom:24px}.brand{display:flex;gap:12px;align-items:center}.mark{display:grid;place-items:center;width:42px;height:42px;border-radius:10px;background:var(--blue);color:#fff;font-weight:800}.brand h1,.card h2{margin:0;font-size:20px}.brand p,.sub{margin:2px 0 0;color:var(--muted);font-size:13px}.toolbar{display:flex;align-items:center;gap:10px}.language{min-width:116px;border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:#fff;color:var(--ink);font:600 13px inherit}.language:focus-visible{outline:3px solid #80afe166}.steps{display:flex;gap:12px;align-items:center;padding:17px 20px;margin-bottom:20px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}.step{color:var(--muted);font-size:12px}.step b{display:block;color:var(--ink)}.step.active b{color:var(--blue)}.line{flex:1;height:1px;background:var(--line)}.grid{display:grid;grid-template-columns:1.55fr .8fr;gap:20px}.card{padding:22px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}.eyebrow{margin:0;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}button{border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:#fff;color:var(--ink);font:600 13px inherit;cursor:pointer}button:hover{background:#f1f6fb}button:focus-visible{outline:3px solid #80afe166}button:disabled{opacity:.45;cursor:not-allowed}.primary{width:100%;margin-top:12px;border-color:var(--blue);background:var(--blue);color:#fff}.primary:hover{background:#205b94}.devices,.boards{margin-top:16px}.device,.board{display:flex;width:100%;gap:12px;align-items:center;padding:13px;margin-bottom:9px;border:1px solid var(--line);border-radius:9px;text-align:left}.device.selected,.board.selected{border-color:var(--blue);box-shadow:0 0 0 2px #2869a829}.device strong,.device small,.board strong,.board small{display:block}.device small,.board small{color:var(--muted)}.icon{display:grid;place-items:center;width:33px;height:33px;border-radius:8px;background:#eef4fa;color:var(--blue);font-weight:800}.badge{margin-left:auto;padding:3px 7px;border-radius:20px;background:#e7f6ef;color:#227350;font-size:11px}.notice,.summary{margin-top:15px;padding:11px 12px;border-radius:8px;background:#f0f5fa;color:var(--muted);font-size:12px}.notice.warning{background:#fff6e5;color:#805100}.checks{display:grid;gap:17px;padding:16px 0;margin:0;list-style:none}.checks li{display:flex;gap:10px}.checks b,.checks small{display:block}.checks small{color:var(--muted)}.status{width:9px;height:9px;margin-top:6px;border-radius:50%;background:var(--line)}.status.ok{background:var(--green)}.status.bad{background:var(--red)}.logs{margin-top:20px}.loglist{max-height:300px;overflow:auto;margin:15px 0 0;padding:0;list-style:none;border-top:1px solid var(--line)}.loglist li{display:grid;grid-template-columns:82px 110px 1fr;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line);font-size:12px}.time,.code{color:var(--muted);font-family:ui-monospace,Consolas,monospace}.error{color:var(--red)}.empty{padding:20px;border:1px dashed var(--line);border-radius:9px;color:var(--muted)}@media(max-width:740px){.app{padding:18px}.toolbar{width:100%;justify-content:space-between}.top{align-items:start;flex-wrap:wrap}.grid{grid-template-columns:1fr}.steps{display:none}.loglist li{grid-template-columns:72px 1fr}.code{display:none}}
@@ -39,18 +39,56 @@ button{min-height:36px;border:1px solid var(--line-strong);border-radius:var(--r
 @media(max-width:640px){.app{padding:20px 14px 34px}.top{align-items:flex-start;gap:18px;margin-bottom:21px;padding-bottom:18px}.toolbar{width:100%;justify-content:space-between}.toolbar>.sub:last-child{max-width:46%;font-size:11px;text-align:right}.steps{display:none}.card{padding:18px;border-radius:10px}.head{align-items:flex-start}.head>button{flex:0 0 auto}.grid{gap:16px}.grid>aside{display:block}.grid>aside>#probe{width:100%;margin-top:4px}.release-channel{grid-template-columns:1fr}.release-channel select{max-width:none}.logfilters{grid-template-columns:1fr;padding:12px}.loglist li{grid-template-columns:76px minmax(0,1fr);gap:8px;padding:10px 0}.code{display:none}#releaseSources{max-width:46%;white-space:normal;text-align:right}.badge{display:none}}
 @media(max-width:420px){.toolbar>.sub:last-child{display:none}.card{padding:18px 16px}.notice,.summary{overflow-wrap:anywhere}.device,.board{min-width:0}.brand h1{font-size:20px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
+/* Final interaction hierarchy: keep the irreversible path calm, explicit, and scannable. */
+.app{max-width:1160px;padding:28px 28px 52px}
+.top{min-height:68px;margin-bottom:22px;padding-bottom:20px}
+.steps{margin-bottom:22px}
+.step{min-height:42px}
+.grid{gap:20px}
+.card{padding:22px 23px}
+.grid>aside{background:#fbfdff}
+.grid>aside .primary{margin-top:4px}
+.devices{display:grid;gap:8px}
+.device{margin:0;min-height:68px}
+.device,.board{isolation:isolate}
+.device.selected,.device.is-selected-port{border:2px solid var(--blue);padding:11px;background:#eaf4ff;box-shadow:inset 0 0 0 1px rgba(23,105,170,.1)}
+.device.selected:before,.device.is-selected-port:before{position:absolute;inset:-5px;z-index:-1;border-radius:12px;background:rgba(23,105,170,.10);content:""}
+.device-selection-label{margin-left:auto}
+.device.selected .device-selection-label,.device.is-selected-port .device-selection-label{background:#174f80}
+#boardCard{position:relative}
+#boardCard .boards{margin-top:16px}
+.board{min-height:70px;margin-bottom:0;background:#f8fbfe}
+.board.selected{border:1px solid #8ab6d7;padding:12px;background:#edf6fc;box-shadow:none}
+.board .icon{background:#d8ecf9}
+.release-channel{margin-top:18px;padding:15px 0 2px}
+#download,#import{display:inline-flex;align-items:center;justify-content:center;margin:12px 8px 0 0}
+#flash{width:auto;min-width:176px;float:right;margin-top:12px}
+#cancelFlash{float:right;clear:right;margin-top:10px}
+#downloadNote{clear:both;margin-top:16px}
+.checks{position:relative;gap:14px}
+.checks li{padding:0 0 14px;border-bottom:1px solid #e3eaf1}
+.checks li:last-child{padding-bottom:0;border-bottom:0}
+.status{flex:0 0 auto}
+.logs{margin-top:20px}
+.device>span:nth-child(2),.board>span:nth-child(2){min-width:0}
+.device strong,.device small,.board strong,.board small{overflow-wrap:anywhere}
+.logfilters{position:sticky;top:0;z-index:1}
+.loglist{scrollbar-color:#aebfce transparent}
+.loglist li:hover{background:#f8fbfd}
+@media(max-width:960px){#flash{float:none}#cancelFlash{float:none;clear:none}.logfilters{position:static}}
+@media(max-width:640px){.app{padding:18px 14px 34px}.card{padding:18px}.device.selected:before,.device.is-selected-port:before{inset:-3px;border-radius:11px}#download,#import,#flash,#cancelFlash{display:flex;width:100%;margin-right:0}.release-channel{gap:8px}}
 </style></head>
 <body><main class="app"><header class="top"><div class="brand"><span class="mark" aria-hidden="true"><svg viewBox="0 0 48 48"><g fill="#fff" stroke="#153e64" stroke-width="2.4"><rect x="4" y="17" width="6" height="4" rx="1"></rect><rect x="4" y="24" width="6" height="4" rx="1"></rect><rect x="4" y="31" width="6" height="4" rx="1"></rect><rect x="38" y="17" width="6" height="4" rx="1"></rect><rect x="38" y="24" width="6" height="4" rx="1"></rect><rect x="38" y="31" width="6" height="4" rx="1"></rect></g><path d="M24 5.5a3 3 0 0 1 3 3v11h5.1c2.1 0 3.2 2.5 1.7 4L25.7 32a2.4 2.4 0 0 1-3.4 0l-8.1-8.5c-1.5-1.5-.4-4 1.7-4H21v-11a3 3 0 0 1 3-3Z" fill="#52b18a"></path><rect x="14" y="29" width="20" height="10" rx="3" fill="#fff" stroke="#153e64" stroke-width="2.4"></rect><path d="M20 34h8" stroke="#52b18a" stroke-width="2.4"></path></svg></span><div><h1>ClawMate Maker</h1><p>ESP32 固件安装与诊断</p></div></div><div class="toolbar"><label class="sub" for="language">显示语言</label><select class="language" id="language" aria-label="显示语言"><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="en">English</option></select><span class="sub" id="platform">正在连接桌面服务</span></div></header>
 <section class="steps"><div class="step active"><b>1 · 识别设备</b>自动发现 USB 串口</div><i class="line"></i><div class="step"><b>2 · 获取固件</b>官方 Release 精确下载</div><i class="line"></i><div class="step"><b>3 · 安全刷写</b>写入与读回校验</div><i class="line"></i><div class="step"><b>4 · 启动验证</b>确认设备就绪</div></section>
-<section class="card notice warning" id="recoveryCard" hidden><div class="head"><div><p class="eyebrow">恢复优先</p><h2>发现未验证的刷写任务</h2></div><button id="recoveryExport" disabled>导出诊断包</button></div><p id="recoveryDetail">请保持设备连接，进入 ROM 下载模式后使用完整恢复包。普通刷写已被阻止。</p><button class="primary" id="recoveryFlash" disabled>使用完整固件恢复</button></section><div class="grid"><section class="card"><div class="head"><div><p class="eyebrow">当前连接</p><h2>设备识别</h2></div><button id="refresh">重新扫描</button></div><div id="devices" class="devices"><div class="empty">正在扫描 USB 串口…</div></div><div class="notice" id="accessNote">读取 ROM 与 Flash 信息不会擦除、写入或修改设备。三种官方板卡均使用 ESP32‑S3，USB VID/PID 不是板型身份证明。</div></section>
+<section class="card notice warning" id="recoveryCard" hidden role="alert" aria-live="assertive"><div class="head"><div><p class="eyebrow">恢复优先</p><h2>发现未验证的刷写任务</h2></div><button id="recoveryExport" disabled>导出诊断包</button></div><p id="recoveryDetail">请保持设备连接，进入 ROM 下载模式后使用完整恢复包。普通刷写已被阻止。</p><button class="primary" id="recoveryFlash" disabled>使用完整固件恢复</button></section><div class="grid"><section class="card"><div class="head"><div><p class="eyebrow">当前连接</p><h2>设备识别</h2></div><button id="refresh">重新扫描</button></div><div id="devices" class="devices" aria-live="polite" aria-relevant="additions text"><div class="empty">正在扫描 USB 串口…</div></div><div class="notice" id="accessNote" role="status" aria-live="polite">读取 ROM 与 Flash 信息不会擦除、写入或修改设备。四种官方板卡均使用 ESP32‑S3；其中 Waveshare S3 Touch AMOLED 1.75C 为 32 MiB。USB VID/PID 不是板型身份证明。</div></section>
 <aside class="card"><p class="eyebrow">安全状态</p><h2>刷写准备度</h2><ul class="checks"><li><span id="deviceStatus" class="status"></span><div><b>已选择设备</b><small id="deviceDetail">等待选择</small></div></li><li><span id="boardStatus" class="status"></span><div><b>已确认板型</b><small id="boardDetail">完成探测后显示候选板型</small></div></li><li><span id="firmwareStatus" class="status"></span><div><b>已验证固件</b><small id="firmwareDetail">仅接受签名的官方 Release 资产</small></div></li></ul><button class="primary" id="probe" disabled>执行只读安全检查</button><p class="sub">正式刷写会重新验证包签名、芯片、分区、安全状态、读回哈希与启动协议。</p></aside></div>
-<section class="card" id="boardCard" hidden><div class="head"><div><p class="eyebrow">官方目录</p><h2>确认硬件并下载固件</h2></div><span class="sub" id="releaseSources">GitHub · Cloudflare R2 · 腾讯云 COS</span></div><div id="boards" class="boards"></div><label class="release-channel" for="releaseChannel"><span id="releaseChannelLabel">发布通道</span><select id="releaseChannel" aria-describedby="releaseChannelNote"><option value="stable">稳定版</option><option value="beta">Beta</option></select><small id="releaseChannelNote">稳定版为默认推荐；Beta 需要主动选择，仍会执行相同的签名和兼容性验证。</small></label><button class="primary" id="download" disabled>重新下载并验证官方固件</button><button id="import" disabled>导入已签名的离线 .clawfw 包</button><button class="primary" id="flash" disabled>开始安全刷写</button><button id="cancelFlash" hidden>停止并检查恢复状态</button><div class="notice warning" id="downloadNote">选择板型后会检测 GitHub、Cloudflare R2 与腾讯云 COS，自动选择最快的已验证下载节点，再验证对应 .clawfw 包的签名。也可通过系统文件选择器导入已签名的离线包；写入前会再次完整核验。</div></section>
-<section class="card logs"><div class="head"><div><p class="eyebrow">任务诊断</p><h2>详细日志</h2></div><span><button id="export" disabled>导出诊断包</button> <button id="clear">清空显示</button></span></div><div class="summary" id="summary">选择设备后执行只读 ROM 与安全状态检查。设备会自动重新扫描；任务日志会保存到本机，并进行脱敏与容量限制。</div><div id="transferProgress" class="transfer-progress" hidden aria-live="polite"><div class="transfer-progress-head"><strong id="transferProgressTitle">正在写入固件</strong><span id="transferProgressPercent">0%</span></div><div class="transfer-track" role="progressbar" aria-labelledby="transferProgressTitle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="transferProgressBar"></i></div><small id="transferProgressDetail">等待 Flash 引擎传输数据…</small></div><div class="logfilters" id="logfilters"><label id="logSeverityLabel">严重级别<select id="logSeverity"><option value="">全部</option><option value="error">错误</option><option value="warning">警告</option><option value="info">信息</option><option value="debug">调试</option></select></label><label id="logStageLabel">阶段<select id="logStage"><option value="">全部</option></select></label><label id="logComponentLabel">组件<select id="logComponent"><option value="">全部</option></select></label><label id="logCodeLabel">错误码 / 关键词<input id="logCode" type="search" autocomplete="off"></label></div><ol class="loglist" id="loglist"><li class="empty">尚无日志事件</li></ol></section></main>
+<section class="card" id="boardCard" hidden><div class="head"><div><p class="eyebrow">官方目录</p><h2>确认硬件并下载固件</h2></div><span class="sub" id="releaseSources">GitHub · Cloudflare R2 · 腾讯云 COS</span></div><div id="boards" class="boards"></div><label class="release-channel" for="releaseChannel"><span id="releaseChannelLabel">发布通道</span><select id="releaseChannel" aria-describedby="releaseChannelNote"><option value="stable">稳定版</option><option value="beta">Beta</option></select><small id="releaseChannelNote">稳定版为默认推荐；Beta 需要主动选择，仍会执行相同的签名和兼容性验证。</small></label><button class="primary" id="download" disabled aria-describedby="downloadNote">重新下载并验证官方固件</button><button id="import" disabled aria-describedby="downloadNote">导入已签名的离线 .clawfw 包</button><button class="primary" id="flash" disabled aria-describedby="downloadNote">开始安全刷写</button><button id="cancelFlash" hidden>停止并检查恢复状态</button><div class="notice warning" id="downloadNote" role="status" aria-live="polite" aria-atomic="true">选择板型后会检测 GitHub、Cloudflare R2 与腾讯云 COS，自动选择最快的已验证下载节点，再验证对应 .clawfw 包的签名。也可通过系统文件选择器导入已签名的离线包；写入前会再次完整核验。</div></section>
+<section class="card logs"><div class="head"><div><p class="eyebrow">任务诊断</p><h2>详细日志</h2></div><span><button id="export" disabled>导出诊断包</button> <button id="clear">清空显示</button></span></div><div class="summary" id="summary" role="status" aria-live="polite" aria-atomic="true">选择设备后执行只读 ROM 与安全状态检查。设备会自动重新扫描；任务日志会保存到本机，并进行脱敏与容量限制。</div><div id="transferProgress" class="transfer-progress" hidden aria-live="polite"><div class="transfer-progress-head"><strong id="transferProgressTitle">正在写入固件</strong><span id="transferProgressPercent">0%</span></div><div class="transfer-track" role="progressbar" aria-labelledby="transferProgressTitle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="transferProgressBar"></i></div><small id="transferProgressDetail">等待 Flash 引擎传输数据…</small></div><div class="logfilters" id="logfilters"><label id="logSeverityLabel">严重级别<select id="logSeverity"><option value="">全部</option><option value="error">错误</option><option value="warning">警告</option><option value="info">信息</option><option value="debug">调试</option></select></label><label id="logStageLabel">阶段<select id="logStage"><option value="">全部</option></select></label><label id="logComponentLabel">组件<select id="logComponent"><option value="">全部</option></select></label><label id="logCodeLabel">错误码 / 关键词<input id="logCode" type="search" autocomplete="off"></label></div><ol class="loglist" id="loglist"><li class="empty">尚无日志事件</li></ol></section></main>
 <script>
 (()=>{const locales={
-'zh-CN':{language:'显示语言',connecting:'正在连接桌面服务',tagline:'ESP32 固件安装与诊断',steps:['1 · 识别设备|自动发现 USB 串口','2 · 获取固件|从最快可信镜像下载','3 · 安全刷写|写入与读回校验','4 · 启动验证|确认设备就绪'],recoveryPriority:'恢复优先',recoveryTitle:'发现未验证的刷写任务',export:'导出诊断包',recoveryStart:'使用完整固件恢复',recoveryHint:'请保持设备连接，进入 ROM 下载模式后使用完整恢复包。普通刷写已被阻止。',connected:'当前连接',identify:'设备识别',rescan:'重新扫描',scanning:'正在扫描 USB 串口…',accessInitial:'读取 ROM 与 Flash 信息不会擦除、写入或修改设备。三种官方板卡均使用 ESP32‑S3，USB VID/PID 不是板型身份证明。',safety:'安全状态',readiness:'刷写准备度',deviceSelected:'已选择设备',waiting:'等待选择',boardConfirmed:'已确认板型',boardPending:'完成探测后显示候选板型',firmwareVerified:'已验证固件',firmwarePending:'仅接受签名的官方 Release 资产',probe:'执行只读安全检查',probeHint:'正式刷写会重新验证包签名、芯片、分区、安全状态、读回哈希与启动协议。',catalog:'官方目录',hardware:'确认硬件并下载固件',releaseSources:'GitHub · Cloudflare R2 · 腾讯云 COS',download:'重新下载并验证官方固件',import:'导入已签名的离线 .clawfw 包',flash:'开始安全刷写',downloadHint:'选择板型后会检测 GitHub、Cloudflare R2 与腾讯云 COS，自动选择最快的已验证下载节点，再验证对应 .clawfw 包的签名。也可通过系统文件选择器导入已签名的离线包；写入前会再次完整核验。',diagnostics:'任务诊断',logs:'详细日志',clear:'清空显示',summary:'选择设备后执行只读 ROM 与安全状态检查。设备会自动重新扫描；任务日志会保存到本机，并进行脱敏与容量限制。',noLogs:'尚无日志事件',noDevices:'未发现候选设备。请检查数据线、USB 口或串口驱动。',espCandidate:'ESP 候选',serialCandidate:'通用串口候选',firmwareReady:'官方固件已就绪',confirmationNeeded:'需确认板型',probeFailed:'只读探测失败',firmwareFailed:'固件下载或验签失败',recognizing:'正在识别',stateUpdated:'状态已更新',readOnlyChecking:'正在检查本机对 {port} 的只读串口访问…',readOnlyReady:'本机可以只读打开 {port}。ROM 探测仍会让设备短暂复位，但不会写入 Flash。',accessFailed:'无法完成本机串口访问检查：{error}',selected:'已选择 {port}，可运行只读 ROM 与 Flash 检查。',autoSelected:'已自动识别唯一候选 {port}，正在执行只读 ROM 与 Flash 检查。',downloadVerifying:'正在检测 GitHub、Cloudflare R2 与腾讯云 COS，并验证固件…',signed:'签名已验证',appOnly:'仅更新应用（保留用户数据）',full:'完整刷写（可能覆盖用户数据）',confirmBoard:'请先点击对应板型，确认设备实物标签后再刷写。',writing:'正在校验并写入；请勿断开设备。',flashDone:'刷写完成：已通过写后校验和 protocol:2 启动验证。',flashFailed:'刷写失败或启动未验证。请导出任务日志并按错误码排查。',confirmFlash:'将写入 {port}。\n\n模式：{mode}\n{recovery}\n\n请确认板型 {board} 正确，且刷写期间不要断开设备。',recoveryRisk:'若写入中断或启动未验证，必须进入 ROM 下载模式执行完整恢复。',confirmRecovery:'将以完整固件恢复 {port}。这可能覆盖用户数据。刷写期间不要断开设备。'},
-'zh-TW':{language:'顯示語言',connecting:'正在連線至桌面服務',tagline:'ESP32 韌體安裝與診斷',steps:['1 · 辨識裝置|自動尋找 USB 序列埠','2 · 取得韌體|從最快可信鏡像下載','3 · 安全燒錄|寫入與讀回驗證','4 · 啟動驗證|確認裝置已就緒'],recoveryPriority:'優先復原',recoveryTitle:'發現未驗證的燒錄工作',export:'匯出診斷套件',recoveryStart:'使用完整韌體復原',recoveryHint:'請保持裝置連線，進入 ROM 下載模式後使用完整復原套件。一般燒錄已被封鎖。',connected:'目前連線',identify:'裝置辨識',rescan:'重新掃描',scanning:'正在掃描 USB 序列埠…',accessInitial:'讀取 ROM 與 Flash 資訊不會清除、寫入或變更裝置。三種官方板卡均使用 ESP32‑S3，USB VID/PID 不是板型身分證明。',safety:'安全狀態',readiness:'燒錄準備度',deviceSelected:'已選擇裝置',waiting:'等待選擇',boardConfirmed:'已確認板型',boardPending:'完成探測後顯示候選板型',firmwareVerified:'已驗證韌體',firmwarePending:'只接受已簽署的官方 Release 資產',probe:'執行唯讀安全檢查',probeHint:'正式燒錄會重新驗證套件簽章、晶片、分割區、安全狀態、讀回雜湊與啟動協定。',catalog:'官方目錄',hardware:'確認硬體並下載韌體',releaseSources:'GitHub · Cloudflare R2 · 騰訊雲 COS',download:'重新下載並驗證官方韌體',import:'匯入已簽署的離線 .clawfw 套件',flash:'開始安全燒錄',downloadHint:'選擇板型後會檢測 GitHub、Cloudflare R2 與騰訊雲 COS，自動選擇最快的已驗證下載節點，再驗證對應 .clawfw 套件的簽章。也可透過系統檔案選擇器匯入已簽署的離線套件；寫入前會再次完整驗證。',diagnostics:'工作診斷',logs:'詳細日誌',clear:'清除顯示',summary:'選擇裝置後執行唯讀 ROM 與安全狀態檢查。裝置會自動重新掃描；工作日誌將儲存在本機，並進行脫敏與容量限制。',noLogs:'尚無日誌事件',noDevices:'未發現候選裝置。請檢查資料線、USB 連接埠或序列埠驅動程式。',espCandidate:'ESP 候選',serialCandidate:'通用序列埠候選',firmwareReady:'官方韌體已就緒',confirmationNeeded:'需要確認板型',probeFailed:'唯讀探測失敗',firmwareFailed:'韌體下載或驗簽失敗',recognizing:'正在辨識',stateUpdated:'狀態已更新',readOnlyChecking:'正在檢查本機對 {port} 的唯讀序列埠存取…',readOnlyReady:'本機可以唯讀開啟 {port}。ROM 探測仍會讓裝置短暫重設，但不會寫入 Flash。',accessFailed:'無法完成本機序列埠存取檢查：{error}',selected:'已選擇 {port}，可執行唯讀 ROM 與 Flash 檢查。',autoSelected:'已自動辨識唯一候選 {port}，正在執行唯讀 ROM 與 Flash 檢查。',downloadVerifying:'正在檢測 GitHub、Cloudflare R2 與騰訊雲 COS，並驗證韌體…',signed:'簽章已驗證',appOnly:'僅更新應用程式（保留使用者資料）',full:'完整燒錄（可能覆蓋使用者資料）',confirmBoard:'請先點選對應板型，確認裝置實體標籤後再燒錄。',writing:'正在驗證並寫入；請勿中斷裝置連線。',flashDone:'燒錄完成：已通過寫後驗證和 protocol:2 啟動驗證。',flashFailed:'燒錄失敗或啟動未驗證。請匯出工作日誌並依錯誤碼排查。',confirmFlash:'將寫入 {port}。\n\n模式：{mode}\n{recovery}\n\n請確認板型 {board} 正確，且燒錄期間不要中斷裝置連線。',recoveryRisk:'若寫入中斷或啟動未驗證，必須進入 ROM 下載模式進行完整復原。',confirmRecovery:'將以完整韌體復原 {port}。這可能覆蓋使用者資料。燒錄期間請勿中斷裝置連線。'},
-en:{language:'Display language',connecting:'Connecting to desktop service',tagline:'ESP32 firmware installation and diagnostics',steps:['1 · Identify device|Automatically discover USB serial ports','2 · Get firmware|Use the fastest trusted mirror','3 · Flash safely|Write and read-back verification','4 · Verify boot|Confirm the device is ready'],recoveryPriority:'Recovery first',recoveryTitle:'An unverified flash job was found',export:'Export diagnostics',recoveryStart:'Recover with full firmware',recoveryHint:'Keep the device connected. Enter ROM download mode, then use a full recovery package. Normal flashing is blocked.',connected:'Current connection',identify:'Device identification',rescan:'Rescan',scanning:'Scanning USB serial ports…',accessInitial:'Reading ROM and Flash information never erases, writes, or changes the device. All three official boards use ESP32‑S3; USB VID/PID does not prove the board type.',safety:'Safety status',readiness:'Flash readiness',deviceSelected:'Selected device',waiting:'Waiting for selection',boardConfirmed:'Confirmed board',boardPending:'Candidate boards appear after probing',firmwareVerified:'Verified firmware',firmwarePending:'Only signed official Release assets are accepted',probe:'Run read-only safety check',probeHint:'Before flashing, the package signature, chip, partitions, security state, read-back hash, and boot protocol are verified again.',catalog:'Official catalog',hardware:'Confirm hardware and download firmware',releaseSources:'GitHub · Cloudflare R2 · Tencent COS',download:'Download and verify official firmware again',import:'Import signed offline .clawfw package',flash:'Start safe flash',downloadHint:'After choosing a board, ClawMate Maker checks GitHub, Cloudflare R2, and Tencent COS, selects the fastest verified download node, then verifies the matching .clawfw package signature. You can also import a signed offline package through the system file picker; it is verified again before writing.',diagnostics:'Job diagnostics',logs:'Detailed logs',clear:'Clear display',summary:'Choose a device, then run the read-only ROM and security-state check. Devices are rescanned automatically; job logs stay local and are redacted and size-limited.',noLogs:'No log events yet',noDevices:'No candidate devices found. Check the data cable, USB port, or serial driver.',espCandidate:'ESP candidate',serialCandidate:'Generic serial candidate',firmwareReady:'Official firmware ready',confirmationNeeded:'Board confirmation required',probeFailed:'Read-only probe failed',firmwareFailed:'Firmware download or signature verification failed',recognizing:'Identifying',stateUpdated:'Status updated',readOnlyChecking:'Checking read-only serial access to {port}…',readOnlyReady:'This computer can open {port} read-only. ROM probing briefly resets the device but never writes Flash.',accessFailed:'Could not check local serial access: {error}',selected:'Selected {port}. You can run the read-only ROM and Flash check.',autoSelected:'Automatically identified the only candidate, {port}; running the read-only ROM and Flash check.',downloadVerifying:'Checking GitHub, Cloudflare R2, and Tencent COS, then verifying firmware…',signed:'Signature verified',appOnly:'Application update only (keeps user data)',full:'Full flash (may overwrite user data)',confirmBoard:'Select the matching board and confirm its physical label before flashing.',writing:'Verifying and writing; do not disconnect the device.',flashDone:'Flashing complete: write-back and protocol:2 boot verification passed.',flashFailed:'Flashing failed or boot was not verified. Export job logs and investigate with the error code.',confirmFlash:'{port} will be written.\n\nMode: {mode}\n{recovery}\n\nConfirm that board {board} is correct and do not disconnect the device during flashing.',recoveryRisk:'If writing is interrupted or boot is not verified, enter ROM download mode and run a full recovery.',confirmRecovery:'{port} will be recovered with full firmware. This may overwrite user data.'}};
+'zh-CN':{language:'显示语言',connecting:'正在连接桌面服务',tagline:'ESP32 固件安装与诊断',steps:['1 · 识别设备|自动发现 USB 串口','2 · 获取固件|从最快可信镜像下载','3 · 安全刷写|写入与读回校验','4 · 启动验证|确认设备就绪'],recoveryPriority:'恢复优先',recoveryTitle:'发现未验证的刷写任务',export:'导出诊断包',recoveryStart:'使用完整固件恢复',recoveryHint:'请保持设备连接，进入 ROM 下载模式后使用完整恢复包。普通刷写已被阻止。',connected:'当前连接',identify:'设备识别',rescan:'重新扫描',scanning:'正在扫描 USB 串口…',accessInitial:'读取 ROM 与 Flash 信息不会擦除、写入或修改设备。四种官方板卡均使用 ESP32‑S3；其中 Waveshare S3 Touch AMOLED 1.75C 为 32 MiB。USB VID/PID 不是板型身份证明。',safety:'安全状态',readiness:'刷写准备度',deviceSelected:'已选择设备',waiting:'等待选择',boardConfirmed:'已确认板型',boardPending:'完成探测后显示候选板型',firmwareVerified:'已验证固件',firmwarePending:'仅接受签名的官方 Release 资产',probe:'执行只读安全检查',probeHint:'正式刷写会重新验证包签名、芯片、分区、安全状态、读回哈希与启动协议。',catalog:'官方目录',hardware:'确认硬件并下载固件',releaseSources:'GitHub · Cloudflare R2 · 腾讯云 COS',download:'重新下载并验证官方固件',import:'导入已签名的离线 .clawfw 包',flash:'开始安全刷写',downloadHint:'选择板型后会检测 GitHub、Cloudflare R2 与腾讯云 COS，自动选择最快的已验证下载节点，再验证对应 .clawfw 包的签名。也可通过系统文件选择器导入已签名的离线包；写入前会再次完整核验。',diagnostics:'任务诊断',logs:'详细日志',clear:'清空显示',summary:'选择设备后执行只读 ROM 与安全状态检查。设备会自动重新扫描；任务日志会保存到本机，并进行脱敏与容量限制。',noLogs:'尚无日志事件',noDevices:'未发现候选设备。请检查数据线、USB 口或串口驱动。',espCandidate:'ESP 候选',serialCandidate:'通用串口候选',firmwareReady:'官方固件已就绪',confirmationNeeded:'需确认板型',probeFailed:'只读探测失败',firmwareFailed:'固件下载或验签失败',recognizing:'正在识别',stateUpdated:'状态已更新',readOnlyChecking:'正在检查本机对 {port} 的只读串口访问…',readOnlyReady:'本机可以只读打开 {port}。ROM 探测仍会让设备短暂复位，但不会写入 Flash。',accessFailed:'无法完成本机串口访问检查：{error}',selected:'已选择 {port}，可运行只读 ROM 与 Flash 检查。',autoSelected:'已自动识别唯一候选 {port}，正在执行只读 ROM 与 Flash 检查。',downloadVerifying:'正在检测 GitHub、Cloudflare R2 与腾讯云 COS，并验证固件…',signed:'签名已验证',appOnly:'仅更新应用（保留用户数据）',full:'完整刷写（可能覆盖用户数据）',confirmBoard:'请先点击对应板型，确认设备实物标签后再刷写。',writing:'正在校验并写入；请勿断开设备。',flashDone:'刷写完成：已通过写后校验和 protocol:2 启动验证。',flashFailed:'刷写失败或启动未验证。请导出任务日志并按错误码排查。',confirmFlash:'将写入 {port}。\n\n模式：{mode}\n{recovery}\n\n请确认板型 {board} 正确，且刷写期间不要断开设备。',recoveryRisk:'若写入中断或启动未验证，必须进入 ROM 下载模式执行完整恢复。',confirmRecovery:'将以完整固件恢复 {port}。这可能覆盖用户数据。刷写期间不要断开设备。'},
+'zh-TW':{language:'顯示語言',connecting:'正在連線至桌面服務',tagline:'ESP32 韌體安裝與診斷',steps:['1 · 辨識裝置|自動尋找 USB 序列埠','2 · 取得韌體|從最快可信鏡像下載','3 · 安全燒錄|寫入與讀回驗證','4 · 啟動驗證|確認裝置已就緒'],recoveryPriority:'優先復原',recoveryTitle:'發現未驗證的燒錄工作',export:'匯出診斷套件',recoveryStart:'使用完整韌體復原',recoveryHint:'請保持裝置連線，進入 ROM 下載模式後使用完整復原套件。一般燒錄已被封鎖。',connected:'目前連線',identify:'裝置辨識',rescan:'重新掃描',scanning:'正在掃描 USB 序列埠…',accessInitial:'讀取 ROM 與 Flash 資訊不會清除、寫入或變更裝置。四種官方板卡均使用 ESP32‑S3；其中 Waveshare S3 Touch AMOLED 1.75C 為 32 MiB。USB VID/PID 不是板型身分證明。',safety:'安全狀態',readiness:'燒錄準備度',deviceSelected:'已選擇裝置',waiting:'等待選擇',boardConfirmed:'已確認板型',boardPending:'完成探測後顯示候選板型',firmwareVerified:'已驗證韌體',firmwarePending:'只接受已簽署的官方 Release 資產',probe:'執行唯讀安全檢查',probeHint:'正式燒錄會重新驗證套件簽章、晶片、分割區、安全狀態、讀回雜湊與啟動協定。',catalog:'官方目錄',hardware:'確認硬體並下載韌體',releaseSources:'GitHub · Cloudflare R2 · 騰訊雲 COS',download:'重新下載並驗證官方韌體',import:'匯入已簽署的離線 .clawfw 套件',flash:'開始安全燒錄',downloadHint:'選擇板型後會檢測 GitHub、Cloudflare R2 與騰訊雲 COS，自動選擇最快的已驗證下載節點，再驗證對應 .clawfw 套件的簽章。也可透過系統檔案選擇器匯入已簽署的離線套件；寫入前會再次完整驗證。',diagnostics:'工作診斷',logs:'詳細日誌',clear:'清除顯示',summary:'選擇裝置後執行唯讀 ROM 與安全狀態檢查。裝置會自動重新掃描；工作日誌將儲存在本機，並進行脫敏與容量限制。',noLogs:'尚無日誌事件',noDevices:'未發現候選裝置。請檢查資料線、USB 連接埠或序列埠驅動程式。',espCandidate:'ESP 候選',serialCandidate:'通用序列埠候選',firmwareReady:'官方韌體已就緒',confirmationNeeded:'需要確認板型',probeFailed:'唯讀探測失敗',firmwareFailed:'韌體下載或驗簽失敗',recognizing:'正在辨識',stateUpdated:'狀態已更新',readOnlyChecking:'正在檢查本機對 {port} 的唯讀序列埠存取…',readOnlyReady:'本機可以唯讀開啟 {port}。ROM 探測仍會讓裝置短暫重設，但不會寫入 Flash。',accessFailed:'無法完成本機序列埠存取檢查：{error}',selected:'已選擇 {port}，可執行唯讀 ROM 與 Flash 檢查。',autoSelected:'已自動辨識唯一候選 {port}，正在執行唯讀 ROM 與 Flash 檢查。',downloadVerifying:'正在檢測 GitHub、Cloudflare R2 與騰訊雲 COS，並驗證韌體…',signed:'簽章已驗證',appOnly:'僅更新應用程式（保留使用者資料）',full:'完整燒錄（可能覆蓋使用者資料）',confirmBoard:'請先點選對應板型，確認裝置實體標籤後再燒錄。',writing:'正在驗證並寫入；請勿中斷裝置連線。',flashDone:'燒錄完成：已通過寫後驗證和 protocol:2 啟動驗證。',flashFailed:'燒錄失敗或啟動未驗證。請匯出工作日誌並依錯誤碼排查。',confirmFlash:'將寫入 {port}。\n\n模式：{mode}\n{recovery}\n\n請確認板型 {board} 正確，且燒錄期間不要中斷裝置連線。',recoveryRisk:'若寫入中斷或啟動未驗證，必須進入 ROM 下載模式進行完整復原。',confirmRecovery:'將以完整韌體復原 {port}。這可能覆蓋使用者資料。燒錄期間請勿中斷裝置連線。'},
+en:{language:'Display language',connecting:'Connecting to desktop service',tagline:'ESP32 firmware installation and diagnostics',steps:['1 · Identify device|Automatically discover USB serial ports','2 · Get firmware|Use the fastest trusted mirror','3 · Flash safely|Write and read-back verification','4 · Verify boot|Confirm the device is ready'],recoveryPriority:'Recovery first',recoveryTitle:'An unverified flash job was found',export:'Export diagnostics',recoveryStart:'Recover with full firmware',recoveryHint:'Keep the device connected. Enter ROM download mode, then use a full recovery package. Normal flashing is blocked.',connected:'Current connection',identify:'Device identification',rescan:'Rescan',scanning:'Scanning USB serial ports…',accessInitial:'Reading ROM and Flash information never erases, writes, or changes the device. All four official boards use ESP32‑S3; Waveshare S3 Touch AMOLED 1.75C uses 32 MiB. USB VID/PID does not prove the board type.',safety:'Safety status',readiness:'Flash readiness',deviceSelected:'Selected device',waiting:'Waiting for selection',boardConfirmed:'Confirmed board',boardPending:'Candidate boards appear after probing',firmwareVerified:'Verified firmware',firmwarePending:'Only signed official Release assets are accepted',probe:'Run read-only safety check',probeHint:'Before flashing, the package signature, chip, partitions, security state, read-back hash, and boot protocol are verified again.',catalog:'Official catalog',hardware:'Confirm hardware and download firmware',releaseSources:'GitHub · Cloudflare R2 · Tencent COS',download:'Download and verify official firmware again',import:'Import signed offline .clawfw package',flash:'Start safe flash',downloadHint:'After choosing a board, ClawMate Maker checks GitHub, Cloudflare R2, and Tencent COS, selects the fastest verified download node, then verifies the matching .clawfw package signature. You can also import a signed offline package through the system file picker; it is verified again before writing.',diagnostics:'Job diagnostics',logs:'Detailed logs',clear:'Clear display',summary:'Choose a device, then run the read-only ROM and security-state check. Devices are rescanned automatically; job logs stay local and are redacted and size-limited.',noLogs:'No log events yet',noDevices:'No candidate devices found. Check the data cable, USB port, or serial driver.',espCandidate:'ESP candidate',serialCandidate:'Generic serial candidate',firmwareReady:'Official firmware ready',confirmationNeeded:'Board confirmation required',probeFailed:'Read-only probe failed',firmwareFailed:'Firmware download or signature verification failed',recognizing:'Identifying',stateUpdated:'Status updated',readOnlyChecking:'Checking read-only serial access to {port}…',readOnlyReady:'This computer can open {port} read-only. ROM probing briefly resets the device but never writes Flash.',accessFailed:'Could not check local serial access: {error}',selected:'Selected {port}. You can run the read-only ROM and Flash check.',autoSelected:'Automatically identified the only candidate, {port}; running the read-only ROM and Flash check.',downloadVerifying:'Checking GitHub, Cloudflare R2, and Tencent COS, then verifying firmware…',signed:'Signature verified',appOnly:'Application update only (keeps user data)',full:'Full flash (may overwrite user data)',confirmBoard:'Select the matching board and confirm its physical label before flashing.',writing:'Verifying and writing; do not disconnect the device.',flashDone:'Flashing complete: write-back and protocol:2 boot verification passed.',flashFailed:'Flashing failed or boot was not verified. Export job logs and investigate with the error code.',confirmFlash:'{port} will be written.\n\nMode: {mode}\n{recovery}\n\nConfirm that board {board} is correct and do not disconnect the device during flashing.',recoveryRisk:'If writing is interrupted or boot is not verified, enter ROM download mode and run a full recovery.',confirmRecovery:'{port} will be recovered with full firmware. This may overwrite user data.'}};
 const runtimeText={
 'zh-CN':{boardRuntimeReported:'运行中 {source} 固件报告目标为 {board}；仍须点击该板型确认实物后才可刷写。',boardConfirmedExact:'已确认 {board}；只获取精确匹配的 Release 资产。',recoveryPending:'恢复任务待处理：请获取已验证的完整固件包，普通刷写仍被阻止。',boardAutoDownloading:'已从运行中的 {source} 固件识别目标，正在自动下载并验证对应官方包；请随后确认设备标签。',boardManualDownloading:'已确认板型。正在从官方 Release 下载并验证固件。',boardSpecificConfirmation:'ESP32‑S3 已识别，但必须确认具体板型。',boardUnknown:'无法唯一识别板型，请核对设备标签后选择。',autoFirmwareReady:'已为 {port} 自动下载并验证 {asset}。请确认设备实物标签后再刷写。',autoDetectIncomplete:'自动识别尚未完成。',retryOrLogs:'可选择该设备后重试或查看详细日志。',desktopUnavailable:'桌面服务尚未连接',developerBuild:'开发构建：仅限本机工具探测',officialBuild:'官方安装构建',deviceDisconnected:'已选设备已断开；请重新选择。',preparationCancelled:'检测到已选设备断开，已取消刷写准备状态。',multipleDevices:'发现多个 USB/ESP 候选设备。请选择目标设备后再执行只读检查。',scanFailed:'扫描失败：{error}',autoDetecting:'正在自动识别 USB 设备、读取 ROM 信息，并准备匹配的官方固件…',autoDetectBatch:'已完成 {probed} 个设备的只读识别，其中 {ready} 个已准备官方固件。请确认实物板型后继续。',autoDetectLog:'已逐一检查 {count} 个 USB/ESP 候选设备，其中 {ready} 个已准备官方固件。',autoFirmwarePrepared:'已根据 nonce-bound 设备身份准备 {asset}',confirmBoardDownload:'请确认板型后下载固件。',autoProbeIncomplete:'自动探测未完成：{reason}',autoFirmwareFailed:'设备已识别，但自动下载或验签失败：{reason}。可确认板型后重试。',unknownError:'未知错误',checkAccess:'请检查设备是否处于可访问状态。',autoDetectFailed:'自动识别失败：{error}',automaticPrefix:'自动',probeStarted:'{automatic}开始只读检查 {port}',chipIdentified:'芯片已识别',probeSucceeded:'{chip} · {flash} MiB Flash。只读检查完成。',probeIncomplete:'检查未完成：{reason}',probeCollected:'ROM 与 Flash 信息已采集',boardAutoMatched:'{source} 运行时身份匹配 {board}；开始下载官方固件。',downloadStarted:'正在获取 {asset}',firmwareVerifiedDetail:'{release} · {mode} · 签名已验证',downloadVerified:'已验证 {asset}。{mode}{recovery}',usableForRecovery:'；可用于完整恢复。',fullPackageRequired:'；恢复必须使用完整包，当前包不可用。',readyToFlash:'；已确认板型，可开始安全刷写。',confirmPhysicalBoard:'；请点击对应板型，确认实物标签后再开始刷写。',offlineVerifiedDetail:'离线包 · {mode} · 签名已验证',offlineVerified:'已验证离线包 {asset}。{mode}{recovery}',unverifiedWritePending:'存在未验证的写入任务；请先导出诊断并执行完整恢复。',flashStarted:'开始安全刷写 {port} · {mode}',flashIncomplete:'刷写未完成',flashLogSucceeded:'写入 {count} 个镜像，设备已验证启动。',recoveryNeedsSetup:'恢复需先重新识别设备、确认板型并下载或导入已验证的完整固件。',recoveryFullOnly:'恢复只能使用完整固件包；当前包为仅更新应用，不能恢复。',recoveryStarted:'开始完整 ROM 恢复 {port}',recoveryIncomplete:'恢复未完成',recoveryLogSucceeded:'设备已验证启动，恢复阻断已解除。',logReplayFailed:'无法重新读取已保存日志：{error}',restoredRunning:'已恢复进行中的任务状态；正在重新连接详细日志。',restoredFailed:'上一次任务未完成：{code}。可导出脱敏诊断包排查。',restoredSucceeded:'已恢复上一次成功任务的详细日志。',jobRestoreFailed:'无法恢复上一次任务状态：{error}',diagnosticsExported:'诊断包已导出：{path}',diagnosticsExportedLog:'已导出 {bytes} 字节的脱敏诊断包。',unknown:'未知',recoveryDetail:'任务 {job} 未达到已验证启动状态{critical}。请导出脱敏诊断包，在 ROM 下载模式下重新识别设备后，选择相同板型并下载或导入完整固件恢复。',bootCriticalSuffix:'，且已触及启动关键区域',recoveryBlocked:'检测到未完成刷写；普通刷写已阻止。完成验证的完整恢复后才会解除阻断。',downloadFailed:'下载、签名或刷写模式验证失败',offlineVerifying:'请选择并验证已签名的离线 .clawfw 包…',offlineFailed:'离线包取消、签名、板型或刷写模式验证失败',recovering:'正在执行完整恢复与启动验证；请勿断开设备。',recoveryDone:'完整恢复完成：已通过写后校验与启动验证。',recoveryFailed:'恢复未完成。请导出任务日志并保持设备在 ROM 下载模式。'},
 'zh-TW':{boardRuntimeReported:'執行中的 {source} 韌體回報目標為 {board}；仍須點選該板型確認實體標籤後才能燒錄。',boardConfirmedExact:'已確認 {board}；只取得精確符合的 Release 資產。',recoveryPending:'復原工作待處理：請取得已驗證的完整韌體套件，一般燒錄仍被封鎖。',boardAutoDownloading:'已從執行中的 {source} 韌體辨識目標，正在自動下載並驗證對應官方套件；請接著確認裝置標籤。',boardManualDownloading:'已確認板型。正在從官方 Release 下載並驗證韌體。',boardSpecificConfirmation:'已辨識 ESP32‑S3，但必須確認具體板型。',boardUnknown:'無法唯一辨識板型，請核對裝置標籤後選擇。',autoFirmwareReady:'已為 {port} 自動下載並驗證 {asset}。請確認裝置實體標籤後再燒錄。',autoDetectIncomplete:'自動辨識尚未完成。',retryOrLogs:'可選擇該裝置後重試或查看詳細日誌。',desktopUnavailable:'桌面服務尚未連線',deviceDisconnected:'已選裝置已中斷連線；請重新選擇。',preparationCancelled:'偵測到已選裝置中斷連線，已取消燒錄準備狀態。',multipleDevices:'發現多個 USB/ESP 候選裝置。請選擇目標裝置後再執行唯讀檢查。',scanFailed:'掃描失敗：{error}',autoDetecting:'正在自動辨識 USB 裝置、讀取 ROM 資訊，並準備符合的官方韌體…',autoDetectBatch:'已完成 {probed} 個裝置的唯讀辨識，其中 {ready} 個已準備官方韌體。請確認實體板型後繼續。',autoDetectLog:'已逐一檢查 {count} 個 USB/ESP 候選裝置，其中 {ready} 個已準備官方韌體。',autoFirmwarePrepared:'已根據 nonce-bound 裝置身分準備 {asset}',confirmBoardDownload:'請確認板型後下載韌體。',autoProbeIncomplete:'自動探測未完成：{reason}',autoFirmwareFailed:'裝置已辨識，但自動下載或驗簽失敗：{reason}。可確認板型後重試。',unknownError:'未知錯誤',checkAccess:'請檢查裝置是否處於可存取狀態。',autoDetectFailed:'自動辨識失敗：{error}',automaticPrefix:'自動',probeStarted:'{automatic}開始唯讀檢查 {port}',chipIdentified:'晶片已辨識',probeSucceeded:'{chip} · {flash} MiB Flash。唯讀檢查完成。',probeIncomplete:'檢查未完成：{reason}',probeCollected:'已擷取 ROM 與 Flash 資訊',boardAutoMatched:'{source} 執行階段身分符合 {board}；開始下載官方韌體。',downloadStarted:'正在取得 {asset}',firmwareVerifiedDetail:'{release} · {mode} · 簽章已驗證',downloadVerified:'已驗證 {asset}。{mode}{recovery}',usableForRecovery:'；可用於完整復原。',fullPackageRequired:'；復原必須使用完整套件，目前套件不可用。',readyToFlash:'；板型已確認，可開始安全燒錄。',confirmPhysicalBoard:'；請點選對應板型，確認實體標籤後再開始燒錄。',offlineVerifiedDetail:'離線套件 · {mode} · 簽章已驗證',offlineVerified:'已驗證離線套件 {asset}。{mode}{recovery}',unverifiedWritePending:'存在未驗證的寫入工作；請先匯出診斷並執行完整復原。',flashStarted:'開始安全燒錄 {port} · {mode}',flashIncomplete:'燒錄未完成',flashLogSucceeded:'已寫入 {count} 個映像檔，裝置已驗證啟動。',recoveryNeedsSetup:'復原前需重新辨識裝置、確認板型，並下載或匯入已驗證的完整韌體。',recoveryFullOnly:'復原只能使用完整韌體套件；目前套件僅更新應用程式，無法復原。',recoveryStarted:'開始完整 ROM 復原 {port}',recoveryIncomplete:'復原未完成',recoveryLogSucceeded:'裝置已驗證啟動，復原封鎖已解除。',logReplayFailed:'無法重新讀取已儲存日誌：{error}',restoredRunning:'已恢復進行中的工作狀態；正在重新連接詳細日誌。',restoredFailed:'上一次工作未完成：{code}。可匯出脫敏診斷套件排查。',restoredSucceeded:'已恢復上一次成功工作的詳細日誌。',jobRestoreFailed:'無法恢復上一次工作狀態：{error}',diagnosticsExported:'診斷套件已匯出：{path}',diagnosticsExportedLog:'已匯出 {bytes} 位元組的脫敏診斷套件。',unknown:'未知',recoveryDetail:'工作 {job} 未達到已驗證啟動狀態{critical}。請匯出脫敏診斷套件，在 ROM 下載模式下重新辨識裝置後，選擇相同板型並下載或匯入完整韌體復原。',bootCriticalSuffix:'，且已觸及啟動關鍵區域',recoveryBlocked:'偵測到未完成燒錄；一般燒錄已封鎖。完成驗證的完整復原後才會解除封鎖。',downloadFailed:'下載、簽章或燒錄模式驗證失敗',offlineVerifying:'請選擇並驗證已簽署的離線 .clawfw 套件…',offlineFailed:'離線套件取消、簽章、板型或燒錄模式驗證失敗',recovering:'正在執行完整復原與啟動驗證；請勿中斷裝置連線。',recoveryDone:'完整復原完成：已通過寫後驗證與啟動驗證。',recoveryFailed:'復原未完成。請匯出工作日誌並保持裝置在 ROM 下載模式。'},
@@ -202,63 +240,136 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
    verified package integer, and changes display copy only—never write rights. */
 (()=>{const install=()=>{const app=window.go?.main?.App;if(!app?.ProbeDevice||!app?.CompareFirmwareVersions||app.ProbeDevice.__versionCheck)return false;const probe=app.ProbeDevice;app.ProbeDevice=(port,...args)=>Promise.resolve(probe(port,...args)).then(result=>{globalThis.__clawMateInstalledVersion={port:String(port||''),version:Number(result?.appIdentity?.firmwareVersion)||0};return result});for(const name of ['GetLatestFirmware','GetLatestFirmwareForChannel','ImportFirmwarePackage','ImportFirmwarePackageForChannel']){if(typeof app[name]!=='function')continue;const original=app[name];app[name]=(...args)=>Promise.resolve(original(...args)).then(async release=>{if(!release||!(Number(release.firmwareVersion)>0))return release;let update={installedVersion:globalThis.__clawMateInstalledVersion?.version||0,availableVersion:Number(release.firmwareVersion),status:'unknown'};try{update=await app.CompareFirmwareVersions(update.installedVersion,update.availableVersion)}catch(_){}release.update=update;setTimeout(()=>{if(typeof firmwareUpdateText!=='function')return;const text=firmwareUpdateText(update),detail=document.querySelector('#firmwareDetail'),summary=document.querySelector('#summary');if(detail&&detail.classList.contains('ok')&&!detail.textContent.includes(text))detail.textContent+=' · '+text;if(summary&&!summary.textContent.includes(text))summary.textContent+=' '+text},0);return release})}app.ProbeDevice.__versionCheck=true;return true};let tries=0;const wait=()=>{if(!install()&&tries++<40)setTimeout(wait,100)};wait()})();
 </script><script>
-/* port-first-auto-match: selecting a serial port is enough. The UI never asks
-   the user to choose among board profiles; only a unique nonce-bound identity
-   can select an official package. */
+/* Port-first auto-match is the sole authority for the selected port:
+   one serial port → one read-only identity → one immutable firmware result. */
 (()=>{
   const copy={
-    'zh-CN':{catalog:'自动匹配的官方固件',hint:'选择端口后自动识别硬件并匹配唯一的官方固件；无法唯一识别时会安全阻止刷写。',detecting:'正在识别硬件并匹配官方固件…',detected:'已自动识别 {board}，并匹配官方固件。',ready:'硬件与签名固件已自动匹配。开始刷写时会再次请你确认识别结果。',finalConfirm:'即将为 {port} 刷写自动识别的 {board} 固件。请确认设备实物与识别结果一致。',confirming:'正在创建本次刷写的一次性安全确认…',confirmed:'已确认自动识别的 {board}，正在开始安全刷写。',blocked:'无法唯一识别此设备的硬件型号，已阻止刷写。请检查设备连接并重新识别。',confirmationFailed:'自动识别成功，但写入前安全确认未完成。请重新识别设备。',selected:'已选择 {port}，正在自动识别硬件。'},
-    'zh-TW':{catalog:'自動配對的官方韌體',hint:'選擇連接埠後會自動辨識硬體並配對唯一官方韌體；無法唯一辨識時會安全封鎖燒錄。',detecting:'正在辨識硬體並配對官方韌體…',detected:'已自動辨識 {board}，並配對官方韌體。',ready:'硬體與已簽署韌體已自動配對。開始燒錄時會再次請你確認辨識結果。',finalConfirm:'即將為 {port} 燒錄自動辨識的 {board} 韌體。請確認裝置實體與辨識結果一致。',confirming:'正在建立本次燒錄的一次性安全確認…',confirmed:'已確認自動辨識的 {board}，正在開始安全燒錄。',blocked:'無法唯一辨識此裝置的硬體型號，已封鎖燒錄。請檢查裝置連線後重新辨識。',confirmationFailed:'自動辨識成功，但燒錄前安全確認未完成。請重新辨識裝置。',selected:'已選擇 {port}，正在自動辨識硬體。'},
-    en:{catalog:'Automatically matched official firmware',hint:'Selecting a port automatically identifies the hardware and matches the one official firmware package. Flashing stays blocked if identity is not unique.',detecting:'Identifying hardware and matching official firmware…',detected:'Automatically identified {board} and matched its official firmware.',ready:'Hardware and signed firmware are automatically matched. You will confirm the detected result once more when flashing starts.',finalConfirm:'{port} will be flashed with firmware automatically matched to {board}. Confirm the physical device matches this result.',confirming:'Creating the one-time safety confirmation for this flash…',confirmed:'Confirmed automatically detected {board}; starting safe flash.',blocked:'The hardware model could not be identified uniquely, so flashing is blocked. Check the connection and identify the device again.',confirmationFailed:'Hardware was identified, but the pre-write safety confirmation did not complete. Identify the device again.',selected:'Selected {port}; identifying hardware automatically.'}
+    'zh-CN':{catalog:'已匹配的官方固件',hint:'选择端口后会自动识别硬件，并只显示这一台设备可安全使用的官方固件。',detecting:'正在识别硬件并匹配官方固件…',detected:'已识别 {board}，并匹配其官方固件。',ready:'硬件和签名固件已匹配。开始刷写时会再次确认识别结果。',refresh:'重新获取固件',offline:'改用离线固件',retryHint:'当前官方包未就绪。可重新获取官方固件或改用已签名的离线包；刷写仍被安全阻止。',packageInvalid:'已获取的固件包无效，未写入设备。请重新获取官方固件；若问题持续，请导出诊断包。',finalConfirm:'即将为 {port} 刷写自动识别的 {board} 固件。请确认设备实物与识别结果一致。',confirming:'正在创建本次刷写的一次性安全确认…',confirmed:'已确认 {board}，正在开始安全刷写。',blocked:'无法唯一识别此设备的硬件型号，已阻止刷写。请检查连接后重新识别。',confirmationFailed:'硬件已识别，但写入前安全确认未完成。请重新识别设备。',selected:'已选择 {port}，正在自动识别硬件。',legacyProtocol:'设备正在运行旧版 protocol:1 固件，尚不能安全自动匹配。请先升级到支持 protocol:2 的官方固件，或联系支持人员执行受控恢复。',identityRequired:'设备未返回本次连接所需的 protocol:2 运行时身份。为避免刷写前后状态不一致，未选择或下载固件；请确认设备已正常启动后重新识别。',recoveryCatalog:'恢复：确认实物板型',recoveryBoardHint:'设备无法提供可用于自动匹配的运行时身份。仅为完整 ROM 恢复，请根据设备实物标签确认板型；仍会严格校验 ESP32‑S3 与 Flash 容量。'},
+    'zh-TW':{catalog:'已配對的官方韌體',hint:'選擇連接埠後會自動辨識硬體，並只顯示這台裝置可安全使用的官方韌體。',detecting:'正在辨識硬體並配對官方韌體…',detected:'已辨識 {board}，並配對其官方韌體。',ready:'硬體和已簽署韌體已配對。開始燒錄時會再次確認辨識結果。',refresh:'重新取得韌體',offline:'改用離線韌體',retryHint:'目前官方套件尚未就緒。可重新取得官方韌體或改用已簽署的離線套件；燒錄仍會安全封鎖。',packageInvalid:'已取得的韌體套件無效，未寫入裝置。請重新取得官方韌體；若問題持續，請匯出診斷套件。',finalConfirm:'即將為 {port} 燒錄自動辨識的 {board} 韌體。請確認裝置實體與辨識結果一致。',confirming:'正在建立本次燒錄的一次性安全確認…',confirmed:'已確認 {board}，正在開始安全燒錄。',blocked:'無法唯一辨識此裝置的硬體型號，已封鎖燒錄。請檢查連線後重新辨識。',confirmationFailed:'硬體已辨識，但燒錄前安全確認未完成。請重新辨識裝置。',selected:'已選擇 {port}，正在自動辨識硬體。',legacyProtocol:'裝置正在執行舊版 protocol:1 韌體，尚不能安全自動配對。請先升級至支援 protocol:2 的官方韌體，或聯絡支援人員執行受控復原。',identityRequired:'裝置未回傳本次連線所需的 protocol:2 執行中身分。為避免燒錄前後狀態不一致，未選擇或下載韌體；請確認裝置已正常啟動後重新辨識。',recoveryCatalog:'復原：確認實體板型',recoveryBoardHint:'裝置無法提供可用於自動配對的執行中身分。僅為完整 ROM 復原，請依裝置實體標籤確認板型；仍會嚴格驗證 ESP32‑S3 與 Flash 容量。'},
+    en:{catalog:'Matched official firmware',hint:'After you select a port, hardware is identified automatically and only the official firmware safe for this device is shown.',detecting:'Identifying hardware and matching official firmware…',detected:'Identified {board} and matched its official firmware.',ready:'Hardware and signed firmware are matched. You will confirm the result once more when flashing starts.',refresh:'Get firmware again',offline:'Use offline firmware',retryHint:'The official package is not ready. Get it again or use a signed offline package; flashing remains safely blocked.',packageInvalid:'The retrieved firmware package is invalid; nothing was written to the device. Get the official firmware again, and export diagnostics if the problem continues.',finalConfirm:'{port} will be flashed with the firmware automatically matched to {board}. Confirm the physical device matches this result.',confirming:'Creating the one-time safety confirmation for this flash…',confirmed:'Confirmed {board}; starting safe flash.',blocked:'The hardware model could not be identified uniquely, so flashing is blocked. Check the connection and identify the device again.',confirmationFailed:'Hardware was identified, but the pre-write safety confirmation did not complete. Identify the device again.',selected:'Selected {port}; identifying hardware automatically.',legacyProtocol:'This device is running legacy protocol:1 firmware and cannot be matched safely yet. Upgrade it to official protocol:2 firmware first, or contact support for a controlled recovery.',identityRequired:'The device did not return the protocol:2 runtime identity required for this connection. No firmware was selected or downloaded, preventing a later pre-write mismatch. Confirm that the device boots normally, then identify it again.',recoveryCatalog:'Recovery: confirm the physical board',recoveryBoardHint:'The device cannot provide runtime identity for automatic matching. Only for full ROM recovery, confirm the board from its physical label; ESP32‑S3 and exact Flash capacity remain strict checks.'}
   };
   const text=(key,args={})=>String((copy[language]||copy['zh-CN'])[key]||key).replace(/\{(\w+)\}/g,(_,name)=>args[name]??'');
+  let activePort='',identifyGeneration=0;
+  const isCurrentPort=(port,generation)=>chosen?.port===port&&activePort===port&&identifyGeneration===generation;
+  const renderMatchedFirmware=()=>{
+    const host=document.querySelector('#boards');
+    if(!host)return;
+    host.replaceChildren();
+    if(!board){host.hidden=true;return}
+    host.hidden=false;
+    const item=document.createElement('div');
+    item.className='board selected';
+    item.dataset.board=board.id;
+    item.setAttribute('aria-current','true');
+    item.innerHTML='<span class="icon">FW</span><span><strong>'+esc(board.name)+'</strong><small>'+esc(firmware?.assetName||board.assetName||'')+'</small></span>';
+    host.append(item);
+  };
   const applyStatic=()=>{
     const card=document.querySelector('#boardCard');
     if(!card)return;
     const title=card.querySelector('h2'); if(title)title.textContent=text('catalog');
-    const boards=document.querySelector('#boards'); if(boards)boards.hidden=true;
-    const hint=document.querySelector('#downloadNote'); if(hint)hint.textContent=text('hint');
+    const hint=document.querySelector('#downloadNote'); if(hint&&!firmware)hint.textContent=text('hint');
+    const download=document.querySelector('#download'); if(download)download.textContent=firmware?text('refresh'):t('download');
+    const offline=document.querySelector('#import'); if(offline)offline.textContent=firmware?text('offline'):t('import');
+  };
+  const displayReason=reason=>{
+    const value=String(reason||'');
+    return /PACKAGE_SIGNATURE_INVALID|zip: not a valid zip file|not a valid zip/i.test(value)?text('packageInvalid'):value;
   };
   const setBlocked=(detail)=>{
     board=null; firmware=null; boardConfirmed=false; boardConfirmationRef='';
-    $('#boardStatus').className='status bad'; $('#boardDetail').textContent=text('blocked');
-    $('#firmwareStatus').className='status bad'; $('#firmwareDetail').textContent=detail||text('blocked');
+    const legacy=/legacy protocol:1/i.test(String(detail||''));
+    const identityRequired=/nonce-bound protocol:2 application identity/i.test(String(detail||''));
+    const userDetail=legacy?text('legacyProtocol'):identityRequired?text('identityRequired'):displayReason(detail);
+    const channel=$('#releaseChannel'); if(channel){channel.disabled=false;channel.removeAttribute('aria-disabled')}
+    $('#boardCard').hidden=false; applyStatic(); renderMatchedFirmware();
+    $('#boardStatus').className='status bad'; $('#boardDetail').textContent=(legacy||identityRequired)?userDetail:text('blocked');
+    $('#firmwareStatus').className='status bad'; $('#firmwareDetail').textContent=userDetail||text('blocked');
     $('#flash').disabled=true; $('#download').disabled=true; $('#import').disabled=true;
-    $('#summary').textContent=text('blocked');
+    $('#summary').textContent=userDetail||text('blocked');
   };
-  let activePort='',identifyGeneration=0;
-  const isCurrentPort=(port,generation)=>chosen?.port===port&&activePort===port&&identifyGeneration===generation;
-  const showDetectedHardware=(matched,detail)=>{
-    // The hardware identity and the package acquisition are separate facts.
-    // Keep the one exact hardware row visible when a local/development build
-    // cannot acquire a signed package, otherwise a correctly identified port
-    // looks indistinguishable from an unknown board.
-    board=matched; firmware=null; boardConfirmed=false; boardConfirmationRef='';
-    $('#boardCard').hidden=false; applyStatic(); renderBoards();
-    $('#boardStatus').className='status ok'; $('#boardDetail').textContent=text('detected',{board:matched.name});
-    $('#firmwareStatus').className='status bad'; $('#firmwareDetail').textContent=detail||text('blocked');
-    $('#downloadNote').textContent=detail||text('blocked');
+  const resetPortPreparation=()=>{
+    // A manual refresh/probe belongs to the currently selected physical port.
+    // Invalidate every async result and write capability first, so an older
+    // auto-detect response cannot restore firmware or a confirmation after a
+    // user deliberately starts a fresh read-only check.
+    identifyGeneration++;
+    board=null; firmware=null; boardConfirmed=false; boardConfirmationRef=''; lastProbeJobID='';
+    const channel=$('#releaseChannel'); if(channel){channel.disabled=false;channel.removeAttribute('aria-disabled')}
+    $('#boardCard').hidden=true;
     $('#download').disabled=true; $('#import').disabled=true; $('#flash').disabled=true;
-    $('#summary').textContent=text('detected',{board:matched.name})+' '+(detail||text('blocked'));
+    $('#boardStatus').className='status'; $('#boardDetail').textContent=t('boardPending');
+    $('#firmwareStatus').className='status'; $('#firmwareDetail').textContent=t('firmwarePending');
   };
-  const applyPrepared=async(item,port,generation)=>{
-    if(!item?.device||!isCurrentPort(port,generation)||item.device.port!==port)return false;
+  const showDetectedHardware=(matched,detail)=>{
+    // Hardware identity and package acquisition are separate facts. Keep the
+    // one exact hardware row visible even when a package cannot be acquired.
+    board=matched; firmware=null; boardConfirmed=false; boardConfirmationRef='';
+    const channel=$('#releaseChannel'); if(channel){channel.disabled=false;channel.removeAttribute('aria-disabled')}
+    $('#boardCard').hidden=false; applyStatic(); renderMatchedFirmware();
+    $('#boardStatus').className='status ok'; $('#boardDetail').textContent=text('detected',{board:matched.name});
+    $('#firmwareStatus').className='status bad'; $('#firmwareDetail').textContent=displayReason(detail)||text('blocked');
+    $('#downloadNote').textContent=text('retryHint')+(detail?' '+displayReason(detail):'');
+    $('#download').disabled=false; $('#import').disabled=false; $('#flash').disabled=true;
+    $('#summary').textContent=text('detected',{board:matched.name})+' '+(displayReason(detail)||'');
+  };
+  const showRecoveryCandidates=(item,port,generation)=>{
+    if(!recoveryRequired||!isCurrentPort(port,generation)||!item?.probe)return false;
+    const observed=Number(item.probe?.flash?.sizeBytes)||0;
+    const reported=item.probe?.boardRecognition?.candidateBoards||[];
+    const candidates=boards.filter(value=>reported.includes(value.id)||(observed>0&&Number(value.flashBytes)===observed));
+    if(!candidates.length)return false;
+    board=null; firmware=null; boardConfirmed=false; boardConfirmationRef='';
+    const channel=$('#releaseChannel'); if(channel){channel.disabled=false;channel.removeAttribute('aria-disabled')}
+    $('#boardCard').hidden=false;
+    const title=$('#boardCard h2'); if(title)title.textContent=text('recoveryCatalog');
+    $('#downloadNote').textContent=text('recoveryBoardHint');
+    const host=$('#boards'); host.replaceChildren(); host.hidden=false;
+    candidates.forEach(candidate=>{const option=document.createElement('button');option.type='button';option.className='board';option.dataset.board=candidate.id;option.innerHTML='<span class="icon">ESP</span><span><strong>'+esc(candidate.name)+'</strong><small>'+esc(candidate.assetName||'')+'</small></span>';option.onclick=()=>void selectRecoveryBoard(candidate);host.append(option)});
+    $('#boardStatus').className='status bad'; $('#boardDetail').textContent=text('recoveryBoardHint');
+    $('#firmwareStatus').className='status'; $('#firmwareDetail').textContent=t('firmwarePending');
+    $('#download').disabled=true; $('#import').disabled=true; $('#flash').disabled=true;
+    $('#summary').textContent=text('recoveryBoardHint');
+    return true;
+  };
+  const selectRecoveryBoard=async(candidate)=>{
+    if(!recoveryRequired||!chosen||!lastProbeJobID)return;
+    board=candidate;firmware=null;boardConfirmed=false;boardConfirmationRef='';
+    document.querySelectorAll('.board').forEach(option=>option.classList.toggle('selected',option.dataset.board===candidate.id));
+    $('#download').disabled=true;$('#import').disabled=true;$('#flash').disabled=true;$('#recoveryFlash').disabled=true;
+    try{
+      const confirmation=await api().ConfirmBoard(chosen.port,candidate.id,lastProbeJobID);
+      if(!recoveryRequired||!chosen||chosen.port!==confirmation.port||board!==candidate)return;
+      boardConfirmationRef=confirmation.confirmationRef||'';boardConfirmed=!!boardConfirmationRef;
+      if(!boardConfirmed)throw new Error('missing recovery confirmation');
+      $('#boardStatus').className='status ok';$('#boardDetail').textContent=text('confirmed',{board:candidate.name});
+      $('#summary').textContent=text('recoveryPending');
+      void download();
+    }catch(error){boardConfirmed=false;boardConfirmationRef='';$('#boardStatus').className='status bad';$('#boardDetail').textContent=text('recoveryBoardHint');$('#summary').textContent=text('recoveryBoardHint');add({severity:'error',code:'RECOVERY_BOARD_CONFIRM_FAILED',detail:String(error)})}
+  };
+  const applyPrepared=(item,port,generation)=>{
+    if(!item?.device||!isCurrentPort(port,generation)||String(item.device.port)!==port)return false;
     if(item.probe){lastJobID=item.probe.jobId||lastJobID;lastProbeJobID=item.probe.jobId||'';$('#export').disabled=!lastJobID}
     const matched=boards.find(value=>value.id===(item.boardId||item.firmware?.boardId));
     if(item.status!=='firmware_ready'||!item.firmware||!matched){
-      if(isCurrentPort(port,generation)){
-        if(matched)showDetectedHardware(matched,item.reason);
-        else {setBlocked(item.reason);renderBoards()}
-      }
-      return false
+      if(showRecoveryCandidates(item,port,generation))return false;
+      if(matched)showDetectedHardware(matched,item.reason);else setBlocked(item.reason);
+      return false;
     }
-    if(!isCurrentPort(port,generation))return false;
     board=matched; firmware=item.firmware; firmware._update=item.update; boardConfirmed=false; boardConfirmationRef='';
-    $('#boardCard').hidden=false; applyStatic(); renderBoards();
-    $('#boardStatus').className='status'; $('#boardDetail').textContent=text('detected',{board:matched.name});
-    $('#firmwareStatus').className='status ok'; $('#firmwareDetail').textContent=firmware.releaseTag+' · '+installModeText(firmware)+' · '+t('signed')+' · '+firmwareUpdateText(item.update);
-    $('#downloadNote').textContent=firmware.safetyNote||text('hint'); $('#download').disabled=false; $('#import').disabled=false; $('#flash').disabled=true;
+    // Auto-detection chooses and verifies one exact release. Pin the visible
+    // channel to that package so a persisted Beta preference never describes
+    // a stable package (or vice versa), and do not offer an unrelated package
+    // choice in the normal port-first flow.
+    const channel=$('#releaseChannel'); if(channel){channel.value=firmware.channel==='beta'?'beta':'stable';channel.disabled=true;channel.setAttribute('aria-disabled','true')}
+    $('#boardCard').hidden=false; applyStatic(); renderMatchedFirmware();
     $('#boardStatus').className='status ok'; $('#boardDetail').textContent=text('detected',{board:matched.name});
+    $('#firmwareStatus').className='status ok'; $('#firmwareDetail').textContent=firmware.releaseTag+' · '+installModeText(firmware)+' · '+t('signed')+' · '+firmwareUpdateText(item.update);
+    $('#downloadNote').textContent=firmware.safetyNote||text('hint');
+    // The package was already downloaded and verified by the port probe.
+    // Keep refresh/import available as recovery actions, but do not make the
+    // normal matched result look like another required download step.
+    $('#download').disabled=false; $('#import').disabled=false; applyStatic();
     $('#flash').disabled=recoveryRequired||firmware.installStatus!=='verified_ready';
     $('#recoveryFlash').disabled=!recoveryRequired||firmware.installStatus!=='verified_ready'||firmware.installPlan!=='full';
     $('#summary').textContent=text('ready')+' '+firmwareUpdateText(item.update);
@@ -266,14 +377,19 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
     return true;
   };
   const identifyPort=async(device)=>{
-    const port=String(device?.port||'');
+    const port=String(device?.port||''); if(!port)return;
     const generation=++identifyGeneration; activePort=port;
-    const endpoint=api(); if(!endpoint?.AutoDetectPortFirmware){if(isCurrentPort(port,generation))setBlocked(text('blocked'));return}
-    $('#boardCard').hidden=false; applyStatic(); renderBoards(); $('#boardStatus').className='status'; $('#boardDetail').textContent=text('detecting');
+    $('#boardCard').hidden=false; applyStatic(); renderMatchedFirmware();
+    $('#boardStatus').className='status'; $('#boardDetail').textContent=text('detecting');
     $('#firmwareStatus').className='status'; $('#firmwareDetail').textContent=text('detecting'); $('#summary').textContent=text('detecting');
+    const channel=$('#releaseChannel'); if(channel){channel.disabled=false;channel.removeAttribute('aria-disabled')}
     $('#probe').disabled=true; $('#download').disabled=true; $('#import').disabled=true; $('#flash').disabled=true;
-    try{const item=await endpoint.AutoDetectPortFirmware(port); await applyPrepared(item,port,generation)}
-    catch(error){if(isCurrentPort(port,generation)){setBlocked(String(error));add({severity:'error',code:'PORT_AUTO_DETECT_FAILED',detail:String(error)})}}
+    try{
+      const endpoint=api();
+      if(!endpoint?.AutoDetectPortFirmware)throw new Error(text('blocked'));
+      const item=await endpoint.AutoDetectPortFirmware(port);
+      applyPrepared(item,port,generation);
+    }catch(error){if(isCurrentPort(port,generation)){setBlocked(String(error));add({severity:'error',code:'PORT_AUTO_DETECT_FAILED',detail:String(error)})}}
     finally{if(isCurrentPort(port,generation))$('#probe').disabled=false}
   };
   let attempts=0;
@@ -281,18 +397,32 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
     if(typeof selectDevice!=='function'||typeof applyAutoDetectedItem!=='function'||!Array.isArray(boards)){if(attempts++<60)setTimeout(install,100);return}
     if(selectDevice.__portFirstAutoMatch)return;
     const originalSelectDevice=selectDevice;
-    selectDevice=(device,automatic=false)=>{originalSelectDevice(device,automatic); $('#summary').textContent=text('selected',{port:device.port}); void identifyPort(device)};
+    selectDevice=(device,automatic=false)=>{
+      originalSelectDevice(device,automatic);
+      activePort=String(device?.port||'');
+      $('#summary').textContent=text('selected',{port:activePort});
+      void identifyPort(device);
+    };
     selectDevice.__portFirstAutoMatch=true;
-    applyAutoDetectedItem=(item)=>{if(!item?.device)return; originalSelectDevice(item.device,true); const port=String(item.device.port||''); const generation=++identifyGeneration; activePort=port; void applyPrepared(item,port,generation)};
+    applyAutoDetectedItem=(item)=>{
+      if(!item?.device)return;
+      originalSelectDevice(item.device,true);
+      const port=String(item.device.port||''); const generation=++identifyGeneration; activePort=port;
+      applyPrepared(item,port,generation);
+    };
+    // Firmware is not a product picker. Until identity chooses a package there
+    // are no rows; afterwards the catalog is the selected port's identity result.
+    // filtering at this one boundary makes it impossible for unrelated
+    // firmware rows to reappear after a scan, language change, or probe.
+    renderBoards=renderMatchedFirmware;
     const requestWriteConfirmation=async(event)=>{
-      if(boardConfirmed||!chosen||!board||!firmware||!firmware.packageRef||recoveryRequired)return;
+      if(boardConfirmed||!chosen||!board||!firmware?.packageRef||recoveryRequired)return;
       event.preventDefault(); event.stopImmediatePropagation();
       if(!confirm(text('finalConfirm',{port:chosen.port,board:board.name})))return;
-      const port=chosen.port, generation=identifyGeneration, detectedBoard=board, detectedFirmware=firmware, probeJobID=lastProbeJobID;
+      const port=chosen.port,generation=identifyGeneration,detectedBoard=board,detectedFirmware=firmware,probeJobID=lastProbeJobID;
       $('#flash').disabled=true; $('#summary').textContent=text('confirming');
       try{
-        const endpoint=api();
-        if(!endpoint?.ConfirmDetectedBoard||!probeJobID)throw new Error('automatic confirmation is unavailable');
+        const endpoint=api(); if(!endpoint?.ConfirmDetectedBoard||!probeJobID)throw new Error('automatic confirmation is unavailable');
         const confirmation=await endpoint.ConfirmDetectedBoard(port,probeJobID);
         if(!isCurrentPort(port,generation)||board!==detectedBoard||firmware!==detectedFirmware||lastProbeJobID!==probeJobID)return;
         boardConfirmationRef=confirmation.confirmationRef||''; boardConfirmed=!!boardConfirmationRef;
@@ -301,27 +431,21 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
         $('#flash').disabled=false; $('#flash').click();
       }catch(error){
         boardConfirmed=false; boardConfirmationRef=''; $('#boardStatus').className='status bad';
-        $('#boardDetail').textContent=text('confirmationFailed'); $('#flash').disabled=true;
-        $('#summary').textContent=text('confirmationFailed'); add({severity:'error',code:'PORT_AUTO_CONFIRM_FAILED',detail:String(error)});
+        $('#boardDetail').textContent=text('confirmationFailed'); $('#flash').disabled=true; $('#summary').textContent=text('confirmationFailed');
+        add({severity:'error',code:'PORT_AUTO_CONFIRM_FAILED',detail:String(error)});
       }
     };
-    document.querySelector('#flash')?.addEventListener('click',requestWriteConfirmation,true);    document.querySelector('#boards')?.replaceChildren(); applyStatic();
-    // Firmware is not a product picker. Until one nonce-bound board identity
-    // has selected an official package, show no rows. Once identified, show
-    // only that immutable match—never the other hardware firmware options.
-    // Install this before the first device can be selected. The base script,
-    // compatibility wrappers, periodic refresh, and manual probe all call the
-    // same renderer, so filtering at this one boundary makes it impossible
-    // for an unmatched firmware row to reappear.
-    renderBoards=()=>{const host=document.querySelector('#boards');if(!host)return;host.replaceChildren();if(!board){host.hidden=true;return}host.hidden=false;const item=document.createElement('div');item.className='board selected';item.dataset.board=board.id;item.setAttribute('aria-current','true');item.innerHTML='<span class="icon">FW</span><span><strong>'+esc(board.name)+'</strong><small>'+esc(board.assetName)+'</small></span>';host.append(item)};
-    // Repair an already-rendered catalog if an early selection happened while
-    // this late-binding script was being installed.
-    if(board)renderBoards();
-    document.querySelector('#language')?.addEventListener('change',()=>setTimeout(applyStatic,0));
+    document.querySelector('#flash')?.addEventListener('click',requestWriteConfirmation,true);
+    probe=async(automatic=false)=>{
+      if(!chosen?.port||automatic)return;
+      activePort=String(chosen.port);resetPortPreparation();return identifyPort(chosen);
+    };
+    probe.__portFirstReset=true;
+    document.querySelector('#language')?.addEventListener('change',()=>{applyStatic();renderMatchedFirmware()});
+    applyStatic(); renderMatchedFirmware();
   };
   install();
-})();
-</script><style>
+})();</script><style>
 /* A port remains visibly selected across re-renders and auto-detection. The
    full outline, icon inversion and explicit state badge avoid relying on a
    subtle background tint or the readiness panel for this critical context. */
@@ -481,6 +605,30 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
     };
     wrapped.__busyIndicator=true;
     probe=wrapped;
+  };
+  install();
+})();
+</script><script>
+/* Preserve a concise, actionable message when the write-time verification
+   catches a malformed archive. The flash engine still records the exact,
+   redacted cause in detailed logs; this summary makes clear that no write
+   occurred and gives the operator a safe next action. */
+(()=>{
+  let attempts=0;
+  const install=()=>{
+    if(typeof add!=='function'){if(attempts++<60)setTimeout(install,100);return}
+    if(add.__packageFailureGuidance)return;
+    const original=add;
+    add=event=>{
+      const detail=String(event?.detail||'');
+      if((event?.code==='FLASH_FAILED'||event?.code==='PACKAGE_SIGNATURE_INVALID')&&/PACKAGE_SIGNATURE_INVALID|zip: not a valid zip file|not a valid zip/i.test(detail)){
+        const message=language==='en'?'The firmware package is invalid. Nothing was written; get the official firmware again.':language==='zh-TW'?'韌體套件無效，未寫入裝置；請重新取得官方韌體。':'固件包无效，未写入设备；请重新获取官方固件。';
+        const summary=document.querySelector('#summary'); if(summary)summary.textContent=message;
+        event={...event,code:'FIRMWARE_PACKAGE_INVALID',detail:message};
+      }
+      return original(event);
+    };
+    add.__packageFailureGuidance=true;
   };
   install();
 })();

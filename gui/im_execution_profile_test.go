@@ -611,6 +611,22 @@ func TestBuildLightIMSystemPromptStaysSmall(t *testing.T) {
 	}
 }
 
+func TestBuildLightIMSystemPromptIncludesBotBindingContext(t *testing.T) {
+	profile := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light"}
+	prompt := buildLightIMSystemPrompt(IMUserMessage{
+		Text: "查询客服手册",
+		AssistantBinding: &agent.AssistantBinding{
+			BotProfileID: "support", WorkingDirectory: "D:/support/source",
+			DocumentDirectories: []string{"D:/support/manuals"}, InitialPrompt: "仅处理客服问题",
+		},
+	}, profile)
+	for _, want := range []string{"bot_profile_id: support", "D:/support/source", "D:/support/manuals", "仅处理客服问题"} {
+		if !containsText(prompt, want) {
+			t.Fatalf("light bot prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildIMEntrySystemPromptWorkflowLoopOverridesLightProfile(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-loop-light-profile-prompt-override"

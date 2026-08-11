@@ -126,8 +126,8 @@ type SkillAppManifestEntry struct {
 	// Source and HubSkillID describe the installed skill's server-authoritative
 	// provenance. They let the app panel distinguish a SkillMarket mini app
 	// from a user-authored local skill after the process restarts.
-	Source             string                  `json:"source,omitempty"`
-	HubSkillID         string                  `json:"hub_skill_id,omitempty"`
+	Source            string                  `json:"source,omitempty"`
+	HubSkillID        string                  `json:"hub_skill_id,omitempty"`
 	Name              string                  `json:"name"`
 	Description       string                  `json:"description,omitempty"`
 	Category          string                  `json:"category,omitempty"`
@@ -1980,6 +1980,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 						return
 					}
 					e.app.AccumulateLLMTokenUsageWithCache(providerName, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
+					e.app.AccumulateLLMProfileTokenUsageWithCache(llmCfg, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
 				},
 			}
 		}
@@ -3232,7 +3233,7 @@ func (a *App) ListSkillAppManifests() []SkillAppManifestEntry {
 			var manifest skillAppManifestFile
 			if err := json.Unmarshal(data, &manifest); err == nil && strings.TrimSpace(manifest.PrivateMarker) == "v1" {
 				for _, app := range manifest.Apps {
-						addApp(item, app, "maclaw.apps.json")
+					addApp(item, app, "maclaw.apps.json")
 				}
 			}
 		}
@@ -3241,7 +3242,7 @@ func (a *App) ListSkillAppManifests() []SkillAppManifestEntry {
 			if !ok {
 				continue
 			}
-				addApp(item, app, entry)
+			addApp(item, app, entry)
 		}
 	}
 	return out

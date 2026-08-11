@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,7 +22,7 @@ func TestRegisterKnowledgeTools(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-	for _, name := range []string{"knowledge_search", "knowledge_explain", "knowledge_search_facets", "knowledge_topic_relevance", "knowledge_context_pack", "knowledge_fact_graph", "knowledge_fact_index", "knowledge_entity_profile", "knowledge_suggest", "knowledge_save_url", "knowledge_save_urls", "knowledge_discover_urls", "knowledge_save_text", "knowledge_import_directory", "knowledge_import_files", "knowledge_import_status", "knowledge_stats", "knowledge_doctor", "knowledge_health", "knowledge_source_quality", "knowledge_quality_maintenance_plan", "knowledge_quality_maintenance_policies", "knowledge_execute_quality_maintenance_plan", "knowledge_rebuild_quality_gaps", "knowledge_backfill_quality_labels", "knowledge_disable_quality_sensitive_sources", "knowledge_suppress_quality_duplicate_groups", "knowledge_capabilities", "knowledge_url_domain_policies", "knowledge_maintain", "knowledge_export_snapshot", "knowledge_import_snapshot", "knowledge_list_sources", "knowledge_list_source_labels", "knowledge_update_source_labels", "knowledge_backfill_source_auto_labels", "knowledge_list_import_batches", "knowledge_list_import_items", "knowledge_retry_import_batch", "knowledge_source_detail", "knowledge_source_digest", "knowledge_list_source_versions", "knowledge_list_source_links", "knowledge_source_graph", "knowledge_source_neighborhood", "knowledge_source_path", "knowledge_preview_topic_links", "knowledge_link_sources", "knowledge_unlink_sources", "knowledge_list_source_link_events", "knowledge_source_timeline", "knowledge_refresh_topic_links", "knowledge_list_duplicate_cards", "knowledge_suppress_duplicate_cards", "knowledge_suppress_duplicate_groups", "knowledge_list_suppressed_cards", "knowledge_scan_sensitive", "knowledge_disable_sensitive_sources", "knowledge_restore_suppressed_cards", "knowledge_restore_suppressed_cards_bulk", "knowledge_update_source_metadata", "knowledge_refresh_source", "knowledge_preview_source_refresh", "knowledge_preview_sources_refresh", "knowledge_preview_sources_refresh_by_filter", "knowledge_refresh_changed_sources", "knowledge_refresh_changed_sources_by_filter", "knowledge_refresh_sources", "knowledge_refresh_sources_by_filter", "knowledge_rebuild_source_derived", "knowledge_rebuild_sources_derived", "knowledge_rebuild_sources_derived_by_filter", "knowledge_disable_source", "knowledge_disable_sources_by_filter", "knowledge_enable_source", "knowledge_enable_sources_by_filter", "knowledge_delete_source"} {
+	for _, name := range []string{"knowledge_search", "knowledge_image_search", "knowledge_explain", "knowledge_search_facets", "knowledge_topic_relevance", "knowledge_context_pack", "knowledge_fact_graph", "knowledge_fact_index", "knowledge_entity_profile", "knowledge_suggest", "knowledge_save_url", "knowledge_save_urls", "knowledge_discover_urls", "knowledge_save_text", "knowledge_import_directory", "knowledge_import_files", "knowledge_import_status", "knowledge_stats", "knowledge_doctor", "knowledge_health", "knowledge_source_quality", "knowledge_quality_maintenance_plan", "knowledge_quality_maintenance_policies", "knowledge_execute_quality_maintenance_plan", "knowledge_rebuild_quality_gaps", "knowledge_backfill_quality_labels", "knowledge_disable_quality_sensitive_sources", "knowledge_suppress_quality_duplicate_groups", "knowledge_capabilities", "knowledge_url_domain_policies", "knowledge_maintain", "knowledge_export_snapshot", "knowledge_import_snapshot", "knowledge_list_sources", "knowledge_list_source_labels", "knowledge_update_source_labels", "knowledge_backfill_source_auto_labels", "knowledge_list_import_batches", "knowledge_list_import_items", "knowledge_retry_import_batch", "knowledge_source_detail", "knowledge_source_digest", "knowledge_list_source_versions", "knowledge_list_source_links", "knowledge_source_graph", "knowledge_source_neighborhood", "knowledge_source_path", "knowledge_preview_topic_links", "knowledge_link_sources", "knowledge_unlink_sources", "knowledge_list_source_link_events", "knowledge_source_timeline", "knowledge_refresh_topic_links", "knowledge_list_duplicate_cards", "knowledge_suppress_duplicate_cards", "knowledge_suppress_duplicate_groups", "knowledge_list_suppressed_cards", "knowledge_scan_sensitive", "knowledge_disable_sensitive_sources", "knowledge_restore_suppressed_cards", "knowledge_restore_suppressed_cards_bulk", "knowledge_update_source_metadata", "knowledge_refresh_source", "knowledge_preview_source_refresh", "knowledge_preview_sources_refresh", "knowledge_preview_sources_refresh_by_filter", "knowledge_refresh_changed_sources", "knowledge_refresh_changed_sources_by_filter", "knowledge_refresh_sources", "knowledge_refresh_sources_by_filter", "knowledge_rebuild_source_derived", "knowledge_rebuild_sources_derived", "knowledge_rebuild_sources_derived_by_filter", "knowledge_disable_source", "knowledge_disable_sources_by_filter", "knowledge_enable_source", "knowledge_enable_sources_by_filter", "knowledge_delete_source"} {
 		tool, ok := registry.Get(name)
 		if !ok {
 			t.Fatalf("expected %s to be registered", name)
@@ -29,15 +33,330 @@ func TestRegisterKnowledgeTools(t *testing.T) {
 	}
 }
 
+func TestKnowledgeImportToolsDescribeSixOfficeFormatsWithoutConverterRequirement(t *testing.T) {
+	registry := NewToolRegistry()
+	app := &App{testHomeDir: t.TempDir()}
+	registerKnowledgeTools(registry, app)
+
+	for _, name := range []string{"knowledge_import_directory", "knowledge_import_files"} {
+		tool, ok := registry.Get(name)
+		if !ok {
+			t.Fatalf("expected %s to be registered", name)
+		}
+		for _, format := range []string{"doc, docx, ppt, pptx, xls, xlsx", "OfficeRead structured Markdown/images are an explicit opt-in"} {
+			if !strings.Contains(tool.Description, format) {
+				t.Fatalf("%s description missing %q: %s", name, format, tool.Description)
+			}
+		}
+		if strings.Contains(strings.ToLower(tool.Description), "libreoffice") || strings.Contains(strings.ToLower(tool.Description), "soffice") {
+			t.Fatalf("%s description incorrectly requires an external converter: %s", name, tool.Description)
+		}
+		includeExts, ok := tool.InputSchema["include_exts"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("%s include_exts schema = %#v", name, tool.InputSchema["include_exts"])
+		}
+		description, _ := includeExts["description"].(string)
+		for _, ext := range []string{".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"} {
+			if !strings.Contains(description, ext) {
+				t.Fatalf("%s include_exts description missing %q: %s", name, ext, description)
+			}
+		}
+	}
+}
+
+func TestKnowledgeRecallToolSchemasDescribeAllSixOfficeSourceKinds(t *testing.T) {
+	registry := NewToolRegistry()
+	app := &App{testHomeDir: t.TempDir()}
+	registerKnowledgeTools(registry, app)
+
+	for _, name := range []string{
+		"knowledge_search",
+		"knowledge_explain",
+		"knowledge_context_pack",
+		"knowledge_search_facets",
+		"knowledge_fact_graph",
+		"knowledge_fact_index",
+		"knowledge_entity_profile",
+	} {
+		tool, ok := registry.Get(name)
+		if !ok {
+			t.Fatalf("expected %s to be registered", name)
+		}
+		schema, ok := tool.InputSchema["source_kinds"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("%s source_kinds schema = %#v", name, tool.InputSchema["source_kinds"])
+		}
+		description, _ := schema["description"].(string)
+		for _, kind := range []string{"doc", "docx", "ppt", "pptx", "xls", "xlsx"} {
+			if !strings.Contains(description, kind) {
+				t.Fatalf("%s source_kinds description missing %q: %s", name, kind, description)
+			}
+		}
+	}
+}
+
 func TestNewIMMessageHandlerRegistersKnowledgeTools(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	handler := NewIMMessageHandler(app, nil)
 
-	for _, name := range []string{"knowledge_search", "knowledge_context_pack"} {
+	for _, name := range []string{"knowledge_search", "knowledge_image_search", "knowledge_context_pack"} {
 		registered, ok := handler.registry.Get(name)
 		if !ok || registered == nil || registered.Handler == nil {
 			t.Fatalf("new IM handler must register %s for local IM gateways", name)
 		}
+	}
+}
+
+func TestKnowledgeImageSearchToolReturnsOnlyImageEvidence(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := app.knowledgeContext()
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage, URI: "file://diagram.png", Title: "Gateway", Status: knowledge.StatusParsed}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "image-node", SourceID: "image-source", Type: knowledge.NodeTypeImage, Title: "Gateway diagram", Text: "production gateway architecture diagram"}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "text-source", Kind: knowledge.SourceKindText, URI: "memory://notes", Status: knowledge.StatusParsed}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "text-node", SourceID: "text-source", Type: "paragraph", Text: "production gateway architecture diagram notes"}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	out := app.toolKnowledgeImageSearch(map[string]interface{}{"query": "gateway architecture diagram"})
+	if !strings.Contains(out, "\"mode\": \"text_to_image\"") || !strings.Contains(out, "image-node") {
+		t.Fatalf("unexpected image search output: %s", out)
+	}
+	if strings.Contains(out, "text-node") {
+		t.Fatalf("image search returned non-image node: %s", out)
+	}
+}
+
+func TestKnowledgeImageSearchNeverLeaksImageSourcePaths(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+			app.enterpriseClient = nil
+		}
+	})
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := app.knowledgeContext()
+	absolutePath := filepath.Join(t.TempDir(), "private", "network-topology.png")
+	if err := store.SaveSource(ctx, knowledge.Source{
+		ID:           "path-free-image",
+		Kind:         knowledge.SourceKindImage,
+		URI:          absolutePath,
+		CanonicalURI: "file://" + filepath.ToSlash(absolutePath),
+		RelativePath: absolutePath,
+		ProjectPath:  filepath.Dir(absolutePath),
+		ErrorMessage: "failed to inspect " + absolutePath,
+		Title:        "Network topology",
+		Status:       knowledge.StatusParsed,
+	}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{
+		ID:       "path-free-image-node",
+		SourceID: "path-free-image",
+		Type:     knowledge.NodeTypeImage,
+		Title:    "Network topology diagram",
+		Text:     "production network topology diagram",
+	}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(absolutePath); !os.IsNotExist(err) {
+		t.Fatalf("test setup unexpectedly has a readable asset at %q: %v", absolutePath, err)
+	}
+	for name, out := range map[string]string{
+		"gui_image":   app.toolKnowledgeImageSearch(map[string]interface{}{"query": "network topology"}),
+		"ve_image":    veToolKnowledgeImageSearch(app, map[string]interface{}{"query": "network topology"}),
+		"gui_search":  app.toolKnowledgeSearch(map[string]interface{}{"query": "network topology"}),
+		"ve_search":   veToolKnowledgeSearch(app, map[string]interface{}{"query": "network topology"}),
+		"gui_explain": app.toolKnowledgeExplain(map[string]interface{}{"query": "network topology"}),
+	} {
+		for _, leaked := range []string{absolutePath, filepath.ToSlash(absolutePath), "canonical_uri", "relative_path", "project_path", "error_message"} {
+			if strings.Contains(out, leaked) {
+				t.Fatalf("%s image search leaked %q: %s", name, leaked, out)
+			}
+		}
+		if !strings.Contains(out, "\"id\": \"path-free-image\"") || !strings.Contains(out, "path-free-image-node") {
+			t.Fatalf("%s image search lost safe evidence identity: %s", name, out)
+		}
+		if (name == "gui_image" || name == "ve_image") && strings.Contains(out, "[KB_IMAGE:") {
+			t.Fatalf("%s emitted a display marker without a readable asset: %s", name, out)
+		}
+	}
+}
+
+func TestVEKnowledgeImageSearchReturnsDisplaySafeEvidence(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+			app.enterpriseClient = nil
+		}
+	})
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := app.knowledgeContext()
+	const assetID = "ve-image-source"
+	if _, err := store.ImageAssets().SaveImageFromBytes(assetID, veKnowledgeImageToolPNG(t), ".png"); err != nil {
+		_ = store.Close()
+		t.Fatalf("SaveImageFromBytes: %v", err)
+	}
+	if err := store.SaveSource(ctx, knowledge.Source{ID: assetID, Kind: knowledge.SourceKindImage, URI: "file://diagram.png", Title: "Gateway", Status: knowledge.StatusParsed}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "ve-image-node", SourceID: assetID, Type: knowledge.NodeTypeImage, Title: "Gateway diagram", Text: "production gateway architecture diagram", Metadata: map[string]string{knowledge.MetaImageAssetID: assetID}}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	imageResult := veToolKnowledgeImageSearch(app, map[string]interface{}{"query": "gateway architecture"})
+	if !strings.Contains(imageResult, "[KB_IMAGE:"+assetID+"|data:image/jpeg;base64,") {
+		t.Fatalf("VE image search did not return a safe display marker: %s", imageResult)
+	}
+	if strings.Contains(imageResult, app.GetDataDir()) || strings.Contains(imageResult, "original.png") {
+		t.Fatalf("VE image search leaked a host asset path: %s", imageResult)
+	}
+
+	generalResult := veToolKnowledgeSearch(app, map[string]interface{}{"query": "gateway architecture"})
+	if !strings.Contains(generalResult, "ve-image-node") {
+		t.Fatalf("VE general search lost image text evidence: %s", generalResult)
+	}
+	if strings.Contains(generalResult, "[KB_IMAGE:") || strings.Contains(generalResult, "data:image/jpeg;base64,") {
+		t.Fatalf("VE general search leaked display media: %s", generalResult)
+	}
+}
+
+func TestVEKnowledgeImageSearchForwardsReadOnlyFilters(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := app.knowledgeContext()
+	for _, fixture := range []struct {
+		sourceID string
+		nodeID   string
+	}{
+		{sourceID: "ve-filter-keep", nodeID: "ve-filter-keep-node"},
+		{sourceID: "ve-filter-skip", nodeID: "ve-filter-skip-node"},
+	} {
+		if err := store.SaveSource(ctx, knowledge.Source{ID: fixture.sourceID, Kind: knowledge.SourceKindImage, URI: "file://" + fixture.sourceID + ".png", Title: fixture.sourceID, Status: knowledge.StatusParsed}); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+		if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: fixture.nodeID, SourceID: fixture.sourceID, Type: knowledge.NodeTypeImage, Title: "Network topology", Text: "production network topology diagram"}); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result := veToolKnowledgeImageSearch(app, map[string]interface{}{
+		"query":      "network topology",
+		"source_ids": []interface{}{"ve-filter-keep"},
+		"limit":      float64(50),
+	})
+	if !strings.Contains(result, "ve-filter-keep-node") {
+		t.Fatalf("VE image search did not forward source_ids filter: %s", result)
+	}
+	if strings.Contains(result, "ve-filter-skip-node") {
+		t.Fatalf("VE image search ignored source_ids filter: %s", result)
+	}
+}
+
+func TestVERemoteImageSearchDefinitionExposesReadOnlyFilters(t *testing.T) {
+	definitions := veRemoteToolDefinitions(true)
+	for _, definition := range definitions {
+		function, _ := definition["function"].(map[string]interface{})
+		if function["name"] != "knowledge_image_search" {
+			continue
+		}
+		parameters, _ := function["parameters"].(map[string]interface{})
+		properties, _ := parameters["properties"].(map[string]interface{})
+		for _, key := range []string{"search_scope", "project_path", "topic_hint", "context_terms", "source_kinds", "source_ids", "ids", "labels", "domain", "include_disabled"} {
+			if _, ok := properties[key]; !ok {
+				t.Fatalf("VE knowledge_image_search definition missing %q", key)
+			}
+		}
+		return
+	}
+	t.Fatal("VE knowledge_image_search definition not found")
+}
+
+func veKnowledgeImageToolPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func TestKnowledgeSearchDoesNotExposeImageDisplayMarkers(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+			app.enterpriseClient = nil
+		}
+	})
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := app.knowledgeContext()
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage, URI: "file://diagram.png", Title: "Gateway", Status: knowledge.StatusParsed}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "image-node", SourceID: "image-source", Type: knowledge.NodeTypeImage, Title: "Gateway diagram", Text: "production gateway architecture diagram"}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	out := app.toolKnowledgeSearch(map[string]interface{}{"query": "gateway architecture diagram"})
+	if !strings.Contains(out, "image-node") {
+		t.Fatalf("general search lost image evidence: %s", out)
+	}
+	if strings.Contains(out, "display_marker") || strings.Contains(out, "thumbnail_data_url") || strings.Contains(out, "data:image/jpeg;base64,") {
+		t.Fatalf("general search leaked display media: %s", out)
 	}
 }
 

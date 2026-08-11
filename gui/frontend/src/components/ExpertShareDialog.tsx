@@ -27,6 +27,7 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
     const { showAlert } = useDialog();
     const [version, setVersion] = useState('1.0.0');
     const [price, setPrice] = useState('0');
+    const [visibility, setVisibility] = useState<'public' | 'private'>('public');
     const [submitting, setSubmitting] = useState(false);
     const dialogRef = useRef<HTMLElement | null>(null);
     const closeRef = useRef(onClose);
@@ -69,9 +70,13 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
         }
         setSubmitting(true);
         try {
-            const listing = await SubmitExpertMarketListing(expert.id, version.trim() || '1.0.0', parsedPrice);
+            const listing = await SubmitExpertMarketListing(expert.id, version.trim() || '1.0.0', parsedPrice, visibility);
             onSubmitted?.(listing || {});
             onClose();
+            if (visibility === 'private') {
+                await showAlert(t(lang, '私有分享无需审核，只有上传该专家的用户可以看到。', 'Private sharing skips review and is visible only to the uploader.'), t(lang, '已私有分享', 'Shared privately'));
+                return;
+            }
             await showAlert(t(lang, '专家已提交审核，审核通过后会出现在市场中。', 'The expert was submitted for review and will appear in the market once approved.'), t(lang, '已提交审核', 'Submitted for review'));
         } catch (err) {
             await showAlert(message(err), t(lang, '提交失败', 'Submission failed'));
@@ -83,7 +88,7 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
     return <div className="expert-share-overlay" role="presentation">
         <section ref={dialogRef} className="expert-share-shell" role="dialog" aria-modal="true" aria-label={t(lang, '分享 AI 专家', 'Share AI expert')}>
             <header className="expert-share-header">
-                <div><h2>{t(lang, '分享 AI 专家', 'Share AI expert')}</h2><p>{t(lang, '提交后将由 HubCenter 审核。', 'HubCenter will review this submission before it is listed.')}</p></div>
+                <div><h2>{t(lang, '分享 AI 专家', 'Share AI expert')}</h2><p>{visibility === 'public' ? t(lang, '公开分享默认需要 HubCenter 审核，审核通过后会在市场展示。', 'Public sharing is the default and requires HubCenter review before market listing.') : t(lang, '私有分享无需审核，只有上传该专家的用户可以看到。', 'Private sharing skips review and is visible only to the uploader.')}</p></div>
                 <button className="expert-share-close" type="button" aria-label={t(lang, '关闭', 'Close')} onClick={onClose}>×</button>
             </header>
             <main className="expert-share-body">
@@ -96,6 +101,11 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
                     </dl>
                 </section>
                 <div className="expert-share-fields">
+                    <fieldset>
+                        <legend>{t(lang, '展示范围', 'Visibility')}</legend>
+                        <label><input type="radio" name="expert-visibility" checked={visibility === 'public'} onChange={() => setVisibility('public')} />{t(lang, '公开（默认，需审核）', 'Public (default, review required)')}</label>
+                        <label><input type="radio" name="expert-visibility" checked={visibility === 'private'} onChange={() => setVisibility('private')} />{t(lang, '私有（无需审核，仅自己可见）', 'Private (no review, only you can see it)')}</label>
+                    </fieldset>
                     <label>{t(lang, '版本', 'Version')}<input aria-label={t(lang, '版本', 'Version')} value={version} onChange={event => setVersion(event.target.value)} /></label>
                     <label>{t(lang, '价格（Credits，0 为免费）', 'Price (Credits, 0 is free)')}<input aria-label={t(lang, '价格（Credits，0 为免费）', 'Price (Credits, 0 is free)')} inputMode="numeric" value={price} onChange={event => setPrice(event.target.value)} /></label>
                 </div>

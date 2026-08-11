@@ -34,6 +34,17 @@ var globalUIASidecar uiaSidecar
 
 const uiaIdleUnload = 5 * time.Minute
 
+// Timeouts guarding the stdio protocol: the sidecar performs synchronous
+// cross-process UIA (COM) calls that can block indefinitely when an app on
+// the desktop is hung, so every pipe round-trip needs a deadline.
+const (
+	// uiaPingTimeout covers process spawn + first ping (PowerShell cold start
+	// with Add-Type can take several seconds).
+	uiaPingTimeout = 30 * time.Second
+	// uiaCallTimeout bounds a single enum/find round-trip.
+	uiaCallTimeout = 20 * time.Second
+)
+
 // Embedded as EncodedCommand (UTF-16LE base64) at start time.
 const uiaSidecarScript = `
 $ErrorActionPreference = 'Stop'
@@ -296,9 +307,19 @@ func (s *uiaSidecar) startProcess(exe string, args []string, backend string) err
 		s.stop()
 		return fmt.Errorf("uia sidecar write: %w", err)
 	}
-	if !s.scanner.Scan() {
-		s.stop()
-		return fmt.Errorf("uia sidecar no ping response (%s)", backend)
+	// Ping with a deadline: a wedged sidecar must not hang startup forever.
+	scanner := s.scanner
+	pingDone := make(chan bool, 1)
+	go func() { pingDone <- scanner.Scan() }()
+	select {
+	case ok := <-pingDone:
+		if !ok {
+			s.stop()
+			return fmt.Errorf("uia sidecar no ping response (%s)", backend)
+		}
+	case <-time.After(uiaPingTimeout):
+		s.stop() // kills process; pending Scan returns and the goroutine exits
+		return fmt.Errorf("uia sidecar ping timed out after %s (%s)", uiaPingTimeout, backend)
 	}
 	var resp uiaResponse
 	if err := json.Unmarshal(s.scanner.Bytes(), &resp); err != nil || !resp.OK {
@@ -321,27 +342,52 @@ func (s *uiaSidecar) call(req map[string]interface{}) (*uiaResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := fmt.Fprintf(s.stdin, "%s\n", body); err != nil {
-		s.stop()
-		return nil, err
+	// Round-trip with a deadline: UIA queries can block indefinitely on a hung
+	// app, so never wait on the pipe without a timeout. The goroutine only
+	// touches captured locals; on timeout stop() closes the pipes, Scan
+	// returns, and the goroutine exits into the buffered channel.
+	stdin := s.stdin
+	scanner := s.scanner
+	type callResult struct {
+		resp *uiaResponse
+		err  error
 	}
-	if !s.scanner.Scan() {
-		err := s.scanner.Err()
-		s.stop()
-		if err != nil {
-			return nil, err
+	done := make(chan callResult, 1)
+	go func() {
+		if _, err := fmt.Fprintf(stdin, "%s\n", body); err != nil {
+			done <- callResult{err: err}
+			return
 		}
-		return nil, fmt.Errorf("uia sidecar closed")
+		if !scanner.Scan() {
+			err := scanner.Err()
+			if err == nil {
+				err = fmt.Errorf("uia sidecar closed")
+			}
+			done <- callResult{err: err}
+			return
+		}
+		var resp uiaResponse
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			done <- callResult{err: fmt.Errorf("uia sidecar decode: %w body=%q", err, scanner.Text())}
+			return
+		}
+		done <- callResult{resp: &resp}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			s.stop()
+			return nil, r.err
+		}
+		if !r.resp.OK {
+			return r.resp, fmt.Errorf("uia sidecar: %s", r.resp.Error)
+		}
+		s.resetIdle()
+		return r.resp, nil
+	case <-time.After(uiaCallTimeout):
+		s.stop()
+		return nil, fmt.Errorf("uia sidecar op %q timed out after %s", req["op"], uiaCallTimeout)
 	}
-	var resp uiaResponse
-	if err := json.Unmarshal(s.scanner.Bytes(), &resp); err != nil {
-		return nil, fmt.Errorf("uia sidecar decode: %w body=%q", err, s.scanner.Text())
-	}
-	if !resp.OK {
-		return &resp, fmt.Errorf("uia sidecar: %s", resp.Error)
-	}
-	s.resetIdle()
-	return &resp, nil
 }
 
 func (s *uiaSidecar) enum(window string, depth int) ([]Element, error) {

@@ -1,20 +1,20 @@
 package knowledge
 
 import (
+	"bytes"
 	"fmt"
-	"log"
+	"image"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
+
+	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
 
 // ExtractPDFImages extracts embedded images from a PDF file.
 //
-// Strategy: Use pdfcpu CLI if available, otherwise fall back to a no-op.
-// The pdfcpu approach is preferred because it handles all PDF image encodings
-// (DCT/JPEG, Flate/PNG, JBIG2, CCITT, etc.) without requiring CGO.
+// The extraction is entirely in-process through GoPDF2, matching the pure-Go
+// PDF inspection and OCR pipeline. Unsupported image encodings are skipped.
 //
 // Each returned node has:
 //   - Type: NodeTypeImage
@@ -22,119 +22,108 @@ import (
 //   - Metadata with format and context
 //   - Metadata["_image_bytes_key"]: key into the returned bytes map
 //
-// If pdfcpu is not available, returns nil (no images extracted).
-// This is acceptable because PDF image extraction is a "best effort" enhancement.
+// Unsupported/unencodable image streams are skipped rather than turning a
+// readable PDF import into an error; image extraction is best effort.
 func ExtractPDFImages(source Source, filePath string, textNodes []DocumentNode) ([]DocumentNode, map[string][]byte, error) {
-	// Try pdfcpu CLI approach first (works if user has pdfcpu installed or
-	// we bundle it). Falls back gracefully if not available.
-	nodes, imageBytes, err := extractPDFImagesWithCLI(source, filePath, textNodes)
-	if err == nil {
-		return nodes, imageBytes, nil
-	}
-
-	// Fallback: try Go-native extraction (limited to simpler encodings).
-	nodes, imageBytes, err = extractPDFImagesNative(source, filePath, textNodes)
+	nodes, imageBytes, err := extractPDFImagesNative(source, filePath, textNodes)
 	if err == nil {
 		return nodes, imageBytes, nil
 	}
 
 	// No extraction method available — this is not a fatal error.
-	log.Printf("[knowledge-pdf] image extraction not available for %s: %v", filepath.Base(filePath), err)
+	// Extraction is best effort. Do not put a user-controlled filename or a
+	// parser/CLI error in logs: either may contain a local path or document
+	// content. The import result already records the document status for the
+	// user-facing workflow.
+	logKnowledgeImageEvent("pdf_image_extraction_unavailable", SourceKindPDF, 0)
 	return nil, nil, nil
 }
 
-// extractPDFImagesWithCLI uses pdfcpu (if installed) to extract images.
-// pdfcpu writes extracted images to a temp directory.
-func extractPDFImagesWithCLI(source Source, filePath string, textNodes []DocumentNode) ([]DocumentNode, map[string][]byte, error) {
-	// Check if pdfcpu is available
-	pdfcpuPath, err := exec.LookPath("pdfcpu")
+// extractPDFImagesNative extracts through the supported in-process GoPDF2
+// reader without spawning an external command.
+//
+// Some PDF filters represent raw pixel planes rather than an encoded image
+// file. Those are deliberately skipped here: persisting bytes under a made-up
+// .png extension would produce an unopenable knowledge asset. An image is
+// accepted only when the standard decoder recognizes its serialized bytes.
+func extractPDFImagesNative(source Source, filePath string, textNodes []DocumentNode) ([]DocumentNode, map[string][]byte, error) {
+	pdfData, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("pdfcpu not found: %w", err)
+		return nil, nil, fmt.Errorf("read PDF: %w", err)
 	}
-
-	// Create temp directory for extracted images
-	tmpDir, err := os.MkdirTemp("", "maclaw-pdf-images-*")
+	pages, err := safeExtractPDFImages(pdfData)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create temp dir: %w", err)
+		return nil, nil, fmt.Errorf("extract PDF images: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
-
-	// Run pdfcpu extract images
-	cmd := exec.Command(pdfcpuPath, "extract", "-mode", "image", filePath, tmpDir)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, nil, fmt.Errorf("pdfcpu extract: %w (output: %s)", err, truncateBytes(output, 200))
-	}
-
-	// Read extracted images from temp directory
-	entries, err := os.ReadDir(tmpDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read temp dir: %w", err)
-	}
-
-	var nodes []DocumentNode
-	imageBytes := make(map[string][]byte)
-
-	// Build page text context map
 	pageTextMap := buildPageTextMap(textNodes)
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	imageBytes := make(map[string][]byte)
+	nodes := make([]DocumentNode, 0)
+	for _, pageIndex := range sortedPDFImagePages(pages) {
+		images := pages[pageIndex]
+		pageNumber := pageIndex + 1
+		for imageIndex, extracted := range images {
+			data := extracted.Data
+			// Avoid image.DecodeConfig on trivially small decorative objects.
+			if len(data) < 500 {
+				continue
+			}
+			_, detectedFormat, decodeErr := image.DecodeConfig(bytes.NewReader(data))
+			if decodeErr != nil || !isImageFileExt("."+detectedFormat) {
+				continue
+			}
+			nodeID := NewID("kdn")
+			metadata := map[string]string{
+				MetaImageFormat:    normalizeFormatName("." + detectedFormat),
+				"_image_bytes_key": nodeID,
+			}
+			if context := pageTextMap[pageNumber]; context != "" {
+				metadata["context_before"] = context
+			}
+			nodes = append(nodes, DocumentNode{
+				ID:       nodeID,
+				SourceID: source.ID,
+				Type:     NodeTypeImage,
+				Title:    fmt.Sprintf("PDF image %d.%d", pageNumber, imageIndex+1),
+				Page:     pageNumber,
+				Metadata: metadata,
+			})
+			imageBytes[nodeID] = data
 		}
-		name := entry.Name()
-		ext := filepath.Ext(name)
-		if !isImageFileExt(ext) {
-			continue
-		}
-
-		imgPath := filepath.Join(tmpDir, name)
-		data, err := os.ReadFile(imgPath)
-		if err != nil {
-			continue
-		}
-		// Skip tiny images (decorative icons)
-		if len(data) < 500 {
-			continue
-		}
-
-		// Try to determine page number from filename (pdfcpu format: "pageN_imageM.ext")
-		pageNum := parsePageFromFilename(name)
-		context := pageTextMap[pageNum]
-
-		nodeID := NewID("kdn")
-		metadata := map[string]string{
-			MetaImageFormat:    normalizeFormatName(ext),
-			"_image_bytes_key": nodeID,
-		}
-		if context != "" {
-			metadata["context_before"] = context
-		}
-		if IsVectorImageExt(ext) {
-			metadata[MetaImageIsVector] = "true"
-		}
-
-		nodes = append(nodes, DocumentNode{
-			ID:       nodeID,
-			SourceID: source.ID,
-			Type:     NodeTypeImage,
-			Page:     pageNum,
-			Metadata: metadata,
-		})
-		imageBytes[nodeID] = data
 	}
-
 	if len(nodes) == 0 {
 		return nil, nil, nil
 	}
 	return nodes, imageBytes, nil
 }
 
-// extractPDFImagesNative is a placeholder for Go-native PDF image extraction.
-// TODO: Implement using pdfcpu Go library (github.com/pdfcpu/pdfcpu/pkg/api)
-// when added as a dependency. This avoids the CLI requirement.
-func extractPDFImagesNative(source Source, filePath string, textNodes []DocumentNode) ([]DocumentNode, map[string][]byte, error) {
-	return nil, nil, fmt.Errorf("native PDF image extraction not yet implemented")
+// sortedPDFImagePages preserves document order. GoPDF2 returns a map keyed by
+// zero-based page index, whose randomized iteration order would otherwise make
+// image-node ordering and downstream indexing nondeterministic.
+func sortedPDFImagePages(pages map[int][]gopdf2.ExtractedImage) []int {
+	pageIndexes := make([]int, 0, len(pages))
+	for pageIndex := range pages {
+		pageIndexes = append(pageIndexes, pageIndex)
+	}
+	sort.Ints(pageIndexes)
+	return pageIndexes
+}
+
+// safeExtractPDFImages keeps malformed PDF image resources from unwinding the
+// import worker. Image assets enrich a successfully parsed document, so an
+// extraction panic is reported as a normal import error and can follow the
+// caller's existing fallback/error policy.
+func safeExtractPDFImages(pdfData []byte) (pages map[int][]gopdf2.ExtractedImage, err error) {
+	return safeExtractPDFImagesWith(pdfData, gopdf2.ExtractImagesFromAllPages)
+}
+
+func safeExtractPDFImagesWith(pdfData []byte, extract func([]byte) (map[int][]gopdf2.ExtractedImage, error)) (pages map[int][]gopdf2.ExtractedImage, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			pages = nil
+			err = fmt.Errorf("extract PDF images panicked: %v", recovered)
+		}
+	}()
+	return extract(pdfData)
 }
 
 // --- helpers ---
@@ -153,27 +142,6 @@ func buildPageTextMap(textNodes []DocumentNode) map[int]string {
 		}
 	}
 	return result
-}
-
-// parsePageFromFilename tries to extract page number from pdfcpu output filenames.
-// Common formats: "page_1_image_1.png", "1_image_1.png", etc.
-func parsePageFromFilename(name string) int {
-	name = strings.TrimSuffix(name, filepath.Ext(name))
-	parts := strings.Split(name, "_")
-	for i, p := range parts {
-		if (p == "page" || p == "p") && i+1 < len(parts) {
-			if n, err := strconv.Atoi(parts[i+1]); err == nil {
-				return n
-			}
-		}
-	}
-	// Try first numeric part
-	for _, p := range parts {
-		if n, err := strconv.Atoi(p); err == nil && n > 0 && n < 10000 {
-			return n
-		}
-	}
-	return 0
 }
 
 func isImageFileExt(ext string) bool {

@@ -29,6 +29,8 @@ type LoopContext struct {
 	replansSealed                       bool  // final response won the accept/commit race; reject later steering
 	currentOperationCancel              context.CancelFunc
 	currentOperation                    *loopReplannableOperation
+	cancelHooks                         map[uint64]func()
+	nextCancelHookID                    uint64
 	backgroundTaskBoundaryExtensionKeys map[string]struct{}
 
 	Conversation []interface{}             // this loop's conversation messages
@@ -48,6 +50,11 @@ type LoopContext struct {
 	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
 	StartedAt  time.Time    // when this loop was spawned
 	Runtime    RuntimeContext
+	// ComputerUseBlockedForLocalFileWork is a per-turn control-plane fence. It
+	// survives tool recovery and dynamic augmentation so a staged attachment
+	// cannot accidentally re-enable desktop automation later in the same loop.
+	// Explicit @computer / "computer use" requests never set this flag.
+	ComputerUseBlockedForLocalFileWork bool
 	// ClientTools and ClientToolContext are immutable per-turn snapshots. They
 	// keep dynamically declared device tools out of the global tool registry.
 	ClientTools       []agent.ClientToolDefinition
@@ -94,6 +101,11 @@ type LoopContext struct {
 	// model output before it reaches workflow persistence or UI.
 	WorkflowPhaseID string
 
+	// WorkflowID is the durable V2 workflow identity. Coding runtime tasks use
+	// it for a stable Workflow/Phase projection; LoopContext.ID is only a
+	// per-process execution-loop identity and must never be substituted here.
+	WorkflowID string
+
 	// SkipWorkflowDocCapture is set for workflow-launched execution paths whose
 	// response is already a terminal execution report rather than a reviewable
 	// phase document (e.g. pure-coding workbench turns that already emit a final report).
@@ -112,7 +124,6 @@ type LoopContext struct {
 	// It keeps group-originated knowledge and filesystem access scoped all the
 	// way through tool selection and execution.
 	LansengerGroupPermissions *lansengerGroupPermissionPolicy
-
 	// IsAskUserResponse is true when the current message is a response to a
 	// previous ask_user tool question. In this case the user's text is a
 	// continuation of an existing task, not a new independent request. The
@@ -404,13 +415,75 @@ func (c *LoopContext) SetLoopState(s LoopState) {
 // Cancel signals the loop to stop.
 func (c *LoopContext) Cancel() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	select {
 	case <-c.CancelC:
 		// already closed
+		c.mu.Unlock()
+		return
 	default:
 		close(c.CancelC)
 	}
+	hooks := make([]func(), 0, len(c.cancelHooks))
+	for _, hook := range c.cancelHooks {
+		hooks = append(hooks, hook)
+	}
+	// A completed coding attempt unregisters itself. Retaining callbacks after
+	// cancellation would only keep host/store references alive while this loop
+	// unwinds.
+	c.cancelHooks = nil
+	c.mu.Unlock()
+	// Hooks persist the durable cancellation boundary (for example a coding
+	// runtime task). Run them after releasing the loop lock: SQLite can block
+	// briefly, and hook code must never re-enter LoopContext while it is held.
+	for _, hook := range hooks {
+		if hook != nil {
+			hook()
+		}
+	}
+}
+
+// RegisterCancelHook binds a short, host-owned cleanup action to this loop's
+// explicit cancellation boundary. It is used for durable runtime cancellation
+// in addition to the normal in-process CancelC signal. The returned function
+// unregisters the hook once the operation reaches its own terminal state.
+func (c *LoopContext) RegisterCancelHook(hook func()) func() {
+	if c == nil || hook == nil {
+		return func() {}
+	}
+	c.mu.Lock()
+	if c.isCancelledLocked() {
+		c.mu.Unlock()
+		hook()
+		return func() {}
+	}
+	c.nextCancelHookID++
+	id := c.nextCancelHookID
+	if c.cancelHooks == nil {
+		c.cancelHooks = make(map[uint64]func())
+	}
+	c.cancelHooks[id] = hook
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		delete(c.cancelHooks, id)
+		c.mu.Unlock()
+	}
+}
+
+// RegisterCancelHookForContext additionally removes the hook when ctx ends.
+// It is appropriate for an individual runtime Attempt: a regular operation
+// completion must not leave a stale hook that cancels a later task in the
+// same user loop.
+func (c *LoopContext) RegisterCancelHookForContext(ctx context.Context, hook func()) func() {
+	unregister := c.RegisterCancelHook(hook)
+	if ctx == nil {
+		return unregister
+	}
+	go func() {
+		<-ctx.Done()
+		unregister()
+	}()
+	return unregister
 }
 
 // isCancelledLocked reports cancellation while c.mu is held. Cancel closes

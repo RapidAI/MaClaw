@@ -67,6 +67,32 @@ func TestTaskRunnerParallelWave(t *testing.T) {
 	}
 }
 
+func TestCodingWorkbenchParallelWriterAdmission(t *testing.T) {
+	project := t.TempDir()
+	base := func(filesA, filesB []string) []*v2.TaskItem {
+		return []*v2.TaskItem{
+			{Index: 1, Title: "implement auth", Description: "write auth", Files: filesA},
+			{Index: 2, Title: "implement billing", Description: "write billing", Files: filesB},
+		}
+	}
+	if !codingWorkbenchCanRunParallelWriterWave(codingRequestImplementation, true, codingWorktreeModeAuto, project, base([]string{"internal/auth/service.go"}, []string{"internal/billing/service.go"})) {
+		t.Fatal("disjoint declared writer wave should be admitted")
+	}
+	for _, wave := range [][]*v2.TaskItem{
+		base(nil, []string{"internal/billing/service.go"}),
+		base([]string{"internal/auth/"}, []string{"internal/auth/service.go"}),
+		base([]string{"../escape.go"}, []string{"internal/billing/service.go"}),
+		base([]string{"internal/auth/*.go"}, []string{"internal/billing/service.go"}),
+	} {
+		if codingWorkbenchCanRunParallelWriterWave(codingRequestImplementation, true, codingWorktreeModeAuto, project, wave) {
+			t.Fatalf("unsafe writer wave admitted: %+v", wave)
+		}
+	}
+	if codingWorkbenchCanRunParallelWriterWave(codingRequestImplementation, true, codingWorktreeModeOff, project, base([]string{"a.go"}, []string{"b.go"})) {
+		t.Fatal("worktree-off writer wave must remain serial")
+	}
+}
+
 func TestParseRemoteVerifyExitCode(t *testing.T) {
 	if parseRemoteVerifyExitCode("ok\n__MACLAW_VERIFY_EXIT:0__\n") != 0 {
 		t.Fatal("want 0")

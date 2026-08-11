@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	_ "modernc.org/sqlite"
 )
 
@@ -618,7 +619,8 @@ func (s *GroupDiscussionHistoryStore) materializeInlineTextAttachments(ctx conte
 				if err != nil || len(decoded) == 0 {
 					continue
 				}
-				filename := safeGroupDiscussionFilename(att.Filename)
+				filename := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
+				filename = safeGroupDiscussionFilename(filename)
 				if filename == "" {
 					filename = fmt.Sprintf("text-%d.txt", j+1)
 				}
@@ -632,7 +634,7 @@ func (s *GroupDiscussionHistoryStore) materializeInlineTextAttachments(ctx conte
 				}
 				localPath := filepath.Join(root, localName)
 				if _, statErr := os.Stat(localPath); statErr != nil {
-					if writeErr := os.WriteFile(localPath, decoded, 0o644); writeErr != nil {
+					if writeErr := os.WriteFile(localPath, decoded, 0o600); writeErr != nil {
 						continue
 					}
 				}

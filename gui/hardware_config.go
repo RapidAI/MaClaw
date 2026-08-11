@@ -19,20 +19,24 @@ const hardwareWelcomeMaxWAVBytes = 96 * 1024
 const hardwareWelcomeMinPeak = 32
 const hardwareWelcomeSpeechSpeed float32 = 0.82
 
-var hardwareWelcomeVoiceIDs = map[string]struct{}{
-	tts.DefaultEnglishTTSVoiceID: {},
-	tts.EnglishFemaleTTSVoiceID:  {},
-}
+// Keep a little headroom below the device's hard limit when automatically
+// increasing speech speed. This accommodates small duration differences
+// between Kokoro voices while preserving the normal, slower delivery whenever
+// it already fits.
+const hardwareWelcomeTargetWAVBytes = hardwareWelcomeMaxWAVBytes * 94 / 100
+const hardwareWelcomeMaxSpeechSpeed float32 = 1.25
+const hardwareWelcomeMaxDurationSeconds = float64(hardwareWelcomeMaxWAVBytes-44) / float64(audioconv.TargetSampleRate*audioconv.TargetChannels*(audioconv.TargetBitsPerSamp/8))
+const hardwareWelcomeMaxSynthesisAttempts = 3
 
 func normalizeHardwareWelcomeVoiceID(voiceID string) (string, error) {
 	voiceID = strings.TrimSpace(voiceID)
 	if voiceID == "" {
 		return tts.EnglishFemaleTTSVoiceID, nil
 	}
-	if _, ok := hardwareWelcomeVoiceIDs[voiceID]; !ok {
-		return "", fmt.Errorf("unsupported English welcome voice %q", voiceID)
+	if tts.IsSupportedTTSVoiceID(voiceID) {
+		return voiceID, nil
 	}
-	return voiceID, nil
+	return "", fmt.Errorf("unsupported welcome voice %q", voiceID)
 }
 
 func hardwareWelcomePCM16Peak(wav []byte) (int, error) {
@@ -77,6 +81,10 @@ func hardwareWelcomeConfigChanged(oldConfig, newConfig corelib.AppConfig) bool {
 
 func hardwareVolumeChanged(oldConfig, newConfig corelib.AppConfig) bool {
 	return oldConfig.HardwareVolume != newConfig.HardwareVolume
+}
+
+func hardwareBrightnessChanged(oldConfig, newConfig corelib.AppConfig) bool {
+	return oldConfig.HardwareBrightness != newConfig.HardwareBrightness
 }
 
 func (a *App) hardwareWelcomePath() string {
@@ -137,6 +145,80 @@ func prepareHardwareWelcomeWAV(wav []byte) ([]byte, error) {
 		return nil, fmt.Errorf("welcome audio is silent or too quiet to play (PCM peak %d)", peak)
 	}
 	return normalized, nil
+}
+
+func hardwareWelcomeDurationSeconds(wav []byte) float64 {
+	if len(wav) <= 44 {
+		return 0
+	}
+	return float64(len(wav)-44) / float64(audioconv.TargetSampleRate*audioconv.TargetChannels*(audioconv.TargetBitsPerSamp/8))
+}
+
+func hardwareWelcomeTooLongError(wav []byte) error {
+	return fmt.Errorf("welcome audio is too long after conversion (%.1f seconds; maximum %.1f seconds); shorten the welcome text", hardwareWelcomeDurationSeconds(wav), hardwareWelcomeMaxDurationSeconds)
+}
+
+func hardwareWelcomeSynthesisSpeed(wavBytes int) (float32, bool) {
+	if wavBytes <= hardwareWelcomeMaxWAVBytes {
+		return hardwareWelcomeSpeechSpeed, false
+	}
+	// At a fixed sample rate the payload duration is inversely proportional to
+	// Kokoro's speed setting. Aim below the cap rather than cutting samples,
+	// which would truncate the end of the greeting.
+	speed := hardwareWelcomeSpeechSpeed * float32(wavBytes) / float32(hardwareWelcomeTargetWAVBytes)
+	return speed, speed <= hardwareWelcomeMaxSpeechSpeed
+}
+
+// synthesizeHardwareWelcomeWAV preserves the deliberately relaxed default
+// speaking pace, then retries with a bounded faster pace when its PCM payload
+// exceeds the ESP32's 96 KiB storage budget. Duration prediction is rounded
+// per phoneme, so a small bounded retry loop is more reliable than assuming
+// payload size scales perfectly with speed.
+func synthesizeHardwareWelcomeWAV(synthesize func(speed float32) ([]byte, error)) ([]byte, error) {
+	if synthesize == nil {
+		return nil, fmt.Errorf("welcome audio synthesizer is unavailable")
+	}
+
+	normalize := func(speed float32) ([]byte, error) {
+		wav, err := synthesize(speed)
+		if err != nil {
+			return nil, err
+		}
+		wav, err = audioconv.ToWAV(wav, audioconv.FormatWAV)
+		if err != nil {
+			return nil, fmt.Errorf("convert generated audio: %w", err)
+		}
+		return wav, nil
+	}
+
+	speed := hardwareWelcomeSpeechSpeed
+	var wav []byte
+	for attempt := 0; attempt < hardwareWelcomeMaxSynthesisAttempts; attempt++ {
+		var err error
+		wav, err = normalize(speed)
+		if err != nil {
+			return nil, err
+		}
+		if len(wav) <= hardwareWelcomeMaxWAVBytes {
+			return prepareHardwareWelcomeWAV(wav)
+		}
+
+		nextSpeed, canRetry := hardwareWelcomeSynthesisSpeed(len(wav))
+		if !canRetry {
+			return nil, hardwareWelcomeTooLongError(wav)
+		}
+		// Kokoro rounds each phoneme's duration independently, so an unchanged
+		// payload can calculate the same speed again. Nudge forward to make each
+		// bounded retry meaningful.
+		if nextSpeed <= speed {
+			nextSpeed = speed + 0.02
+		}
+		if nextSpeed > hardwareWelcomeMaxSpeechSpeed {
+			return nil, hardwareWelcomeTooLongError(wav)
+		}
+		speed = nextSpeed
+	}
+	return nil, hardwareWelcomeTooLongError(wav)
 }
 
 func (a *App) saveHardwareWelcomeWAV(wav []byte) (string, error) {
@@ -207,24 +289,22 @@ func (a *App) GenerateHardwareWelcomeAudio(text, requestedVoiceID string) (strin
 	if err != nil {
 		return "", err
 	}
-	voiceID, err = ensureKokoroEnglishVoice(voiceDir, voiceID)
+	voiceID, err = ensureKokoroWelcomeVoice(voiceDir, voiceID)
 	if err != nil {
 		return "", err
 	}
-	// The normal application TTS voice is Mandarin. Welcome is a short English
-	// product signature, so synthesize it with a native English voice instead of
-	// asking the Mandarin speaker to imitate English phonemes.
+	// Let users choose any installed Kokoro voice. Text-to-phoneme conversion
+	// still detects Chinese and English automatically; the selected voice only
+	// controls the speaker identity.
 	welcomeTTS := tts.NewKokoroManager(modelPath, voiceDir, voiceID)
 	defer welcomeTTS.Unload()
 	// A measured pace helps this short product signature survive the ESP32's
 	// 16 kHz conversion without changing the text stored and shown in settings.
-	wav, err := welcomeTTS.SynthesizeTextAtSpeed(text, hardwareWelcomeSpeechSpeed)
+	wav, err := synthesizeHardwareWelcomeWAV(func(speed float32) ([]byte, error) {
+		return welcomeTTS.SynthesizeTextAtSpeed(text, speed)
+	})
 	if err != nil {
 		return "", err
-	}
-	wav, err = audioconv.ToWAV(wav, audioconv.FormatWAV)
-	if err != nil {
-		return "", fmt.Errorf("convert generated audio: %w", err)
 	}
 	path, err := a.saveHardwareWelcomeWAV(wav)
 	if err != nil {
@@ -336,6 +416,27 @@ func (a *App) SyncHardwareVolume() error {
 		return nil
 	}
 	return hub.SendDeviceGatewayHardwareConfig(map[string]any{"volume": cfg.HardwareVolume})
+}
+
+// SyncHardwareBrightness makes the selected backlight level durable in Hub
+// mode, mirroring SyncHardwareVolume. Hub only forwards the level to devices
+// that declared brightness control in their capability handshake.
+func (a *App) SyncHardwareBrightness() error {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	if !cfg.HardwareEnabled {
+		return nil
+	}
+	if cfg.HardwareBrightness < 0 || cfg.HardwareBrightness > 100 {
+		return fmt.Errorf("hardware brightness must be between 0 and 100")
+	}
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		return nil
+	}
+	return hub.SendDeviceGatewayHardwareConfig(map[string]any{"brightness": cfg.HardwareBrightness})
 }
 
 func (a *App) loadHardwareWelcomeWAV() ([]byte, error) {

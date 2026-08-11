@@ -6,6 +6,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestHasCodingImageAttachment(t *testing.T) {
@@ -57,6 +58,103 @@ func TestShouldUseRemoteCodingIsolate(t *testing.T) {
 	}
 }
 
+func TestRemoteIsolateMergeGateRejectsUnsafeClaimsAndRequiresCompleteFrame(t *testing.T) {
+	for _, writes := range [][]string{nil, {"."}, {"./internal/config.go"}, {"internal/../config.go"}, {"../outside.go"}, {"/etc/passwd"}, {"*.go"}, {"internal/${target}.go"}} {
+		if err := validateRemoteIsolateWriteClaims(writes); err == nil {
+			t.Fatalf("unsafe remote isolate write set accepted: %#v", writes)
+		}
+	}
+	if err := validateRemoteIsolateWriteClaims([]string{"cmd/app/", "internal/config.go"}); err != nil {
+		t.Fatalf("valid write set rejected: %v", err)
+	}
+	start, end := "__REMOTE_BEGIN__", "__REMOTE_END__"
+	if remoteIsolateMergeFrameComplete("echo "+start+" "+end, start, end) {
+		t.Fatal("single echoed marker line was accepted as an executed merge frame")
+	}
+	if remoteIsolateMergeFrameComplete("echo "+start+"\n"+start+"\nresult\n", start, end) {
+		t.Fatal("incomplete merge frame was accepted")
+	}
+	if !remoteIsolateMergeFrameComplete("echo "+start+" "+end+"\n"+start+"\nmerged\n"+end+"\n", start, end) {
+		t.Fatal("final complete merge frame was rejected")
+	}
+}
+
+func TestRemoteIsolateFrozenWriteScopeContainsOnlyClaimedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		claim string
+		file  string
+		want  bool
+	}{
+		{"internal/config.go", "internal/config.go", true},
+		{"internal/config.go", "internal/other.go", false},
+		{"cmd/", "cmd/app/main.go", true},
+		{"cmd/", "cmdx/main.go", false},
+		{"cmd", "cmd/main.go", false},
+		{"cmd/", "cmd/../secret.go", false},
+	} {
+		if got := remoteIsolateClaimContainsFile(tc.claim, tc.file); got != tc.want {
+			t.Fatalf("claim %q file %q = %v, want %v", tc.claim, tc.file, got, tc.want)
+		}
+	}
+}
+
+func TestRemoteIsolateAlwaysModeFailsClosed(t *testing.T) {
+	if !remoteIsolateCreationMustFailClosed(codingWorktreeModeAlways) {
+		t.Fatal("always mode must not fall back to the primary remote workspace")
+	}
+	if remoteIsolateCreationMustFailClosed(codingWorktreeModeAuto) || remoteIsolateCreationMustFailClosed(codingWorktreeModeOff) {
+		t.Fatal("only always mode should require a remote isolate")
+	}
+}
+
+func TestManagedRemoteCodingIsolatePathRejectsUntrustedDeleteTargets(t *testing.T) {
+	for _, value := range []string{"/tmp/maclaw-wt-1", "/tmp/maclaw-coding-2"} {
+		if !isManagedRemoteCodingIsolatePath(value) {
+			t.Fatalf("managed isolate path rejected: %q", value)
+		}
+	}
+	for _, value := range []string{"", "/tmp", "/tmp/../etc", "/srv/app", "/tmp/other/maclaw-wt-1", "/tmp/maclaw-wt-1/child"} {
+		if isManagedRemoteCodingIsolatePath(value) {
+			t.Fatalf("untrusted isolate path accepted: %q", value)
+		}
+	}
+}
+
+func TestRemoteConflictResolutionRequiresFrozenScope(t *testing.T) {
+	c := codingWorkbenchConflict{Path: "/tmp/maclaw-wt-1", Files: []string{"internal/", "README.md"}}
+	if got, err := validateRemoteConflictFileWithinFrozenScope(c, "internal/config.go"); err != nil || got != "internal/config.go" {
+		t.Fatalf("valid scoped conflict file = %q, %v", got, err)
+	}
+	for _, file := range []string{"other.go", "internal/../secret.go", "/etc/passwd"} {
+		if _, err := validateRemoteConflictFileWithinFrozenScope(c, file); err == nil {
+			t.Fatalf("unscoped conflict file accepted: %q", file)
+		}
+	}
+	if _, err := remoteConflictExactFilesForBulkResolution(c, nil); err == nil {
+		t.Fatal("remote bulk resolution must require explicit files")
+	}
+	files, err := remoteConflictExactFilesForBulkResolution(c, []string{"internal/config.go", "README.md"})
+	if err != nil || len(files) != 2 {
+		t.Fatalf("selected scoped files = %#v, %v", files, err)
+	}
+}
+
+func TestRemoteGitWorktreeMergeCommandIsFailClosed(t *testing.T) {
+	command := remoteGitWorktreeMergeCommand("/tmp/maclaw-wt-1", "/srv/repo", 7, []string{"internal/", "cmd/app/main.go"}, "BEGIN", "END")
+	for _, required := range []string{
+		"test \"$#\" -gt 0", "undeclared isolate write", "git status --porcelain", "git cherry-pick --allow-empty", "git cherry-pick --abort", "BEGIN", "END",
+	} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("controlled remote merge command lacks %q: %s", required, command)
+		}
+	}
+	for _, forbidden := range []string{"rsync -a", "cp -a"} {
+		if strings.Contains(command, forbidden) {
+			t.Fatalf("controlled remote merge command retains unsafe fallback %q: %s", forbidden, command)
+		}
+	}
+}
+
 func TestRecordStickyCodingRoute(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := "desktop-user:route-test"
@@ -96,6 +194,85 @@ func TestCodingRouteCapabilitiesWithoutRouter(t *testing.T) {
 	md := h.formatCodingRouteCapabilitiesMarkdown()
 	if !strings.Contains(md, "ModelRouter") || !strings.Contains(md, "reasoning") {
 		t.Fatalf("md=%s", md)
+	}
+}
+
+func TestCodingRouteKeepsCodingProfileSnapshot(t *testing.T) {
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskReasoning): {
+			Model:    "coding-reasoning",
+			URL:      "https://coding-route.example/v1",
+			Provider: "Coding route",
+		},
+	})
+	h := &IMMessageHandler{app: app}
+	base := corelib.MaclawLLMConfig{
+		URL: "https://coding-base.example/v1", Key: "coding-key", Model: "coding-base",
+		ProviderName: "Coding provider", ProviderID: "coding-provider-id", Profile: "coding", RouteSource: "base",
+	}
+
+	routed := h.applyCodingRoutePreference("coding-route-test", base, false)
+	if routed.Model != "coding-reasoning" || routed.URL != "https://coding-route.example/v1" || routed.ProviderName != "Coding route" {
+		t.Fatalf("unexpected coding route: %+v", routed)
+	}
+	if routed.Profile != "coding" || routed.ProviderID != "coding-provider-id" || routed.RouteSource != "route" {
+		t.Fatalf("route lost coding attribution: %+v", routed)
+	}
+}
+
+func TestLocalCodingRouteTurnKeepsCodingProfileSnapshot(t *testing.T) {
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskReasoning): {Model: "routed-model"},
+	})
+	base := corelib.MaclawLLMConfig{Model: "coding-base", ProviderName: "Coding", ProviderID: "coding-id", Profile: "coding", RouteSource: "base"}
+	cb := &codingSubAgentCallbacks{subagent: NewCodingSubAgent(&IMMessageHandler{app: app}, base, nil, "", nil)}
+	routed, decision, applied := cb.RouteTurn("implement")
+	if !applied || decision.Source != "route" || routed.Model != "routed-model" {
+		t.Fatalf("unexpected local coding route: cfg=%+v decision=%+v applied=%v", routed, decision, applied)
+	}
+	if routed.Profile != "coding" || routed.ProviderID != "coding-id" || routed.RouteSource != "route" {
+		t.Fatalf("local route lost coding attribution: %+v", routed)
+	}
+}
+
+func TestRemoteCodingRouteTurnKeepsCodingProfileSnapshot(t *testing.T) {
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskReasoning): {Model: "remote-routed-model"},
+	})
+	base := corelib.MaclawLLMConfig{Model: "coding-base", ProviderName: "Coding", ProviderID: "coding-id", Profile: "coding", RouteSource: "base"}
+	cb := &remoteCodingCallbacks{agent: NewRemoteCodingSubAgent(&IMMessageHandler{app: app}, base, nil, "session", "work", "project", nil)}
+	routed, decision, applied := cb.RouteTurn("implement")
+	if !applied || decision.Source != "route" || routed.Model != "remote-routed-model" {
+		t.Fatalf("unexpected remote coding route: cfg=%+v decision=%+v applied=%v", routed, decision, applied)
+	}
+	if routed.Profile != "coding" || routed.ProviderID != "coding-id" || routed.RouteSource != "route" {
+		t.Fatalf("remote route lost coding attribution: %+v", routed)
+	}
+}
+
+func TestCodingLightweightConfigUsesCodingProfile(t *testing.T) {
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskFast): {Model: "coding-fast"},
+	})
+	base := corelib.MaclawLLMConfig{URL: "https://coding.example/v1", Key: "coding-key", Model: "coding-base", ProviderName: "Coding", ProviderID: "coding-id", Profile: "coding", RouteSource: "base"}
+	// A standalone handler lets the test isolate the coding accessor's source
+	// config without creating a persisted AppConfig.
+	h := &IMMessageHandler{app: app, standaloneConfig: &StandaloneConfig{LLMConfigFunc: func() corelib.MaclawLLMConfig { return base }}}
+	cfg := h.getCodingLightweightLLMConfig()
+	if cfg.Model != "coding-fast" || cfg.Profile != "coding" || cfg.ProviderID != "coding-id" || cfg.RouteSource != "route" {
+		t.Fatalf("coding lightweight config lost coding attribution: %+v", cfg)
+	}
+}
+
+func TestLoopUsageUsesFinalRoutedCodingModel(t *testing.T) {
+	base := corelib.MaclawLLMConfig{Model: "coding-base", ProviderName: "Coding", ProviderID: "coding-id", Profile: "coding", RouteSource: "base"}
+	final := finalLLMConfigForLoopUsage(base, agent.LoopResult{Route: agent.RouteDecision{Model: "coding-reasoning", Provider: "Coding route", Source: "route"}})
+	if final.Model != "coding-reasoning" || final.ProviderName != "Coding route" || final.Profile != "coding" || final.ProviderID != "coding-id" || final.RouteSource != "route" {
+		t.Fatalf("final coding usage config = %+v", final)
 	}
 }
 

@@ -112,10 +112,18 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if loopCtx.WorkflowAgentLoop && loopCtx.WorkflowPhaseID == "" {
 		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
 			if state := wf.machine.GetActive(msg.UserID); state != nil {
+				loopCtx.WorkflowID = state.ID
 				if phase := state.ActivePhase(); phase != nil {
 					loopCtx.WorkflowPhaseID = phase.ID
 					loopCtx.WorkflowDocPhase = phase.NeedsConfirm
 				}
+			}
+		}
+	}
+	if loopCtx.WorkflowAgentLoop && loopCtx.WorkflowID == "" {
+		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+			if state := wf.machine.GetActive(msg.UserID); state != nil {
+				loopCtx.WorkflowID = state.ID
 			}
 		}
 	}

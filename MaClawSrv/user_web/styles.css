@@ -422,6 +422,19 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .settings-actions .badge { margin-right: 4px; box-shadow: none; }
 .settings-actions button { min-width: 72px; }
+.hardware-device-manager { margin-top: 18px; }
+.hardware-device-card, .hardware-expert-manager {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+}
+.hardware-device-form, .hardware-expert-form { margin-top: 12px; }
+.hardware-prompt-label { grid-column: 1 / -1; }
+.hardware-prompt-label textarea { min-height: 84px; resize: vertical; }
+.hardware-expert-manager > summary { cursor: pointer; font-weight: 650; }
+.hardware-expert-manager > .stack { margin-top: 12px; }
+.hardware-expert-row { padding: 8px 0; border-top: 1px solid var(--line); }
 .action-row { justify-content: flex-end; }
 .error { color: var(--danger); }
 #issues .error { display: grid; gap: 3px; margin: 0; border: 1px solid rgba(180, 35, 24, .18); border-radius: 8px; padding: 10px 12px; background: var(--danger-soft); }

@@ -91,9 +91,31 @@ func migrateV1SpreadsheetSourcesToV2(ctx context.Context, tx *sql.Tx) error {
 			}
 			continue
 		}
-		if _, err := importSpreadsheetSourceV2(ctx, tx, source, path, source.Kind); err != nil {
+		// A v1 source's stored hash identifies the version that produced its
+		// existing document nodes. Do not let an open-time migration rebuild
+		// structured rows from a later replacement at the same user-controlled
+		// path. The owned snapshot also prevents the spreadsheet reader from
+		// reopening a file that changes after its preflight.
+		input, snapshotErr := prepareKnowledgeDocumentInput(path, source.Kind)
+		if snapshotErr != nil {
+			if err := migrateV1SpreadsheetNodesDegraded(ctx, tx, source); err != nil {
+				return err
+			}
+			continue
+		}
+		verifiedHash, hashErr := fileSHA256(input.path)
+		if hashErr != nil || strings.TrimSpace(source.ContentHash) == "" || verifiedHash != source.ContentHash {
+			input.close()
+			if err := migrateV1SpreadsheetNodesDegraded(ctx, tx, source); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := importSpreadsheetSourceV2(ctx, tx, source, input.path, source.Kind); err != nil {
+			input.close()
 			return fmt.Errorf("knowledge sqlite reimport spreadsheet %s v1->v2: %w", source.ID, err)
 		}
+		input.close()
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("knowledge sqlite iterate spreadsheet sources v1->v2: %w", err)

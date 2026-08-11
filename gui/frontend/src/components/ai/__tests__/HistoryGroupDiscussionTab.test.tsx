@@ -421,6 +421,28 @@ describe("HistoryGroupDiscussionTab", () => {
         expect(openFileMock).not.toHaveBeenCalled();
     });
 
+    it("does not render a mislabelled Office document as an image attachment", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            messages: [{
+                id: "m-office-image",
+                from_id: "ve-a",
+                from_name: "VE",
+                content: "attachment",
+                created_at: "2026-01-01T00:00:00Z",
+                image_attachments: [{
+                    filename: "cover.png",
+                    mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    file_url: "/api/ve/files/file-office",
+                }],
+            }],
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Attachments" readOnly={true} theme={theme} lang="en" />);
+
+        const attachment = await screen.findByTestId("group-msg-att-m-office-image-0");
+        expect(attachment.textContent).toContain("FILE");
+        expect(attachment.textContent).not.toContain("IMG");
+    });
+
     it("shows named participants and roles for review context", async () => {
         getDetailMock.mockResolvedValue(detail({
             discussion: { participant_ids: ["me", "ve-a", "external-lawyer"] },

@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,39 @@ func TestWaitForOutput_TimeoutInterruptsWithoutSignal(t *testing.T) {
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "命令执行超时") {
 		t.Fatalf("expected timeout notice, got %q", joined)
+	}
+}
+
+// TestWaitForOutputContextCancellationReturnsWithoutTimeoutSideEffect covers
+// the runtime-child path. A cancelled reader must stop waiting quickly, but
+// must not turn its local cancellation into the timeout/Ctrl+C behavior that
+// could interrupt another caller sharing the same SSH session.
+func TestWaitForOutputContextCancellationReturnsWithoutTimeoutSideEffect(t *testing.T) {
+	mgr := NewSSHSessionManager(nil)
+	s := &SSHManagedSession{
+		ID:           "sess-context-cancel",
+		Status:       SessionRunning,
+		PreviewLines: []string{"command is still running"},
+		CreatedAt:    time.Now(),
+	}
+	mgr.mu.Lock()
+	mgr.sessions[s.ID] = s
+	mgr.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(80*time.Millisecond, cancel)
+	start := time.Now()
+	lines, status := mgr.WaitForOutputContext(ctx, s.ID, 0, 10*time.Second)
+	elapsed := time.Since(start)
+
+	if status != SessionRunning {
+		t.Fatalf("status=%s, want running", status)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("context cancellation did not stop wait promptly: %v", elapsed)
+	}
+	if joined := strings.Join(lines, "\n"); strings.Contains(joined, "命令执行超时") {
+		t.Fatalf("context cancellation must not report timeout/interrupt: %q", joined)
 	}
 }
 

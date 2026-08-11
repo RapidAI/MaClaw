@@ -185,8 +185,13 @@ func veSkillMCPOnlyGuard(skillName string, app *App) (bool, string) {
 
 // isVEToolBlocked checks if a tool is blocked in VE mode.
 func isVEToolBlocked(toolName string) bool {
-	name := strings.TrimSpace(toolName)
-	if strings.HasPrefix(name, "browser_") {
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	// Digital employees may inspect approved local files, but must never take
+	// control of the host desktop.  The registry is intentionally extensible,
+	// so reserve the entire computer_ namespace instead of maintaining a
+	// fragile list of today's Computer Use tool names.  This guard protects
+	// both BuildTools visibility and ExecuteTool's direct-call path.
+	if strings.HasPrefix(name, "browser_") || strings.HasPrefix(name, "computer_") {
 		return true
 	}
 	return coretool.IsCodingSessionTool(name) || veBlockedTools[name]

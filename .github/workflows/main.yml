@@ -47,6 +47,16 @@ jobs:
           echo "=== Running tests for embedding and memory packages ==="
           CGO_ENABLED=0 go test ./corelib/embedding/... ./corelib/memory/...
 
+  # Keep the firmware publication contract cheap and early: a mismatch among
+  # the desktop catalog, board matrix, release allow-list, or mirror manifest
+  # must not consume four ESP-IDF builds or request protected signing secrets.
+  verify-firmware-release-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test four-board firmware publication contract
+        run: python3 .github/scripts/test_firmware_release_contract.py
+
   # ============================================================
   # Windows: GUI (amd64/arm64) + TUI + maclaw-tool + NSIS installer
   # ============================================================
@@ -1853,6 +1863,10 @@ jobs:
   # ESP32-S3: build and package complete flash images per board profile
   # ============================================================
   build-esp32-firmware:
+    # A manual dispatch has a branch ref rather than an immutable release tag.
+    # Never mint production-signed firmware from that mutable reference.
+    if: github.ref_type == 'tag'
+    needs: [verify-firmware-release-contract]
     runs-on: ubuntu-latest
     # Firmware signing material is scoped to this protected environment. The
     # package-build job must enter it too; otherwise an environment-level
@@ -1865,24 +1879,37 @@ jobs:
           - device: echoear-2st
             firmware_board: echoear-2st-r8
             layout_id: maclaw-s3-16m-factory-v2
+            flash_bytes: 16777216
             sdkconfig_defaults: sdkconfig.defaults
             firmware_name: MaClaw-ESP32S3-EchoEar-2ST-firmware
+            profile: echoear-2st
           - device: bread-compact
             firmware_board: bread-compact-wifi-lcd-v1
             layout_id: maclaw-s3-16m-factory-v2
+            flash_bytes: 16777216
             sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.bread-compact
             firmware_name: MaClaw-ESP32S3-Bread-Compact-firmware
+            profile: bread-compact
           - device: fangtang-4g
             firmware_board: fangtang-4g-v1
             layout_id: maclaw-s3-16m-factory-v2
+            flash_bytes: 16777216
             sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.fangtang-4g
             firmware_name: MaClaw-ESP32S3-Fangtang-4G-firmware
+            profile: fangtang-4g
+          - device: waveshare-amoled-1.75c
+            firmware_board: waveshare-s3-touch-amoled-1.75c-v1
+            layout_id: maclaw-s3-32m-factory-v1
+            flash_bytes: 33554432
+            sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c
+            firmware_name: MaClaw-ESP32S3-Waveshare-AMOLED-1.75C-firmware
+            profile: waveshare-amoled-1.75c
     steps:
       - uses: actions/checkout@v5
         with:
           # Do not request recursive submodules here. The repository contains
           # a legacy gitlink without a .gitmodules mapping; checkout otherwise
-          # fails before any of the three signed firmware packages are built.
+          # fails before any of the four signed firmware packages are built.
           # This ESP-IDF project has no declared submodule dependency.
           submodules: false
       - uses: actions/setup-go@v6
@@ -1893,6 +1920,7 @@ jobs:
         env:
           SDKCONFIG_DEFAULTS: ${{ matrix.sdkconfig_defaults }}
           FIRMWARE_NAME: ${{ matrix.firmware_name }}
+          MACLAW_PROFILE: ${{ matrix.profile }}
           CLAWMATE_FIRMWARE_SIGNING_KEY: ${{ secrets.CLAWMATE_FIRMWARE_SIGNING_KEY }}
           CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
           CLAWMATE_FIRMWARE_PUBLIC_KEY: ${{ vars.CLAWMATE_FIRMWARE_PUBLIC_KEY }}
@@ -1914,6 +1942,7 @@ jobs:
             -w /project/iot-agentos \
             -e SDKCONFIG_DEFAULTS \
             -e FIRMWARE_NAME \
+            -e MACLAW_PROFILE \
             espressif/idf:v6.0.2 \
             bash -lc '
               set -euo pipefail
@@ -1922,11 +1951,11 @@ jobs:
               # ESP-IDF 6 declares it as a volatile typedef. Resolve managed
               # dependencies first, then apply the one-line IDF 6 compatibility
               # patch before compiling any board image.
-              idf.py -B "$build_dir" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" reconfigure
+              idf.py -B "$build_dir" -D MACLAW_PROFILE="$MACLAW_PROFILE" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" reconfigure
               header="managed_components/78__uart-uhci/include/uart_uhci.h"
               grep -qx 'struct uhci_dev_t;' "$header" || grep -qx 'typedef volatile struct uhci_dev_s uhci_dev_t;' "$header"
               sed -i 's/^struct uhci_dev_t;$/typedef volatile struct uhci_dev_s uhci_dev_t;/' "$header"
-              idf.py -B "$build_dir" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" build
+              idf.py -B "$build_dir" -D MACLAW_PROFILE="$MACLAW_PROFILE" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" build
               # The desktop tool's nonce-bound IDENTIFY and BOOT_STATUS
               # protocol runs on the secondary USB Serial/JTAG console. Do
               # not publish an otherwise-valid image that cannot prove a
@@ -1983,8 +2012,9 @@ jobs:
             go run ./tools/fwpack \
               --board '${{ matrix.device }}' \
               --firmware-board '${{ matrix.firmware_board }}' \
-              --layout-id '${{ matrix.layout_id }}' \
-              --mode full \
+               --layout-id '${{ matrix.layout_id }}' \
+               --flash-bytes '${{ matrix.flash_bytes }}' \
+               --mode full \
               --channel "$FIRMWARE_CHANNEL" \
               --release '${{ github.ref_name }}' \
               --release-sequence '${{ github.run_number }}' \
@@ -2031,6 +2061,9 @@ jobs:
   # ClawMate Maker: signed desktop flasher for Windows/macOS/Linux
   # ============================================================
   build-clawmate-maker:
+    # The desktop trust root and managed sidecar are release artifacts too;
+    # keep their protected signing environment tag-only with the firmware.
+    if: github.ref_type == 'tag'
     needs: [build-esp32-firmware]
     runs-on: ${{ matrix.os }}
     environment: firmware-release
@@ -2208,6 +2241,10 @@ jobs:
   # Release: collect all artifacts and create GitHub Release
   # ============================================================
   release:
+    # Every publication step below uses github.ref_name as its release tag and
+    # syncs that tag to Gitee. workflow_dispatch supplies a branch name, so it
+    # may validate builds but must never publish or enter the release boundary.
+    if: github.ref_type == 'tag'
     needs: [build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-esp32-firmware, build-clawmate-maker]
     runs-on: ubuntu-latest
     # The R2/COS credentials and firmware release keys may be environment
@@ -2332,15 +2369,19 @@ jobs:
               "MaClaw-ESP32S3-EchoEar-2ST-firmware.bin",
               "MaClaw-ESP32S3-Bread-Compact-firmware.bin",
               "MaClaw-ESP32S3-Fangtang-4G-firmware.bin",
+              "MaClaw-ESP32S3-Waveshare-AMOLED-1.75C-firmware.bin",
               "MaClaw-ESP32S3-EchoEar-2ST-firmware.zip",
               "MaClaw-ESP32S3-Bread-Compact-firmware.zip",
               "MaClaw-ESP32S3-Fangtang-4G-firmware.zip",
+              "MaClaw-ESP32S3-Waveshare-AMOLED-1.75C-firmware.zip",
               "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw",
               "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw",
               "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw",
+              "MaClaw-ESP32S3-Waveshare-AMOLED-1.75C-firmware.clawfw",
               "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw.evidence.json",
               "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw.evidence.json",
               "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw.evidence.json",
+              "MaClaw-ESP32S3-Waveshare-AMOLED-1.75C-firmware.clawfw.evidence.json",
               "ClawMateMaker-windows-amd64.zip",
               "ClawMateMaker-darwin-amd64.zip",
               "ClawMateMaker-darwin-arm64.zip",
@@ -2357,7 +2398,7 @@ jobs:
           echo "Release asset allowlist for BRAND=${BRAND_FILTER:-all}:"
           cat release_only_assets.txt
 
-      - name: Test three-board firmware manifest contract
+      - name: Test four-board firmware manifest contract
         run: python3 .github/scripts/test_firmware_release_contract.py
 
       - name: Generate latest manifest
@@ -2456,7 +2497,7 @@ jobs:
         run: python3 .github/scripts/verify_firmware_mirrors.py
 
       # Do not publish the GitHub Release until both public mirrors contain
-      # the same manifest and all three signed firmware archives. This keeps
+      # the same manifest and all four signed firmware archives. This keeps
       # the desktop client's GitHub/R2/COS discovery contract truthful.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

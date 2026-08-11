@@ -1,0 +1,521 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-08-11T07:25:43Z",
+  "engine": "dual",
+  "sample_provenance": "fixture",
+  "minimum_samples_per_format": 1,
+  "minimum_officeread_token_hit_rate": 0,
+  "formats": [
+    "doc",
+    "docx",
+    "ppt",
+    "pptx",
+    "xls",
+    "xlsx"
+  ],
+  "summary": {
+    "doc": {
+      "total": 5,
+      "office_read_ok": 5,
+      "legacy_ok": 3,
+      "office_tokens": 795,
+      "legacy_tokens": 201,
+      "shared_tokens": 201,
+      "office_token_hit_rate": 1,
+      "legacy_token_hit_rate": 0.2528301886792453,
+      "max_elapsed_ms": 110
+    },
+    "docx": {
+      "total": 5,
+      "office_read_ok": 5,
+      "legacy_ok": 4,
+      "office_tokens": 66,
+      "legacy_tokens": 28,
+      "shared_tokens": 28,
+      "office_token_hit_rate": 1,
+      "legacy_token_hit_rate": 0.42424242424242425,
+      "max_elapsed_ms": 32
+    },
+    "ppt": {
+      "total": 5,
+      "office_read_ok": 5,
+      "legacy_ok": 0,
+      "office_tokens": 101,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "max_elapsed_ms": 39
+    },
+    "pptx": {
+      "total": 4,
+      "office_read_ok": 4,
+      "legacy_ok": 3,
+      "office_tokens": 148,
+      "legacy_tokens": 64,
+      "shared_tokens": 58,
+      "office_token_hit_rate": 0.90625,
+      "legacy_token_hit_rate": 0.3918918918918919,
+      "max_elapsed_ms": 45
+    },
+    "xls": {
+      "total": 5,
+      "office_read_ok": 5,
+      "legacy_ok": 4,
+      "office_tokens": 188,
+      "legacy_tokens": 46,
+      "shared_tokens": 40,
+      "office_token_hit_rate": 0.8695652173913043,
+      "legacy_token_hit_rate": 0.2127659574468085,
+      "max_elapsed_ms": 42
+    },
+    "xlsx": {
+      "total": 5,
+      "office_read_ok": 5,
+      "legacy_ok": 5,
+      "office_tokens": 109,
+      "legacy_tokens": 47,
+      "shared_tokens": 47,
+      "office_token_hit_rate": 1,
+      "legacy_token_hit_rate": 0.43119266055045874,
+      "max_elapsed_ms": 45
+    }
+  },
+  "assessment": {
+    "doc": {
+      "quantitative_gate": "insufficient_evidence",
+      "reasons": [
+        "sample_provenance_is_not_internal_authorized"
+      ]
+    },
+    "docx": {
+      "quantitative_gate": "insufficient_evidence",
+      "reasons": [
+        "sample_provenance_is_not_internal_authorized"
+      ]
+    },
+    "ppt": {
+      "quantitative_gate": "insufficient_evidence",
+      "reasons": [
+        "sample_provenance_is_not_internal_authorized",
+        "legacy_baseline_unavailable",
+        "legacy_token_baseline_unavailable"
+      ]
+    },
+    "pptx": {
+      "quantitative_gate": "insufficient_evidence",
+      "reasons": [
+        "sample_provenance_is_not_internal_authorized"
+      ]
+    },
+    "xls": {
+      "quantitative_gate": "insufficient_evidence",
+      "reasons": [
+        "sample_provenance_is_not_internal_authorized"
+      ]
+    },
+    "xlsx": {
+      "quantitative_gate": "insufficient_evidence",
+      "reasons": [
+        "sample_provenance_is_not_internal_authorized"
+      ]
+    }
+  },
+  "manual_review_required": [
+    "review_text_order_and_business_answer_quality",
+    "review_p1_p2_crash_hang_memory_and_pagination_diagnostics",
+    "review_gui_file_selection_attachment_tool_continuous_conversation_and_fallback",
+    "record_format_level_rollback_drill"
+  ],
+  "files": [
+    {
+      "sample_id": "sample-53e1f0c1c7b3e381",
+      "format": "ppt",
+      "source_bytes": 103936,
+      "office_read_ok": true,
+      "office_runes": 65,
+      "office_tokens": 25,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 30
+    },
+    {
+      "sample_id": "sample-b845836a86c22d9c",
+      "format": "xls",
+      "source_bytes": 5632,
+      "office_read_ok": true,
+      "office_runes": 966,
+      "office_tokens": 146,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 5
+    },
+    {
+      "sample_id": "sample-0999dff2cffbbd18",
+      "format": "xlsx",
+      "source_bytes": 9457,
+      "office_read_ok": true,
+      "office_runes": 178,
+      "office_tokens": 32,
+      "legacy_ok": true,
+      "legacy_runes": 120,
+      "legacy_tokens": 19,
+      "shared_tokens": 19,
+      "elapsed_ms": 28
+    },
+    {
+      "sample_id": "sample-a327251a525707ea",
+      "format": "docx",
+      "source_bytes": 17034,
+      "office_read_ok": true,
+      "office_runes": 19,
+      "office_tokens": 4,
+      "legacy_ok": true,
+      "legacy_runes": 19,
+      "legacy_tokens": 4,
+      "shared_tokens": 4,
+      "elapsed_ms": 27
+    },
+    {
+      "sample_id": "sample-873fe61732c128f8",
+      "format": "xlsx",
+      "source_bytes": 9543,
+      "office_read_ok": true,
+      "office_runes": 91,
+      "office_tokens": 10,
+      "legacy_ok": true,
+      "legacy_runes": 9,
+      "legacy_tokens": 1,
+      "shared_tokens": 1,
+      "elapsed_ms": 25
+    },
+    {
+      "sample_id": "sample-2ac0772750aa1b5c",
+      "format": "xls",
+      "source_bytes": 48128,
+      "office_read_ok": true,
+      "office_runes": 20,
+      "office_tokens": 3,
+      "legacy_ok": true,
+      "legacy_runes": 33,
+      "legacy_tokens": 3,
+      "shared_tokens": 3,
+      "elapsed_ms": 42
+    },
+    {
+      "sample_id": "sample-dd76a73485f5d0f2",
+      "format": "ppt",
+      "source_bytes": 9728,
+      "office_read_ok": true,
+      "office_runes": 113,
+      "office_tokens": 25,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 29
+    },
+    {
+      "sample_id": "sample-3c2b4a44cbdfe5f9",
+      "format": "xls",
+      "source_bytes": 7680,
+      "office_read_ok": true,
+      "office_runes": 55,
+      "office_tokens": 7,
+      "legacy_ok": true,
+      "legacy_runes": 69,
+      "legacy_tokens": 8,
+      "shared_tokens": 5,
+      "elapsed_ms": 4
+    },
+    {
+      "sample_id": "sample-a3a042bc93fff438",
+      "format": "docx",
+      "source_bytes": 103677,
+      "office_read_ok": true,
+      "office_runes": 109,
+      "office_tokens": 20,
+      "legacy_ok": true,
+      "legacy_runes": 58,
+      "legacy_tokens": 10,
+      "shared_tokens": 10,
+      "elapsed_ms": 32
+    },
+    {
+      "sample_id": "sample-9dfb50d39bec8dc4",
+      "format": "ppt",
+      "source_bytes": 10752,
+      "office_read_ok": true,
+      "office_runes": 31,
+      "office_tokens": 7,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 30
+    },
+    {
+      "sample_id": "sample-bc4c8a4042770e83",
+      "format": "xlsx",
+      "source_bytes": 101696,
+      "office_read_ok": true,
+      "office_runes": 130,
+      "office_tokens": 23,
+      "legacy_ok": true,
+      "legacy_runes": 9,
+      "legacy_tokens": 1,
+      "shared_tokens": 1,
+      "elapsed_ms": 36
+    },
+    {
+      "sample_id": "sample-daae7f91721dc74a",
+      "format": "xls",
+      "source_bytes": 13824,
+      "office_read_ok": true,
+      "office_runes": 96,
+      "office_tokens": 17,
+      "legacy_ok": true,
+      "legacy_runes": 111,
+      "legacy_tokens": 17,
+      "shared_tokens": 17,
+      "elapsed_ms": 33
+    },
+    {
+      "sample_id": "sample-ba8b29636c00bd47",
+      "format": "doc",
+      "source_bytes": 6656,
+      "office_read_ok": true,
+      "office_runes": 43,
+      "office_tokens": 9,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 4
+    },
+    {
+      "sample_id": "sample-982eef448047abbd",
+      "format": "pptx",
+      "source_bytes": 651648,
+      "office_read_ok": true,
+      "office_runes": 346,
+      "office_tokens": 67,
+      "legacy_ok": true,
+      "legacy_runes": 10,
+      "legacy_tokens": 2,
+      "shared_tokens": 1,
+      "elapsed_ms": 45
+    },
+    {
+      "sample_id": "sample-c9006503fa7a9ca5",
+      "format": "xls",
+      "source_bytes": 4096,
+      "office_read_ok": true,
+      "office_runes": 73,
+      "office_tokens": 15,
+      "legacy_ok": true,
+      "legacy_runes": 80,
+      "legacy_tokens": 18,
+      "shared_tokens": 15,
+      "elapsed_ms": 5
+    },
+    {
+      "sample_id": "sample-ec410f17a1a2f05c",
+      "format": "xlsx",
+      "source_bytes": 10046,
+      "office_read_ok": true,
+      "office_runes": 118,
+      "office_tokens": 19,
+      "legacy_ok": true,
+      "legacy_runes": 31,
+      "legacy_tokens": 5,
+      "shared_tokens": 5,
+      "elapsed_ms": 30
+    },
+    {
+      "sample_id": "sample-169d3b762444e604",
+      "format": "docx",
+      "source_bytes": 683,
+      "office_read_ok": true,
+      "office_runes": 87,
+      "office_tokens": 13,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 4
+    },
+    {
+      "sample_id": "sample-4ed9d459d482c96f",
+      "format": "docx",
+      "source_bytes": 1634,
+      "office_read_ok": true,
+      "office_runes": 74,
+      "office_tokens": 10,
+      "legacy_ok": true,
+      "legacy_runes": 39,
+      "legacy_tokens": 5,
+      "shared_tokens": 5,
+      "elapsed_ms": 4
+    },
+    {
+      "sample_id": "sample-9a7f178775b1dd51",
+      "format": "docx",
+      "source_bytes": 1812,
+      "office_read_ok": true,
+      "office_runes": 136,
+      "office_tokens": 19,
+      "legacy_ok": true,
+      "legacy_runes": 63,
+      "legacy_tokens": 9,
+      "shared_tokens": 9,
+      "elapsed_ms": 6
+    },
+    {
+      "sample_id": "sample-3c3f2793f6e5dd38",
+      "format": "pptx",
+      "source_bytes": 1971,
+      "office_read_ok": true,
+      "office_runes": 94,
+      "office_tokens": 13,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 5
+    },
+    {
+      "sample_id": "sample-0b2b71eac221dba8",
+      "format": "pptx",
+      "source_bytes": 1484,
+      "office_read_ok": false,
+      "office_runes": 0,
+      "office_tokens": 0,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 0,
+      "error_class": "malformed"
+    },
+    {
+      "sample_id": "sample-55b17e677638ce0b",
+      "format": "doc",
+      "source_bytes": 39936,
+      "office_read_ok": true,
+      "office_runes": 1302,
+      "office_tokens": 172,
+      "legacy_ok": true,
+      "legacy_runes": 1286,
+      "legacy_tokens": 168,
+      "shared_tokens": 168,
+      "elapsed_ms": 61
+    },
+    {
+      "sample_id": "sample-dff048b1a8999b5f",
+      "format": "xlsx",
+      "source_bytes": 428616,
+      "office_read_ok": true,
+      "office_runes": 136,
+      "office_tokens": 25,
+      "legacy_ok": true,
+      "legacy_runes": 114,
+      "legacy_tokens": 21,
+      "shared_tokens": 21,
+      "elapsed_ms": 45
+    },
+    {
+      "sample_id": "sample-fa91fb72ef6df1ad",
+      "format": "ppt",
+      "source_bytes": 75776,
+      "office_read_ok": true,
+      "office_runes": 154,
+      "office_tokens": 29,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 39
+    },
+    {
+      "sample_id": "sample-6d354499da371026",
+      "format": "pptx",
+      "source_bytes": 43459,
+      "office_read_ok": true,
+      "office_runes": 15,
+      "office_tokens": 4,
+      "legacy_ok": true,
+      "legacy_runes": 10,
+      "legacy_tokens": 2,
+      "shared_tokens": 0,
+      "elapsed_ms": 42
+    },
+    {
+      "sample_id": "sample-2e2013807f85b886",
+      "format": "doc",
+      "source_bytes": 11264,
+      "office_read_ok": true,
+      "office_runes": 21,
+      "office_tokens": 11,
+      "legacy_ok": true,
+      "legacy_runes": 21,
+      "legacy_tokens": 11,
+      "shared_tokens": 11,
+      "elapsed_ms": 33
+    },
+    {
+      "sample_id": "sample-7443e90aa5be8181",
+      "format": "pptx",
+      "source_bytes": 33414,
+      "office_read_ok": true,
+      "office_runes": 358,
+      "office_tokens": 64,
+      "legacy_ok": true,
+      "legacy_runes": 371,
+      "legacy_tokens": 60,
+      "shared_tokens": 57,
+      "elapsed_ms": 41
+    },
+    {
+      "sample_id": "sample-6efea7801e3d4cd7",
+      "format": "doc",
+      "source_bytes": 315904,
+      "office_read_ok": true,
+      "office_runes": 144,
+      "office_tokens": 22,
+      "legacy_ok": true,
+      "legacy_runes": 160,
+      "legacy_tokens": 22,
+      "shared_tokens": 22,
+      "elapsed_ms": 46
+    },
+    {
+      "sample_id": "sample-0918608c62133bd9",
+      "format": "ppt",
+      "source_bytes": 10752,
+      "office_read_ok": true,
+      "office_runes": 71,
+      "office_tokens": 15,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 30
+    },
+    {
+      "sample_id": "sample-f9a00ffc092f886b",
+      "format": "doc",
+      "source_bytes": 33280,
+      "office_read_ok": true,
+      "office_runes": 3140,
+      "office_tokens": 581,
+      "legacy_ok": false,
+      "legacy_runes": 0,
+      "legacy_tokens": 0,
+      "shared_tokens": 0,
+      "elapsed_ms": 110
+    }
+  ]
+}

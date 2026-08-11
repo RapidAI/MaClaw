@@ -3,8 +3,10 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 )
 
 func TestParseCodingSubAgentRole(t *testing.T) {
@@ -34,6 +36,27 @@ func TestParseCodingSubAgentRole(t *testing.T) {
 	}
 }
 
+func TestLocalRuntimeSpawnRejectsClosedParentAttempt(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	now := time.Now().UTC()
+	task, err := store.CreateTask(codingruntime.Task{TaskID: "local-spawn-closed", ProjectRef: t.TempDir(), Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: task.ProjectRef, Mode: "local"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CancelTask(task.TaskID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{fullEnvironment: true, runtimeStore: store, runtimeAttempt: attempt}}
+	result := cb.executeSpawnCodingAgent(map[string]interface{}{"role": "explorer", "task": "inspect"})
+	if result.Outcome != codingToolOutcomeFailed || !strings.Contains(result.Text, "runtime parent attempt is no longer running") {
+		t.Fatalf("closed Runtime attempt must reject spawn, got %#v", result)
+	}
+}
+
 func TestParseCodingSpawnSpecsSingleAndParallel(t *testing.T) {
 	specs, err := parseCodingSpawnSpecs(map[string]interface{}{
 		"role": "explorer",
@@ -46,22 +69,25 @@ func TestParseCodingSpawnSpecsSingleAndParallel(t *testing.T) {
 	specs, err = parseCodingSpawnSpecs(map[string]interface{}{
 		"agents": []interface{}{
 			map[string]interface{}{"role": "explorer", "task": "A"},
-			map[string]interface{}{"role": "worker", "task": "B", "context": "use A"},
+			map[string]interface{}{"role": "reviewer", "task": "B", "context": "use A"},
 		},
 	})
 	if err != nil || len(specs) != 2 {
 		t.Fatalf("parallel = %#v err=%v", specs, err)
 	}
-	if specs[1].Context != "use A" || specs[1].Role != codingRoleWorker {
+	if specs[1].Context != "use A" || specs[1].Role != codingRoleReviewer {
 		t.Fatalf("second agent = %#v", specs[1])
 	}
 	// Coerce non-string task/role from loose tool arg decoding.
 	specs, err = parseCodingSpawnSpecs(map[string]interface{}{
-		"role": "worker",
+		"role": "explorer",
 		"task": float64(42),
 	})
 	if err != nil || len(specs) != 1 || specs[0].Task != "42" {
 		t.Fatalf("numeric task coerce = %#v err=%v", specs, err)
+	}
+	if _, err := parseCodingSpawnSpecs(map[string]interface{}{"role": "worker", "task": "write"}); err == nil {
+		t.Fatal("write-capable nested worker must be rejected")
 	}
 
 	_, err = parseCodingSpawnSpecs(map[string]interface{}{
@@ -93,11 +119,11 @@ func TestShouldParallelizeCodingSpawn(t *testing.T) {
 	}) {
 		t.Fatal("mixed with worker must be sequential")
 	}
-	if shouldParallelizeCodingSpawn([]codingSpawnSpec{
+	if !shouldParallelizeCodingSpawn([]codingSpawnSpec{
 		{Role: codingRoleReviewer, Task: "a"},
 		{Role: codingRoleReviewer, Task: "b"},
 	}) {
-		t.Fatal("reviewers must be sequential")
+		t.Fatal("read-only reviewers may parallelize")
 	}
 }
 
@@ -133,11 +159,16 @@ func TestToolAllowedForRole(t *testing.T) {
 	}
 
 	rev := &CodingSubAgent{role: codingRoleReviewer, nestDepth: 1}
-	if !rev.toolAllowedForRole("bash") || !rev.toolAllowedForRole("git_diff") {
-		t.Fatal("reviewer should bash/git_diff")
+	if !rev.toolAllowedForRole("git_diff") {
+		t.Fatal("reviewer should inspect git diff")
 	}
-	if rev.toolAllowedForRole("write_file") || rev.toolAllowedForRole("edit_file") {
-		t.Fatal("reviewer must not write")
+	if rev.toolAllowedForRole("write_file") || rev.toolAllowedForRole("edit_file") || rev.toolAllowedForRole("bash") {
+		t.Fatal("reviewer must be strictly read-only")
+	}
+	for _, key := range []string{"save_path", "output", "dest", "path", "filename"} {
+		if ok, _ := rev.toolCallAllowedForRole("web_fetch", map[string]interface{}{key: "report.pdf"}); ok {
+			t.Fatalf("reviewer web_fetch %s must not write", key)
+		}
 	}
 
 	worker := &CodingSubAgent{fullEnvironment: true, nestDepth: 0, role: codingRoleWorker}
@@ -211,6 +242,18 @@ func TestExecuteSpawnBlockedAtDepth(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "unavailable") {
 		t.Fatalf("text=%s", res.Text)
+	}
+}
+
+func TestFormatAdmittedReadOnlyChildHandlesReturnsHandoffOnly(t *testing.T) {
+	text := formatAdmittedReadOnlyChildHandles([]codingruntime.ChildTaskHandle{{
+		TaskID: "child-1", Name: "explorer", Status: codingruntime.TaskQueued,
+	}})
+	if !strings.Contains(text, "child-1") || !strings.Contains(text, "fresh parent attempt") {
+		t.Fatalf("handoff text=%q", text)
+	}
+	if strings.Contains(text, "completed") {
+		t.Fatalf("admission response must not claim child completion: %q", text)
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -43,6 +44,28 @@ func TestCoreToolNames_AllRegistered(t *testing.T) {
 		t.Errorf("CoreToolNames declares %q but RegisterCoreTools does not register it.\n"+
 			"Fix: either register it in RegisterCoreTools (with ExtraHandlers if host-specific),\n"+
 			"or add it to guiOnly in this test with a comment explaining why.", name)
+	}
+}
+
+func TestRegisterCoreTools_DescribesStructuredOfficeFormatBoundaries(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+	definitions := reg.BuildDefinitions()
+	byName := make(map[string]map[string]interface{}, len(definitions))
+	for _, definition := range definitions {
+		function, _ := definition["function"].(map[string]interface{})
+		name, _ := function["name"].(string)
+		byName[name] = function
+	}
+	for name, want := range map[string]string{
+		"read_document": "PowerPoint (.ppt/.pptx)",
+		"read_excel":    ".xlsx/.csv modern, .xls legacy",
+		"read_pptx":     "PPTX-only",
+	} {
+		function := byName[name]
+		if !strings.Contains(fmt.Sprint(function["description"]), want) {
+			t.Fatalf("%s description missing %q: %#v", name, want, function)
+		}
 	}
 }
 
@@ -257,6 +280,13 @@ func TestCoreKnowledgeImportToolsAreRegistered(t *testing.T) {
 	filesEntry := reg.tools["knowledge_import_files"]
 	urlEntry := reg.tools["knowledge_save_url"]
 	reg.mu.RUnlock()
+	for name, entry := range map[string]*ToolEntry{"directory": dirEntry, "files": filesEntry} {
+		for _, format := range []string{"DOC/DOCX", "PPT/PPTX", "XLS/XLSX"} {
+			if !strings.Contains(entry.Description, format) {
+				t.Fatalf("knowledge_import_%s description missing %s: %q", name, format, entry.Description)
+			}
+		}
+	}
 	if _, ok := dirEntry.Properties["root_path"]; !ok {
 		t.Fatalf("knowledge_import_directory missing root_path property")
 	}

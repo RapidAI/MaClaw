@@ -1,6 +1,8 @@
 package knowledge
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -17,6 +19,72 @@ func TestContextPackFactTextDeduplicatesSnippet(t *testing.T) {
 	text := contextPackText(result)
 	if strings.Count(text, "知识库接口 提供 来源摘要") != 1 {
 		t.Fatalf("expected deduplicated fact text, got %q", text)
+	}
+}
+
+func TestContextPackTitleDoesNotExposeImagePathMetadata(t *testing.T) {
+	privatePath := `C:\\private\\knowledge_assets\\diagram.png`
+	result := SearchResult{
+		ResultType: "node",
+		NodeType:   NodeTypeImage,
+		NodeTitle:  privatePath,
+		Source: Source{
+			ID:           "safe-image-id",
+			Kind:         SourceKindImage,
+			Title:        privatePath,
+			RelativePath: privatePath,
+			CanonicalURI: "file://" + privatePath,
+			URI:          privatePath,
+		},
+	}
+	if got := contextPackTitle(result); got != "safe-image-id" {
+		t.Fatalf("contextPackTitle = %q, want safe image ID", got)
+	}
+}
+
+func TestContextPackDoesNotExposeImagePathThroughCitations(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	privatePath := `C:\\private\\knowledge_assets\\diagram.png`
+	if err := store.SaveSource(ctx, Source{
+		ID:           "safe-image-id",
+		Kind:         SourceKindImage,
+		URI:          privatePath,
+		CanonicalURI: "file://" + privatePath,
+		RelativePath: privatePath,
+		Title:        privatePath,
+		Status:       StatusParsed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, DocumentNode{
+		ID:       "safe-image-node",
+		SourceID: "safe-image-id",
+		Type:     NodeTypeImage,
+		Title:    privatePath,
+		Text:     "gateway architecture image evidence",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pack, err := store.ContextPack(ctx, ContextPackOptions{SearchOptions: SearchOptions{Query: "gateway architecture", Limit: 5}, MaxItems: 1, MaxChars: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pack.Items) != 1 || len(pack.Citations) != 1 {
+		t.Fatalf("context pack = %#v", pack)
+	}
+	item, citation := pack.Items[0], pack.Citations[0]
+	for _, value := range []string{item.Title, item.Citation, citation.Label, citation.SourceTitle, citation.URI, citation.RelativePath} {
+		if strings.Contains(value, privatePath) || strings.Contains(value, "file://") {
+			t.Fatalf("context pack leaked image path in %q", value)
+		}
+	}
+	if item.Title != "safe-image-id" || citation.SourceID != "safe-image-id" {
+		t.Fatalf("context pack lost safe image identity: item=%#v citation=%#v", item, citation)
 	}
 }
 

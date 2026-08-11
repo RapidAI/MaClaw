@@ -7,6 +7,9 @@ import {
     classifyAttachmentType,
     formatFileSize,
     fileNameFromPath,
+    isBinaryDocumentAttachment,
+    isImageAttachment,
+    normalizeVEMessageAttachments,
     createSessionWithTimeout,
     classifySessionInitError,
     classifySendError,
@@ -363,11 +366,38 @@ describe("VEConversationView", () => {
 
         it("classifies document files", () => {
             expect(classifyAttachmentType("report.pdf")).toBe("file");
+            expect(classifyAttachmentType("letter.doc")).toBe("file");
             expect(classifyAttachmentType("doc.docx")).toBe("file");
+            expect(classifyAttachmentType("budget.xls")).toBe("file");
+            expect(classifyAttachmentType("budget.xlsx")).toBe("file");
+            expect(classifyAttachmentType("deck.ppt")).toBe("file");
+            expect(classifyAttachmentType("deck.pptx")).toBe("file");
         });
 
         it("classifies unknown extensions as file", () => {
             expect(classifyAttachmentType("data.xyz")).toBe("file");
+        });
+    });
+
+    describe("binary document attachment routing", () => {
+        it("keeps Office/PDF metadata out of the image preview path", () => {
+            for (const filename of ["report.pdf", "report.doc", "report.docx", "report.xls", "report.xlsx", "report.ppt", "report.pptx"]) {
+                expect(isBinaryDocumentAttachment(filename, "image/png")).toBe(true);
+                expect(isImageAttachment({ type: "image", filename, mimeType: "image/png" })).toBe(false);
+            }
+            expect(isBinaryDocumentAttachment("report.png", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")).toBe(true);
+            expect(isImageAttachment({ type: "image", filename: "report.png", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" })).toBe(false);
+        });
+
+        it("normalizes mislabelled Office documents as files", () => {
+            const attachments = normalizeVEMessageAttachments([{
+                type: "image",
+                filename: "report.png",
+                mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                file_url: "/api/ve/files/download/report",
+            }]);
+            expect(attachments).toHaveLength(1);
+            expect(attachments[0].type).toBe("file");
         });
     });
 

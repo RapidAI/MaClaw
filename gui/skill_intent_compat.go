@@ -335,6 +335,9 @@ func extractTaskDomain(text string) skillDomainCategory {
 	if lower == "" {
 		return skillDomainUnknown
 	}
+	if containsAny(lower, "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet") {
+		return skillDomainDocument
+	}
 	if containsAny(lower, "server", "status", "health", "ssh", "host", "uptime", "api2", "api1",
 		"服务器", "服务", "状态", "健康", "主机", "连接") {
 		return skillDomainInfra
@@ -352,6 +355,9 @@ func extractSkillDomain(text string) skillDomainCategory {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {
 		return skillDomainUnknown
+	}
+	if containsAny(lower, "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet") {
+		return skillDomainDocument
 	}
 	if containsAny(lower, "api design", "design review", "design reviewer", "api reviewer", "openapi review",
 		"接口设计", "api设计", "设计评审") {

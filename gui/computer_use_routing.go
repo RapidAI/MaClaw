@@ -52,6 +52,8 @@ const computerUseIntentCompetingConfidence = 0.78
 // ends sticky session mid-conversation (e.g. user switched to pure chat/coding).
 const computerUseStickyReleaseConfidence = 0.55
 
+const computerUseLocalAttachmentMarker = "\n[附件: 当前轮已收到，待本地解析]"
+
 // clearComputerUseStickyLocked clears sticky flags. Caller must hold globalComputerUse.mu.
 func clearComputerUseStickyLocked() (changed bool) {
 	if !globalComputerUse.activated && globalComputerUse.activatedAt.IsZero() {
@@ -128,6 +130,7 @@ func clearComputerUseSessionActive() {
 // computerUseActivationInput is the pure input to the CU gate (testable without UIC).
 type computerUseActivationInput struct {
 	Explicit          bool
+	LocalFileWork     bool
 	Sticky            bool
 	StickyAge         time.Duration
 	HasClassification bool
@@ -150,6 +153,18 @@ type computerUseActivationDecision struct {
 func decideComputerUseActivation(in computerUseActivationInput) computerUseActivationDecision {
 	if in.Explicit {
 		return computerUseActivationDecision{Active: true, Reason: "explicit_trigger"}
+	}
+	// A current local attachment is already staged for the agent and should be
+	// handled through the file/Office tools.  In particular, exposing desktop
+	// tools here makes a model try to open PowerShell or Explorer merely to
+	// unpack/read a ZIP, even though no GUI interaction is needed.  This also
+	// ends a stale sticky desktop session so it cannot leak into a fresh
+	// document-processing turn.  An explicit @computer / "computer use" request
+	// above remains the intentional opt-in override.
+	if in.LocalFileWork {
+		return computerUseActivationDecision{
+			Active: false, ClearSticky: in.Sticky, Reason: "local_file_work",
+		}
 	}
 
 	if in.HasClassification && computerUseIntentActivated(in.Classification) {
@@ -179,8 +194,8 @@ func decideComputerUseActivation(in computerUseActivationInput) computerUseActiv
 }
 
 // shouldActivateComputerUse decides playbook + tool injection for this turn.
-// Pure: repeated calls within a turn (prompt build + per-iteration tool
-// filtering) must not mutate session control state.
+// Repeated prompt/tool preparation calls may clear a stale sticky state, which
+// is idempotent; all other gate outcomes are read-only.
 func (h *IMMessageHandler) shouldActivateComputerUse(userText string) bool {
 	active, _ := h.gateComputerUse(userText)
 	return active
@@ -196,9 +211,10 @@ func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool)
 
 	sticky, stickyAge := computerUseStickyState()
 	in := computerUseActivationInput{
-		Explicit:  computeruse.HasExplicitTrigger(userText),
-		Sticky:    sticky,
-		StickyAge: stickyAge,
+		Explicit:      hasExplicitComputerUseRequest(userText),
+		LocalFileWork: hasCurrentLocalFileWork(userText),
+		Sticky:        sticky,
+		StickyAge:     stickyAge,
 	}
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		in.HasClassification = true
@@ -216,6 +232,85 @@ func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool)
 	}
 	fresh = d.Active && d.Reason != "sticky" && d.Reason != "sticky_degraded"
 	return d.Active, fresh
+}
+
+// hasExplicitComputerUseRequest recognizes an intentional desktop-control
+// request only in the user-authored portion of a turn. Attachment staging and
+// document extraction are appended to user content later in the pipeline; a
+// document that merely discusses "@computer" or "computer use" must never be
+// able to grant desktop-control authority to itself.
+func hasExplicitComputerUseRequest(text string) bool {
+	if cut := currentLocalFileWorkMarkerOffset(text); cut >= 0 {
+		text = text[:cut]
+	}
+	return computeruse.HasExplicitTrigger(text)
+}
+
+// currentLocalFileWorkMarkerOffset returns the first control/content boundary
+// introduced for the current turn's local file work. The marker itself and
+// everything following it may include untrusted attachment text.
+func currentLocalFileWorkMarkerOffset(text string) int {
+	markers := []string{
+		"[附件:",
+		"[用户选择的本地文件路径]",
+		"--- auto_extract: begin ",
+	}
+	first := -1
+	for _, marker := range markers {
+		if index := strings.Index(text, marker); index >= 0 && (first < 0 || index < first) {
+			first = index
+		}
+	}
+	return first
+}
+
+// hasCurrentLocalFileWork recognizes files supplied in the current turn. It
+// deliberately includes archives: ZIPs are often skill packages or document
+// bundles, but they still belong to local file handling rather than desktop
+// control. Historical attachment annotations are excluded because a follow-up
+// can legitimately continue an earlier Computer Use task.
+func hasCurrentLocalFileWork(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, "[用户选择的本地文件路径]") ||
+		strings.Contains(text, "--- auto_extract: begin ") {
+		return true
+	}
+
+	const currentAttachmentPrefix = "[附件:"
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, currentAttachmentPrefix) {
+			continue
+		}
+		// The host writes this prefix only after staging the attachment. Do not
+		// infer its kind from an extension: archives without one and arbitrary
+		// binary uploads still need local file handling, not desktop control.
+		return true
+	}
+	return false
+}
+
+// computerUseRoutingText reserves Computer Use for an attachment turn before
+// the attachment has been staged and described in user content. The marker is
+// control-plane-only: callers use it for prompt/tool routing, never as the
+// visible user message. Explicit desktop intent remains authoritative.
+func computerUseRoutingText(text string, attachments []MessageAttachment) string {
+	return computerUseRoutingTextForLocalFileWork(text, len(attachments) > 0)
+}
+
+// computerUseRoutingTextForLocalFileWork adds the control-plane attachment
+// marker when the caller knows that this turn has local file work, even if the
+// raw user text has not yet been enriched with staged attachment details.
+// Do not add it twice: a staged attachment/auto-extract marker already carries
+// the same routing signal. Explicit desktop intent remains authoritative.
+func computerUseRoutingTextForLocalFileWork(text string, hasLocalFileWork bool) string {
+	if !hasLocalFileWork || hasExplicitComputerUseRequest(text) || hasCurrentLocalFileWork(text) {
+		return text
+	}
+	return text + computerUseLocalAttachmentMarker
 }
 
 // liftComputerUseStopForFreshRequest lifts a stale hard-stop when a brand-new

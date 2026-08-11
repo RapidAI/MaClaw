@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -156,5 +158,65 @@ func TestBuildUserContentWithoutLocalStagingKeepsUnsupportedGroupImageOffDisk(t 
 	text, ok := content.(string)
 	if !ok || !strings.Contains(text, "不允许将图片保存到本机") || strings.Contains(text, "已保存到") {
 		t.Fatalf("restricted image content = %#v", content)
+	}
+}
+
+func TestBuildUserContentRoutesMislabelledBinaryDocumentsAwayFromVision(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	for _, name := range []string{"report.pdf", "report.doc", "report.docx", "deck.ppt", "deck.pptx", "data.xls", "data.xlsx"} {
+		t.Run(name, func(t *testing.T) {
+			content := buildUserContentWithLocalStaging("inspect", []MessageAttachment{{
+				// Deliberately contradict the filename as a remote gateway could.
+				Type:     "image",
+				FileName: name,
+				MimeType: "image/png",
+				Data:     "bm90LWEtcmVhbC1kb2N1bWVudA==",
+			}}, "openai", true, nil, nil, true)
+
+			text, ok := content.(string)
+			if !ok {
+				t.Fatalf("mislabelled binary document entered vision content: %#v", content)
+			}
+			if !strings.Contains(text, "[附件: "+name+" → 已保存到 ") {
+				t.Fatalf("missing staged attachment reference: %q", text)
+			}
+			if strings.Contains(text, "data:image/png;base64,") || strings.Contains(text, "bm90LWEtcmVhbC1kb2N1bWVudA==") {
+				t.Fatalf("attachment bytes leaked into model context: %q", text)
+			}
+		})
+	}
+}
+
+func TestSaveAttachmentToLocalUsesOfficeMimeSuffixWhenFilenameMissing(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	for _, tc := range []struct {
+		fileName string
+		mimeType string
+		wantExt  string
+	}{
+		{"", "application/msword", ".doc"},
+		{"", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"},
+		{"", "application/vnd.ms-powerpoint", ".ppt"},
+		{"", "application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"},
+		{"", "application/vnd.ms-excel", ".xls"},
+		{"cover.png", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"},
+	} {
+		t.Run(tc.wantExt, func(t *testing.T) {
+			path, err := saveAttachmentToLocal(&MessageAttachment{FileName: tc.fileName, MimeType: tc.mimeType, Data: "eA=="})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if filepath.Ext(path) != tc.wantExt {
+				t.Fatalf("staged path = %q, want %s suffix", path, tc.wantExt)
+			}
+		})
 	}
 }

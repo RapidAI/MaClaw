@@ -28,6 +28,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
 // DeviceGateway exposes the same small HTTP protocol as a third-party
@@ -44,13 +46,36 @@ type DeviceGateway struct {
 	voicePairAttempts    map[string]*deviceVoicePairAttempt
 	codePairAttempts     map[string]*deviceVoicePairAttempt
 	machineSender        MachineMessageSender
+	// credentialBackup mirrors the opaque durable credential snapshot to the
+	// Hub recovery authority. It must never affect normal local persistence:
+	// an unreachable Hub Center cannot disconnect an already paired ESP32.
+	credentialBackup func(context.Context, string) error
+	// credentialIdentity contains the minimum GUI identities needed to make a
+	// recovered hardware binding usable. ESP credentials are owned by a GUI
+	// machine token; restoring only the ESP bearer after a SQLite reinstall
+	// would otherwise leave that GUI unable to authenticate and send commands.
+	credentialTenants          store.TenantRepository
+	credentialUsers            store.UserRepository
+	credentialMachines         store.MachineRepository
+	credentialIdentityRestorer deviceCredentialIdentityRestorer
+	credentialSnapshotRestorer deviceCredentialSnapshotRestorer
+	// credentialBackupPending holds the newest durable snapshot awaiting remote
+	// replication. Exactly one worker sends snapshots at a time: independent
+	// goroutines could otherwise complete out of order and overwrite a newer
+	// remote backup with stale credentials.
+	credentialBackupPending string
+	credentialBackupRunning bool
 
 	mu       sync.Mutex
 	pairings map[string]devicePairing
 	tokens   map[string]devicePrincipal
 	clients  map[string]*deviceClientState
-	media    map[string]*deviceMedia
-	hardware map[string]deviceHardwareConfig
+	// ambient belongs to the GUI/machine context, rather than to a transient
+	// physical client ID. Re-pairing creates a new credential/client identity
+	// but must not make its standby weather wait for the next GUI refresh.
+	ambientByMachine map[string]map[string]any
+	media            map[string]*deviceMedia
+	hardware         map[string]deviceHardwareConfig
 	// dispatchLocks serializes the short Hub-relay hand-off for one physical
 	// client with deletion of that same binding. It is deliberately per-device:
 	// an ESP32 hand-off must never make another bound ESP32 wait.
@@ -69,7 +94,33 @@ type deviceCredentialStore interface {
 	Get(ctx context.Context, key string) (string, error)
 }
 
+// deviceCredentialIdentityRestorer keeps the recovery write atomic when the
+// backing store supports transactions. The gateway still accepts the narrower
+// repository interfaces for test and alternate-store compatibility.
+type deviceCredentialIdentityRestorer interface {
+	RestoreDeviceCredentialIdentities(ctx context.Context, tenants []store.Tenant, users []store.User, machines []store.Machine) error
+}
+
+// deviceCredentialSnapshotRestorer atomically restores both the GUI identity
+// records and the local durable hardware snapshot. Implementations normally
+// use one database transaction, preventing a failed disk write from leaving
+// recovered identities without their matching device credentials.
+type deviceCredentialSnapshotRestorer interface {
+	RestoreDeviceCredentialSnapshot(ctx context.Context, tenants []store.Tenant, users []store.User, machines []store.Machine, credentialKey, credentialJSON string) error
+}
+
 const deviceGatewayCredentialsKey = "device_gateway_credentials_v1"
+
+// deviceGatewayCredentialsMaxBytes is shared with the authenticated Hub
+// Center backup endpoint. The local SQLite value is also untrusted at startup:
+// bounding it before JSON decoding prevents a corrupted record from making a
+// Hub unavailable before it can recover its existing hardware bindings.
+const deviceGatewayCredentialsMaxBytes = 16 << 20
+
+// deviceGatewayCredentialOutboxKey stores the newest snapshot that has not
+// yet been acknowledged by Hub Center. Keeping it locally means a temporary
+// Hub Center outage cannot silently discard a newly paired ESP32 binding.
+const deviceGatewayCredentialOutboxKey = "device_gateway_credentials_outbox_v1"
 
 const (
 	// Hardware binding capacity is fixed for every GUI. Keep this constant at
@@ -82,6 +133,18 @@ const (
 type persistedDeviceCredentials struct {
 	Tokens          map[string]devicePrincipal      `json:"tokens"`
 	MachineHardware map[string]deviceHardwareConfig `json:"machineHardware,omitempty"`
+	// Ambient is keyed by the owning GUI/machine rather than a physical client
+	// ID. A replacement ESP32 credential therefore receives the last valid
+	// weather snapshot during its first handshake, even if the GUI's normal
+	// 45-minute refresh has not run again yet.
+	AmbientByMachine map[string]map[string]any `json:"ambientByMachine,omitempty"`
+	// These are deliberately limited to the tenant/user/machine records that
+	// own an ESP credential. MachineTokenHash is retained so an already running
+	// GUI can prove its existing identity after Hub SQLite is recreated; raw GUI
+	// tokens are never stored in, or sent by, this snapshot.
+	Tenants  []store.Tenant  `json:"tenants,omitempty"`
+	Users    []store.User    `json:"users,omitempty"`
+	Machines []store.Machine `json:"machines,omitempty"`
 }
 
 // deviceHardwareConfig is Hub-owned state for the hardware paired to one GUI.
@@ -102,6 +165,16 @@ type deviceHardwareConfig struct {
 	// ESP32. Keeping it with Hub-owned binding state makes the setting survive
 	// desktop restarts and avoids broadcasting one device's change to others.
 	DeviceVolumes map[string]int `json:"deviceVolumes,omitempty"`
+	// Brightness mirrors Volume for the panel backlight: nil keeps the legacy
+	// "not configured" state distinguishable from an explicit level, and the
+	// value remains the default for bindings without their own level.
+	Brightness *int `json:"brightness,omitempty"`
+	// DeviceBrightness stores the explicit backlight level for an individual
+	// bound ESP32, mirroring DeviceVolumes.
+	DeviceBrightness map[string]int `json:"deviceBrightness,omitempty"`
+	// DeviceScreenSleepSeconds stores the per-device idle timeout before the
+	// display turns off. Zero explicitly means never turn the display off.
+	DeviceScreenSleepSeconds map[string]int `json:"deviceScreenSleepSeconds,omitempty"`
 	// AllowCustomPets is false by default. Hub enforces it as the authority for
 	// per-device profile writes rather than trusting the desktop UI to hide the
 	// selector.
@@ -115,6 +188,32 @@ type devicePairing struct {
 	Pet       devicePetProfile
 	ExpiresAt time.Time
 }
+
+// pairingRegistrationError is intentionally distinguishable without exposing
+// the DeviceGateway implementation to the WebSocket package. Callers can use
+// errors.As with the small PairingErrorCode contract instead of matching an
+// operator-facing error sentence.
+type pairingRegistrationError struct {
+	code    string
+	message string
+}
+
+func (e pairingRegistrationError) Error() string { return e.message }
+
+func (e pairingRegistrationError) PairingErrorCode() string { return e.code }
+
+// deviceDeletionError keeps a failed unlink actionable for the GUI without
+// leaking DeviceGateway implementation details into the WebSocket package.
+// An absent owned bearer means the selected hardware is no longer bound to
+// this GUI machine, not that the Hub itself failed to delete it.
+type deviceDeletionError struct {
+	code    string
+	message string
+}
+
+func (e deviceDeletionError) Error() string { return e.message }
+
+func (e deviceDeletionError) HardwareErrorCode() string { return e.code }
 
 type deviceVoicePairAttempt struct {
 	WindowStart time.Time
@@ -148,16 +247,18 @@ type devicePrincipal struct {
 // HardwareDevice is the credential-free view exposed to the owning GUI.
 // Bearer tokens never leave Hub after the one-time pairing exchange.
 type HardwareDevice struct {
-	ClientID        string                    `json:"clientId"`
-	ClientName      string                    `json:"clientName,omitempty"`
-	ProtocolVersion string                    `json:"protocolVersion,omitempty"`
-	PairedAt        time.Time                 `json:"pairedAt,omitempty"`
-	LastSeenAt      time.Time                 `json:"lastSeenAt,omitempty"`
-	Online          bool                      `json:"online"`
-	LastAckStatus   string                    `json:"lastAckStatus,omitempty"`
-	Volume          *int                      `json:"volume,omitempty"`
-	PetSkin         string                    `json:"petSkin,omitempty"`
-	Capabilities    *agent.ClientCapabilities `json:"capabilities,omitempty"`
+	ClientID           string                    `json:"clientId"`
+	ClientName         string                    `json:"clientName,omitempty"`
+	ProtocolVersion    string                    `json:"protocolVersion,omitempty"`
+	PairedAt           time.Time                 `json:"pairedAt,omitempty"`
+	LastSeenAt         time.Time                 `json:"lastSeenAt,omitempty"`
+	Online             bool                      `json:"online"`
+	LastAckStatus      string                    `json:"lastAckStatus,omitempty"`
+	Volume             *int                      `json:"volume,omitempty"`
+	Brightness         *int                      `json:"brightness,omitempty"`
+	ScreenSleepSeconds *int                      `json:"screenSleepSeconds,omitempty"`
+	PetSkin            string                    `json:"petSkin,omitempty"`
+	Capabilities       *agent.ClientCapabilities `json:"capabilities,omitempty"`
 }
 
 // MachineHardwareBindingState is the credential-free capacity view exposed to
@@ -166,6 +267,15 @@ type MachineHardwareBindingState struct {
 	MaxDevices int `json:"maxDevices"`
 	BoundCount int `json:"boundCount"`
 }
+
+const (
+	MachineClientReplyNotOwned    = "HARDWARE_NOT_OWNED"
+	MachineClientReplyDisabled    = "HARDWARE_DISABLED"
+	MachineClientReplyOffline     = "HARDWARE_OFFLINE"
+	MachineClientReplyUnsupported = "HARDWARE_UNSUPPORTED"
+	MachineClientReplyStale       = "HARDWARE_STALE_REPLY"
+	MachineClientReplyUnavailable = "HARDWARE_UNAVAILABLE"
+)
 
 type deviceAmbientWeather struct {
 	Summary      string `json:"summary"`
@@ -271,6 +381,7 @@ const (
 	devicePetAssetMaxDimension                        = 256
 	devicePetAssetMaxEncodedFrameBytes                = 270000
 	devicePetAssetMaxFrames                           = 8
+	deviceCredentialBackupRetryDelay                  = time.Second
 	deviceGatewayMaxMediaBytes                  int64 = 10 * 1024 * 1024
 	deviceGatewayMaxMediaResidentBytes          int64 = 64 * 1024 * 1024
 	deviceGatewayMaxMediaResidentBytesPerClient int64 = 16 * 1024 * 1024
@@ -285,7 +396,7 @@ const (
 )
 
 func NewDeviceGateway(plugin *RemoteGatewayPlugin) *DeviceGateway {
-	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), media: make(map[string]*deviceMedia), hardware: make(map[string]deviceHardwareConfig), dispatchLocks: make(map[string]*sync.Mutex), voicePairAttempts: make(map[string]*deviceVoicePairAttempt), codePairAttempts: make(map[string]*deviceVoicePairAttempt)}
+	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), ambientByMachine: make(map[string]map[string]any), media: make(map[string]*deviceMedia), hardware: make(map[string]deviceHardwareConfig), dispatchLocks: make(map[string]*sync.Mutex), voicePairAttempts: make(map[string]*deviceVoicePairAttempt), codePairAttempts: make(map[string]*deviceVoicePairAttempt)}
 }
 
 // SetMachineMessageSender lets the HTTP-side hardware ACK complete an
@@ -294,6 +405,266 @@ func (g *DeviceGateway) SetMachineMessageSender(sender MachineMessageSender) {
 	g.mu.Lock()
 	g.machineSender = sender
 	g.mu.Unlock()
+}
+
+// SetCredentialIdentityRepositories supplies the local identity records which
+// make hardware credentials usable after a Hub database reinstall. It is
+// optional for lightweight/test-only gateways that do not have Hub identity
+// storage; production Bootstrap always wires it before backing up bindings.
+func (g *DeviceGateway) SetCredentialIdentityRepositories(tenants store.TenantRepository, users store.UserRepository, machines store.MachineRepository) {
+	g.mu.Lock()
+	g.credentialTenants = tenants
+	g.credentialUsers = users
+	g.credentialMachines = machines
+	g.credentialIdentityRestorer = nil
+	g.mu.Unlock()
+}
+
+// SetCredentialIdentityRestorer adds an atomic identity restore path for the
+// configured repositories. Bootstrap uses the SQLite implementation so a
+// failed recovery cannot leave partial tenant/user/machine rows behind.
+func (g *DeviceGateway) SetCredentialIdentityRestorer(restorer deviceCredentialIdentityRestorer) {
+	g.mu.Lock()
+	g.credentialIdentityRestorer = restorer
+	g.mu.Unlock()
+}
+
+// SetCredentialSnapshotRestorer installs the atomic production recovery path.
+func (g *DeviceGateway) SetCredentialSnapshotRestorer(restorer deviceCredentialSnapshotRestorer) {
+	g.mu.Lock()
+	g.credentialSnapshotRestorer = restorer
+	g.mu.Unlock()
+}
+
+// SetCredentialBackup installs the optional, asynchronous off-Hub backup sink
+// used to recover bindings after a Hub database is re-created. The snapshot is
+// opaque to this package and is never sent to a GUI or hardware client.
+func (g *DeviceGateway) SetCredentialBackup(backup func(context.Context, string) error) {
+	g.mu.Lock()
+	g.credentialBackup = backup
+	if g.credentialBackupPending == "" && g.store != nil {
+		if pending, err := g.store.Get(context.Background(), deviceGatewayCredentialOutboxKey); err == nil {
+			g.credentialBackupPending = strings.TrimSpace(pending)
+		}
+	}
+	if g.credentialBackupPending != "" && !g.credentialBackupRunning {
+		g.credentialBackupRunning = true
+		go g.runCredentialBackup()
+	}
+	g.mu.Unlock()
+}
+
+// ExportPersistedCredentials returns the same opaque snapshot kept in local
+// durable storage. It intentionally contains no runtime queues or media.
+func (g *DeviceGateway) ExportPersistedCredentials() (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.marshalPersistedCredentialsLocked()
+}
+
+// RestorePersistedCredentials atomically replaces the durable binding snapshot
+// received from the Hub recovery authority. It is used only after Hub Center
+// has identified the same Hub installation; bearer tokens never cross ESP32
+// or GUI protocol messages during recovery.
+func (g *DeviceGateway) RestorePersistedCredentials(raw string) error {
+	_, err := g.restorePersistedCredentials(context.Background(), raw, false)
+	return err
+}
+
+func (g *DeviceGateway) restorePersistedCredentials(ctx context.Context, raw string, onlyIfMissing bool) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(raw) > deviceGatewayCredentialsMaxBytes {
+		return false, fmt.Errorf("recovered device credentials exceed %d bytes", deviceGatewayCredentialsMaxBytes)
+	}
+	var saved persistedDeviceCredentials
+	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+		return false, fmt.Errorf("invalid recovered device credentials: %w", err)
+	}
+	if saved.Tokens == nil {
+		saved.Tokens = make(map[string]devicePrincipal)
+	}
+	if saved.MachineHardware == nil {
+		saved.MachineHardware = make(map[string]deviceHardwareConfig)
+	}
+	// Normalize the recovered identity before validating and persisting it.
+	// Beyond avoiding whitespace-dependent lookup failures, this guarantees that
+	// future locally generated snapshots cannot keep re-uploading an unclean
+	// Hub Center payload indefinitely.
+	seenClients := make(map[string]struct{}, len(saved.Tokens))
+	clientMachines := make(map[string]string, len(saved.Tokens))
+	machineClientCounts := make(map[string]int)
+	normalizedTokens := make(map[string]devicePrincipal, len(saved.Tokens))
+	for token, principal := range saved.Tokens {
+		normalizedToken := strings.TrimSpace(token)
+		principal.ClientID = strings.TrimSpace(principal.ClientID)
+		principal.MachineID = strings.TrimSpace(principal.MachineID)
+		principal.TenantID = normalizeRemoteTenantID(principal.TenantID)
+		principal.UserID = strings.TrimSpace(principal.UserID)
+		if normalizedToken == "" || principal.ClientID == "" || principal.MachineID == "" {
+			return false, fmt.Errorf("invalid recovered device credential")
+		}
+		if _, exists := seenClients[principal.ClientID]; exists {
+			// A physical ESP32 client ID must have exactly one bearer principal.
+			// Normal pairing revokes the previous bearer before minting a new one;
+			// accepting a malformed backup here would make ownership ambiguous.
+			return false, fmt.Errorf("duplicate recovered hardware client")
+		}
+		seenClients[principal.ClientID] = struct{}{}
+		clientMachines[principal.ClientID] = principal.MachineID
+		machineClientCounts[principal.MachineID]++
+		if machineClientCounts[principal.MachineID] > maxMachineHardwareDevices {
+			// Recovery must retain the same per-GUI capacity invariant as the
+			// pairing endpoint. Otherwise a malformed backup could restore an
+			// unmanageable sixth device that the normal product flow can never
+			// create or replace.
+			return false, fmt.Errorf("recovered hardware binding limit exceeded")
+		}
+		principal.Pet = normalizeDevicePetProfileAsset(principal.Pet.Skin, principal.Pet.MotionEnabled, principal.Pet.Asset)
+		principal.LastWelcomeBootID = strings.TrimSpace(principal.LastWelcomeBootID)
+		principal.ClientName = strings.TrimSpace(principal.ClientName)
+		principal.ProtocolVersion = strings.TrimSpace(principal.ProtocolVersion)
+		if _, exists := normalizedTokens[normalizedToken]; exists {
+			return false, fmt.Errorf("duplicate recovered device credential")
+		}
+		normalizedTokens[normalizedToken] = principal
+	}
+	// Do not mutate saved.Tokens while ranging over it. Go permits entries added
+	// during map iteration to be visited or skipped, which made a whitespace-key
+	// normalization path depend on iteration order and could reject a valid
+	// recovered binding intermittently.
+	saved.Tokens = normalizedTokens
+	normalizedHardware := make(map[string]deviceHardwareConfig, len(saved.MachineHardware))
+	for machineID, config := range saved.MachineHardware {
+		machineID = strings.TrimSpace(machineID)
+		if machineID == "" {
+			return false, fmt.Errorf("invalid recovered machine hardware")
+		}
+		if _, exists := normalizedHardware[machineID]; exists {
+			return false, fmt.Errorf("duplicate recovered machine hardware")
+		}
+		normalizedConfig, err := normalizeRecoveredDeviceHardwareConfig(config)
+		if err != nil {
+			return false, err
+		}
+		normalizedHardware[machineID] = normalizedConfig
+	}
+	saved.MachineHardware = normalizedHardware
+	for machineID, config := range saved.MachineHardware {
+		for _, settings := range []map[string]int{config.DeviceVolumes, config.DeviceBrightness, config.DeviceScreenSleepSeconds} {
+			for clientID := range settings {
+				if clientMachines[clientID] != machineID {
+					return false, fmt.Errorf("recovered hardware setting is not owned by its machine")
+				}
+			}
+		}
+	}
+	for index := range saved.Tenants {
+		saved.Tenants[index].ID = strings.TrimSpace(saved.Tenants[index].ID)
+		saved.Tenants[index].Slug = strings.TrimSpace(saved.Tenants[index].Slug)
+	}
+	for index := range saved.Users {
+		saved.Users[index].ID = strings.TrimSpace(saved.Users[index].ID)
+		saved.Users[index].TenantID = normalizeRemoteTenantID(saved.Users[index].TenantID)
+		saved.Users[index].Email = strings.TrimSpace(saved.Users[index].Email)
+	}
+	for index := range saved.Machines {
+		saved.Machines[index].ID = strings.TrimSpace(saved.Machines[index].ID)
+		saved.Machines[index].TenantID = normalizeRemoteTenantID(saved.Machines[index].TenantID)
+		saved.Machines[index].UserID = strings.TrimSpace(saved.Machines[index].UserID)
+		saved.Machines[index].ClientID = strings.TrimSpace(saved.Machines[index].ClientID)
+		saved.Machines[index].MachineTokenHash = strings.TrimSpace(saved.Machines[index].MachineTokenHash)
+	}
+	ambientByMachine := make(map[string]map[string]any, len(saved.AmbientByMachine))
+	for machineID, ambient := range saved.AmbientByMachine {
+		machineID = strings.TrimSpace(machineID)
+		if machineID == "" {
+			return false, fmt.Errorf("invalid recovered machine ambient")
+		}
+		if _, exists := ambientByMachine[machineID]; exists {
+			return false, fmt.Errorf("duplicate recovered machine ambient")
+		}
+		copy := cloneDeviceAmbient(ambient)
+		if copy == nil {
+			return false, fmt.Errorf("invalid recovered machine ambient")
+		}
+		ambientByMachine[machineID] = copy
+	}
+	if err := validateCredentialIdentitySnapshot(saved); err != nil {
+		return false, err
+	}
+	// Persist the normalized form, not the remote payload verbatim. This makes
+	// recovery self-healing and ensures a later Hub restart validates the same
+	// canonical identities currently installed in memory.
+	normalizedRaw, err := json.Marshal(saved)
+	if err != nil {
+		return false, fmt.Errorf("encode recovered device credentials: %w", err)
+	}
+	raw = string(normalizedRaw)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// A pairing may complete while the remote snapshot is being fetched. In
+	// that case the newly persisted local binding wins over an older backup.
+	if onlyIfMissing && len(g.tokens) != 0 {
+		return false, nil
+	}
+	if g.credentialSnapshotRestorer != nil {
+		if err := g.credentialSnapshotRestorer.RestoreDeviceCredentialSnapshot(ctx, saved.Tenants, saved.Users, saved.Machines, deviceGatewayCredentialsKey, raw); err != nil {
+			return false, err
+		}
+	} else if g.store != nil && !onlyIfMissing {
+		// Startup reload has already written this snapshot successfully. It must
+		// not require identity repositories again merely to hydrate memory; those
+		// repositories are needed only when restoring a remote snapshot into an
+		// empty Hub database.
+	} else {
+		if err := g.restoreCredentialIdentitiesLocked(ctx, saved); err != nil {
+			return false, err
+		}
+		if g.store != nil {
+			if err := g.store.Set(ctx, deviceGatewayCredentialsKey, raw); err != nil {
+				return false, err
+			}
+		}
+	}
+	g.tokens = saved.Tokens
+	g.hardware = saved.MachineHardware
+	g.ambientByMachine = ambientByMachine
+	return true, nil
+}
+
+// RestoreMissingCredentials fetches a durable snapshot only when this Hub has
+// no local hardware bindings. This makes reinstall recovery safe while never
+// overwriting an operator's current local state.
+func (g *DeviceGateway) RestoreMissingCredentials(ctx context.Context, restore func(context.Context) (string, bool, error)) error {
+	_, err := g.RestoreMissingCredentialsResult(ctx, restore)
+	return err
+}
+
+// RestoreMissingCredentialsResult restores an absent local binding snapshot
+// and reports whether recovery reached a conclusive state. A false result
+// means Hub Center could not be consulted safely, so callers must not publish
+// an empty local snapshot that could overwrite the remote backup.
+func (g *DeviceGateway) RestoreMissingCredentialsResult(ctx context.Context, restore func(context.Context) (string, bool, error)) (bool, error) {
+	if restore == nil {
+		return true, nil
+	}
+	g.mu.Lock()
+	hasCredentials := len(g.tokens) != 0
+	g.mu.Unlock()
+	if hasCredentials {
+		return true, nil
+	}
+	raw, found, err := restore(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !found || strings.TrimSpace(raw) == "" {
+		return true, nil
+	}
+	_, err = g.restorePersistedCredentials(ctx, raw, true)
+	return err == nil, err
 }
 
 // NewPersistentDeviceGateway keeps hardware bearer credentials across Hub
@@ -309,14 +680,12 @@ func NewPersistentDeviceGateway(plugin *RemoteGatewayPlugin, store deviceCredent
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return g
 	}
-	var saved persistedDeviceCredentials
-	if json.Unmarshal([]byte(raw), &saved) == nil {
-		if saved.Tokens != nil {
-			g.tokens = saved.Tokens
-		}
-		if saved.MachineHardware != nil {
-			g.hardware = saved.MachineHardware
-		}
+	// The disk snapshot is the same untrusted boundary as a Hub Center backup.
+	// Validate and normalize it before serving any ESP request; otherwise a
+	// partially written or manually corrupted local record could bypass the
+	// recovery checks added for reinstall snapshots.
+	if _, err := g.restorePersistedCredentials(context.Background(), raw, false); err != nil {
+		log.Printf("device gateway: ignore invalid persisted hardware credentials: %v", err)
 	}
 	return g
 }
@@ -325,6 +694,76 @@ func (g *DeviceGateway) persistTokensLocked() error {
 	if g.store == nil {
 		return nil
 	}
+	raw, err := g.marshalPersistedCredentialsLocked()
+	if err != nil {
+		return err
+	}
+	if err := g.store.Set(context.Background(), deviceGatewayCredentialsKey, raw); err != nil {
+		return err
+	}
+	g.scheduleCredentialBackupLocked(raw)
+	return nil
+}
+
+// scheduleCredentialBackupLocked coalesces bursts of local changes and keeps
+// remote writes ordered. The caller must hold g.mu.
+func (g *DeviceGateway) scheduleCredentialBackupLocked(snapshot string) {
+	if g.credentialBackup == nil || strings.TrimSpace(snapshot) == "" {
+		return
+	}
+	if g.store != nil {
+		if err := g.store.Set(context.Background(), deviceGatewayCredentialOutboxKey, snapshot); err != nil {
+			log.Printf("device gateway: persist credential backup outbox: %v", err)
+		}
+	}
+	g.credentialBackupPending = snapshot
+	if g.credentialBackupRunning {
+		return
+	}
+	g.credentialBackupRunning = true
+	go g.runCredentialBackup()
+}
+
+func (g *DeviceGateway) runCredentialBackup() {
+	for {
+		g.mu.Lock()
+		snapshot := g.credentialBackupPending
+		g.credentialBackupPending = ""
+		backup := g.credentialBackup
+		if snapshot == "" || backup == nil {
+			g.credentialBackupRunning = false
+			g.mu.Unlock()
+			return
+		}
+		g.mu.Unlock()
+
+		if err := backup(context.Background(), snapshot); err != nil {
+			log.Printf("device gateway: backup hardware credentials failed: %v", err)
+			g.mu.Lock()
+			if g.credentialBackupPending == "" {
+				g.credentialBackupPending = snapshot
+			}
+			g.mu.Unlock()
+			time.Sleep(deviceCredentialBackupRetryDelay)
+			continue
+		}
+		// Do not erase an outbox entry for a mutation that arrived while this
+		// request was in flight. That newer snapshot must remain durable until
+		// its own upload succeeds.
+		g.mu.Lock()
+		hasNewerPending := g.credentialBackupPending != ""
+		g.mu.Unlock()
+		if !hasNewerPending && g.store != nil {
+			if err := g.store.Set(context.Background(), deviceGatewayCredentialOutboxKey, ""); err != nil {
+				log.Printf("device gateway: clear credential backup outbox: %v", err)
+			}
+		}
+		// A mutation made while the request was in flight is now pending. Loop
+		// so it is sent only after this snapshot has completed.
+	}
+}
+
+func (g *DeviceGateway) marshalPersistedCredentialsLocked() (string, error) {
 	copyTokens := make(map[string]devicePrincipal, len(g.tokens))
 	for token, principal := range g.tokens {
 		copyTokens[token] = principal
@@ -333,11 +772,264 @@ func (g *DeviceGateway) persistTokensLocked() error {
 	for machineID, config := range g.hardware {
 		copyHardware[machineID] = cloneDeviceHardwareConfig(config)
 	}
-	raw, err := json.Marshal(persistedDeviceCredentials{Tokens: copyTokens, MachineHardware: copyHardware})
-	if err != nil {
-		return err
+	copyAmbient := make(map[string]map[string]any, len(g.ambientByMachine))
+	for machineID, ambient := range g.ambientByMachine {
+		if copy := cloneDeviceAmbient(ambient); copy != nil {
+			copyAmbient[machineID] = copy
+		}
 	}
-	return g.store.Set(context.Background(), deviceGatewayCredentialsKey, string(raw))
+	tenants, users, machines, err := g.snapshotCredentialIdentitiesLocked(context.Background(), copyTokens)
+	if err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(persistedDeviceCredentials{
+		Tokens:           copyTokens,
+		MachineHardware:  copyHardware,
+		AmbientByMachine: copyAmbient,
+		Tenants:          tenants,
+		Users:            users,
+		Machines:         machines,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func (g *DeviceGateway) snapshotCredentialIdentitiesLocked(ctx context.Context, tokens map[string]devicePrincipal) ([]store.Tenant, []store.User, []store.Machine, error) {
+	if len(tokens) == 0 || g.credentialTenants == nil || g.credentialUsers == nil || g.credentialMachines == nil {
+		return nil, nil, nil, nil
+	}
+	tenantIDs := make(map[string]struct{})
+	userIDs := make(map[string]struct{})
+	machineIDs := make(map[string]struct{})
+	for _, principal := range tokens {
+		tenantIDs[normalizeRemoteTenantID(principal.TenantID)] = struct{}{}
+		userIDs[strings.TrimSpace(principal.UserID)] = struct{}{}
+		machineIDs[strings.TrimSpace(principal.MachineID)] = struct{}{}
+	}
+	tenants := make([]store.Tenant, 0, len(tenantIDs))
+	for tenantID := range tenantIDs {
+		if tenantID == "" {
+			return nil, nil, nil, fmt.Errorf("hardware credential has no tenant")
+		}
+		tenant, err := g.credentialTenants.GetByID(ctx, tenantID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if tenant == nil {
+			return nil, nil, nil, fmt.Errorf("hardware credential tenant %q not found", tenantID)
+		}
+		tenants = append(tenants, *tenant)
+	}
+	users := make([]store.User, 0, len(userIDs))
+	for userID := range userIDs {
+		if userID == "" {
+			return nil, nil, nil, fmt.Errorf("hardware credential has no user")
+		}
+		user, err := g.credentialUsers.GetByID(ctx, userID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if user == nil {
+			return nil, nil, nil, fmt.Errorf("hardware credential user %q not found", userID)
+		}
+		users = append(users, *user)
+	}
+	machines := make([]store.Machine, 0, len(machineIDs))
+	for machineID := range machineIDs {
+		if machineID == "" {
+			return nil, nil, nil, fmt.Errorf("hardware credential has no machine")
+		}
+		machine, err := g.credentialMachines.GetByID(ctx, machineID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if machine == nil || strings.TrimSpace(machine.MachineTokenHash) == "" {
+			return nil, nil, nil, fmt.Errorf("hardware credential machine %q not found", machineID)
+		}
+		machines = append(machines, *machine)
+	}
+	sort.Slice(tenants, func(i, j int) bool { return tenants[i].ID < tenants[j].ID })
+	sort.Slice(users, func(i, j int) bool { return users[i].ID < users[j].ID })
+	sort.Slice(machines, func(i, j int) bool { return machines[i].ID < machines[j].ID })
+	return tenants, users, machines, nil
+}
+
+func validateCredentialIdentitySnapshot(saved persistedDeviceCredentials) error {
+	// Snapshots created before identity recovery was introduced remain valid:
+	// they preserve ESP connectivity, while newer backups additionally retain
+	// the GUI authentication chain needed for command delivery.
+	if len(saved.Tenants) == 0 && len(saved.Users) == 0 && len(saved.Machines) == 0 {
+		return nil
+	}
+	tenants := make(map[string]store.Tenant, len(saved.Tenants))
+	for _, tenant := range saved.Tenants {
+		tenant.ID = strings.TrimSpace(tenant.ID)
+		if tenant.ID == "" || tenants[tenant.ID].ID != "" {
+			return fmt.Errorf("invalid recovered tenant identity")
+		}
+		tenants[tenant.ID] = tenant
+	}
+	users := make(map[string]store.User, len(saved.Users))
+	for _, user := range saved.Users {
+		user.ID, user.TenantID, user.Email = strings.TrimSpace(user.ID), normalizeRemoteTenantID(user.TenantID), strings.TrimSpace(user.Email)
+		if user.ID == "" || user.Email == "" || tenants[user.TenantID].ID == "" || users[user.ID].ID != "" {
+			return fmt.Errorf("invalid recovered user identity")
+		}
+		users[user.ID] = user
+	}
+	machines := make(map[string]store.Machine, len(saved.Machines))
+	for _, machine := range saved.Machines {
+		machine.ID, machine.TenantID, machine.UserID, machine.ClientID = strings.TrimSpace(machine.ID), normalizeRemoteTenantID(machine.TenantID), strings.TrimSpace(machine.UserID), strings.TrimSpace(machine.ClientID)
+		// A recovered GUI must retain its durable client ID: it is the input to
+		// deterministic machine-ID issuance and keeps the new Hub from treating
+		// the already-installed desktop as a different machine on its next
+		// activation. Legacy snapshots omit the entire identity chain and remain
+		// supported by the early-return above.
+		if machine.ID == "" || machine.UserID == "" || machine.ClientID == "" || machine.MachineTokenHash == "" || tenants[machine.TenantID].ID == "" || users[machine.UserID].ID == "" || users[machine.UserID].TenantID != machine.TenantID || machines[machine.ID].ID != "" {
+			return fmt.Errorf("invalid recovered machine identity")
+		}
+		machines[machine.ID] = machine
+	}
+	for _, principal := range saved.Tokens {
+		tenantID, userID, machineID := normalizeRemoteTenantID(principal.TenantID), strings.TrimSpace(principal.UserID), strings.TrimSpace(principal.MachineID)
+		machine := machines[machineID]
+		if tenants[tenantID].ID == "" || users[userID].ID == "" || machine.ID == "" || users[userID].TenantID != tenantID || machine.TenantID != tenantID || machine.UserID != userID {
+			return fmt.Errorf("recovered device credential has incomplete identity")
+		}
+	}
+	return nil
+}
+
+func (g *DeviceGateway) restoreCredentialIdentitiesLocked(ctx context.Context, saved persistedDeviceCredentials) error {
+	if len(saved.Tenants) == 0 && len(saved.Users) == 0 && len(saved.Machines) == 0 {
+		return nil
+	}
+	if g.credentialTenants == nil || g.credentialUsers == nil || g.credentialMachines == nil {
+		return fmt.Errorf("credential identity recovery is not configured")
+	}
+	if g.credentialIdentityRestorer != nil {
+		return g.credentialIdentityRestorer.RestoreDeviceCredentialIdentities(ctx, saved.Tenants, saved.Users, saved.Machines)
+	}
+	// Check every natural-key collision before writing anything. A recovery
+	// snapshot must never silently take over a tenant slug, account email, or
+	// GUI client identity that belongs to a different local record.
+	for _, tenant := range saved.Tenants {
+		existing, err := g.credentialTenants.GetByID(ctx, tenant.ID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			if !sameRecoveredTenant(*existing, tenant) {
+				return fmt.Errorf("recovered tenant %q conflicts with local identity", tenant.ID)
+			}
+		} else if bySlug, err := g.credentialTenants.GetBySlug(ctx, tenant.Slug); err != nil {
+			return err
+		} else if bySlug != nil && strings.TrimSpace(bySlug.ID) != strings.TrimSpace(tenant.ID) {
+			return fmt.Errorf("recovered tenant slug %q conflicts with local identity", tenant.Slug)
+		}
+	}
+	for _, user := range saved.Users {
+		existing, err := g.credentialUsers.GetByID(ctx, user.ID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			if !sameRecoveredUser(*existing, user) {
+				return fmt.Errorf("recovered user %q conflicts with local identity", user.ID)
+			}
+		} else if byEmail, err := g.credentialUsers.GetByTenantEmail(ctx, user.TenantID, user.Email); err != nil {
+			return err
+		} else if byEmail != nil && strings.TrimSpace(byEmail.ID) != strings.TrimSpace(user.ID) {
+			return fmt.Errorf("recovered user email %q conflicts with local identity", user.Email)
+		}
+	}
+	for _, machine := range saved.Machines {
+		existing, err := g.credentialMachines.GetByID(ctx, machine.ID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			if !sameRecoveredMachine(*existing, machine) {
+				return fmt.Errorf("recovered machine %q conflicts with local identity", machine.ID)
+			}
+		} else if strings.TrimSpace(machine.ClientID) != "" {
+			byClient, err := g.credentialMachines.GetByUserAndClientID(ctx, machine.UserID, machine.ClientID)
+			if err != nil {
+				return err
+			}
+			if byClient != nil && strings.TrimSpace(byClient.ID) != strings.TrimSpace(machine.ID) {
+				return fmt.Errorf("recovered machine client %q conflicts with local identity", machine.ClientID)
+			}
+		}
+	}
+	for _, tenant := range saved.Tenants {
+		if existing, err := g.credentialTenants.GetByID(ctx, tenant.ID); err != nil {
+			return err
+		} else if existing == nil {
+			if err := g.credentialTenants.Create(ctx, &tenant); err != nil {
+				return err
+			}
+		}
+	}
+	for _, user := range saved.Users {
+		if existing, err := g.credentialUsers.GetByID(ctx, user.ID); err != nil {
+			return err
+		} else if existing == nil {
+			if err := g.credentialUsers.Create(ctx, &user); err != nil {
+				return err
+			}
+		}
+	}
+	for _, machine := range saved.Machines {
+		if existing, err := g.credentialMachines.GetByID(ctx, machine.ID); err != nil {
+			return err
+		} else if existing == nil {
+			if err := g.credentialMachines.Create(ctx, &machine); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func sameRecoveredTenant(existing, recovered store.Tenant) bool {
+	// Tenant metadata is not part of a GUI's authentication chain. A clean Hub
+	// database always seeds tenant_default, and its display/settings may differ
+	// from the old Hub. The stable tenant ID is therefore the safe identity
+	// comparison for that one bootstrap record. Custom tenant conflicts remain
+	// strict because their local status/domain configuration is authoritative.
+	if strings.TrimSpace(existing.ID) == store.DefaultTenantID && strings.TrimSpace(recovered.ID) == store.DefaultTenantID {
+		return true
+	}
+	return strings.TrimSpace(existing.ID) == strings.TrimSpace(recovered.ID) &&
+		strings.TrimSpace(existing.Slug) == strings.TrimSpace(recovered.Slug) &&
+		strings.TrimSpace(existing.Name) == strings.TrimSpace(recovered.Name) &&
+		strings.TrimSpace(existing.Status) == strings.TrimSpace(recovered.Status) &&
+		strings.TrimSpace(existing.PrimaryDomain) == strings.TrimSpace(recovered.PrimaryDomain) &&
+		strings.TrimSpace(existing.SettingsJSON) == strings.TrimSpace(recovered.SettingsJSON) &&
+		strings.TrimSpace(existing.CreatedByAdminID) == strings.TrimSpace(recovered.CreatedByAdminID) &&
+		sameOptionalTime(existing.DeletedAt, recovered.DeletedAt)
+}
+
+func sameOptionalTime(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.UTC().Equal(right.UTC())
+}
+
+func sameRecoveredUser(existing, recovered store.User) bool {
+	return strings.TrimSpace(existing.ID) == strings.TrimSpace(recovered.ID) && normalizeRemoteTenantID(existing.TenantID) == normalizeRemoteTenantID(recovered.TenantID) && strings.EqualFold(strings.TrimSpace(existing.Email), strings.TrimSpace(recovered.Email))
+}
+
+func sameRecoveredMachine(existing, recovered store.Machine) bool {
+	return strings.TrimSpace(existing.ID) == strings.TrimSpace(recovered.ID) &&
+		normalizeRemoteTenantID(existing.TenantID) == normalizeRemoteTenantID(recovered.TenantID) &&
+		strings.TrimSpace(existing.UserID) == strings.TrimSpace(recovered.UserID) &&
+		strings.TrimSpace(existing.ClientID) == strings.TrimSpace(recovered.ClientID) &&
+		strings.TrimSpace(existing.MachineTokenHash) == strings.TrimSpace(recovered.MachineTokenHash)
 }
 
 func (g *DeviceGateway) RegisterPairing(machineID, tenantID, userID, code string) error {
@@ -362,6 +1054,28 @@ func (g *DeviceGateway) registerPairingWithPetProfileAsset(machineID, tenantID, 
 	now := time.Now()
 	for candidate, pairing := range g.pairings {
 		if !pairing.ExpiresAt.After(now) {
+			delete(g.pairings, candidate)
+		}
+	}
+	// A disconnected desktop can still be rendering its locally cached enabled
+	// switch while Hub has not yet received the reconnect sync. Do not mint a
+	// convincing code in that gap: the public pairing endpoint would correctly
+	// reject its exchange, leaving the user with an unusable credential.
+	if !g.machineHardwareEnabledLocked(machineID) {
+		return pairingRegistrationError{code: "HARDWARE_DISABLED", message: "hardware is disabled for this machine"}
+	}
+	if existing, exists := g.pairings[code]; exists && existing.MachineID != machineID {
+		// Codes are the only unauthenticated bootstrap secret. Never let a
+		// coincidental (or deliberately repeated) six-digit value replace a
+		// live reservation belonging to another machine.
+		return pairingRegistrationError{code: "PAIRING_CODE_COLLISION", message: "pairing code is already active; retry"}
+	}
+	for candidate, pairing := range g.pairings {
+		// A machine presents only one pairing code at a time. Replacing an
+		// unconsumed code here (rather than merely hiding it in the GUI) makes
+		// "generate a new code" a real credential rotation: a leaked earlier
+		// code cannot be used during its original 30-minute lifetime.
+		if pairing.MachineID == machineID {
 			delete(g.pairings, candidate)
 		}
 	}
@@ -460,6 +1174,10 @@ func (g *DeviceGateway) handlePair(w http.ResponseWriter, r *http.Request) {
 	if pairCode == "" {
 		pairCode = strings.TrimSpace(req.Code)
 	}
+	if len(pairCode) != 6 || strings.Trim(pairCode, "0123456789") != "" {
+		writeDeviceError(w, http.StatusBadRequest, "bad_pairing_code", "a six-digit pairing code is required")
+		return
+	}
 	if !g.allowCodePairAttempt(devicePairAttemptAddress(r), time.Now()) {
 		w.Header().Set("Retry-After", "60")
 		writeDeviceError(w, http.StatusTooManyRequests, "rate_limited", "too many pairing attempts; retry later")
@@ -472,6 +1190,10 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 	clientID = coreim.NormalizeThirdPartyID(clientID)
 	if err := coreim.ValidateThirdPartyID("clientId", clientID); err != nil {
 		writeDeviceError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if len(pairCode) != 6 || strings.Trim(pairCode, "0123456789") != "" {
+		writeDeviceError(w, http.StatusBadRequest, "bad_pairing_code", "a six-digit pairing code is required")
 		return
 	}
 	g.mu.Lock()
@@ -488,12 +1210,6 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 		writeDeviceError(w, http.StatusUnauthorized, "invalid_pairing_code", "pairing code is invalid or expired")
 		return
 	}
-	var bytes [32]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot create credential")
-		return
-	}
-	token := hex.EncodeToString(bytes[:])
 	// Pairing can replace the bearer for an existing physical ID. Serialize that
 	// credential rotation with the device's asynchronous inbound hand-off so an
 	// old bearer cannot cross the relay boundary during re-pairing.
@@ -507,6 +1223,21 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 		writeDeviceError(w, http.StatusUnauthorized, "invalid_pairing_code", "pairing code is invalid or already used")
 		return
 	}
+	// The master switch must gate the unauthenticated bootstrap too. Without
+	// this check, a code created just before disabling hardware could still mint
+	// a durable bearer while every authenticated endpoint is correctly blocked.
+	if !g.machineHardwareEnabledLocked(pairing.MachineID) {
+		g.mu.Unlock()
+		writeDeviceError(w, http.StatusServiceUnavailable, "hardware_disabled", "hardware is disabled in MaClaw")
+		return
+	}
+	var bytes [32]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		g.mu.Unlock()
+		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot create credential")
+		return
+	}
+	token := hex.EncodeToString(bytes[:])
 	for _, principal := range g.tokens {
 		if principal.ClientID == clientID && principal.MachineID != pairing.MachineID {
 			g.mu.Unlock()
@@ -852,7 +1583,7 @@ func (g *DeviceGateway) handleHandshake(w http.ResponseWriter, r *http.Request) 
 	}
 	response["protocolVersion"] = "1.1"
 	response["capabilitiesAccepted"] = capabilities
-	if ambient, ok := g.latestAmbientLocked(p.ClientID); ok {
+	if ambient, ok := g.latestAmbientForMachineLocked(p.MachineID); ok {
 		response["ambient"] = ambient
 	}
 	writeDeviceJSON(w, 200, response)
@@ -1539,13 +2270,13 @@ func (g *DeviceGateway) EnqueueMachineReply(machineID, conversationID string, re
 // previews intentionally skip stale clients so the GUI can fail fast instead
 // of waiting for a playback receipt from an offline ESP32.
 func (g *DeviceGateway) EnqueueMachineReplyCount(machineID, conversationID string, reply map[string]any) int {
-	return g.enqueueMachineClientReplyCount(machineID, "*", conversationID, reply)
+	return g.EnqueueMachineClientReplyResult(machineID, "*", conversationID, reply).Queued
 }
 
 // EnqueueMachineClientReply routes a GUI-originated message to one owned
 // hardware client. The wildcard preserves the legacy broadcast behaviour.
 func (g *DeviceGateway) EnqueueMachineClientReply(machineID, targetClientID, conversationID string, reply map[string]any) {
-	g.enqueueMachineClientReplyCount(machineID, targetClientID, conversationID, reply)
+	g.EnqueueMachineClientReplyResult(machineID, targetClientID, conversationID, reply)
 }
 
 // EnqueueMachineClientReplyCount is the ownership-enforcing variant used by
@@ -1553,38 +2284,38 @@ func (g *DeviceGateway) EnqueueMachineClientReply(machineID, targetClientID, con
 // that GUI (or cannot accept the reply), so callers can surface a correlated
 // error instead of silently routing by globally visible client ID.
 func (g *DeviceGateway) EnqueueMachineClientReplyCount(machineID, targetClientID, conversationID string, reply map[string]any) int {
-	return g.enqueueMachineClientReplyCount(machineID, targetClientID, conversationID, reply)
+	return g.EnqueueMachineClientReplyResult(machineID, targetClientID, conversationID, reply).Queued
 }
 
-func (g *DeviceGateway) enqueueMachineClientReplyCount(machineID, targetClientID, conversationID string, reply map[string]any) int {
+// EnqueueMachineClientReplyResult is the diagnostic variant of
+// EnqueueMachineClientReplyCount.  Reason is empty only when at least one
+// matching device accepted the message.
+func (g *DeviceGateway) EnqueueMachineClientReplyResult(machineID, targetClientID, conversationID string, reply map[string]any) ws.MachineClientReplyResult {
 	machineID = strings.TrimSpace(machineID)
 	targetClientID = strings.TrimSpace(targetClientID)
 	if machineID == "" || reply == nil {
-		return 0
+		return ws.MachineClientReplyResult{Reason: MachineClientReplyUnavailable}
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.machineHardwareEnabledLocked(machineID) {
-		return 0
+		return ws.MachineClientReplyResult{Reason: MachineClientReplyDisabled}
 	}
 	replyType, _ := reply["reply_type"].(string)
 	if strings.TrimSpace(replyType) == "" {
 		replyType, _ = reply["type"].(string)
 	}
-	volume := 0
-	isVolumeConfig := false
-	if strings.EqualFold(strings.TrimSpace(replyType), "hardware_config") {
-		extra, _ := reply["extra"].(map[string]any)
-		volume, isVolumeConfig = deviceVolume(extra["volume"])
-	}
+	isHardwareConfig := strings.EqualFold(strings.TrimSpace(replyType), "hardware_config")
 	extra, _ := reply["extra"].(map[string]any)
 	isHardwareAudioPreview, _ := extra["hardware_audio_preview"].(bool)
 	queued := 0
+	reason := MachineClientReplyNotOwned
 	seenClients := make(map[string]struct{})
 	for _, principal := range g.tokens {
 		if principal.MachineID != machineID || (targetClientID != "" && targetClientID != "*" && principal.ClientID != targetClientID) {
 			continue
 		}
+		reason = MachineClientReplyUnavailable
 		if _, seen := seenClients[principal.ClientID]; seen {
 			continue
 		}
@@ -1592,6 +2323,7 @@ func (g *DeviceGateway) enqueueMachineClientReplyCount(machineID, targetClientID
 		state := g.clientLocked(principal.ClientID)
 		if !deviceReplyBelongsToCurrentBootLocked(state, reply) {
 			log.Printf("[device-gateway] stale machine reply discarded machine=%s client=%s replyTo=%s bootSessionId=%s", machineID, principal.ClientID, deviceReplyCorrelationID(reply), state.bootSessionID)
+			reason = MachineClientReplyStale
 			continue
 		}
 		lastSeen := state.lastSeenAt
@@ -1599,6 +2331,7 @@ func (g *DeviceGateway) enqueueMachineClientReplyCount(machineID, targetClientID
 			lastSeen = principal.LastSeenAt
 		}
 		if isHardwareAudioPreview && (lastSeen.IsZero() || time.Since(lastSeen) > 90*time.Second) {
+			reason = MachineClientReplyOffline
 			continue
 		}
 		message := make(map[string]any, len(reply)+4)
@@ -1609,17 +2342,25 @@ func (g *DeviceGateway) enqueueMachineClientReplyCount(machineID, targetClientID
 			message["type"] = replyType
 		}
 		if !g.prepareOutgoingAudioLocked(principal.ClientID, message, state.capabilities) {
+			reason = MachineClientReplyUnsupported
 			continue
 		}
 		if !adaptDeviceGatewayReply(message, state.capabilities) {
+			reason = MachineClientReplyUnsupported
 			continue
 		}
-		if isVolumeConfig && replaceQueuedDeviceVolume(state, volume) {
-			queued++
-			old := state.notify
-			state.notify = make(chan struct{})
-			close(old)
-			continue
+		if isHardwareConfig {
+			// The message already passed adaptDeviceGatewayReply, so its extra
+			// holds only levels this device declared support for. Coalesce into
+			// the pending control message instead of stacking stale values.
+			extra, _ := message["extra"].(map[string]any)
+			if mergeQueuedHardwareConfig(state, extra) {
+				queued++
+				old := state.notify
+				state.notify = make(chan struct{})
+				close(old)
+				continue
+			}
 		}
 		state.next++
 		message["seq"] = state.next
@@ -1631,7 +2372,11 @@ func (g *DeviceGateway) enqueueMachineClientReplyCount(machineID, targetClientID
 		state.notify = make(chan struct{})
 		close(old)
 	}
-	return queued
+	if queued > 0 {
+		return ws.MachineClientReplyResult{Queued: queued}
+	}
+	log.Printf("[device-gateway] machine reply rejected machine=%s client=%s reason=%s preview=%t", machineID, targetClientID, reason, isHardwareAudioPreview)
+	return ws.MachineClientReplyResult{Reason: reason}
 }
 
 // ListMachineDevices returns all durable hardware bindings owned by one GUI.
@@ -1650,6 +2395,12 @@ func (g *DeviceGateway) ListMachineDevices(machineID string) []HardwareDevice {
 		device := HardwareDevice{ClientID: clientID, ClientName: principal.ClientName, ProtocolVersion: principal.ProtocolVersion, PairedAt: principal.PairedAt, LastSeenAt: principal.LastSeenAt, PetSkin: principal.Pet.Skin}
 		if volume, ok := g.hardwareVolumeForClientLocked(machineID, clientID); ok {
 			device.Volume = &volume
+		}
+		if brightness, ok := g.hardwareBrightnessForClientLocked(machineID, clientID); ok {
+			device.Brightness = &brightness
+		}
+		if timeout, ok := g.hardwareScreenSleepTimeoutForClientLocked(machineID, clientID); ok {
+			device.ScreenSleepSeconds = &timeout
 		}
 		if state := g.clients[clientID]; state != nil {
 			lastSeen := state.lastSeenAt
@@ -1703,6 +2454,12 @@ func (g *DeviceGateway) ListMachineDevicesJSON(machineID string) []map[string]an
 		}
 		if device.Volume != nil {
 			item["volume"] = *device.Volume
+		}
+		if device.Brightness != nil {
+			item["brightness"] = *device.Brightness
+		}
+		if device.ScreenSleepSeconds != nil {
+			item["screenSleepSeconds"] = *device.ScreenSleepSeconds
 		}
 		if device.PetSkin != "" {
 			item["petSkin"] = device.PetSkin
@@ -1803,14 +2560,40 @@ func (g *DeviceGateway) MigrateMachineHardwareBindings(machineID, tenantID, user
 				currentHardware = cloneDeviceHardwareConfig(legacyHardware)
 				currentHardwareExisted = true
 			}
-		} else if len(legacyHardware.DeviceVolumes) > 0 {
-			if currentHardware.DeviceVolumes == nil {
-				currentHardware.DeviceVolumes = make(map[string]int)
+		} else {
+			if len(legacyHardware.DeviceVolumes) > 0 {
+				if currentHardware.DeviceVolumes == nil {
+					currentHardware.DeviceVolumes = make(map[string]int)
+				}
+				for clientID, volume := range legacyHardware.DeviceVolumes {
+					if _, moved := migratedClientIDs[clientID]; moved {
+						if _, alreadyConfigured := currentHardware.DeviceVolumes[clientID]; !alreadyConfigured {
+							currentHardware.DeviceVolumes[clientID] = volume
+						}
+					}
+				}
 			}
-			for clientID, volume := range legacyHardware.DeviceVolumes {
-				if _, moved := migratedClientIDs[clientID]; moved {
-					if _, alreadyConfigured := currentHardware.DeviceVolumes[clientID]; !alreadyConfigured {
-						currentHardware.DeviceVolumes[clientID] = volume
+			if len(legacyHardware.DeviceBrightness) > 0 {
+				if currentHardware.DeviceBrightness == nil {
+					currentHardware.DeviceBrightness = make(map[string]int)
+				}
+				for clientID, brightness := range legacyHardware.DeviceBrightness {
+					if _, moved := migratedClientIDs[clientID]; moved {
+						if _, alreadyConfigured := currentHardware.DeviceBrightness[clientID]; !alreadyConfigured {
+							currentHardware.DeviceBrightness[clientID] = brightness
+						}
+					}
+				}
+			}
+			if len(legacyHardware.DeviceScreenSleepSeconds) > 0 {
+				if currentHardware.DeviceScreenSleepSeconds == nil {
+					currentHardware.DeviceScreenSleepSeconds = make(map[string]int)
+				}
+				for clientID, timeout := range legacyHardware.DeviceScreenSleepSeconds {
+					if _, moved := migratedClientIDs[clientID]; moved {
+						if _, alreadyConfigured := currentHardware.DeviceScreenSleepSeconds[clientID]; !alreadyConfigured {
+							currentHardware.DeviceScreenSleepSeconds[clientID] = timeout
+						}
 					}
 				}
 			}
@@ -1907,7 +2690,7 @@ func (g *DeviceGateway) DeleteMachineDevice(machineID, clientID string) error {
 		}
 	}
 	if len(revoked) == 0 {
-		return fmt.Errorf("hardware device not found")
+		return deviceDeletionError{code: "HARDWARE_NOT_OWNED", message: "hardware client is not bound to this machine"}
 	}
 	previousState := g.clients[clientID]
 	delete(g.clients, clientID)
@@ -1920,11 +2703,25 @@ func (g *DeviceGateway) DeleteMachineDevice(machineID, clientID string) error {
 	}
 	previousHardware, hardwareExisted := g.hardware[machineID]
 	previousHardware = cloneDeviceHardwareConfig(previousHardware)
-	if config, ok := g.hardware[machineID]; ok && config.DeviceVolumes != nil {
+	if config, ok := g.hardware[machineID]; ok && (config.DeviceVolumes != nil || config.DeviceBrightness != nil || config.DeviceScreenSleepSeconds != nil) {
 		config = cloneDeviceHardwareConfig(config)
-		delete(config.DeviceVolumes, clientID)
-		if len(config.DeviceVolumes) == 0 {
-			config.DeviceVolumes = nil
+		if config.DeviceVolumes != nil {
+			delete(config.DeviceVolumes, clientID)
+			if len(config.DeviceVolumes) == 0 {
+				config.DeviceVolumes = nil
+			}
+		}
+		if config.DeviceBrightness != nil {
+			delete(config.DeviceBrightness, clientID)
+			if len(config.DeviceBrightness) == 0 {
+				config.DeviceBrightness = nil
+			}
+		}
+		if config.DeviceScreenSleepSeconds != nil {
+			delete(config.DeviceScreenSleepSeconds, clientID)
+			if len(config.DeviceScreenSleepSeconds) == 0 {
+				config.DeviceScreenSleepSeconds = nil
+			}
 		}
 		g.hardware[machineID] = config
 	}
@@ -2102,6 +2899,32 @@ func (g *DeviceGateway) UpdateMachineVolume(machineID string, value any) error {
 	return err
 }
 
+// UpdateMachineBrightness changes the machine default backlight level. It
+// mirrors UpdateMachineVolume and is used only by bindings without an
+// explicit per-device level.
+func (g *DeviceGateway) UpdateMachineBrightness(machineID string, value any) error {
+	machineID = strings.TrimSpace(machineID)
+	brightness, ok := deviceBrightness(value)
+	if machineID == "" || !ok {
+		return fmt.Errorf("invalid hardware brightness")
+	}
+	g.mu.Lock()
+	previous, existed := g.hardware[machineID]
+	config := g.hardware[machineID]
+	config.Brightness = &brightness
+	g.hardware[machineID] = config
+	err := g.persistTokensLocked()
+	if err != nil {
+		if existed {
+			g.hardware[machineID] = previous
+		} else {
+			delete(g.hardware, machineID)
+		}
+	}
+	g.mu.Unlock()
+	return err
+}
+
 // UpdateMachineDeviceVolume makes one bound ESP32's speaker level durable.
 // It verifies ownership before persisting so a machine cannot reserve settings
 // for an arbitrary globally-visible client ID.
@@ -2144,7 +2967,7 @@ func (g *DeviceGateway) UpdateMachineDeviceVolume(machineID, clientID string, va
 	// capability handshake picks up the durable value below.
 	if state := g.clients[clientID]; state != nil {
 		if capabilities := agent.NormalizeClientCapabilities(&state.capabilities); capabilities.Features.VolumeControl {
-			if replaceQueuedDeviceVolume(state, volume) {
+			if mergeQueuedHardwareConfig(state, map[string]any{"volume": volume}) {
 				return nil
 			}
 			message := map[string]any{"reply_type": "hardware_config", "type": "hardware_config", "extra": map[string]any{"volume": volume}}
@@ -2161,16 +2984,223 @@ func (g *DeviceGateway) UpdateMachineDeviceVolume(machineID, clientID string, va
 	return nil
 }
 
-func cloneDeviceHardwareConfig(config deviceHardwareConfig) deviceHardwareConfig {
-	if config.DeviceVolumes == nil {
-		return config
+// UpdateMachineDeviceBrightness makes one bound ESP32's backlight level
+// durable. It mirrors UpdateMachineDeviceVolume: ownership is verified before
+// persisting, and a live device only receives the level when it declared
+// brightness control in its capability handshake.
+func (g *DeviceGateway) UpdateMachineDeviceBrightness(machineID, clientID string, value any) error {
+	machineID, clientID = strings.TrimSpace(machineID), strings.TrimSpace(clientID)
+	brightness, ok := deviceBrightness(value)
+	if machineID == "" || clientID == "" || !ok {
+		return fmt.Errorf("invalid hardware device brightness")
 	}
-	volumes := config.DeviceVolumes
-	config.DeviceVolumes = make(map[string]int, len(volumes))
-	for clientID, volume := range volumes {
-		config.DeviceVolumes[clientID] = volume
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	owned := false
+	for _, principal := range g.tokens {
+		if principal.MachineID == machineID && principal.ClientID == clientID {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		return fmt.Errorf("hardware device not found")
+	}
+	previous, existed := g.hardware[machineID]
+	previous = cloneDeviceHardwareConfig(previous)
+	config := cloneDeviceHardwareConfig(g.hardware[machineID])
+	if config.DeviceBrightness == nil {
+		config.DeviceBrightness = make(map[string]int)
+	}
+	config.DeviceBrightness[clientID] = brightness
+	g.hardware[machineID] = config
+	if err := g.persistTokensLocked(); err != nil {
+		if existed {
+			g.hardware[machineID] = previous
+		} else {
+			delete(g.hardware, machineID)
+		}
+		return err
+	}
+	// Same delivery contract as the speaker level: a connected device receives
+	// the change right away, an offline binding picks it up during its next
+	// capability handshake.
+	if state := g.clients[clientID]; state != nil {
+		if capabilities := agent.NormalizeClientCapabilities(&state.capabilities); capabilities.Features.BrightnessControl {
+			if mergeQueuedHardwareConfig(state, map[string]any{"brightness": brightness}) {
+				return nil
+			}
+			message := map[string]any{"reply_type": "hardware_config", "type": "hardware_config", "extra": map[string]any{"brightness": brightness}}
+			state.next++
+			message["seq"] = state.next
+			message["id"] = fmt.Sprintf("hub_hardware_config_%d_%d", time.Now().UnixMilli(), state.next)
+			message["conversationId"] = "system"
+			g.queueDeviceMessageLocked(state, message)
+			old := state.notify
+			state.notify = make(chan struct{})
+			close(old)
+		}
+	}
+	return nil
+}
+
+// UpdateMachineDeviceScreenSleepTimeout makes one bound ESP32's idle
+// screen-off timeout durable. The same binding ownership rule as the volume
+// and brightness settings prevents cross-machine updates.
+func (g *DeviceGateway) UpdateMachineDeviceScreenSleepTimeout(machineID, clientID string, value any) error {
+	machineID, clientID = strings.TrimSpace(machineID), strings.TrimSpace(clientID)
+	timeout, ok := deviceScreenSleepTimeout(value)
+	if machineID == "" || clientID == "" || !ok {
+		return fmt.Errorf("invalid hardware device screen sleep timeout")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	owned := false
+	for _, principal := range g.tokens {
+		if principal.MachineID == machineID && principal.ClientID == clientID {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		return fmt.Errorf("hardware device not found")
+	}
+	previous, existed := g.hardware[machineID]
+	previous = cloneDeviceHardwareConfig(previous)
+	config := cloneDeviceHardwareConfig(g.hardware[machineID])
+	if config.DeviceScreenSleepSeconds == nil {
+		config.DeviceScreenSleepSeconds = make(map[string]int)
+	}
+	config.DeviceScreenSleepSeconds[clientID] = timeout
+	g.hardware[machineID] = config
+	if err := g.persistTokensLocked(); err != nil {
+		if existed {
+			g.hardware[machineID] = previous
+		} else {
+			delete(g.hardware, machineID)
+		}
+		return err
+	}
+	if state := g.clients[clientID]; state != nil {
+		if capabilities := agent.NormalizeClientCapabilities(&state.capabilities); capabilities.Features.ScreenSleepControl {
+			if mergeQueuedHardwareConfig(state, map[string]any{"screenSleepSeconds": timeout}) {
+				return nil
+			}
+			message := map[string]any{"reply_type": "hardware_config", "type": "hardware_config", "extra": map[string]any{"screenSleepSeconds": timeout}}
+			state.next++
+			message["seq"] = state.next
+			message["id"] = fmt.Sprintf("hub_hardware_config_%d_%d", time.Now().UnixMilli(), state.next)
+			message["conversationId"] = "system"
+			g.queueDeviceMessageLocked(state, message)
+			old := state.notify
+			state.notify = make(chan struct{})
+			close(old)
+		}
+	}
+	return nil
+}
+
+func cloneDeviceHardwareConfig(config deviceHardwareConfig) deviceHardwareConfig {
+	if config.DeviceVolumes != nil {
+		volumes := config.DeviceVolumes
+		config.DeviceVolumes = make(map[string]int, len(volumes))
+		for clientID, volume := range volumes {
+			config.DeviceVolumes[clientID] = volume
+		}
+	}
+	if config.DeviceBrightness != nil {
+		brightness := config.DeviceBrightness
+		config.DeviceBrightness = make(map[string]int, len(brightness))
+		for clientID, level := range brightness {
+			config.DeviceBrightness[clientID] = level
+		}
+	}
+	if config.DeviceScreenSleepSeconds != nil {
+		timeouts := config.DeviceScreenSleepSeconds
+		config.DeviceScreenSleepSeconds = make(map[string]int, len(timeouts))
+		for clientID, timeout := range timeouts {
+			config.DeviceScreenSleepSeconds[clientID] = timeout
+		}
 	}
 	return config
+}
+
+// normalizeRecoveredDeviceHardwareConfig constrains a Hub Center snapshot to
+// the same state that the live hardware-setting APIs can create. Recovery is
+// a trust boundary: malformed levels or orphaned per-device overrides must
+// not become durable merely because they arrived inside an otherwise valid
+// credential backup.
+func normalizeRecoveredDeviceHardwareConfig(config deviceHardwareConfig) (deviceHardwareConfig, error) {
+	config = cloneDeviceHardwareConfig(config)
+	if config.Enabled != nil {
+		enabled := *config.Enabled
+		config.Enabled = &enabled
+	}
+	if len(config.WelcomeAudio) > deviceGatewayWelcomeMaxBytes*2 {
+		return deviceHardwareConfig{}, fmt.Errorf("recovered hardware welcome audio is too large")
+	}
+	config.WelcomeAudio = strings.TrimSpace(config.WelcomeAudio)
+	if config.WelcomeAudio != "" {
+		decoded, err := base64.StdEncoding.DecodeString(config.WelcomeAudio)
+		if err != nil || len(decoded) == 0 || len(decoded) > deviceGatewayWelcomeMaxBytes {
+			return deviceHardwareConfig{}, fmt.Errorf("invalid recovered hardware welcome audio")
+		}
+	}
+	if config.Volume != nil && !validDeviceVolume(*config.Volume) {
+		return deviceHardwareConfig{}, fmt.Errorf("invalid recovered hardware volume")
+	}
+	if config.Brightness != nil && !validDeviceBrightness(*config.Brightness) {
+		return deviceHardwareConfig{}, fmt.Errorf("invalid recovered hardware brightness")
+	}
+	volumes := make(map[string]int, len(config.DeviceVolumes))
+	for clientID, volume := range config.DeviceVolumes {
+		clientID = strings.TrimSpace(clientID)
+		if clientID == "" || !validDeviceVolume(volume) {
+			return deviceHardwareConfig{}, fmt.Errorf("invalid recovered hardware device volume")
+		}
+		if _, exists := volumes[clientID]; exists {
+			return deviceHardwareConfig{}, fmt.Errorf("duplicate recovered hardware device volume")
+		}
+		volumes[clientID] = volume
+	}
+	if len(volumes) == 0 {
+		config.DeviceVolumes = nil
+	} else {
+		config.DeviceVolumes = volumes
+	}
+	brightnesses := make(map[string]int, len(config.DeviceBrightness))
+	for clientID, brightness := range config.DeviceBrightness {
+		clientID = strings.TrimSpace(clientID)
+		if clientID == "" || !validDeviceBrightness(brightness) {
+			return deviceHardwareConfig{}, fmt.Errorf("invalid recovered hardware device brightness")
+		}
+		if _, exists := brightnesses[clientID]; exists {
+			return deviceHardwareConfig{}, fmt.Errorf("duplicate recovered hardware device brightness")
+		}
+		brightnesses[clientID] = brightness
+	}
+	if len(brightnesses) == 0 {
+		config.DeviceBrightness = nil
+	} else {
+		config.DeviceBrightness = brightnesses
+	}
+	timeouts := make(map[string]int, len(config.DeviceScreenSleepSeconds))
+	for clientID, timeout := range config.DeviceScreenSleepSeconds {
+		clientID = strings.TrimSpace(clientID)
+		if clientID == "" || !validDeviceScreenSleepTimeout(timeout) {
+			return deviceHardwareConfig{}, fmt.Errorf("invalid recovered hardware device screen sleep timeout")
+		}
+		if _, exists := timeouts[clientID]; exists {
+			return deviceHardwareConfig{}, fmt.Errorf("duplicate recovered hardware device screen sleep timeout")
+		}
+		timeouts[clientID] = timeout
+	}
+	if len(timeouts) == 0 {
+		config.DeviceScreenSleepSeconds = nil
+	} else {
+		config.DeviceScreenSleepSeconds = timeouts
+	}
+	return config, nil
 }
 
 func (g *DeviceGateway) hardwareVolumeForClientLocked(machineID, clientID string) (int, bool) {
@@ -2186,26 +3216,64 @@ func (g *DeviceGateway) hardwareVolumeForClientLocked(machineID, clientID string
 	return 0, false
 }
 
+// hardwareBrightnessForClientLocked mirrors hardwareVolumeForClientLocked for
+// the panel backlight: an explicit per-device level wins over the machine
+// default.
+func (g *DeviceGateway) hardwareBrightnessForClientLocked(machineID, clientID string) (int, bool) {
+	config := g.hardware[machineID]
+	if config.DeviceBrightness != nil {
+		if brightness, ok := config.DeviceBrightness[clientID]; ok {
+			return brightness, true
+		}
+	}
+	if config.Brightness != nil {
+		return *config.Brightness, true
+	}
+	return 0, false
+}
+
+func (g *DeviceGateway) hardwareScreenSleepTimeoutForClientLocked(machineID, clientID string) (int, bool) {
+	config := g.hardware[machineID]
+	if config.DeviceScreenSleepSeconds != nil {
+		timeout, ok := config.DeviceScreenSleepSeconds[clientID]
+		return timeout, ok
+	}
+	return 0, false
+}
+
 // queueHardwareConfigForClientLocked places durable, lightweight settings
-// ahead of boot-time media. At present this is the speaker volume; keeping it
-// in the handshake path also covers a device paired after the desktop setting
-// was chosen.
+// ahead of boot-time media. At present these are the speaker volume and the
+// backlight level; keeping them in the handshake path also covers a device
+// paired after the desktop setting was chosen.
 func (g *DeviceGateway) queueHardwareConfigForClientLocked(principal devicePrincipal, state *deviceClientState) {
 	if state == nil {
 		return
 	}
-	volume, ok := g.hardwareVolumeForClientLocked(principal.MachineID, principal.ClientID)
-	if !ok {
+	levels := make(map[string]any, 3)
+	if volume, ok := g.hardwareVolumeForClientLocked(principal.MachineID, principal.ClientID); ok {
+		levels["volume"] = volume
+	}
+	if brightness, ok := g.hardwareBrightnessForClientLocked(principal.MachineID, principal.ClientID); ok {
+		levels["brightness"] = brightness
+	}
+	if timeout, ok := g.hardwareScreenSleepTimeoutForClientLocked(principal.MachineID, principal.ClientID); ok {
+		levels["screenSleepSeconds"] = timeout
+	}
+	// Only levels the device declared support for may leave Hub. A device
+	// without brightness control keeps its durable value stored for later but
+	// never sees the key on the wire.
+	levels = filterHardwareConfigLevels(levels, agent.NormalizeClientCapabilities(&state.capabilities))
+	if len(levels) == 0 {
 		return
 	}
 	// A reconnect or rapid slider movement can arrive before the ESP ACKs the
 	// prior setting. Coalesce into its pending control message so the device
-	// always receives the latest level without filling the queue with stale
+	// always receives the latest levels without filling the queue with stale
 	// values that could later overwrite the user's last choice.
-	if replaceQueuedDeviceVolume(state, volume) {
+	if mergeQueuedHardwareConfig(state, levels) {
 		return
 	}
-	message := map[string]any{"reply_type": "hardware_config", "type": "hardware_config", "extra": map[string]any{"volume": volume}}
+	message := map[string]any{"reply_type": "hardware_config", "type": "hardware_config", "extra": levels}
 	if !adaptDeviceGatewayReply(message, state.capabilities) {
 		return
 	}
@@ -2219,8 +3287,28 @@ func (g *DeviceGateway) queueHardwareConfigForClientLocked(principal devicePrinc
 	close(old)
 }
 
-func replaceQueuedDeviceVolume(state *deviceClientState, volume int) bool {
-	if state == nil {
+// filterHardwareConfigLevels keeps only the hardware_config levels that are
+// both well-formed and supported by the device. Unsupported levels are
+// dropped quietly so older firmware is never sent keys it does not know.
+func filterHardwareConfigLevels(levels map[string]any, capabilities agent.ClientCapabilities) map[string]any {
+	filtered := make(map[string]any, len(levels))
+	if value, present := levels["volume"]; present && validDeviceVolume(value) && capabilities.Features.VolumeControl {
+		filtered["volume"] = value
+	}
+	if value, present := levels["brightness"]; present && validDeviceBrightness(value) && capabilities.Features.BrightnessControl {
+		filtered["brightness"] = value
+	}
+	if value, present := levels["screenSleepSeconds"]; present && validDeviceScreenSleepTimeout(value) && capabilities.Features.ScreenSleepControl {
+		filtered["screenSleepSeconds"] = value
+	}
+	return filtered
+}
+
+// mergeQueuedHardwareConfig folds the newest per-device hardware levels into
+// the latest pending hardware_config message. Volume, brightness, and screen
+// sleep merge independently, so updating one never clobbers another value.
+func mergeQueuedHardwareConfig(state *deviceClientState, levels map[string]any) bool {
+	if state == nil || len(levels) == 0 {
 		return false
 	}
 	for index := len(state.messages) - 1; index >= 0; index-- {
@@ -2228,7 +3316,14 @@ func replaceQueuedDeviceVolume(state *deviceClientState, volume int) bool {
 		if deviceReplyString(message, "type", "reply_type") != "hardware_config" {
 			continue
 		}
-		message["extra"] = map[string]any{"volume": volume}
+		extra, _ := message["extra"].(map[string]any)
+		if extra == nil {
+			extra = make(map[string]any, len(levels))
+		}
+		for key, value := range levels {
+			extra[key] = value
+		}
+		message["extra"] = extra
 		return true
 	}
 	return false
@@ -2339,7 +3434,24 @@ func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapa
 		if extra == nil {
 			return false
 		}
-		return validDeviceVolume(extra["volume"]) && capabilities.Features.VolumeControl
+		// Malformed levels reject the whole message; well-formed levels the
+		// device never declared are stripped quietly so one payload can carry
+		// volume and brightness for mixed-capability hardware.
+		if value, present := extra["volume"]; present && !validDeviceVolume(value) {
+			return false
+		}
+		if value, present := extra["brightness"]; present && !validDeviceBrightness(value) {
+			return false
+		}
+		if value, present := extra["screenSleepSeconds"]; present && !validDeviceScreenSleepTimeout(value) {
+			return false
+		}
+		filtered := filterHardwareConfigLevels(extra, capabilities)
+		if len(filtered) == 0 {
+			return false
+		}
+		reply["extra"] = filtered
+		return true
 	case "image":
 		mimeType = firstDeviceValue(mimeType, "image/png")
 		if !capabilities.SupportsOutputMIME("image", mimeType) {
@@ -2465,6 +3577,50 @@ func validDeviceVolume(value any) bool {
 	return ok
 }
 
+// Backlight levels share the speaker-level contract: an integer in 0-100.
+func validDeviceBrightness(value any) bool {
+	_, ok := deviceBrightness(value)
+	return ok
+}
+
+func validDeviceScreenSleepTimeout(value any) bool {
+	_, ok := deviceScreenSleepTimeout(value)
+	return ok
+}
+
+func deviceScreenSleepTimeout(value any) (int, bool) {
+	var timeout int64
+	switch v := value.(type) {
+	case int:
+		timeout = int64(v)
+	case int64:
+		timeout = v
+	case float64:
+		if v != float64(int64(v)) {
+			return 0, false
+		}
+		timeout = int64(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		timeout = parsed
+	default:
+		return 0, false
+	}
+	switch timeout {
+	case 0, 60, 180, 300, 600, 1800, 3600, 7200, 10800, 14400, 18000:
+		return int(timeout), true
+	default:
+		return 0, false
+	}
+}
+
+func deviceBrightness(value any) (int, bool) {
+	return deviceVolume(value)
+}
+
 func deviceVolume(value any) (int, bool) {
 	var volume int64
 	switch value := value.(type) {
@@ -2532,6 +3688,16 @@ func (g *DeviceGateway) UpdateMachineAmbient(machineID string, ambient map[strin
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.ambientByMachine == nil {
+		g.ambientByMachine = make(map[string]map[string]any)
+	}
+	g.ambientByMachine[machineID] = normalized
+	if err := g.persistTokensLocked(); err != nil {
+		// Ambient is advisory display data. Keep the fresh in-memory snapshot and
+		// live delivery available, but make a persistence failure visible because
+		// a Hub restart would otherwise reintroduce the GUI-refresh wait.
+		log.Printf("device gateway: persist ambient for machine %q: %v", machineID, err)
+	}
 	for _, principal := range g.tokens {
 		if principal.MachineID != machineID {
 			continue
@@ -2549,11 +3715,9 @@ func (g *DeviceGateway) UpdateMachineAmbient(machineID string, ambient map[strin
 	}
 }
 
-func (g *DeviceGateway) latestAmbientLocked(clientID string) (map[string]any, bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	state := g.clientLocked(clientID)
-	return state.ambient, state.ambient != nil
+func (g *DeviceGateway) latestAmbientForMachineLocked(machineID string) (map[string]any, bool) {
+	ambient := g.ambientByMachine[machineID]
+	return ambient, ambient != nil
 }
 
 func normalizeDeviceAmbient(raw map[string]any) (map[string]any, bool) {
@@ -2568,7 +3732,7 @@ func normalizeDeviceAmbient(raw map[string]any) (map[string]any, bool) {
 	if summary == "" || !ok || temperature < -80 || temperature > 80 {
 		return nil, false
 	}
-	expiresAt, _ := raw["expiresAt"].(float64)
+	expiresAt, _ := deviceAmbientNumber(raw["expiresAt"])
 	if expiresAt <= 0 {
 		expiresAt = float64(time.Now().Add(2 * time.Hour).UnixMilli())
 	}
@@ -2580,6 +3744,18 @@ func normalizeDeviceAmbient(raw map[string]any) (map[string]any, bool) {
 		normalized["glyphs"] = glyphs
 	}
 	return normalized, true
+}
+
+// cloneDeviceAmbient validates and copies the compact, bounded weather DTO
+// before it crosses an ownership boundary (persistence, recovery or an HTTP
+// response). It deliberately reuses the protocol validator so old/corrupt
+// stored state cannot enter a newly paired device's handshake.
+func cloneDeviceAmbient(ambient map[string]any) map[string]any {
+	copy, ok := normalizeDeviceAmbient(ambient)
+	if !ok {
+		return nil
+	}
+	return copy
 }
 
 // normalizeDeviceGlyphs accepts only the fixed-size monochrome glyph format

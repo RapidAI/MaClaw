@@ -309,6 +309,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		}
 		status, _ := classifyIMAgentResponseOutcome(result)
 		if result != nil {
+			result.ToolCallsInTurn = loopStats.tools
 			if result.RequestID == "" {
 				result.RequestID = requestID
 			}
@@ -393,20 +394,21 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	userContent := startState.UserContent
 
 	cb := &sharedAgentLoopCallbacks{
-		handler:      h,
-		loopCtx:      ctx,
-		userID:       userID,
-		userText:     userText,
-		platform:     platform, // pin turn platform for tool rewrites (not only loopCtx)
-		systemPrompt: startState.SystemPrompt,
-		tools:        startState.Tools,
-		llmCfg:       cfg,
-		route:        startState.RouteDecision,
-		onProgress:   progressOut,
-		onToken:      onToken,
-		onNewRound:   onNewRound,
-		maxIter:      startState.EffectiveMax,
-		httpClient:   startState.HTTPClient,
+		handler:          h,
+		loopCtx:          ctx,
+		userID:           userID,
+		userText:         userText,
+		hasLocalFileWork: len(attachments) > 0 || hasCurrentLocalFileWork(userText),
+		platform:         platform, // pin turn platform for tool rewrites (not only loopCtx)
+		systemPrompt:     startState.SystemPrompt,
+		tools:            startState.Tools,
+		llmCfg:           cfg,
+		route:            startState.RouteDecision,
+		onProgress:       progressOut,
+		onToken:          onToken,
+		onNewRound:       onNewRound,
+		maxIter:          startState.EffectiveMax,
+		httpClient:       startState.HTTPClient,
 	}
 	if cb.maxIter <= 0 {
 		cb.maxIter = startState.MaxIterations
@@ -590,22 +592,25 @@ func sharedLoopDisplayReasoning(result agent.LoopResult) string {
 
 // sharedAgentLoopCallbacks adapts IMMessageHandler to agent.LoopCallbacks.
 type sharedAgentLoopCallbacks struct {
-	handler      *IMMessageHandler
-	loopCtx      *LoopContext
-	userID       string
-	userText     string
-	platform     string // turn platform from runAgentLoopShared (desktop/weixin/…)
-	systemPrompt string
-	tools        []map[string]interface{}
-	llmCfg       corelib.MaclawLLMConfig
-	route        modelRouteDecision
-	onProgress   tool.ProgressCallback
-	onToken      llm.TokenCallback
-	onNewRound   NewRoundCallback
-	maxIter      int
-	httpClient   *http.Client
-	escalated    bool
-	toolCalls    int
+	handler  *IMMessageHandler
+	loopCtx  *LoopContext
+	userID   string
+	userText string
+	// hasLocalFileWork survives the light-to-full upgrade, which occurs after
+	// attachment staging and otherwise only has the raw user text to inspect.
+	hasLocalFileWork bool
+	platform         string // turn platform from runAgentLoopShared (desktop/weixin/…)
+	systemPrompt     string
+	tools            []map[string]interface{}
+	llmCfg           corelib.MaclawLLMConfig
+	route            modelRouteDecision
+	onProgress       tool.ProgressCallback
+	onToken          llm.TokenCallback
+	onNewRound       NewRoundCallback
+	maxIter          int
+	httpClient       *http.Client
+	escalated        bool
+	toolCalls        int
 	// moaPreset is set for the duration of one agent loop after /moa or auto arming.
 	moaPreset *moa.ResolvedPreset
 	moaAuto   bool
@@ -742,13 +747,17 @@ func (c *sharedAgentLoopCallbacks) UpgradeLightPromptToFull(reason string) bool 
 	}
 	if c.handler != nil {
 		phase := c.handler.initialAgentLoopPhase(c.userText, c.loopCtx)
-		toolSet := c.handler.prepareAgentLoopTools(c.userID, c.userText, c.loopCtx, phase)
+		routingText := computerUseRoutingTextForLocalFileWork(c.userText, c.hasLocalFileWork)
+		toolSet := c.handler.prepareAgentLoopTools(c.userID, routingText, c.loopCtx, phase)
 		c.tools = toolSet.Tools
 		// Rebuild full policy surface (profile now full on loopCtx).
-		c.systemPrompt = c.handler.buildSystemPromptWithMemory(c.userText, false, c.loopCtx)
+		c.systemPrompt = c.handler.buildSystemPromptWithMemory(agent.CompactQueryForEmbedding(routingText), false, c.loopCtx)
 	}
 	log.Printf("[shared-loop] light→full prompt upgrade reason=%s tools=%d", reason, len(c.tools))
-	return !c.CurrentPromptProfile().IsLight()
+	// A full execution profile can still use a light prompt profile as an
+	// adaptive optimization. The upgrade contract is about execution layer and
+	// tool re-authorization, so report success once the light layer is gone.
+	return c.loopCtx != nil && !c.loopCtx.Runtime.Execution.IsLight()
 }
 
 func (c *sharedAgentLoopCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
@@ -788,6 +797,9 @@ func (c *sharedAgentLoopCallbacks) BuildTools(userText string) []map[string]inte
 func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if c == nil || c.handler == nil {
 		return "handler unavailable"
+	}
+	if localFileWorkBlocksComputerUseExecution(c.loopCtx, c.userText, name) {
+		return "[system rejected] Computer Use is unavailable while handling the current local attachment. Use the local file/document tools instead."
 	}
 	// Defense-in-depth: never execute oversized payloads even if a caller bypasses RunLoop.
 	if argSize := len(argsJSON); argSize > guiMaxToolArgumentsBytes {

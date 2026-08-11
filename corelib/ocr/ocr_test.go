@@ -23,6 +23,28 @@ func TestDictVocabSize(t *testing.T) {
 	}
 }
 
+// TestDictTiny guards the per-tier dict selection: the PP-OCRv6 tiny rec
+// model has a 6906-class CTC head and its own character dictionary, while
+// small/medium share the 18710-class one.
+func TestDictTiny(t *testing.T) {
+	d := DictTiny()
+	if len(d) != 6906 {
+		t.Fatalf("len(DictTiny)=%d want 6906", len(d))
+	}
+	if d[0] != "" || d[1] != "!" || d[len(d)-1] != " " {
+		t.Fatalf("tiny dict boundary ids wrong: %q %q %q", d[0], d[1], d[len(d)-1])
+	}
+	if got, err := DictForVocab(18710); err != nil || len(got) != 18710 {
+		t.Fatalf("DictForVocab(18710) = %d, %v", len(got), err)
+	}
+	if got, err := DictForVocab(6906); err != nil || len(got) != 6906 {
+		t.Fatalf("DictForVocab(6906) = %d, %v", len(got), err)
+	}
+	if _, err := DictForVocab(42); err == nil {
+		t.Fatal("DictForVocab(42) must fail for an unknown vocab size")
+	}
+}
+
 func TestCTCDecode(t *testing.T) {
 	dict := []string{"", "a", "b", " "}
 	// frames: a a blank b b b a  ->  "aba"

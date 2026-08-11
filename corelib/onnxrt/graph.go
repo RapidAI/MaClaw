@@ -28,6 +28,7 @@ type Graph struct {
 	epilogues    map[*Node]*epilogue  // fused conv activations
 	matMulBT     map[string][]float32 // pre-transposed constant MatMul B operands, by value name
 	plan         *arenaPlan           // liveness/alias analysis for output arena allocation
+	ctc          *ctcTail             // detected fusable CTC head (nil when absent)
 }
 
 // LoadGraph reads an ONNX model file, parses it, and prepares an executable
@@ -104,6 +105,10 @@ func NewGraph(m *Model) (*Graph, error) {
 		}
 		g.matMulBT[nd.Inputs[1]] = transpose2D(bt.F32, K, N)
 	}
+	// Detect a fusable CTC head (MatMul -> [Add] -> Softmax graph output).
+	// Runs after matMulBT so the fused kernel can share the pre-transposed
+	// weight; records only, never rewrites.
+	g.detectCTCTail()
 	// Value liveness + alias analysis for the output arena. Frozen like the
 	// rest of the graph state, so Run stays concurrency-safe.
 	g.computeArenaPlan()
@@ -263,6 +268,15 @@ func topoSort(gp *GraphProto, inits map[string]*Tensor) ([]*Node, error) {
 // never alias arena memory: graph outputs (and every value aliasing them) are
 // excluded from arena allocation.
 func (g *Graph) Run(inputs map[string]*Tensor) (map[string]*Tensor, error) {
+	outs, _, err := g.exec(inputs, nil)
+	return outs, err
+}
+
+// exec is the shared Run/RunCTC driver. With a non-nil tail the CTC head
+// nodes are skipped and the fused decode runs when the tail MatMul is
+// reached (before its arena frees); the full output map is still assembled
+// for whatever values remain, but callers using a tail only read dec.
+func (g *Graph) exec(inputs map[string]*Tensor, tail *ctcTail) (outs map[string]*Tensor, dec *ctcDecode, err error) {
 	rc := &runCtx{Graph: g}
 	if g.plan != nil && len(g.plan.eligible) > 0 && !noArena {
 		rc.arena = acquireArena()
@@ -275,14 +289,25 @@ func (g *Graph) Run(inputs map[string]*Tensor) (map[string]*Tensor, error) {
 	for _, name := range g.inputNames {
 		t, ok := inputs[name]
 		if !ok {
-			return nil, fmt.Errorf("onnxrt: missing input %q", name)
+			return nil, nil, fmt.Errorf("onnxrt: missing input %q", name)
 		}
 		if err := g.validateInput(name, t); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		values[name] = t
 	}
 	for nodeIdx, nd := range g.nodes {
+		if tail != nil && tail.skip[nd] {
+			if nd == tail.matmul {
+				d, derr := tail.decode(values[nd.Inputs[0]])
+				if derr != nil {
+					return nil, nil, fmt.Errorf("onnxrt: node %q (MatMul): fused CTC head: %w", nd.Name, derr)
+				}
+				dec = d
+			}
+			rc.freeDead(nodeIdx, values)
+			continue
+		}
 		args := make([]*Tensor, len(nd.Inputs))
 		for i, in := range nd.Inputs {
 			if in == "" {
@@ -290,17 +315,17 @@ func (g *Graph) Run(inputs map[string]*Tensor) (map[string]*Tensor, error) {
 			}
 			t, ok := values[in]
 			if !ok {
-				return nil, fmt.Errorf("onnxrt: node %q (%s): input %q not available", nd.Name, nd.OpType, in)
+				return nil, nil, fmt.Errorf("onnxrt: node %q (%s): input %q not available", nd.Name, nd.OpType, in)
 			}
 			args[i] = t
 		}
 		op, ok := opRegistry[nd.OpType]
 		if !ok {
-			return nil, fmt.Errorf("onnxrt: node %q: unsupported op %q", nd.Name, nd.OpType)
+			return nil, nil, fmt.Errorf("onnxrt: node %q: unsupported op %q", nd.Name, nd.OpType)
 		}
 		outs, err := op(rc, nd, args)
 		if err != nil {
-			return nil, fmt.Errorf("onnxrt: node %q (%s): %w", nd.Name, nd.OpType, err)
+			return nil, nil, fmt.Errorf("onnxrt: node %q (%s): %w", nd.Name, nd.OpType, err)
 		}
 		if debugNaN {
 			for i, t := range outs {
@@ -325,7 +350,7 @@ func (g *Graph) Run(inputs map[string]*Tensor) (map[string]*Tensor, error) {
 								fmt.Fprintf(os.Stderr, "  input %d %q range [%g, %g]\n", k, nd.Inputs[k], mn, mx)
 							}
 						}
-						return nil, fmt.Errorf("onnxrt: non-finite at node %q", nd.Name)
+						return nil, nil, fmt.Errorf("onnxrt: non-finite at node %q", nd.Name)
 					}
 				}
 			}
@@ -343,11 +368,14 @@ func (g *Graph) Run(inputs map[string]*Tensor) (map[string]*Tensor, error) {
 	for _, name := range g.outputNames {
 		t, ok := values[name]
 		if !ok {
-			return nil, fmt.Errorf("onnxrt: output %q not produced", name)
+			if tail != nil {
+				continue // head outputs are intentionally not produced
+			}
+			return nil, nil, fmt.Errorf("onnxrt: output %q not produced", name)
 		}
 		result[name] = t
 	}
-	return result, nil
+	return result, dec, nil
 }
 
 // validateInput checks dtype and shape against the declared input signature.

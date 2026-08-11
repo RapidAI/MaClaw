@@ -3779,6 +3779,42 @@ func TestMobileUploadedDOCXDraftMarkdown(t *testing.T) {
 	}
 }
 
+func TestMobileUploadedFileNeedsRemoteOfficeExtractionRecognizesSixFormats(t *testing.T) {
+	for _, name := range []string{"resume.doc", "resume.docx", "slides.ppt", "slides.pptx", "data.xls", "data.xlsx"} {
+		if !mobileUploadedFileNeedsRemoteOfficeExtraction(name) {
+			t.Errorf("%s must be queued for the desktop Office worker", name)
+		}
+		if mobileUploadedFileIsImmediateDraft(name) {
+			t.Errorf("%s must not bypass the desktop Office worker", name)
+		}
+	}
+	if mobileUploadedFileNeedsRemoteOfficeExtraction("report.pdf") {
+		t.Fatal("PDF must retain its existing Hub parsing path")
+	}
+}
+
+func TestMobileDraftSourceLooksTextLikeRejectsAllOfficeFormats(t *testing.T) {
+	for _, tc := range []struct {
+		filename    string
+		contentType string
+	}{
+		{"report.doc", "application/msword"},
+		{"report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		{"slides.ppt", "application/vnd.ms-powerpoint"},
+		{"slides.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+		{"data.xls", "application/vnd.ms-excel"},
+		{"data.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+	} {
+		draft := mobileDocumentDraftRecord{
+			SourceFilename:    tc.filename,
+			SourceContentType: tc.contentType,
+		}
+		if mobileDraftSourceLooksTextLike(draft, []byte("not an Office document")) {
+			t.Errorf("%s (%s) must not be treated as text-like", tc.filename, tc.contentType)
+		}
+	}
+}
+
 func TestMobileSniffImageContentType(t *testing.T) {
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0}
 	if got := mobileSniffImageContentType(png); got != "image/png" {

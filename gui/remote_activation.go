@@ -1030,14 +1030,13 @@ func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode st
 	}
 
 	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
-	clientID := strings.TrimSpace(cfg.RemoteClientID)
-	if clientID == "" {
-		clientID = remote.GenerateClientID()
-		if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-			cfg.RemoteClientID = clientID
-		}); err != nil {
-			return RemoteActivationResult{}, err
-		}
+	// Match email activation: preserve the durable desktop identity when app
+	// configuration is replaced during an upgrade or a local data cleanup.
+	clientID := remote.EnsureDeviceKey(cfg.RemoteClientID)
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteClientID = clientID
+	}); err != nil {
+		return RemoteActivationResult{}, err
 	}
 	heartbeat := profile.HeartbeatSec
 	if heartbeat <= 0 {

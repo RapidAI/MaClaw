@@ -30,8 +30,8 @@ const (
 	srvAIModelASR       = "asr"
 	srvAIModelTTS       = "tts"
 
-	srvASRModelFilename           = asr.DefaultModelFilename
-	srvASRModelDefaultURL         = asr.DefaultModelDownloadURL
+	srvASRModelFilename   = asr.DefaultModelFilename
+	srvASRModelDefaultURL = asr.DefaultModelDownloadURL
 	// Per-chunk budget for long-form TTS (clamped further inside tts.SplitSpeechChunks).
 	// Total reply length is no longer hard-truncated — semantic chunks are concatenated.
 	srvTTSMaxRunes                = tts.DefaultSpeechChunkRunes
@@ -726,18 +726,35 @@ func (m *srvAIModelManager) transcribeWAV(ctx context.Context, cfg corelib.AppCo
 }
 
 func (m *srvAIModelManager) synthesizeText(ctx context.Context, cfg corelib.AppConfig, text string) ([]byte, string, error) {
+	return m.synthesizeTextWithVoice(ctx, cfg, "", text)
+}
+
+// synthesizeTextWithVoice keeps the user-level configuration as the fallback
+// while allowing a hardware binding to select one bundled Kokoro voice.
+func (m *srvAIModelManager) synthesizeTextWithVoice(ctx context.Context, cfg corelib.AppConfig, requestedVoiceID, text string) ([]byte, string, error) {
 	_ = ctx
 	text = cleanSrvTTSReplyText(text)
 	if text == "" {
 		return nil, "", fmt.Errorf("%w: text is required", errSrvAIModelInvalidInput)
 	}
-	if exists, _ := modelFileReady(m.modelPath(tts.TTSModelFilename)); !exists || !m.ttsVoicesReady() {
+	voiceID := normalizeSrvTTSVoiceID(requestedVoiceID)
+	if strings.TrimSpace(requestedVoiceID) == "" {
+		voiceID = normalizeSrvTTSVoiceID(cfg.TTSVoiceID)
+	}
+	if exists, _ := modelFileReady(m.modelPath(tts.TTSModelFilename)); !exists || !m.ttsVoiceReady(voiceID) {
 		return nil, "", fmt.Errorf("%w: tts model is missing", errSrvAIModelNotReady)
 	}
-	voiceID := normalizeSrvTTSVoiceID(cfg.TTSVoiceID)
 	m.ttsRunMu.Lock()
 	defer m.ttsRunMu.Unlock()
 	m.mu.Lock()
+	// Tests and embedders can inject a synthesizer without a concrete Kokoro
+	// runtime. It has no per-voice state, so keep it instead of replacing it.
+	// The normal production path always creates/replaces a Kokoro manager.
+	if m.ttsMgr != nil && m.ttsVoice != voiceID {
+		if _, ok := m.ttsMgr.(*tts.Manager); !ok {
+			m.ttsVoice = voiceID
+		}
+	}
 	if m.ttsMgr == nil || m.ttsVoice != voiceID {
 		if m.ttsMgr != nil {
 			m.ttsMgr.Unload()
@@ -824,6 +841,11 @@ func (m *srvAIModelManager) ttsVoicesReady() bool {
 		}
 	}
 	return true
+}
+
+func (m *srvAIModelManager) ttsVoiceReady(voiceID string) bool {
+	exists, size := fileStatus(filepath.Join(m.ttsVoiceDir(), voiceID+".koro"))
+	return exists && size > 0
 }
 
 func (m *srvAIModelManager) unzipTTSVoices() error {

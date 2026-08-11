@@ -45,6 +45,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -92,15 +94,67 @@ type CodingSubAgent struct {
 	// attachments are optional user images/files for the first user turn
 	// (pure-coding vision / screenshot-to-code). Nested spawn children inherit none.
 	attachments []agent.MessageAttachment
+
+	// runtimeStore/runtimeAttempt are ephemeral bindings for a currently
+	// executing ledger-backed parent. They are never persisted or reused for
+	// recovery; they exist solely to admit a read-only child and release the
+	// parent lease through corelib while the parent loop is still alive.
+	runtimeStore   codingruntime.Store
+	runtimeAttempt *codingruntime.Attempt
+	// executionCtx is set only on an admitted detached child. It is distinct
+	// from loopCtx: normal parent handoff must not cancel the child, while an
+	// explicit Runtime cancellation must interrupt its current model/tool wait.
+	executionCtx context.Context
+}
+
+// ExecuteReadOnlyChild implements codingruntime.ReadOnlyChildExecutor. The
+// corelib runner owns the child Attempt; this GUI adapter supplies only the
+// existing read-only explorer/reviewer loop and a bounded evidence digest.
+func (s *CodingSubAgent) ExecuteReadOnlyChild(ctx context.Context, request codingruntime.ExecutionRequest) codingruntime.ChildTaskResult {
+	if s == nil || (s.role != codingRoleExplorer && s.role != codingRoleReviewer) {
+		return codingruntime.ChildTaskResult{Status: codingruntime.TaskFailed, Summary: "GUI read-only child adapter requires explorer or reviewer role"}
+	}
+	if !request.Attempt.Policy.ReadOnly {
+		return codingruntime.ChildTaskResult{Status: codingruntime.TaskFailed, Summary: "read-only child policy missing"}
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return codingruntime.ChildTaskResult{Status: codingruntime.TaskCancelled, Summary: "read-only child cancelled before execution"}
+	}
+	child := *s
+	// RunReadOnlyChild owns a fresh child Attempt. Binding it here gives the
+	// local callback the same durable cancellation/lease boundary as remote
+	// children, without ever reusing the parent's released Attempt.
+	child.runtimeAttempt = &request.Attempt
+	child.executionCtx = ctx
+	result := child.ExecuteTask(&TaskItem{Index: 1, Title: request.Task.RequestedWork, Description: request.Task.RequestedWork, Status: TaskExecPending}, codingSpawnRolePromptHint(child.role), "", nil)
+	if result == nil {
+		return codingruntime.ChildTaskResult{Status: codingruntime.TaskFailed, Summary: "GUI read-only child returned no result"}
+	}
+	status := codingruntime.TaskFailed
+	switch result.Status {
+	case TaskExecPassed:
+		status = codingruntime.TaskCompleted
+	case TaskExecInterrupted:
+		status = codingruntime.TaskInterrupted
+	}
+	digest := codingRuntimeDigest(result.Summary + "\n" + result.Error + "\n" + strings.Join(result.FilesRead, "\n"))
+	return codingruntime.ChildTaskResult{TaskID: request.Task.TaskID, AttemptID: request.Attempt.AttemptID, Status: status, Summary: result.Summary, EvidenceDigest: digest}
 }
 
 // CodingSubAgentResult is the outcome of a single task execution.
 type CodingSubAgentResult struct {
-	Status     TaskExecStatus // passed, failed, skipped
-	Summary    string         // human-readable summary of what was done
-	Error      string         // error message if failed
-	Iterations int
-	ToolCalls  int
+	Status  TaskExecStatus // passed, failed, skipped
+	Summary string         // human-readable summary of what was done
+	Error   string         // error message if failed
+	// RuntimeTaskID is the opaque durable ledger task reference for this
+	// execution. It is used for recovery/projection only, never replay.
+	RuntimeTaskID string
+	// RuntimeHandoff is true only when this result represents a durable
+	// waiting_child parent handoff. Workflow V2 preserves it separately from a
+	// generic skipped status so users can explicitly review child results.
+	RuntimeHandoff bool
+	Iterations     int
+	ToolCalls      int
 
 	// Token / cost accounting for this SubAgent loop (when provider reports usage).
 	InputTokens  int
@@ -291,10 +345,6 @@ func (s *CodingSubAgent) seedFullEnvironmentWorkspaceApprovals() {
 		return
 	}
 	s.scopeApproval.approveDir(root)
-	parent := filepath.Dir(root)
-	if parent != "" && parent != root && parent != "." && parent != string(filepath.Separator) {
-		s.scopeApproval.approveDir(parent)
-	}
 }
 
 // SetScopeApprovalCallback configures interactive user confirmation for
@@ -304,6 +354,38 @@ func (s *CodingSubAgent) seedFullEnvironmentWorkspaceApprovals() {
 // fullAccess: if true, all scope checks are bypassed (user previously granted permanent access).
 func (s *CodingSubAgent) SetScopeApprovalCallback(callback ScopeApprovalCallback, fullAccess bool) {
 	s.scopeApproval = newScopeApprovalState(callback, fullAccess)
+}
+
+// prepareTaskScopeApproval resolves declared absolute paths before model
+// execution. Tool-level checks remain in place for paths discovered later.
+func (s *CodingSubAgent) prepareTaskScopeApproval(task *TaskItem) string {
+	if s == nil || task == nil || strings.TrimSpace(s.projectPath) == "" {
+		return ""
+	}
+	for _, path := range collectTaskAbsolutePaths(task) {
+		withinProject, err := isPathWithinDir(path, s.projectPath)
+		if err == nil && withinProject {
+			continue
+		}
+		if s.scopeApproval == nil {
+			return formatScopeRejection("task_scope", path, s.projectPath)
+		}
+		if rejection := s.scopeApproval.check("task_scope", path, s.projectPath); rejection != "" {
+			return rejection
+		}
+	}
+	return ""
+}
+
+func scopeApprovalRequiredCodingSubAgentResult(errMsg string) *CodingSubAgentResult {
+	errMsg = compactSubAgentErrorSummary(errMsg)
+	return &CodingSubAgentResult{
+		Status:         TaskExecWaitingApproval,
+		Summary:        "Coding task was not started because required scope approval was not granted.",
+		Error:          "scope_approval_required: " + errMsg,
+		QualityStatus:  codingSubAgentQualityMissing,
+		QualitySummary: "scope approval was not granted before model execution",
+	}
 }
 
 func failedCodingSubAgentStartResult(errMsg string) *CodingSubAgentResult {
@@ -376,12 +458,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		defer flushSubAgentTrajectory(traj)
 	}
 
-	var result agent.LoopResult
-	if userContent != nil && userContent != userText {
-		result = agent.RunLoopWithUserContent(cb, userText, userContent, nil, s.httpClient, s.buildLoopHooks(cb))
-	} else {
-		result = agent.RunLoop(cb, userText, nil, s.httpClient, s.buildLoopHooks(cb))
-	}
+	result := codingagent.Run(cb, userText, userContent, nil, s.httpClient, s.buildLoopHooks(cb))
 	// Record main loop turns first; seal outcome after optional post-loop verify/fix.
 	appendSubAgentLoopResult(traj, result, false)
 
@@ -565,9 +642,6 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationFailureEvidence(modelSummary, allCommandsRun))
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeLocalizationQuality(task.Title+"\n"+task.Description, existingFilesModified, cb.localization.snapshot(), allSearchesRun))
 		status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
-	}
-	if status == TaskExecPassed {
-		s.persistLocalizationExperience(task, cb.localization.snapshot(), allCommandsRun)
 	}
 	if modelSummary == "" {
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
@@ -755,7 +829,7 @@ func (c *codingSubAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMC
 	if h.app == nil || h.app.ohModules.modelRouter == nil {
 		return cfg, decision, true
 	}
-	routed := h.routeLLMConfig(llm.TaskReasoning)
+	routed := h.routeCodingLLMConfig(llm.TaskReasoning, cfg)
 	if routed.Model != "" {
 		cfg = routed
 		cfg.EnablePromptCache = true
@@ -771,29 +845,39 @@ func (c *codingSubAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMC
 
 func (c *codingSubAgentCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
 	var loopCtx *LoopContext
+	var executionCtx context.Context
 	if c != nil && c.subagent != nil {
 		loopCtx = c.subagent.loopCtx
+		executionCtx = c.subagent.executionCtx
 	}
-	return codingLoopLLMRequestContext(loopCtx, "coding-subagent", iteration)
+	return codingLoopLLMRequestContext(executionCtx, loopCtx, "coding-subagent", iteration)
 }
 
 // codingLoopLLMRequestContext builds a per-round LLM context with cancel linkage,
 // request tracing, and scheduler lease — shared by local and remote coding SubAgents.
-func codingLoopLLMRequestContext(loopCtx *LoopContext, caller string, iteration int) (context.Context, func(error), error) {
-	baseCtx := context.Background()
+func codingLoopLLMRequestContext(executionCtx context.Context, loopCtx *LoopContext, caller string, iteration int) (context.Context, func(error), error) {
+	baseCtx := executionCtx
 	baseCancel := func() {}
 	trace := llm.RequestTrace{Caller: caller, Iteration: iteration}
 	if loopCtx != nil {
-		if loopCtx.IsCancelled() {
+		if loopCtx.IsCancelled() || (baseCtx != nil && baseCtx.Err() != nil) {
 			return nil, nil, fmt.Errorf("cancelled")
 		}
-		baseCtx, baseCancel = loopCtx.Context()
+		if baseCtx == nil {
+			baseCtx, baseCancel = loopCtx.Context()
+		}
 		trace.OwnerID = strings.TrimSpace(loopCtx.Runtime.PolicyOwnerID)
 		if trace.OwnerID == "" {
 			trace.OwnerID = strings.TrimSpace(loopCtx.UserID)
 		}
 		trace.RequestID = loopCtx.Runtime.RequestID
 		trace.LoopID = loopCtx.ID
+	}
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	if err := baseCtx.Err(); err != nil {
+		return nil, nil, err
 	}
 	ctx := llm.WithRequestTrace(baseCtx, trace)
 	lease, scheduledTrace, err := acquireLLMSchedulerLease(ctx)
@@ -812,6 +896,9 @@ func codingLoopLLMRequestContext(loopCtx *LoopContext, caller string, iteration 
 }
 
 func (c *codingSubAgentCallbacks) toolContext() (context.Context, context.CancelFunc) {
+	if c != nil && c.subagent != nil && c.subagent.executionCtx != nil {
+		return c.subagent.executionCtx, func() {}
+	}
 	if c != nil && c.subagent != nil && c.subagent.loopCtx != nil {
 		return c.subagent.loopCtx.Context()
 	}
@@ -1008,7 +1095,7 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 			tools = append(tools, codingKnowledgeSearchToolDef())
 		}
 		if c.subagent.generalKB != nil {
-			tools = append(tools, knowledgeSearchToolDef())
+			tools = append(tools, knowledgeSearchToolDef(), knowledgeImageSearchToolDef())
 		}
 
 		// Codex-style nested subagents (pure coding workbench root only).
@@ -1054,15 +1141,7 @@ func filterCodingToolsForRole(tools []map[string]interface{}, sa *CodingSubAgent
 		}
 		return out
 	}
-	out := make([]map[string]interface{}, 0, len(tools))
-	for _, t := range tools {
-		fn, _ := t["function"].(map[string]interface{})
-		name, _ := fn["name"].(string)
-		if sa.toolAllowedForRole(name) {
-			out = append(out, t)
-		}
-	}
-	return out
+	return (codingagent.ToolPolicy{Role: role, Allowed: codingSubAgentSpawnRoleTools[role], Normalize: canonicalCodingSubAgentToolName}).FilterToolDefinitions(tools)
 }
 
 func cloneCodingSubAgentToolDefinitions(tools []map[string]interface{}) []map[string]interface{} {
@@ -1230,10 +1309,11 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	if c == nil || c.subagent == nil {
 		return codingToolExecutionResult{Text: "coding subagent is unavailable", Outcome: codingToolOutcomeFailed}
 	}
-	// Nested role policy (explorer/reviewer) is enforced at execution time too.
-	if !c.subagent.toolAllowedForRole(name) {
+	// Nested role policy (explorer/reviewer) is enforced at execution time too,
+	// including write-capable argument variants of otherwise observational tools.
+	if allowed, reason := c.subagent.toolCallAllowedForRole(name, args); !allowed {
 		return codingToolExecutionResult{
-			Text:    fmt.Sprintf("tool %s is not available for nested role %q", name, c.subagent.role),
+			Text:    reason,
 			Outcome: codingToolOutcomeBlocked,
 		}
 	}
@@ -1447,6 +1527,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		return c.executeCodingKnowledgeSearch(argsJSON)
 	case "knowledge_search":
 		return c.executeKnowledgeSearch(argsJSON)
+	case "knowledge_image_search":
+		return c.executeKnowledgeImageSearch(argsJSON)
 	case "web_search":
 		if h == nil {
 			text := "web_search unavailable: host handler missing"
@@ -1652,7 +1734,7 @@ func codingSubAgentRequiredArgumentFields(name string) []string {
 		return []string{"action"}
 	case "call_mcp_tool":
 		return []string{"server_id", "tool_name"}
-	case "coding_knowledge_search", "knowledge_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return []string{"query"}
 	default:
 		return nil
@@ -1760,7 +1842,7 @@ func codingSubAgentStringArgumentFields(name string) []string {
 		return []string{"action", "name"}
 	case "call_mcp_tool":
 		return []string{"server_id", "tool_name"}
-	case "coding_knowledge_search", "knowledge_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return []string{"query"}
 	default:
 		return nil
@@ -1951,7 +2033,7 @@ func codingSubAgentToolArgumentExample(name string) string {
 		return `{"action":"run","name":"skill-name","args":{"input":"task-specific instructions"}}`
 	case "call_mcp_tool":
 		return `{"server_id":"server","tool_name":"tool","arguments":{}}`
-	case "coding_knowledge_search", "knowledge_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return `{"query":"search terms"}`
 	default:
 		return ""
@@ -1976,7 +2058,7 @@ func codingSubAgentToolArgumentAliasHint(name string) string {
 		return `Accepted aliases: work_dir/cwd -> working_dir.`
 	case "call_mcp_tool":
 		return `Accepted aliases: server/server_name -> server_id; tool/name -> tool_name; args/params/input -> arguments.`
-	case "coding_knowledge_search", "knowledge_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return `Accepted aliases: text/question/keyword/keywords/term/terms/search_terms/q -> query.`
 	default:
 		return ""
@@ -2070,7 +2152,7 @@ func applyCodingSubAgentToolArgumentAliases(name string, args map[string]interfa
 		changed = applyCodingSubAgentToolArgumentAlias(args, "args", "arguments") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "params", "arguments") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "input", "arguments") || changed
-	case "coding_knowledge_search", "knowledge_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		changed = applyCodingSubAgentQueryArgumentAliases(args) || changed
 	}
 	return changed
@@ -6355,7 +6437,7 @@ func subAgentDynamicToolInspectionOutputLooksEmpty(tool CodingSubAgentDynamicToo
 
 func subAgentDynamicToolIsKnowledgeSearch(tool CodingSubAgentDynamicToolResult) bool {
 	switch strings.ToLower(strings.TrimSpace(tool.Tool)) {
-	case "coding_knowledge_search", "knowledge_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return true
 	default:
 		return false
@@ -12321,6 +12403,18 @@ func (c *codingSubAgentCallbacks) emitVerificationSummaryEvent(status codingSubA
 func (c *codingSubAgentCallbacks) OnToolResult(name string) {}
 
 func (c *codingSubAgentCallbacks) ShouldStop() bool {
+	if c != nil && c.subagent != nil && c.subagent.runtimeAttempt != nil && c.subagent.runtimeStore != nil {
+		current, err := c.subagent.runtimeStore.GetAttempt(c.subagent.runtimeAttempt.AttemptID)
+		// Runtime state is authoritative once the agent is ledger-bound. A
+		// cancelled, interrupted, waiting-child, or terminal Attempt must not
+		// admit another model/tool turn from a stale callback.
+		if err != nil || current.Status != codingruntime.TaskRunning {
+			return true
+		}
+	}
+	if c != nil && c.subagent != nil && c.subagent.executionCtx != nil && c.subagent.executionCtx.Err() != nil {
+		return true
+	}
 	if c != nil && c.subagent != nil && c.subagent.loopCtx != nil {
 		return c.subagent.loopCtx.IsCancelled()
 	}
@@ -12805,7 +12899,7 @@ func codingSubAgentUserContent(s *CodingSubAgent, userText string) interface{} {
 	if protocol == "" {
 		protocol = "openai"
 	}
-	return agent.BuildUserContent(userText, s.attachments, protocol, cfg.SupportsVision, nil)
+	return agent.BuildUserContent(userText, s.attachments, protocol, cfg.SupportsVision, imageTextFromAttachment, nil)
 }
 
 func hasCodingImageAttachment(atts []agent.MessageAttachment) bool {
@@ -13245,6 +13339,7 @@ var codingSubAgentDynamicToolNames = map[string]bool{
 	"call_mcp_tool":             true,
 	"coding_knowledge_search":   true,
 	"knowledge_search":          true,
+	"knowledge_image_search":    true,
 	"web_search":                true,
 	"web_fetch":                 true,
 	"download_file":             true,
@@ -13672,6 +13767,25 @@ func RunTaskWithSubAgent(
 	onToken func(string),
 	onProgress func(string),
 ) *CodingSubAgentResult {
+	return runTaskWithSubAgentRuntimeOptions(handler, cfg, httpClient, task, projectPath, reqCtx, designCtx, prevOutputs, loopCtx, onToken, onProgress, nil)
+}
+
+// runTaskWithSubAgentRuntimeOptions is the internal implementation boundary
+// for isolated worktree execution. Public callers retain the existing API;
+// the workbench can supply a final merge gate that is evaluated before the
+// shared runtime records a successful Attempt.
+func runTaskWithSubAgentRuntimeOptions(
+	handler *IMMessageHandler,
+	cfg corelib.MaclawLLMConfig,
+	httpClient *http.Client,
+	task *TaskItem,
+	projectPath, reqCtx, designCtx string,
+	prevOutputs []string,
+	loopCtx *LoopContext,
+	onToken func(string),
+	onProgress func(string),
+	runtimeOptions *guiCodingRuntimeOptions,
+) *CodingSubAgentResult {
 	// OpenHuman-inspired + sticky RoutePref (auto/primary/reasoning/vision).
 	userID := ""
 	if loopCtx != nil {
@@ -13732,7 +13846,6 @@ func RunTaskWithSubAgent(
 			handler.applyStickyCodingPermissions(loopCtx.UserID, sa)
 		}
 	}
-
 	// Wire knowledge stores for experience recall and project doc lookup.
 	if handler != nil && handler.app != nil {
 		codingKB := handler.app.ensureCodingKnowledgeStore()
@@ -13740,5 +13853,57 @@ func RunTaskWithSubAgent(
 		sa.SetKnowledgeStores(codingKB, generalKB)
 	}
 
-	return sa.ExecuteTask(task, reqCtx, designCtx, prevOutputs)
+	store, closeStore, err := openGUICodingRuntimeStore(handler)
+	if err != nil {
+		return failedCodingSubAgentStartResult("unable to open coding execution ledger: " + err.Error())
+	}
+	defer closeStore()
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if loopCtx != nil {
+		ctx, cancel = loopCtx.Context()
+		defer cancel()
+	}
+	ownerID := "gui:local"
+	workflowID, phaseID := "", ""
+	if loopCtx != nil {
+		ownerID = "gui:" + loopCtx.ID
+		workflowID = loopCtx.WorkflowID
+		phaseID = loopCtx.WorkflowPhaseID
+	}
+	approvalGate := codingRuntimeApprovalGate(func() string { return sa.prepareTaskScopeApproval(task) })
+	var unregisterRuntimeCancellation func()
+	result, attempt, ledgerErr := runGUICodingTaskWithLedgerWithOptions(ctx, store, ownerID, workflowID, phaseID, projectPath, task.Title+"\n"+task.Description, approvalGate, func(request codingruntime.ExecutionRequest) {
+		sa.runtimeStore = store
+		attempt := request.Attempt
+		sa.runtimeAttempt = &attempt
+		if loopCtx != nil {
+			unregisterRuntimeCancellation = loopCtx.RegisterCancelHookForContext(ctx, func() {
+				// LoopContext already stops the in-process agent. This second,
+				// durable boundary prevents admitted children or a late callback
+				// from continuing after the user has cancelled the parent turn.
+				_, _ = store.CancelTask(request.Task.TaskID, time.Now().UTC())
+				cancelGUIAdmittedChildExecutions(request.Task.TaskID)
+			})
+		}
+	}, runtimeOptions, func() *CodingSubAgentResult {
+		return sa.ExecuteTask(task, reqCtx, designCtx, prevOutputs)
+	})
+	if unregisterRuntimeCancellation != nil {
+		unregisterRuntimeCancellation()
+	}
+	sa.runtimeStore, sa.runtimeAttempt = nil, nil
+	if ledgerErr != nil {
+		return failedCodingSubAgentStartResult("coding execution ledger failed: " + ledgerErr.Error())
+	}
+	if result != nil && result.Status == TaskExecWaitingChild {
+		result.RuntimeHandoff = true
+	}
+	if result != nil && attempt != nil {
+		result.Summary = strings.TrimSpace(result.Summary + "\n\nExecution attempt: " + attempt.AttemptID)
+	}
+	if result != nil && result.Status == TaskExecPassed && handler != nil {
+		persistLocalizationExperience(handler.app, sa.codingKB, projectPath, task.Title, result.Localization, result.CommandsRun, result.RuntimeTaskID)
+	}
+	return result
 }

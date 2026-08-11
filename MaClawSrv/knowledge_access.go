@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -309,6 +310,16 @@ func newMultiKnowledgeStore(store *knowledge.SQLiteStore, access *knowledgeAcces
 	return &multiKnowledgeStore{store: store, access: access}
 }
 
+// ImageAssetBaseDir exposes the process-level knowledge asset root to the
+// local agent executor. The executor turns only thumbnails into data URLs; the
+// path itself never crosses into the model context or an HTTP response.
+func (s *multiKnowledgeStore) ImageAssetBaseDir() string {
+	if s == nil || s.store == nil {
+		return ""
+	}
+	return s.store.ImageAssetBaseDir()
+}
+
 func (s *multiKnowledgeStore) resolveScopes(ctx context.Context, tenantID, ownerID string) []knowledgeScope {
 	tenantID = strings.TrimSpace(tenantID)
 	ownerID = strings.TrimSpace(ownerID)
@@ -346,6 +357,46 @@ func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchO
 			queryOpts.IncludeDisabled = false
 		}
 		results, err := s.store.Search(ctx, queryOpts)
+		if err != nil {
+			return nil, err
+		}
+		merged, seen = mergeKnowledgeSearchResults(merged, seen, results)
+	}
+	sortKnowledgeSearchResults(merged)
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+// SearchImages applies the same readable-scope expansion as Search, but only
+// returns image nodes. This keeps image discovery consistent for an agent's
+// shared knowledge scopes and for the public HTTP image-search API.
+func (s *multiKnowledgeStore) SearchImages(ctx context.Context, opts knowledge.ImageSearchOptions) ([]knowledge.SearchResult, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("knowledge store is not configured")
+	}
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	requestTenantID := strings.TrimSpace(opts.TenantID)
+	requestOwnerID := strings.TrimSpace(opts.OwnerID)
+	scopes := s.resolveScopes(ctx, requestTenantID, requestOwnerID)
+	merged := make([]knowledge.SearchResult, 0, limit)
+	seen := make(map[string]int)
+	for _, scope := range scopes {
+		queryOpts := opts
+		queryOpts.TenantID = scope.TenantID
+		queryOpts.OwnerID = scope.OwnerID
+		queryOpts.Limit = limit
+		if scope.TenantID != requestTenantID || scope.OwnerID != requestOwnerID {
+			queryOpts.IncludeDisabled = false
+		}
+		results, err := s.store.SearchImages(ctx, queryOpts)
 		if err != nil {
 			return nil, err
 		}
@@ -504,9 +555,17 @@ func (s *multiKnowledgeStore) ContextPack(ctx context.Context, opts knowledge.Co
 		if result.Source.TenantID != searchOpts.TenantID || result.Source.OwnerID != searchOpts.OwnerID {
 			crossUserContextUsed = true
 		}
-		pack.Items = append(pack.Items, knowledge.ContextPackItem{Label: label, ResultType: result.ResultType, Title: multiContextPackTitle(result), Text: text, SourceID: result.Source.ID, Citation: result.Citation, Score: result.Score})
+		itemCitation := result.Citation
+		if result.NodeType == knowledge.NodeTypeImage || result.Source.Kind == knowledge.SourceKindImage {
+			// Source provenance for images can retain an absolute import path.
+			// Context packs are passed straight to agents, so use the shared
+			// display-only citation rather than the persisted generic value.
+			itemCitation = knowledge.FormatImageCitationLabel(result)
+		}
+		pack.Items = append(pack.Items, knowledge.ContextPackItem{Label: label, ResultType: result.ResultType, Title: multiContextPackTitle(result), Text: text, SourceID: result.Source.ID, Citation: itemCitation, Score: result.Score})
 		pack.CharacterCount += len([]rune(text))
 		citation := multiCitationFromResult(result)
+		citation = knowledge.ProjectImageCitationForTool(citation, result)
 		key := knowledgeContextCitationKey(result)
 		if _, ok := seenCitations[key]; !ok {
 			seenCitations[key] = struct{}{}
@@ -641,8 +700,14 @@ func (s *multiKnowledgeStore) DeleteSource(ctx context.Context, id string) error
 func (s *multiKnowledgeStore) RefreshSource(ctx context.Context, id string) (knowledge.Source, error) {
 	return s.store.RefreshSource(ctx, id)
 }
+func (s *multiKnowledgeStore) RefreshSourceWithOfficeReadConfig(ctx context.Context, id string, config *agent.OfficeReadConfig) (knowledge.Source, error) {
+	return s.store.RefreshSourceWithOfficeReadConfig(ctx, id, config)
+}
 func (s *multiKnowledgeStore) PreviewSourceRefresh(ctx context.Context, id string) (knowledge.SourceChangePreview, error) {
 	return s.store.PreviewSourceRefresh(ctx, id)
+}
+func (s *multiKnowledgeStore) PreviewSourceRefreshWithOfficeReadConfig(ctx context.Context, id string, config *agent.OfficeReadConfig) (knowledge.SourceChangePreview, error) {
+	return s.store.PreviewSourceRefreshWithOfficeReadConfig(ctx, id, config)
 }
 func (s *multiKnowledgeStore) ListImportBatches(ctx context.Context, limit int) ([]knowledge.ImportBatch, error) {
 	return s.store.ListImportBatches(ctx, limit)
@@ -710,6 +775,17 @@ func knowledgeContextCitationKey(r knowledge.SearchResult) string {
 }
 
 func multiContextPackTitle(result knowledge.SearchResult) string {
+	if result.NodeType == knowledge.NodeTypeImage || result.Source.Kind == knowledge.SourceKindImage {
+		for _, candidate := range []string{result.CardTitle, result.NodeTitle, result.Source.Title, result.Source.RelativePath} {
+			if candidate = knowledge.SafeImageDisplayText(candidate); candidate != "" {
+				return candidate
+			}
+		}
+		if sourceID := strings.TrimSpace(result.Source.ID); sourceID != "" {
+			return sourceID
+		}
+		return "knowledge image"
+	}
 	for _, candidate := range []string{result.CardTitle, result.NodeTitle, result.Source.Title, result.Source.RelativePath, result.Source.CanonicalURI, result.Source.URI} {
 		if candidate = strings.TrimSpace(candidate); candidate != "" {
 			return candidate

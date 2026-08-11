@@ -2,6 +2,20 @@ package agent
 
 import "context"
 
+// AssistantBinding is trusted, local routing metadata attached by an IM
+// transport. It is deliberately separate from UserID: a bot must not pretend
+// to be a desktop expert session merely to select a persona.
+type AssistantBinding struct {
+	BotProfileID        string   `json:"bot_profile_id,omitempty"`
+	Mode                string   `json:"mode,omitempty"`
+	ExpertID            string   `json:"expert_id,omitempty"`
+	InitialPrompt       string   `json:"initial_prompt,omitempty"`
+	WorkingDirectory    string   `json:"working_directory,omitempty"`
+	DocumentDirectories []string `json:"document_directories,omitempty"`
+	AllowedDirectories  []string `json:"allowed_directories,omitempty"`
+	AllowAllDirectories bool     `json:"allow_all_directories,omitempty"`
+}
+
 // UserMessage is the input to the agent handler. It represents a message
 // from any platform (desktop, IM, TUI).
 //
@@ -14,6 +28,23 @@ type UserMessage struct {
 	MessageType string `json:"message_type,omitempty"` // "text", "voice", "image", "file", "audio", "video"
 	Text        string `json:"text"`
 	Lang        string `json:"lang,omitempty"`
+
+	// CacheQuestion and CacheScope are trusted transport metadata used only by
+	// local answer reuse. They keep a display/prompt-enriched message (such as
+	// a group-chat context prefix) from weakening exact-question matching, while
+	// preserving the conversation boundary that must not share cached answers.
+	// They are never sent to external clients.
+	CacheQuestion string `json:"-"`
+	CacheScope    string `json:"-"`
+	// CachePolicyScope carries non-secret, response-affecting transport policy
+	// that is not represented by AssistantBinding. It prevents a cached answer
+	// from crossing permission boundaries such as a group knowledge-source
+	// allowlist. It is never sent to external clients.
+	CachePolicyScope string `json:"-"`
+
+	// AssistantBinding is transport-internal policy supplied by a configured
+	// bot profile; it must never be inferred from untrusted message text.
+	AssistantBinding *AssistantBinding `json:"-"`
 
 	// Attachments holds images/files attached to the message.
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
@@ -121,11 +152,12 @@ type StartMenuLaunch struct {
 
 // MessageAttachment represents an image or file attached to a message.
 type MessageAttachment struct {
-	Type     string `json:"type"`                // "image", "file", "audio", "video"
-	FileName string `json:"file_name,omitempty"` // original filename
-	MimeType string `json:"mime_type,omitempty"` // e.g. "image/png"
-	Data     string `json:"data,omitempty"`      // Base64-encoded content
-	Size     int64  `json:"size,omitempty"`      // Original size in bytes
+	Type          string `json:"type"`                      // "image", "file", "audio", "video"
+	FileName      string `json:"file_name,omitempty"`       // original filename
+	MimeType      string `json:"mime_type,omitempty"`       // e.g. "image/png"
+	Data          string `json:"data,omitempty"`            // Base64-encoded content
+	Size          int64  `json:"size,omitempty"`            // Original size in bytes
+	SourceMediaID string `json:"source_media_id,omitempty"` // transport-local authenticated media reference
 }
 
 // Response is the output from the agent handler.

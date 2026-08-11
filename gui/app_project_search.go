@@ -2871,15 +2871,9 @@ func (a *App) recentTaskWorkingDir(projectPath string) string {
 
 func (a *App) recentTaskExecutionProjectPath(projectPath string) string {
 	projectPath = normalizeProjectSessionPath(projectPath)
-	// Priority 1: in-memory override (set immediately by SetTabWorkingDir UI action).
-	// This ensures the new directory takes effect on the next agent loop without
-	// waiting for memory flush + ProjectIndex rebuild.
-	if override, ok := a.tabWorkingDirOverrides.Load(projectPath); ok {
-		if dir, _ := override.(string); dir != "" {
-			return dir
-		}
-	}
-	// Priority 2: persistent workingDir tag from memory store.
+	// Tab-local overrides are resolved by EffectiveWorkingDirForOwner. This task
+	// metadata helper must never leak a directory between independent tabs.
+	// Priority 1: persistent workingDir tag from memory store.
 	if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" {
 		return workingDir
 	}
@@ -3278,6 +3272,14 @@ func (a *App) emitProjectTaskDeleted(projectPath string) {
 	a.emitEvent(EventProjectTaskDeleted, projectPath)
 }
 
+func (a *App) emitExpertTaskDeleted(expertID string) {
+	expertID = strings.TrimSpace(expertID)
+	if a.ctx == nil || expertID == "" {
+		return
+	}
+	a.emitEvent(EventExpertTaskDeleted, expertID)
+}
+
 func (a *App) cancelProjectTaskLoop(projectPath string) {
 	projectPath = strings.TrimSpace(projectPath)
 	if projectPath == "" {
@@ -3645,10 +3647,19 @@ func (a *App) DeleteTask(projectPath string) error {
 		return fmt.Errorf("project path is required")
 	}
 	log.Printf("[project_search] DeleteTask requested path=%q", projectPath)
+	// Directory updates and task deletion both mutate the same tab session files
+	// and runtime maps. Hold the lifecycle mutex so a picker completion cannot
+	// recreate a deleted tab's directory override halfway through this cleanup.
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
 
 	// First stop anything that could write task state back while it is removed.
 	a.cancelProjectTaskLoop(projectPath)
 	ownerID := projectSessionOwnerID(projectPath)
+	// Expert tasks keep their agent session under "desktop-user:expert:<id>"
+	// rather than the task's project path. Resolve the expert id BEFORE the
+	// record is deleted below, so the expert session can be purged too.
+	expertID := a.expertIDForTaskPath(projectPath)
 	var errs []error
 	handler := a.imHandler
 	if handler == nil {
@@ -3692,11 +3703,47 @@ func (a *App) DeleteTask(projectPath string) error {
 			errs = append(errs, fmt.Errorf("delete task workflow: %w", err))
 		}
 	}
+	// Expert task sessions live outside the project-path cleanup above: the
+	// conversation memory is keyed by the expert owner id and the tab session
+	// file carries no project path. Without this, recreating the expert would
+	// resurrect the deleted task's memory.
+	if expertID != "" {
+		expertOwner := expertSessionUserID(expertID)
+		if handler != nil {
+			_, _ = handler.CancelSessionForUser(expertOwner)
+			if handler.memory != nil {
+				handler.memory.Clear(expertOwner)
+			}
+			handler.clearPerUserSessionState(expertOwner)
+			handler.clearCodingWorkflowRemoteCreds(expertOwner)
+			handler.workflowV2Adapters.Delete(expertOwner)
+			handler.frozenMemorySnapshots.Delete(expertOwner)
+			handler.snapshotInitialized.Delete(expertOwner)
+			handler.snapshotWarmInflight.Delete(expertOwner)
+			handler.snapshotEpoch.Delete(expertOwner)
+			handler.proactiveRecallInFlight.Delete(expertOwner)
+		}
+		if a.workflowV2 != nil && a.workflowV2.machine != nil {
+			if err := a.workflowV2.machine.DeleteState(expertOwner); err != nil {
+				errs = append(errs, fmt.Errorf("delete expert task workflow: %w", err))
+			}
+		}
+		if err := a.ensureProjectTabSessionPersist().DeleteSession(expertTabSessionID(expertID)); err != nil {
+			errs = append(errs, fmt.Errorf("delete expert tab session: %w", err))
+		}
+		// The expert owner and its tab id are unrelated to the task path. Clear
+		// both runtime directory maps here so recreating an expert never inherits
+		// a deleted expert's private workdir in this process.
+		a.sessionEventScopeIDs.Delete(expertOwner)
+		a.assistantSessionWorkingDirs.Delete(expertOwner)
+		a.tabWorkingDirOverrides.Delete(expertTabSessionID(expertID))
+	}
 	a.sessionEventScopeIDs.Delete(ownerID)
-	a.tabWorkingDirOverrides.Delete(projectPath)
+	a.assistantSessionWorkingDirs.Delete(ownerID)
 	a.tabProjectPaths.Range(func(tabID, value any) bool {
 		if path, _ := value.(string); normalizeProjectSessionPath(path) == projectPath {
 			a.tabProjectPaths.Delete(tabID)
+			a.tabWorkingDirOverrides.Delete(tabID)
 		}
 		return true
 	})
@@ -3732,8 +3779,34 @@ func (a *App) DeleteTask(projectPath string) error {
 	// signal so AI panel listeners discard the project's tabs and local caches
 	// instead of persisting an archived session for a permanently removed task.
 	a.emitProjectTaskDeleted(projectPath)
+	// Expert history is not path-keyed; tell the UI to drop expert tab caches too.
+	a.emitExpertTaskDeleted(expertID)
 	a.emitProjectTaskClosed(projectPath)
 	return errors.Join(errs...)
+}
+
+// expertIDForTaskPath returns the expert id when the task record at
+// projectPath is an expert task (tagged with taskSourceExpertPrefix), else "".
+func (a *App) expertIDForTaskPath(projectPath string) string {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return ""
+	}
+	for _, tag := range rec.Tags {
+		tag = strings.TrimSpace(tag)
+		if strings.HasPrefix(tag, taskSourceExpertPrefix) {
+			return strings.TrimSpace(strings.TrimPrefix(tag, taskSourceExpertPrefix))
+		}
+	}
+	return ""
 }
 
 // switchCurrentProjectByPath updates config.CurrentProject to match the
@@ -3907,11 +3980,19 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		log.Printf("[CreateProjectTabSession] skipped closed task tab=%q project=%q", tabID, projectPath)
 		return ""
 	}
-
+	// Session creation, close, deletion and directory updates mutate the same
+	// session file and runtime maps. Keep them as one lifecycle transaction.
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
 	persist := a.ensureProjectTabSessionPersist()
 
 	// Cache the tabID → projectPath mapping in memory for fast lookup.
 	a.tabProjectPaths.Store(tabID, projectPath)
+	// Reopening a tab restores its private directory before a message arrives.
+	// With no persisted override it intentionally follows the main assistant.
+	// We already hold tabWorkingDirMu, so use the internal variant instead of
+	// recursively acquiring the non-reentrant mutex.
+	a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
 
 	projectName := a.projectTabDisplayName(projectPath)
 	a.ensureRecentTaskWorkspace(projectPath, projectName)
@@ -3965,10 +4046,17 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		log.Printf("[CreateProjectTabSession] SaveIndex failed: %v", err)
 	}
 
-	// Save an initial empty session file.
+	// Save an initial empty session file without overwriting a directory override
+	// that belongs to an existing/reopened tab.
+	previousSession, _ := persist.LoadSession(tabID)
+	workingDir := ""
+	if previousSession != nil {
+		workingDir = normalizeProjectSessionPath(previousSession.WorkingDir)
+	}
 	session := &TabSessionData{
 		TabID:        tabID,
 		ProjectPath:  projectPath,
+		WorkingDir:   workingDir,
 		Conversation: []interface{}{},
 		ScrollTop:    0,
 		InputText:    "",
@@ -4292,6 +4380,10 @@ func (a *App) CloseProjectTabSession(tabID string) {
 	if tabID == "" {
 		return
 	}
+	// Serialize lifecycle cleanup with SetTabWorkingDir. A late directory-picker
+	// completion must not publish a live owner override after this tab closed.
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
 
 	persist := a.ensureProjectTabSessionPersist()
 	var projectPath string
@@ -4332,10 +4424,13 @@ func (a *App) CloseProjectTabSession(tabID string) {
 	}
 
 	a.tabProjectPaths.Delete(tabID)
+	a.tabWorkingDirOverrides.Delete(tabID)
+	if strings.TrimSpace(projectPath) != "" {
+		a.assistantSessionWorkingDirs.Delete(projectSessionOwnerID(normalizeProjectSessionPath(projectPath)))
+	}
 	if strings.TrimSpace(projectPath) != "" {
 		// Clean up working directory override — prevents stale overrides from
 		// leaking into future sessions that reuse the same projectPath.
-		a.tabWorkingDirOverrides.Delete(normalizeProjectSessionPath(projectPath))
 		a.cancelProjectTaskLoop(projectPath)
 		if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" && !strings.EqualFold(workingDir, projectPath) {
 			a.cancelProjectTaskLoop(workingDir)
@@ -4344,15 +4439,33 @@ func (a *App) CloseProjectTabSession(tabID string) {
 	log.Printf("[CloseProjectTabSession] tab=%s closed project=%q", tabID, projectPath)
 }
 
-// SetTabWorkingDir changes the effective working directory for a project tab.
-// Called immediately from the frontend directory switcher UI. The new directory
-// takes effect on the next agent loop via the in-memory tabWorkingDirOverrides
-// cache (no delay waiting for memory flush).
-//
-// For the Local Tab, pass tabID="" and the change updates config.WorkingDirectory.
-// Active workflow state.ProjectPath for the matching session owner is also synced
-// so phase prompts ("项目路径") stay aligned with the top bar.
-// This is a Wails binding method.
+// CloseAssistantTabSession releases the runtime-only directory binding for any
+// non-main assistant tab. Project tabs additionally archive their entry through
+// CloseProjectTabSession; expert tabs have no project index entry, but still
+// need this cleanup so a closed expert cannot keep a private tool directory
+// alive until the process exits.
+func (a *App) CloseAssistantTabSession(tabID string) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return
+	}
+	if strings.HasPrefix(tabID, "expert-") {
+		a.tabWorkingDirMu.Lock()
+		defer a.tabWorkingDirMu.Unlock()
+		ownerID, _ := a.assistantOwnerForTab(tabID)
+		if ownerID != "" {
+			a.assistantSessionWorkingDirs.Delete(ownerID)
+		}
+		a.tabWorkingDirOverrides.Delete(tabID)
+		return
+	}
+	a.CloseProjectTabSession(tabID)
+}
+
+// SetTabWorkingDir changes the effective working directory for exactly one AI
+// assistant tab. Empty tabID means the main assistant and updates its desktop
+// default. Any other supported tab receives a private override; without one,
+// it dynamically follows the main assistant directory.
 func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	newDir = strings.TrimSpace(newDir)
 	if newDir == "" {
@@ -4381,31 +4494,137 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 		return nil
 	}
 
-	// Project Tab: resolve projectPath from tabID, then write override.
-	projectPath := ""
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+	ownerID, projectPath := a.assistantOwnerForTab(tabID)
+	if ownerID == "" {
+		return fmt.Errorf("tab %s has no associated assistant session", tabID)
+	}
+	// Commit the durable source of truth before publishing the in-memory value.
+	// If the write fails, returning an error must leave this tab's active tools
+	// on its previous directory rather than creating a hidden transient override.
+	if err := a.persistAssistantTabWorkingDir(tabID, projectPath, newDir); err != nil {
+		return err
+	}
+	// Tools resolve by owner while the UI and persistence resolve by tab ID, so
+	// publish both mappings as soon as the durable update has succeeded.
+	a.tabWorkingDirOverrides.Store(tabID, newDir)
+	a.assistantSessionWorkingDirs.Store(ownerID, newDir)
+	a.syncActiveWorkflowWorkingDir(ownerID, newDir)
+	log.Printf("[SetTabWorkingDir] tab=%s owner=%q dir=%q", tabID, ownerID, newDir)
+	return nil
+}
+
+// assistantOwnerForTab resolves the runtime owner and optional task path for a
+// directory-bearing tab. Expert tabs have a session owner but no task path.
+func (a *App) assistantOwnerForTab(tabID string) (ownerID, projectPath string) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return desktopUserID, ""
+	}
+	if strings.HasPrefix(tabID, "expert-") {
+		expertID := strings.TrimSpace(strings.TrimPrefix(tabID, "expert-"))
+		if expertIDPattern.MatchString(expertID) {
+			return expertSessionUserID(expertID), ""
+		}
+	}
 	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
 		projectPath, _ = cached.(string)
-	}
-	if projectPath == "" {
-		return fmt.Errorf("tab %s has no associated project path", tabID)
-	}
-	projectPath = normalizeProjectSessionPath(projectPath)
-
-	// Write to in-memory cache — takes effect immediately on next agent loop.
-	a.tabWorkingDirOverrides.Store(projectPath, newDir)
-
-	// Keep any active workflow for this project tab on the same directory.
-	a.syncActiveWorkflowWorkingDir(projectSessionOwnerID(projectPath), newDir)
-
-	// Persist to task record asynchronously (update workingDir tag).
-	go func() {
-		if err := a.persistTaskWorkingDir(projectPath, newDir); err != nil {
-			log.Printf("[SetTabWorkingDir] persist failed tab=%s project=%q dir=%q err=%v", tabID, projectPath, newDir, err)
+		projectPath = normalizeProjectSessionPath(projectPath)
+		if projectPath != "" {
+			return projectSessionOwnerID(projectPath), projectPath
 		}
-	}()
+	}
+	// Restored project tabs are created from the persisted index and do not call
+	// CreateProjectTabSession again. Resolve their owner from the session file so
+	// GetTabWorkingDir and a direct send restore the private directory before
+	// any tab-local cache has been populated in this process. An archived session
+	// is closed, however, and must not accept a late picker completion.
+	persist := a.ensureProjectTabSessionPersist()
+	index, indexErr := persist.LoadIndex()
+	if indexErr != nil || index == nil || !projectTabIndexContainsActiveID(index, tabID) {
+		return "", ""
+	}
+	if session, err := persist.LoadSession(tabID); err == nil && session != nil {
+		projectPath = normalizeProjectSessionPath(session.ProjectPath)
+		if projectPath != "" {
+			a.tabProjectPaths.Store(tabID, projectPath)
+			return projectSessionOwnerID(projectPath), projectPath
+		}
+	}
+	return "", ""
+}
 
-	log.Printf("[SetTabWorkingDir] tab=%s project=%q dir=%q (immediate + async persist)", tabID, projectPath, newDir)
+func projectTabIndexContainsActiveID(index *TabIndex, tabID string) bool {
+	if index == nil {
+		return false
+	}
+	for _, entry := range index.Tabs {
+		if entry.ID == tabID {
+			return !entry.Archived
+		}
+	}
+	return false
+}
+
+// assistantTabWorkingDir returns an explicit tab override. Empty is
+// significant: the tab has not been customized and must follow the main tab.
+func (a *App) assistantTabWorkingDir(tabID string) string {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return ""
+	}
+	if value, ok := a.tabWorkingDirOverrides.Load(tabID); ok {
+		if dir, ok := value.(string); ok {
+			return normalizeProjectSessionPath(dir)
+		}
+	}
+	session, err := a.ensureProjectTabSessionPersist().LoadSession(tabID)
+	if err != nil || session == nil {
+		return ""
+	}
+	return normalizeProjectSessionPath(session.WorkingDir)
+}
+
+func (a *App) persistAssistantTabWorkingDir(tabID, projectPath, dir string) error {
+	persist := a.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil {
+		return fmt.Errorf("load tab working directory: %w", err)
+	}
+	if session == nil {
+		session = &TabSessionData{TabID: tabID, ProjectPath: projectPath, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+	}
+	session.WorkingDir = normalizeProjectSessionPath(dir)
+	if err := persist.SaveSession(session); err != nil {
+		return fmt.Errorf("save tab working directory: %w", err)
+	}
 	return nil
+}
+
+// bindAssistantTabWorkingDir restores the tab override before a turn starts.
+// It is idempotent and may safely run before every dispatch.
+func (a *App) bindAssistantTabWorkingDir(tabID, ownerID string) {
+	tabID = strings.TrimSpace(tabID)
+	ownerID = strings.TrimSpace(ownerID)
+	if tabID == "" || ownerID == "" {
+		return
+	}
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+	a.bindAssistantTabWorkingDirLocked(tabID, ownerID)
+}
+
+// bindAssistantTabWorkingDirLocked is bindAssistantTabWorkingDir's internal
+// form for callers that already hold tabWorkingDirMu.
+func (a *App) bindAssistantTabWorkingDirLocked(tabID, ownerID string) {
+	if dir := a.assistantTabWorkingDir(tabID); dir != "" {
+		a.tabWorkingDirOverrides.Store(tabID, dir)
+		a.assistantSessionWorkingDirs.Store(ownerID, dir)
+		return
+	}
+	// No override means dynamic inheritance, so never leave a stale owner value.
+	a.assistantSessionWorkingDirs.Delete(ownerID)
 }
 
 // syncActiveWorkflowWorkingDir updates the ProjectPath of an active workflow for
@@ -4467,19 +4686,9 @@ func (a *App) syncActiveWorkflowWorkingDir(ownerID, dir string) {
 	}
 }
 
-// EffectiveWorkingDirForOwner returns the working directory that tools, system
-// prompts, workflow phase headers ("项目路径"), and the ProjectDirBar all share
-// for a given session owner.
-//
-// Resolution order (single source of truth):
-//  1. Project-tab owner (desktop-user:{projectPath}) → recentTaskExecutionProjectPath
-//     (honors SetTabWorkingDir overrides and managed-task workspace/)
-//  2. Local / unknown owner → corelib.EffectiveWorkspaceDir()
-//     (config.working_directory / top-bar local path — NOT config.Projects)
-//
-// GetCurrentProjectPath (Projects list / CurrentProject) is intentionally NOT
-// used here: it is a separate "configured project" concept and diverging from
-// the top-bar working directory is the root cause of agents listing the wrong tree.
+// EffectiveWorkingDirForOwner returns the directory tools, prompts, workflows
+// and the ProjectDirBar share for one runtime conversation owner. A configured
+// tab override wins; every unconfigured non-main tab follows the main tab.
 func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
 	if isACPAssistantSessionUserID(ownerID) && a != nil {
 		if dir, ok := a.acpSessionWorkingDirs.Load(ownerID); ok {
@@ -4488,13 +4697,12 @@ func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
 			}
 		}
 	}
-	if projectPath := projectPathFromSessionOwnerID(ownerID); projectPath != "" {
-		if a != nil {
-			if dir := strings.TrimSpace(a.recentTaskExecutionProjectPath(projectPath)); dir != "" {
+	if a != nil {
+		if value, ok := a.assistantSessionWorkingDirs.Load(strings.TrimSpace(ownerID)); ok {
+			if dir, ok := value.(string); ok && strings.TrimSpace(dir) != "" {
 				return normalizeProjectSessionPath(dir)
 			}
 		}
-		return projectPath
 	}
 	return normalizeProjectSessionPath(corelib.EffectiveWorkspaceDir())
 }
@@ -4520,17 +4728,11 @@ func (a *App) GetTabWorkingDir(tabID string) map[string]interface{} {
 		// Normalize both sides so Windows drive-letter casing does not flip the badge.
 		isDefault = normalizeProjectSessionPath(dir) == normalizeProjectSessionPath(corelib.WorkspaceDir())
 	} else {
-		// Project Tab: resolve via the same chain that tools use.
-		projectPath := ""
-		if cached, ok := a.tabProjectPaths.Load(tabID); ok {
-			projectPath, _ = cached.(string)
-		}
-		if projectPath != "" {
-			projectPath = normalizeProjectSessionPath(projectPath)
-			dir = a.EffectiveWorkingDirForOwner(projectSessionOwnerID(projectPath))
-			// It's "default" if it's a system-managed workspace path (not user-specified).
-			isDefault = a.isManagedRecentTaskWorkspacePath(dir) ||
-				(a.isManagedRecentTaskWorkspacePath(projectPath) && dir == filepath.Join(projectPath, "workspace"))
+		ownerID, _ := a.assistantOwnerForTab(tabID)
+		if ownerID != "" {
+			a.bindAssistantTabWorkingDir(tabID, ownerID)
+			dir = a.EffectiveWorkingDirForOwner(ownerID)
+			isDefault = a.assistantTabWorkingDir(tabID) == ""
 		}
 	}
 
@@ -4589,33 +4791,17 @@ func (a *App) persistTaskWorkingDir(projectPath, newDir string) error {
 	return a.memoryStore.Flush()
 }
 
-// SendMessageForTab routes a message to the project-specific session identified
-// by tabID. It delegates to the existing SendAIAssistantMessage with the
-// project_path from the tab's session, enabling per-project isolation.
-//
-// projectPathHint is an optional fallback: if the tab session hasn't been
-// registered yet (race between CreateProjectTabSession and this call), the
-// hint allows self-healing — the mapping is established on-the-fly and cached
-// for future calls.
-//
-// This is a Wails binding method.
-func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentResponse, error) {
+// resolveProjectPathForTab resolves the project path backing a project tab:
+// in-memory cache first, then the tab session file, then the persisted tab
+// index. If all lookups fail but the frontend provided a hint, the mapping is
+// self-healed and cached. Returns "" when nothing resolves.
+func (a *App) resolveProjectPathForTab(tabID, projectPathHint string) string {
 	tabID = strings.TrimSpace(tabID)
 	if tabID == "" {
-		return nil, fmt.Errorf("tabID is required")
+		return ""
 	}
-	trimmedText := strings.TrimSpace(text)
-	if trimmedText == "" {
-		return nil, fmt.Errorf("message text is required")
-	}
-	rawProjectPathHint := strings.TrimSpace(projectPathHint)
 	projectPathHint = normalizeProjectSessionPath(projectPathHint)
-	if rawProjectPathHint != "" && rawProjectPathHint != projectPathHint {
-		log.Printf("[SendMessageForTab] normalized hint tab=%q raw=%q normalized=%q", tabID, rawProjectPathHint, projectPathHint)
-	}
-	log.Printf("[SendMessageForTab] send requested tab=%q hint=%q text_len=%d", tabID, projectPathHint, len(trimmedText))
 
-	// Look up the project path — first from in-memory cache, then fall back to disk.
 	var projectPath string
 	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
 		projectPath = normalizeProjectSessionPath(cached.(string))
@@ -4652,8 +4838,39 @@ func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentRe
 	if projectPath == "" && projectPathHint != "" {
 		projectPath = projectPathHint
 		a.tabProjectPaths.Store(tabID, projectPath)
-		log.Printf("[SendMessageForTab] self-healed tab %s → %s (from hint)", tabID, projectPath)
+		log.Printf("[resolveProjectPathForTab] self-healed tab %s → %s (from hint)", tabID, projectPath)
 	}
+	return projectPath
+}
+
+// SendMessageForTab routes a message to the project-specific session identified
+// by tabID. It delegates to the existing SendAIAssistantMessage with the
+// project_path from the tab's session, enabling per-project isolation.
+//
+// projectPathHint is an optional fallback: if the tab session hasn't been
+// registered yet (race between CreateProjectTabSession and this call), the
+// hint allows self-healing — the mapping is established on-the-fly and cached
+// for future calls.
+//
+// This is a Wails binding method.
+func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentResponse, error) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return nil, fmt.Errorf("tabID is required")
+	}
+	trimmedText := strings.TrimSpace(text)
+	if trimmedText == "" {
+		return nil, fmt.Errorf("message text is required")
+	}
+	rawProjectPathHint := strings.TrimSpace(projectPathHint)
+	projectPathHint = normalizeProjectSessionPath(projectPathHint)
+	if rawProjectPathHint != "" && rawProjectPathHint != projectPathHint {
+		log.Printf("[SendMessageForTab] normalized hint tab=%q raw=%q normalized=%q", tabID, rawProjectPathHint, projectPathHint)
+	}
+	log.Printf("[SendMessageForTab] send requested tab=%q hint=%q text_len=%d", tabID, projectPathHint, len(trimmedText))
+
+	// Look up the project path — first from in-memory cache, then fall back to disk.
+	projectPath := a.resolveProjectPathForTab(tabID, projectPathHint)
 
 	if projectPath == "" {
 		log.Printf("[SendMessageForTab] send rejected tab=%q reason=no_project_path", tabID)
@@ -4664,7 +4881,10 @@ func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentRe
 		a.cancelProjectTaskLoop(projectPath)
 		return nil, fmt.Errorf("project task is closed: %s", projectPath)
 	}
-	executionProjectPath := a.recentTaskExecutionProjectPath(projectPath)
+	// Bind the tab before resolving the execution directory. This preserves a
+	// tab-local override even when multiple tabs share the same task path.
+	a.bindAssistantTabWorkingDir(tabID, projectSessionOwnerID(projectPath))
+	executionProjectPath := a.EffectiveWorkingDirForOwner(projectSessionOwnerID(projectPath))
 	log.Printf("[SendMessageForTab] route tab=%q project=%q execution_project=%q text_len=%d", tabID, projectPath, executionProjectPath, len(trimmedText))
 
 	// Delegate to the existing SendAIAssistantMessage with project_path set.
@@ -4759,6 +4979,10 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 	if tabID == "" {
 		return
 	}
+	// A debounced frontend history flush can race with task deletion. Serialize
+	// it with the tab lifecycle so it cannot recreate a deleted session file.
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
 	persist := a.ensureProjectTabSessionPersist()
 	session, err := persist.LoadSession(tabID)
 	if err != nil || session == nil {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI contract tests for the three-board firmware publication format."""
+"""CI contract tests for the four-board firmware publication format."""
 
 import hashlib
 import importlib.util
@@ -7,6 +7,7 @@ import json
 import zipfile
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -31,6 +32,38 @@ os.environ.setdefault("COS_PUBLIC_BASE_URL", "https://cos.example")
 os.environ.setdefault("RELEASE_TAG", "v-test")
 sync = load_module("sync_cos_release")
 verify = load_module("verify_firmware_mirrors")
+
+
+OFFICIAL_FIRMWARE_PROFILES = {
+    "echoear-2st": {
+        "firmware_board": "echoear-2st-r8",
+        "layout_id": "maclaw-s3-16m-factory-v2",
+        "flash_bytes": "16777216",
+        "catalog_flash_bytes": "16 * 1024 * 1024",
+        "asset": "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw",
+    },
+    "bread-compact": {
+        "firmware_board": "bread-compact-wifi-lcd-v1",
+        "layout_id": "maclaw-s3-16m-factory-v2",
+        "flash_bytes": "16777216",
+        "catalog_flash_bytes": "16 * 1024 * 1024",
+        "asset": "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw",
+    },
+    "fangtang-4g": {
+        "firmware_board": "fangtang-4g-v1",
+        "layout_id": "maclaw-s3-16m-factory-v2",
+        "flash_bytes": "16777216",
+        "catalog_flash_bytes": "16 * 1024 * 1024",
+        "asset": "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw",
+    },
+    "waveshare-amoled-1.75c": {
+        "firmware_board": "waveshare-s3-touch-amoled-1.75c-v1",
+        "layout_id": "maclaw-s3-32m-factory-v1",
+        "flash_bytes": "33554432",
+        "catalog_flash_bytes": "32 * 1024 * 1024",
+        "asset": "MaClaw-ESP32S3-Waveshare-AMOLED-1.75C-firmware.clawfw",
+    },
+}
 
 
 class FirmwareReleaseContractTest(unittest.TestCase):
@@ -81,10 +114,10 @@ class FirmwareReleaseContractTest(unittest.TestCase):
             mutate(result)
         return result
 
-    def test_manifest_requires_all_three_exact_assets(self):
+    def test_manifest_requires_all_four_exact_assets(self):
         _, found = contract.required_firmware(self.manifest(), self.assets, "v1.2.3")
         self.assertEqual(set(contract.FIRMWARE_ASSETS), set(found))
-        self.assertEqual(3, len(found))
+        self.assertEqual(4, len(found))
 
     def test_release_archives_require_signed_split_write_order(self):
         contract.require_split_firmware_archives(self.assets)
@@ -122,7 +155,7 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "SHA-256"):
             contract.required_firmware(bad_digest, self.assets)
 
-    def test_manifest_writer_is_gated_by_the_same_three_board_contract(self):
+    def test_manifest_writer_is_gated_by_the_same_four_board_contract(self):
         previous = {
             "tag": sync.tag,
             "asset_dir": sync.asset_dir,
@@ -137,7 +170,7 @@ class FirmwareReleaseContractTest(unittest.TestCase):
             result = sync.write_latest_manifest([self.assets / name for name in contract.FIRMWARE_ASSETS])
             manifest = json.loads(result.read_text(encoding="utf-8"))
             _, found = contract.required_firmware(manifest, self.assets, "v1.2.3")
-            self.assertEqual(3, len(found))
+            self.assertEqual(4, len(found))
             with self.assertRaisesRegex(RuntimeError, "missing"):
                 sync.write_latest_manifest([self.assets / name for name in contract.FIRMWARE_ASSETS[:-1]])
         finally:
@@ -169,7 +202,7 @@ class FirmwareReleaseContractTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "desktop-approved"):
                 contract.validate_public_mirror_base(label, value, expected)
 
-    def test_public_manifest_may_change_format_but_not_three_board_metadata(self):
+    def test_public_manifest_may_change_format_but_not_four_board_metadata(self):
         local = self.manifest()
         _, expected = contract.required_firmware(local, self.assets, "v1.2.3")
         remote = json.loads(json.dumps(local))
@@ -209,6 +242,8 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
         command = "python3 .github/scripts/test_firmware_release_contract.py"
         self.assertIn(command, workflow)
+        self.assertIn("  verify-firmware-release-contract:", workflow)
+        self.assertIn("needs: [verify-firmware-release-contract]", workflow)
         self.assertLess(workflow.index(command), workflow.index("- name: Generate latest manifest"))
         self.assertIn("Verify firmware publication on Cloudflare R2 and Tencent COS", workflow)
         self.assertLess(workflow.index("Verify firmware publication on Cloudflare R2 and Tencent COS"), workflow.index("- name: Create GitHub Release"))
@@ -218,14 +253,55 @@ class FirmwareReleaseContractTest(unittest.TestCase):
     def test_firmware_build_and_mirror_publication_use_protected_release_environment(self):
         workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
         firmware_job = workflow[workflow.index("  build-esp32-firmware:") : workflow.index("  build-clawmate-maker:")]
+        desktop_job = workflow[workflow.index("  build-clawmate-maker:") : workflow.index("  # ============================================================\n  # Release:")]
         release_job = workflow[workflow.index("  release:") :]
         self.assertIn("environment: firmware-release", firmware_job)
+        self.assertIn("if: github.ref_type == 'tag'", firmware_job)
+        self.assertIn("if: github.ref_type == 'tag'", desktop_job)
         self.assertIn("environment: firmware-release", release_job)
+        self.assertIn("if: github.ref_type == 'tag'", release_job)
 
     def test_firmware_packaging_binds_manifest_identity_to_generated_sdkconfig(self):
         workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
         firmware_job = workflow[workflow.index("  build-esp32-firmware:") : workflow.index("  build-clawmate-maker:")]
         self.assertIn('--sdkconfig-header "$project_dir/$build_dir/config/sdkconfig.h"', firmware_job)
+
+    def test_firmware_workflow_builds_all_catalog_profiles_with_their_own_locks(self):
+        workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
+        firmware_job = workflow[workflow.index("  build-esp32-firmware:") : workflow.index("  build-clawmate-maker:")]
+        for profile in ("echoear-2st", "bread-compact", "fangtang-4g", "waveshare-amoled-1.75c"):
+            self.assertIn(f"profile: {profile}", firmware_job)
+        self.assertIn('MACLAW_PROFILE: ${{ matrix.profile }}', firmware_job)
+        self.assertIn('-D MACLAW_PROFILE="$MACLAW_PROFILE"', firmware_job)
+
+    def test_firmware_workflow_passes_each_profile_flash_capacity_to_fwpack(self):
+        workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
+        firmware_job = workflow[workflow.index("  build-esp32-firmware:") : workflow.index("  build-clawmate-maker:")]
+        self.assertIn("flash_bytes: 16777216", firmware_job)
+        self.assertIn("flash_bytes: 33554432", firmware_job)
+        self.assertIn("--flash-bytes '${{ matrix.flash_bytes }}'", firmware_job)
+
+    def test_catalog_workflow_and_manifest_share_one_exact_four_board_contract(self):
+        workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
+        firmware_job = workflow[workflow.index("  build-esp32-firmware:") : workflow.index("  build-clawmate-maker:")]
+        catalog = (ROOT.parent.parent / "ClawMateMaker" / "internal" / "catalog" / "catalog.go").read_text(encoding="utf-8")
+
+        self.assertEqual(
+            {profile["asset"] for profile in OFFICIAL_FIRMWARE_PROFILES.values()},
+            set(contract.FIRMWARE_ASSETS),
+        )
+        for device, expected in OFFICIAL_FIRMWARE_PROFILES.items():
+            matrix = re.search(
+                rf"(?ms)^          - device: {re.escape(device)}$.*?(?=^          - device:|^    steps:)",
+                firmware_job,
+            )
+            self.assertIsNotNone(matrix, f"workflow matrix lacks {device}")
+            for field in ("firmware_board", "layout_id", "flash_bytes"):
+                self.assertIn(f"{field}: {expected[field]}", matrix.group(0))
+            self.assertIn(f'AssetName: "{expected["asset"]}"', catalog)
+            self.assertIn(f'FirmwareBoardID: "{expected["firmware_board"]}"', catalog)
+            self.assertIn(f'FlashBytes: {expected["catalog_flash_bytes"]}', catalog)
+            self.assertIn(f'"{expected["asset"]}"', workflow)
 
     def test_firmware_version_uses_one_monotonic_ci_build_sequence(self):
         workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")

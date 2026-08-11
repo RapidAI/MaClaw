@@ -156,8 +156,12 @@ type BlockedIPRepository interface {
 }
 
 type RegisterHubRequest struct {
-	InstallationID        string         `json:"installation_id"`
-	OwnerEmail            string         `json:"owner_email"`
+	InstallationID string `json:"installation_id"`
+	OwnerEmail     string `json:"owner_email"`
+	// RecoverySecret proves possession of the existing Hub registration when a
+	// local Hub database has been rebuilt. Installation IDs and emails are
+	// identifiers, never credentials.
+	RecoverySecret        string         `json:"recovery_secret,omitempty"`
 	Name                  string         `json:"name"`
 	Description           string         `json:"description"`
 	BaseURL               string         `json:"base_url"`
@@ -395,6 +399,49 @@ func (s *Service) VerifyHubSecret(ctx context.Context, hubID, rawSecret string) 
 	return s.verifyHubSecret(ctx, hubID, rawSecret)
 }
 
+const deviceCredentialBackupSettingPrefix = "hub_device_credentials:"
+
+// deviceCredentialBackupSnapshotMaxBytes bounds direct service callers too;
+// HTTP requests are separately limited because JSON escaping adds envelope
+// overhead. Keeping both limits protects stores used outside the router.
+const deviceCredentialBackupSnapshotMaxBytes = 16 << 20
+
+// SaveDeviceCredentialBackup stores an opaque encrypted-in-transit snapshot of
+// hardware bearer bindings. Hub Center associates it with the stable Hub ID;
+// it never interprets or exposes individual device tokens.
+func (s *Service) SaveDeviceCredentialBackup(ctx context.Context, hubID, rawSecret, snapshot string) error {
+	if err := s.verifyHubSecret(ctx, hubID, rawSecret); err != nil {
+		return err
+	}
+	if strings.TrimSpace(snapshot) == "" {
+		return errors.New("device credential snapshot is required")
+	}
+	if len(snapshot) > deviceCredentialBackupSnapshotMaxBytes {
+		return fmt.Errorf("device credential snapshot exceeds %d bytes", deviceCredentialBackupSnapshotMaxBytes)
+	}
+	if s.settings == nil {
+		return errors.New("device credential backup is unavailable")
+	}
+	return s.settings.Set(ctx, deviceCredentialBackupSettingPrefix+strings.TrimSpace(hubID), snapshot)
+}
+
+// LoadDeviceCredentialBackup returns a Hub's opaque hardware-binding snapshot.
+// It requires the current Hub secret, so Hub Center cannot leak it to a party
+// that only knows the installation or Hub ID.
+func (s *Service) LoadDeviceCredentialBackup(ctx context.Context, hubID, rawSecret string) (string, bool, error) {
+	if err := s.verifyHubSecret(ctx, hubID, rawSecret); err != nil {
+		return "", false, err
+	}
+	if s.settings == nil {
+		return "", false, errors.New("device credential backup is unavailable")
+	}
+	snapshot, err := s.settings.Get(ctx, deviceCredentialBackupSettingPrefix+strings.TrimSpace(hubID))
+	if err != nil {
+		return "", false, err
+	}
+	return snapshot, strings.TrimSpace(snapshot) != "", nil
+}
+
 // SyncInvitationCodes registers invitation codes for routing to this hub.
 // Called by Hub when new codes are generated.
 func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string, tenantID string) error {
@@ -525,6 +572,15 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	acceptPublicSignup := explicitPublicSignupOrDefault(req.AcceptPublicSignup)
 
 	completeExistingRegistration := func(existing *store.HubInstance) (*RegisterHubResult, error) {
+		if existing.IsDisabled {
+			return nil, ErrHubDisabled
+		}
+		// A still-pending initial registration has no active recovery data and
+		// remains retryable. Once confirmed, changing its endpoint or rotating its
+		// secret requires proof of the existing Hub credential.
+		if existing.Status != "pending_confirmation" && (strings.TrimSpace(req.RecoverySecret) == "" || existing.HubSecretHash != hashToken(strings.TrimSpace(req.RecoverySecret))) {
+			return nil, ErrHubUnauthorized
+		}
 		result, err := s.updateRegisteredHub(ctx, existing, req, ownerEmail, rawSecret, string(capJSON), capabilities, corporateEmailDomains, corporateEmailDomain, visibility, acceptPublicSignup, now)
 		if err != nil {
 			return nil, err
@@ -648,7 +704,9 @@ func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubIn
 		return nil, ErrHubDisabled
 	}
 
-	alreadyConfirmed := existing.Status == "online"
+	// Possession of the pre-rebuild Hub credential was verified by RegisterHub.
+	// Do not make an already-confirmed Hub wait for another email confirmation.
+	alreadyConfirmed := existing.Status != "pending_confirmation"
 	installationID := strings.TrimSpace(req.InstallationID)
 
 	if installationID != "" {

@@ -13,6 +13,7 @@ func TestPeersRoundTrip(t *testing.T) {
 
 	if err := s.Patch(func(p *Peers) {
 		p.LansengerPrivateUserID = "staff-1"
+		p.LansengerPrivateUserIDsByBotID = map[string]string{"support": "staff-support"}
 		p.TelegramLastChatID = 42
 		p.QQLastOpenID = "oid-9"
 	}); err != nil {
@@ -23,6 +24,9 @@ func TestPeersRoundTrip(t *testing.T) {
 	p := s2.LoadOrEmpty()
 	if p.LansengerPrivateUserID != "staff-1" {
 		t.Fatalf("lansenger = %q", p.LansengerPrivateUserID)
+	}
+	if p.LansengerPrivateUserIDsByBotID["support"] != "staff-support" {
+		t.Fatalf("lansenger profile peers = %#v", p.LansengerPrivateUserIDsByBotID)
 	}
 	if p.TelegramLastChatID != 42 {
 		t.Fatalf("telegram = %d", p.TelegramLastChatID)

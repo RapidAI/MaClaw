@@ -2,10 +2,15 @@ package knowledge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestImportDirectoryParallelLightMarkdown(t *testing.T) {
@@ -135,6 +140,104 @@ func TestImportDirectoryParallelLightMarkdown(t *testing.T) {
 	}
 	if len(results2) == 0 {
 		t.Fatal("expected search hits after content update")
+	}
+}
+
+func TestImportFilesLightMarkdownRejectsSourceChangedAfterScanWithoutReplacingExisting(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	path := filepath.Join(root, "replace-after-scan.md")
+	mustWrite(t, path, []byte("# Previous\n\nprevious indexed markdown"))
+	store, err := NewSQLiteStore(filepath.Join(root, "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	req := DirectoryImportRequest{RootPath: root, IncludeExts: []string{".md"}, DistillMode: DistillModeRules}
+	if result, err := store.ImportFiles(ctx, req, []string{path}); err != nil || result.ImportedFiles != 1 {
+		t.Fatalf("first import = %#v, %v", result, err)
+	}
+	sources, err := store.ListSources(ctx, ListSourcesOptions{Limit: 10})
+	if err != nil || len(sources) != 1 {
+		t.Fatalf("sources = %#v, %v", sources, err)
+	}
+	existing := sources[0]
+	previousHash := existing.ContentHash
+	previousNodes, err := store.ListNodesBySource(ctx, existing.ID, 10)
+	if err != nil || len(previousNodes) == 0 || !strings.Contains(previousNodes[0].Text, "previous indexed markdown") {
+		t.Fatalf("previous nodes = %#v, %v", previousNodes, err)
+	}
+
+	mustWrite(t, path, []byte("# Scanned\n\nscan version markdown"))
+	previousHook := lightImportBeforeParse
+	var once sync.Once
+	lightImportBeforeParse = func(item ImportItem) {
+		if item.FilePath != path {
+			return
+		}
+		once.Do(func() { mustWrite(t, path, []byte("# Replacement\n\nreplacement after scan")) })
+	}
+	t.Cleanup(func() { lightImportBeforeParse = previousHook })
+
+	result, err := store.ImportFiles(ctx, req, []string{path})
+	if err != nil || result.ImportedFiles != 0 || result.FailedFiles != 1 || len(result.Items) != 1 || result.Items[0].ErrorMessage != agent.ErrOfficeReadSourceChanged.Error() {
+		t.Fatalf("changed reimport = %#v, %v", result, err)
+	}
+	after, err := store.GetSource(ctx, existing.ID)
+	if err != nil || after.ContentHash != previousHash || after.NodeCount != existing.NodeCount || after.CardCount != existing.CardCount {
+		t.Fatalf("existing source changed = %#v, want hash=%q nodes=%d cards=%d, err=%v", after, previousHash, existing.NodeCount, existing.CardCount, err)
+	}
+	afterNodes, err := store.ListNodesBySource(ctx, existing.ID, 10)
+	if err != nil || len(afterNodes) == 0 || !strings.Contains(afterNodes[0].Text, "previous indexed markdown") {
+		t.Fatalf("existing nodes replaced = %#v, %v", afterNodes, err)
+	}
+}
+
+func TestRefreshLightMarkdownRejectsSourceChangedWithoutReplacingExisting(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	path := filepath.Join(root, "refresh-after-change.md")
+	mustWrite(t, path, []byte("# Previous\n\nprevious refreshable markdown"))
+	store, err := NewSQLiteStore(filepath.Join(root, "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	req := DirectoryImportRequest{RootPath: root, IncludeExts: []string{".md"}, DistillMode: DistillModeRules}
+	if result, err := store.ImportFiles(ctx, req, []string{path}); err != nil || result.ImportedFiles != 1 {
+		t.Fatalf("first import = %#v, %v", result, err)
+	}
+	sources, err := store.ListSources(ctx, ListSourcesOptions{Limit: 10})
+	if err != nil || len(sources) != 1 {
+		t.Fatalf("sources = %#v, %v", sources, err)
+	}
+	existing := sources[0]
+	previousNodes, err := store.ListNodesBySource(ctx, existing.ID, 10)
+	if err != nil || len(previousNodes) == 0 || !strings.Contains(previousNodes[0].Text, "previous refreshable markdown") {
+		t.Fatalf("previous nodes = %#v, %v", previousNodes, err)
+	}
+	mustWrite(t, path, []byte("# Candidate\n\nrefresh candidate version"))
+
+	previousHook := fileRefreshBeforeParse
+	var once sync.Once
+	fileRefreshBeforeParse = func(source Source) {
+		if source.ID != existing.ID {
+			return
+		}
+		once.Do(func() { mustWrite(t, path, []byte("# Replacement\n\nreplacement during refresh")) })
+	}
+	t.Cleanup(func() { fileRefreshBeforeParse = previousHook })
+
+	if _, err := store.RefreshSource(ctx, existing.ID); !errors.Is(err, agent.ErrOfficeReadSourceChanged) {
+		t.Fatalf("RefreshSource error = %v, want source-changed rejection", err)
+	}
+	after, err := store.GetSource(ctx, existing.ID)
+	if err != nil || after.ContentHash != existing.ContentHash || after.NodeCount != existing.NodeCount || after.CardCount != existing.CardCount {
+		t.Fatalf("existing source changed = %#v, want hash=%q nodes=%d cards=%d err=%v", after, existing.ContentHash, existing.NodeCount, existing.CardCount, err)
+	}
+	afterNodes, err := store.ListNodesBySource(ctx, existing.ID, 10)
+	if err != nil || len(afterNodes) == 0 || !strings.Contains(afterNodes[0].Text, "previous refreshable markdown") {
+		t.Fatalf("existing nodes replaced = %#v, %v", afterNodes, err)
 	}
 }
 

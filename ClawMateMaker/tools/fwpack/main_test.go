@@ -98,6 +98,29 @@ func TestRunBuildsSignedSplitFullPackageFromFlasherArgs(t *testing.T) {
 	}
 }
 
+func TestValidateSDKConfigHeaderRequiresExact32MiBDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sdkconfig.h")
+	const board = "waveshare-s3-touch-amoled-1.75c-v1"
+	const layout = "maclaw-s3-32m-factory-v1"
+	valid := "#define CONFIG_MACLAW_BOARD_ID \"" + board + "\"\n" +
+		"#define CONFIG_MACLAW_COMPAT_ID \"maclaw-clawmate:" + board + ":" + layout + "\"\n" +
+		"#define CONFIG_MACLAW_RELEASE_SEQUENCE 7\n" +
+		"#define CONFIG_ESPTOOLPY_FLASHSIZE_32MB 1\n"
+	if err := os.WriteFile(path, []byte(valid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSDKConfigHeader(path, board, layout, 7, 32*1024*1024); err != nil {
+		t.Fatalf("valid 32 MiB sdkconfig rejected: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(valid, "#define CONFIG_ESPTOOLPY_FLASHSIZE_32MB 1\n", "", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSDKConfigHeader(path, board, layout, 7, 32*1024*1024); err == nil || !strings.Contains(err.Error(), "FLASHSIZE_32MB") {
+		t.Fatalf("missing 32 MiB declaration was accepted: %v", err)
+	}
+}
+
 func TestRunRejectsSplitPackageWhenGeneratedSDKConfigDoesNotMatchManifestIdentity(t *testing.T) {
 	dir := t.TempDir()
 	table, err := partition.Encode([]partition.Entry{{Label: "factory", Type: 0, Subtype: 0, Offset: 0x10000, Size: 0x3a0000}})

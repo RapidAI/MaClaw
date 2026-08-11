@@ -257,6 +257,7 @@ func (h *IMMessageHandler) recoverNativePDFGenerationFailure(
 		}
 		fallbackTools = filterToolsForLansengerGroupPermissions(fallbackTools, *ctx.LansengerGroupPermissions)
 	}
+	fallbackTools = filterComputerUseToolsForLocalFileWork(ctx, "", fallbackTools)
 	start := len(conversation)
 	conversation = append(conversation, map[string]string{
 		"role": "system",

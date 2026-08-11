@@ -1,7 +1,9 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithMode, DeleteSkill, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureCodingWorkbenchArmed, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, ReadBBS, ReadThanks, ReadTutorial, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithMode, DeleteSkill, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOff, EventsOn, Quit, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
-import appIcon from './assets/images/maclaw-agent-mark.svg';
+// Keep the in-app navigation and About artwork aligned with the packaged
+// Windows/tray icon rather than the legacy standalone SVG mark.
+import appIcon from './assets/images/appicon.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
@@ -16,6 +18,7 @@ import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
+import type { AIExecutionProfile } from './components/ai/AITabTypes';
 
 function clipboardImageExtension(mimeType: string): string {
     switch (mimeType.toLowerCase()) {
@@ -44,6 +47,20 @@ async function toggleMaximiseAndClampWorkArea(): Promise<void> {
     } catch {
         // Window state APIs may be unavailable during shutdown.
     }
+}
+
+// Last-resort geometry for the rare case where GetAdaptiveWindowSize is not
+// callable while ResizeWindow still is (for example during a partial frontend
+// reload). screen.* is expressed in WebView CSS pixels, the same logical space
+// Wails accepts for WindowSetSize. Keep a 10% margin so this fallback remains
+// inside a taskbar/work-area boundary at 125% and 150% display scaling.
+function getSafeFallbackWindowSize(): { width: number; height: number } {
+    const screenWidth = window.screen?.width || 1360;
+    const screenHeight = window.screen?.height || 850;
+    return {
+        width: Math.max(640, Math.min(1360, Math.floor(screenWidth * 0.9))),
+        height: Math.max(480, Math.min(850, Math.floor(screenHeight * 0.9))),
+    };
 }
 
 function readClipboardImageBase64(file: Blob): Promise<string> {
@@ -94,7 +111,7 @@ import { OPEN_SETTINGS_EVENT } from './utils/settingsNavigation';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
-import { purgeDeletedProjectTabLocalCache } from './components/ai/aiAssistantPanelSessionUtils';
+import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops } from './components/layout/backgroundTaskCount';
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
@@ -126,18 +143,8 @@ function callBackend<T>(call: () => T | Promise<T>): Promise<T> {
     return Promise.resolve().then(call);
 }
 
-const EXPERT_TASK_SOURCE_PREFIX = 'source:expert:';
-
-/** Return the persistent expert identity encoded on a task-management row. */
-export function expertIDFromTaskTags(tags?: string[] | null): string {
-    for (const rawTag of tags || []) {
-        const tag = String(rawTag || '').trim();
-        if (!tag.startsWith(EXPERT_TASK_SOURCE_PREFIX)) continue;
-        const expertID = tag.slice(EXPERT_TASK_SOURCE_PREFIX.length).trim();
-        if (expertID) return expertID;
-    }
-    return '';
-}
+/** @deprecated Prefer importing expertIDFromTaskTags from aiAssistantPanelSessionUtils. */
+export { expertIDFromTaskTags };
 
 function safeEventsOn(eventName: string, callback: (...args: any[]) => void) {
     try {
@@ -177,6 +184,7 @@ type SensitivePermissionRequest = {
 
 type SidebarProviderStateWire = {
     providers?: Array<{
+        id?: string; ID?: string;
         name?: string; Name?: string;
         url?: string; URL?: string;
         key?: string; Key?: string;
@@ -188,6 +196,7 @@ type SidebarProviderStateWire = {
         is_hub_service?: boolean; IsHubService?: boolean;
     }>;
     Providers?: Array<{
+        id?: string; ID?: string;
         name?: string; Name?: string;
         url?: string; URL?: string;
         key?: string; Key?: string;
@@ -565,6 +574,8 @@ function App() {
         }
         await DeleteTask(projectPath);
         purgeDeletedProjectTabLocalCache(projectPath);
+        // Expert history is keyed by expert id, not the task workspace path.
+        if (expertID) purgeDeletedExpertTabLocalCache(expertID);
     }, [openExpertTabIDs, openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
@@ -1089,12 +1100,18 @@ function App() {
         const platform = navigator.platform || '';
         return !/win|mac/i.test(platform);
     });
-    // Win10's frameless WebView2 host already applies display DPI. Applying an
-    // additional fractional CSS transform to the entire root can make the DWM
-    // surface exceed its client rectangle and crop every outer edge. Win11 has
-    // native frameless support, so it retains the normal Auto recommendation.
+    // WebView2 already applies Windows display DPI. A fractional CSS transform
+    // on the root can round outside its physical client rectangle at 125% / 150%
+    // scaling and crop an outer edge. Native Win11 corners do not change that
+    // WebView2 rasterisation boundary, so Auto stays at the native size on every
+    // Windows version. Manual UI zoom remains an explicit user choice.
     const isWindowsHost = /win/i.test(navigator.platform || '');
-    const disableAutoUIScaleTransform = isWindowsHost && !nativeRounded;
+    // The initial render does not yet know the OS build. Avoid a one-frame
+    // Win10-only edge inset on Windows 11; after the native query resolves,
+    // only genuine legacy Windows frameless shells receive it.
+    const [nativeRoundedResolved, setNativeRoundedResolved] = useState(() => /mac/i.test(navigator.platform));
+    const isLegacyWindowsFrameless = isWindowsHost && nativeRoundedResolved && !nativeRounded;
+    const disableAutoUIScaleTransform = isWindowsHost;
     const disableAutoUIScaleTransformRef = useRef(disableAutoUIScaleTransform);
     disableAutoUIScaleTransformRef.current = disableAutoUIScaleTransform;
     const applyFramelessTopInset = useCallback((topInset: unknown) => {
@@ -1110,21 +1127,35 @@ function App() {
     // Clear boot-time inline colours so the CSS theme token owns the opaque
     // shell; writing a literal scheme colour here can fringe at fractional DPI.
     useEffect(() => {
+        let disposed = false;
+        let retryTimer: ReturnType<typeof setTimeout> | undefined;
         Promise.all([
             callBackend(() => IsNativeRoundedCorners()).catch(() => null),
             callBackend(() => GetFramelessTopInset()).catch(() => 0),
         ]).then(([rounded, topInset]) => {
+            if (disposed) return;
             if (rounded !== null) {
                 setNativeRounded(rounded);
             }
+            // Even if the native query fails, resolve the platform gate and
+            // use the conservative Windows 10 safe-edge fallback.
+            setNativeRoundedResolved(true);
             document.documentElement.style.backgroundColor = '';
             document.body.style.backgroundColor = '';
-            // Win10 DWM may reserve an invisible top frame on frameless windows.
+            // Windows DWM may reserve an invisible top frame on frameless windows.
             // CSS #App uses padding-top: var(--dwm-top-offset) to compensate.
             // Set on :root only — do not set on .app-viewport (would shadow).
             applyFramelessTopInset(topInset);
+            // Wails can expose the frontend just before the main HWND is
+            // discoverable. Re-read after the first compositor frame so a
+            // transient 0 inset cannot persist until a later resize.
+            retryTimer = setTimeout(refreshFramelessTopInset, 240);
         });
-    }, [applyFramelessTopInset]);
+        return () => {
+            disposed = true;
+            if (retryTimer) clearTimeout(retryTimer);
+        };
+    }, [applyFramelessTopInset, refreshFramelessTopInset]);
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const refreshAfterResize = () => {
@@ -1184,6 +1215,20 @@ function App() {
         presets?: Array<{ id: string; display_name?: string; ref_count?: number; enabled?: boolean }>;
     }>({ available: false, active: false });
     const [sidebarProviderSummaries, setSidebarProviderSummaries] = useState<SidebarLLMProviderSummary[]>([]);
+    const [activeExecutionProfile, setActiveExecutionProfile] = useState<AIExecutionProfile>('none');
+    const [llmProfilePanelState, setLLMProfilePanelState] = useState<any>(null);
+    const [quickDraftProvider, setQuickDraftProvider] = useState<{ profile: AIExecutionProfile; providerID: string } | null>(null);
+    const [quickModelsLoadingForProviderID, setQuickModelsLoadingForProviderID] = useState('');
+    const [quickProfileSavePending, setQuickProfileSavePending] = useState(false);
+    const quickProfileSaveSeqRef = useRef(0);
+    const quickModelFetchSeqRef = useRef(0);
+    // One live catalog is enough for a given provider + directory generation.
+    // Both the sidebar and the bottom bar can expose the same picker, so this
+    // also prevents two clicks in the same turn from issuing duplicate /models
+    // requests (and, for managed providers, duplicate credential refreshes).
+    const quickModelFetchesRef = useRef(new Map<string, Promise<any>>());
+    const llmProfilePanelSeqRef = useRef(0);
+    const llmProfileHealthRefreshSeqRef = useRef(0);
     const sidebarTokenUsageSeqRef = useRef(0);
     const maclawLLMFirstPingDone = useRef(false);    const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
 
@@ -1769,15 +1814,16 @@ function App() {
             });
         };
         const resizeMainWindow = async () => {
+            const fallbackSize = getSafeFallbackWindowSize();
             try {
                 const size: any = await callBackend(() => GetAdaptiveWindowSize());
-                const w = size?.width || 1360;
-                const h = size?.height || 850;
+                const w = size?.width || fallbackSize.width;
+                const h = size?.height || fallbackSize.height;
                 await callBackend(() => ResizeWindow(w, h));
                 return true;
             } catch {
                 try {
-                    await callBackend(() => ResizeWindow(1360, 850));
+                    await callBackend(() => ResizeWindow(fallbackSize.width, fallbackSize.height));
                     return true;
                 } catch {
                     return false;
@@ -2997,6 +3043,7 @@ function App() {
                     ? rawModels.map((m) => String(m || '').trim()).filter(Boolean)
                     : [];
                 return {
+                    id: String(provider?.id ?? provider?.ID ?? '').trim() || undefined,
                     name: provider?.name ?? provider?.Name ?? '',
                     url,
                     isHubService: isHub,
@@ -3013,25 +3060,110 @@ function App() {
         return { providers: list, current };
     }, []);
 
+    const refreshLLMProfilePanelState = useCallback(async () => {
+        const seq = ++llmProfilePanelSeqRef.current;
+        try {
+            const next = await callBackend(() => GetMaclawLLMProfilePanelState());
+            if (seq !== llmProfilePanelSeqRef.current) return null;
+            setLLMProfilePanelState(next);
+            return next;
+        } catch {
+            if (seq === llmProfilePanelSeqRef.current) setLLMProfilePanelState(null);
+            return null;
+        }
+    }, []);
+
+    // Keep probe completion subordinate to the most recent assignment read.
+    // The health endpoint returns the same panel shape, but a result is only
+    // useful if its starting assignment generation is still current.
+    const refreshLLMProfileHealth = useCallback(() => {
+        const healthSeq = ++llmProfileHealthRefreshSeqRef.current;
+        const panelSeq = llmProfilePanelSeqRef.current;
+        return callBackend(() => RefreshMaclawLLMProfileHealth()).then((next: any) => {
+            if (next
+                && healthSeq === llmProfileHealthRefreshSeqRef.current
+                && panelSeq === llmProfilePanelSeqRef.current) {
+                setLLMProfilePanelState(next);
+            }
+            return next;
+        }).catch(() => null);
+    }, []);
+
+    useEffect(() => {
+        void refreshLLMProfilePanelState().then((next) => {
+            if (next) void refreshLLMProfileHealth();
+        });
+        const off = safeEventsOn('llm-profiles-changed', () => {
+            // Save/provider events invalidate backend probe records. Refresh
+            // both the selection and health now instead of showing the safe
+            // interim "unverified" state until the next 60-second poll.
+            void refreshLLMProfilePanelState().then((next) => {
+                if (next) void refreshLLMProfileHealth();
+            });
+        });
+        // A successful real chat can verify providers that do not support the
+        // optional /models health probe. Read the refreshed state only: running
+        // another probe here would immediately overwrite that stronger evidence.
+        const offHealth = safeEventsOn('llm-profile-health-changed', () => {
+            void refreshLLMProfilePanelState();
+        });
+        return () => {
+            llmProfilePanelSeqRef.current += 1;
+            llmProfileHealthRefreshSeqRef.current += 1;
+            if (typeof off === 'function') off(); else safeEventsOff('llm-profiles-changed');
+            if (typeof offHealth === 'function') offHealth(); else safeEventsOff('llm-profile-health-changed');
+        };
+    }, [refreshLLMProfileHealth, refreshLLMProfilePanelState]);
+
+    // Profile health is intentionally refreshed through its own dual-profile
+    // API. The legacy assistant-only ping below remains for onboarding only.
+    useEffect(() => {
+        const timer = setInterval(() => { void refreshLLMProfileHealth(); }, 60000);
+        return () => {
+            llmProfileHealthRefreshSeqRef.current += 1;
+            clearInterval(timer);
+        };
+    }, [refreshLLMProfileHealth]);
+
     const refreshSidebarTokenUsage = useCallback(async () => {
         const refreshSeq = ++sidebarTokenUsageSeqRef.current;
         const normalizeProviderURL = (value?: string) => String(value || '').trim().replace(/\/+$/, '');
         try {
-            const [usageMap, providerState] = await Promise.all([
+            const [usageMap, profileUsageMap, providerState] = await Promise.all([
                 GetAllLLMTokenUsage() as Promise<Record<string, SidebarTokenUsageStat> | null>,
+                GetAllLLMProfileTokenUsage() as Promise<Record<string, SidebarTokenUsageStat> | null>,
                 GetMaclawLLMProviders() as Promise<SidebarProviderStateWire>,
             ]);
             const normalizedMap = usageMap || {};
+            const profileUsage = profileUsageMap || {};
             const normalizedProviderState = normalizeSidebarProviderState(providerState);
             const providerSummaries = normalizedProviderState.providers.length > 0
                 ? normalizedProviderState.providers
                 : providers.map((provider) => ({ name: provider.name, url: (provider as any).url || (provider as any).URL || '', isHubService: !!(provider as any).is_hub_service || !!(provider as any).IsHubService })).filter((provider) => !!provider.name);
-            const currentProviderName = selectSidebarCurrentProvider(
+            const legacyCurrentProviderName = selectSidebarCurrentProvider(
                 providerSummaries,
                 normalizedProviderState.current || selectedProvider || providers[0]?.name || '',
                 normalizedMap,
             );
-            const currentProviderUsage = getSidebarUsageForProvider(normalizedMap, currentProviderName);
+            const activeSummary = activeExecutionProfile === 'assistant'
+                ? llmProfilePanelState?.assistant
+                : activeExecutionProfile === 'coding' ? llmProfilePanelState?.coding : null;
+            const activeProviderID = String(activeSummary?.provider_id ?? activeSummary?.providerID ?? '').trim();
+            const currentProviderName = String(activeSummary?.provider_name ?? activeSummary?.providerName ?? '').trim() || legacyCurrentProviderName;
+            const profileTotals = Object.values(profileUsage).reduce<Omit<SidebarCurrentProviderTokenUsage, 'provider' | 'isHubService'>>((total, item) => {
+                if (!activeSummary || !item || item.profile !== activeExecutionProfile || item.provider_id !== activeProviderID) return total;
+                total.input += Number(item.input_tokens ?? 0);
+                total.output += Number(item.output_tokens ?? 0);
+                total.total += Number(item.total_tokens ?? 0);
+                total.cachedInput = (total.cachedInput ?? 0) + Number(item.cached_input_tokens ?? 0);
+                total.cacheWrite = (total.cacheWrite ?? 0) + Number(item.cache_write_tokens ?? 0);
+                total.requests = (total.requests ?? 0) + Number(item.requests ?? 0);
+                total.cachedRequests = (total.cachedRequests ?? 0) + Number(item.cached_requests ?? 0);
+                total.localCacheRequests = (total.localCacheRequests ?? 0) + Number(item.local_cache_requests ?? 0);
+                total.localCacheHits = (total.localCacheHits ?? 0) + Number(item.local_cache_hits ?? 0);
+                return total;
+            }, { input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
+            const currentProviderUsage = activeSummary ? profileTotals : getSidebarUsageForProvider(normalizedMap, currentProviderName);
             const currentProvider = providerSummaries.find((provider) => provider.name === currentProviderName);
             let hubStatus: Awaited<ReturnType<typeof GetHubLLMServiceStatus>> | null = null;
             try {
@@ -3053,7 +3185,7 @@ function App() {
             setSidebarHubCredits(null);
             setSidebarProviderSummaries([]);
         }
-    }, [normalizeSidebarProviderState, providers, selectedProvider]);
+    }, [activeExecutionProfile, llmProfilePanelState, normalizeSidebarProviderState, providers, selectedProvider]);
 
     useEffect(() => {
         const delayedRefreshTimers = new Set<number>();
@@ -3349,6 +3481,205 @@ function App() {
             showAlert(errMsg);
         });
     }, [lang, refreshSidebarTokenUsage, refreshSidebarModelOptions, showAlert, sidebarCurrentModel]);
+
+    // The old provider/model fields above remain temporarily for legacy status
+    // refreshes. All visible quick writes below are profile-scoped and never
+    // call PatchConfigFields/SetMaclawLLMCurrentModel.
+    const activeProfileSummary = useMemo(() => {
+        if (activeExecutionProfile === 'assistant') return llmProfilePanelState?.assistant ?? null;
+        if (activeExecutionProfile === 'coding') return llmProfilePanelState?.coding ?? null;
+        return null;
+    }, [activeExecutionProfile, llmProfilePanelState]);
+    const effectiveProfileProviderID = String(activeProfileSummary?.provider_id ?? activeProfileSummary?.providerID ?? '').trim();
+    const selectedQuickProviderID = quickDraftProvider?.profile === activeExecutionProfile
+        ? quickDraftProvider.providerID
+        : effectiveProfileProviderID;
+    const quickProfileProvider = useMemo((): SidebarLLMProviderSummary | null => {
+        if (!activeProfileSummary) return null;
+        const id = selectedQuickProviderID;
+        const name = String(activeProfileSummary.provider_name ?? activeProfileSummary.providerName ?? '').trim();
+        const provider = (llmProfilePanelState?.providers || []).find((item: any) => String(item?.id ?? item?.ID ?? '').trim() === id);
+        if (!provider && !name) return null;
+        return {
+            id,
+            name: String(provider?.name ?? provider?.Name ?? name).trim(),
+            url: '',
+            isHubService: !!(provider?.is_hub_service ?? provider?.isHubService),
+            model: String(activeProfileSummary.model ?? '').trim(),
+            models: Array.isArray(provider?.models ?? provider?.Models) ? (provider?.models ?? provider?.Models) : [],
+            configured: String(activeProfileSummary.health ?? '') !== 'invalid',
+        };
+    }, [activeProfileSummary, llmProfilePanelState, selectedQuickProviderID]);
+    const quickModel = selectedQuickProviderID === effectiveProfileProviderID
+        ? String(activeProfileSummary?.model ?? '').trim()
+        : '';
+    const quickModelOptions = useMemo(() => buildSidebarModelOptions({
+        configuredModel: quickModel,
+        cachedModels: quickProfileProvider?.models,
+    }), [quickModel, quickProfileProvider?.models]);
+    const quickProfileProviders = useMemo((): SidebarLLMProviderSummary[] => {
+        const providers = (llmProfilePanelState?.providers || []).map((provider: any) => ({
+            id: String(provider?.id ?? provider?.ID ?? '').trim() || undefined,
+            name: String(provider?.name ?? provider?.Name ?? '').trim(),
+            url: '',
+            isHubService: !!(provider?.is_hub_service ?? provider?.isHubService),
+            model: String(provider?.model ?? provider?.Model ?? '').trim() || undefined,
+            models: Array.isArray(provider?.models ?? provider?.Models) ? (provider?.models ?? provider?.Models) : [],
+            configured: true,
+        })).filter((provider: SidebarLLMProviderSummary) => !!provider.id && !!provider.name);
+        // The shared picker treats its first provider as the current context.
+        // Keep the selected draft/effective provider there without mutating the
+        // persisted profile until a model is explicitly chosen.
+        return providers.sort((a: SidebarLLMProviderSummary, b: SidebarLLMProviderSummary) => {
+            if (a.id === selectedQuickProviderID) return -1;
+            if (b.id === selectedQuickProviderID) return 1;
+            return a.name.localeCompare(b.name);
+        });
+    }, [llmProfilePanelState, selectedQuickProviderID]);
+    useEffect(() => {
+        // A staged provider is valid only while its owning scope and revision
+        // remain current. It is intentionally not persisted until a model is
+        // explicitly selected.
+        setQuickDraftProvider(null);
+        quickModelFetchSeqRef.current += 1;
+        setQuickModelsLoadingForProviderID('');
+    }, [activeExecutionProfile, llmProfilePanelState?.revision]);
+    const dismissQuickProfileProviderDraft = useCallback(() => {
+        // A provider choice becomes real only with the model click. Closing a
+        // menu therefore restores the effective profile instead of leaving an
+        // invisible staged choice that can affect a later, unrelated open.
+        if (!quickProfileSavePending) setQuickDraftProvider(null);
+    }, [quickProfileSavePending]);
+    const refreshQuickProfileModels = useCallback((providerID: string) => {
+        providerID = String(providerID || '').trim();
+        if (!providerID) return;
+        // A successful profile/directory refresh invalidates prior endpoint and
+        // catalog assumptions even when the profile assignment itself did not
+        // change (for example, a provider URL was edited in another window).
+        // Do not merge an old response into that newer directory.
+        const directoryGeneration = llmProfilePanelSeqRef.current;
+        const fetchKey = `${directoryGeneration}:${providerID}`;
+        const requestSeq = ++quickModelFetchSeqRef.current;
+        setQuickModelsLoadingForProviderID(providerID);
+        // The profile directory intentionally omits endpoints and credentials.
+        // Resolve them in the backend by stable provider ID, then merge its
+        // catalog into the shared directory. Provider ID plus the directory
+        // generation makes a late response safe after tab navigation *and*
+        // after provider settings are edited in another surface.
+        let request = quickModelFetchesRef.current.get(fetchKey);
+        if (!request) {
+            request = callBackend(() => FetchMaclawLLMProfileModels(providerID));
+            quickModelFetchesRef.current.set(fetchKey, request);
+            void request.finally(() => {
+                if (quickModelFetchesRef.current.get(fetchKey) === request) {
+                    quickModelFetchesRef.current.delete(fetchKey);
+                }
+            }).catch(() => {
+                // The request's consumer below deliberately falls back to the
+                // cached catalog. Consume this bookkeeping branch too so a
+                // rejected Wails call never becomes an unhandled rejection.
+            });
+        }
+        void request.then((items: any) => {
+            const fetched = Array.isArray(items)
+                ? items.map((item) => String(item?.id ?? item?.ID ?? item?.name ?? item?.Name ?? '').trim()).filter(Boolean)
+                : [];
+            if (fetched.length === 0) return;
+            if (directoryGeneration !== llmProfilePanelSeqRef.current) return;
+            setLLMProfilePanelState((previous: any) => {
+                if (!previous?.providers) return previous;
+                return {
+                    ...previous,
+                    providers: previous.providers.map((provider: any) => {
+                        const id = String(provider?.id ?? provider?.ID ?? '').trim();
+                        if (id !== providerID) return provider;
+                        const cached = Array.isArray(provider?.models ?? provider?.Models) ? (provider.models ?? provider.Models) : [];
+                        return { ...provider, models: Array.from(new Set([...cached, ...fetched])) };
+                    }),
+                };
+            });
+        }).catch(() => {
+            // The menu already has the configured/cached catalog. A failed live
+            // refresh should not interrupt an otherwise valid model change.
+        }).finally(() => {
+            if (requestSeq === quickModelFetchSeqRef.current) {
+                setQuickModelsLoadingForProviderID('');
+            }
+        });
+    }, []);
+    const handleOpenProfileModelMenu = useCallback(() => {
+        const profile = activeExecutionProfile;
+        const providerID = selectedQuickProviderID;
+        if (!providerID || (profile !== 'assistant' && profile !== 'coding')) return;
+        if (profile === 'coding' && activeProfileSummary?.inherit_assistant === true) {
+            openLLMSettingsPage();
+            return;
+        }
+        refreshQuickProfileModels(providerID);
+    }, [activeExecutionProfile, activeProfileSummary?.inherit_assistant, openLLMSettingsPage, refreshQuickProfileModels, selectedQuickProviderID]);
+    const handleProfileQuickSwitchProvider = useCallback((providerID: string) => {
+        if (quickProfileSavePending) return;
+        const profile = activeExecutionProfile;
+        if (profile !== 'assistant' && profile !== 'coding') return;
+        if (profile === 'coding' && activeProfileSummary?.inherit_assistant === true) {
+            openLLMSettingsPage();
+            return;
+        }
+        // Provider display names are editable and can be duplicated. The
+        // picker sends its stable id, with the name lookup retained only for
+        // an older caller that did not yet have ids.
+        const provider = quickProfileProviders.find((item) => item.id === providerID)
+            ?? quickProfileProviders.find((item) => item.name === providerID);
+        if (!provider?.id) return;
+        setQuickDraftProvider({ profile, providerID: provider.id });
+        // Keep the combined picker open while the user chooses the model. This
+        // turns provider selection into a staging step instead of forcing a
+        // close-and-reopen loop, while the eventual model click remains the
+        // single atomic profile write.
+        refreshQuickProfileModels(provider.id);
+    }, [activeExecutionProfile, activeProfileSummary?.inherit_assistant, openLLMSettingsPage, quickProfileProviders, quickProfileSavePending, refreshQuickProfileModels]);
+    const handleProfileQuickSwitchModel = useCallback((modelId: string) => {
+        const model = String(modelId || '').trim();
+        const profile = activeExecutionProfile;
+        const providerID = selectedQuickProviderID;
+        const revision = String(llmProfilePanelState?.revision ?? '').trim();
+        if (quickProfileSavePending || !model || !providerID || !revision || (profile !== 'assistant' && profile !== 'coding')) return;
+        if (profile === 'coding' && activeProfileSummary?.inherit_assistant === true) {
+            openLLMSettingsPage();
+            return;
+        }
+        const saveSeq = ++quickProfileSaveSeqRef.current;
+        setQuickProfileSavePending(true);
+        callBackend(() => QuickSaveMaclawLLMProfile(profile, providerID, model, revision)).then((next) => {
+            if (saveSeq !== quickProfileSaveSeqRef.current) return;
+            // The backend event normally schedules a fresh read too, but the
+            // returned snapshot arrives first. Invalidate any in-flight health
+            // result immediately so it cannot paint the previous assignment
+            // over this authoritative post-save state.
+            llmProfilePanelSeqRef.current += 1;
+            setLLMProfilePanelState(next);
+            setQuickDraftProvider(null);
+            // QuickSave emits llm-profiles-changed. Its assignment refresh
+            // then starts exactly one health probe for the new revision. Do
+            // not start another one here: it would immediately be invalidated
+            // by that event refresh and can consume a duplicate network check.
+            void refreshSidebarTokenUsage();
+            showToastMessage?.(lang === 'en'
+                ? 'Model updated for future requests.'
+                : lang === 'zh-Hant' ? '模型已更新，將於後續請求生效。' : '模型已更新，将于后续请求生效。');
+        }).catch((err) => {
+            if (saveSeq !== quickProfileSaveSeqRef.current) return;
+            const message = String(err || '');
+            if (message.includes('follows assistant')) {
+                openLLMSettingsPage();
+                return;
+            }
+            showAlert(lang === 'en' ? `Failed to update model: ${message}` : `模型更新失败：${message}`);
+            void refreshLLMProfilePanelState();
+        }).finally(() => {
+            if (saveSeq === quickProfileSaveSeqRef.current) setQuickProfileSavePending(false);
+        });
+    }, [activeExecutionProfile, activeProfileSummary, lang, llmProfilePanelState?.revision, openLLMSettingsPage, quickProfileSavePending, refreshLLMProfilePanelState, refreshSidebarTokenUsage, selectedQuickProviderID, showAlert, showToastMessage]);
 
     const refreshMoASession = useCallback(() => {
         callBackend(() => GetMoASessionState()).then((raw: any) => {
@@ -4174,7 +4505,7 @@ ${instruction}`;
     if (isLoading) {
         logStartupTrace('render-gate-isLoading', { envLogsCount: envLogs.length, isManualCheck });
         return (
-            <div data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} className="app-loading-shell">
+            <div data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} className="app-loading-shell">
                 <div className="app-loading-drag-zone" data-window-drag />
                 <h2 className="app-loading-title">{t("envCheckTitle")}</h2>
                 <div className="app-loading-progress" aria-hidden="true">
@@ -4235,6 +4566,7 @@ ${instruction}`;
             <div
                 className="main-content app-config-loading"
                 data-ai-theme={aiThemeMode}
+                data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined}
                 role="status"
                 aria-live="polite"
             >
@@ -4314,7 +4646,7 @@ ${instruction}`;
         >
             <DataMigrationOverlay />
             <div className="app-scale-layer">
-                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-maximized={windowMaximized ? "true" : undefined}>
+                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
                 taskManagementPaneWidth={taskManagementPaneWidth}
@@ -4396,13 +4728,19 @@ ${instruction}`;
                 showWorkflowEntry={showWorkflowEntryEnabled}
 				showUtilitiesEntry={showUtilitiesEntryEnabled}
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
-                availableProviders={availableProvidersForSwitch}
-                onSwitchProvider={handleQuickSwitchProvider}
-                currentModel={sidebarCurrentModel}
-                modelOptions={sidebarModelOptions}
-                modelsLoading={sidebarModelsLoading}
-                onSwitchModel={handleQuickSwitchModel}
-                onOpenModelMenu={refreshSidebarModelOptions}
+                availableProviders={quickProfileProviders}
+                onSwitchProvider={handleProfileQuickSwitchProvider}
+                currentModel={quickModel}
+                modelOptions={quickModelOptions}
+                modelsLoading={quickModelsLoadingForProviderID === selectedQuickProviderID}
+                onSwitchModel={handleProfileQuickSwitchModel}
+                onOpenModelMenu={handleOpenProfileModelMenu}
+                onDismissModelMenu={dismissQuickProfileProviderDraft}
+                providerSelectionPending={!!quickDraftProvider && quickDraftProvider.profile === activeExecutionProfile}
+                profileSavePending={quickProfileSavePending}
+                profileSummaries={llmProfilePanelState ? { assistant: llmProfilePanelState.assistant, coding: llmProfilePanelState.coding } : null}
+                activeProfile={activeExecutionProfile}
+                codingInheritsAssistant={activeProfileSummary?.inherit_assistant === true}
                 moaSticky={moaSession}
                 onToggleMoASticky={handleToggleMoASticky}
             />
@@ -4444,13 +4782,20 @@ ${instruction}`;
                             appUpdateAvailable={appUpdateAvailable}
                             onOpenAppUpdate={handleOpenAppUpdate}
                             onDismissAppUpdate={handleDismissAppUpdate}
-                            availableProviders={availableProvidersForSwitch}
-                            onSwitchProvider={handleQuickSwitchProvider}
-                            currentModel={sidebarCurrentModel}
-                            modelOptions={sidebarModelOptions}
-                            modelsLoading={sidebarModelsLoading}
-                            onSwitchModel={handleQuickSwitchModel}
-                            onOpenModelMenu={refreshSidebarModelOptions}
+                            availableProviders={quickProfileProviders}
+                            onSwitchProvider={handleProfileQuickSwitchProvider}
+                            currentModel={quickModel}
+                            modelOptions={quickModelOptions}
+                            modelsLoading={quickModelsLoadingForProviderID === selectedQuickProviderID}
+                            onSwitchModel={handleProfileQuickSwitchModel}
+                            onOpenModelMenu={handleOpenProfileModelMenu}
+                            onDismissModelMenu={dismissQuickProfileProviderDraft}
+                            providerSelectionPending={!!quickDraftProvider && quickDraftProvider.profile === activeExecutionProfile}
+                            profileSavePending={quickProfileSavePending}
+                            activeExecutionProfile={activeExecutionProfile}
+                            codingInheritsAssistant={activeProfileSummary?.inherit_assistant === true}
+                            onOpenLLMSettings={openLLMSettingsPage}
+                            onActiveExecutionProfileChange={setActiveExecutionProfile}
                             onLanguageChange={applyLanguage}
                             statusSlot={(
                                 <AppStatusMessageBar

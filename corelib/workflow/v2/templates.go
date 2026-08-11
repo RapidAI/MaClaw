@@ -70,7 +70,7 @@ type SupplementaryDocConfig struct {
 	Description string `json:"description"`
 	// MaxFiles: maximum number of supplementary files (0 = unlimited, default: 5)
 	MaxFiles int `json:"max_files,omitempty"`
-	// AcceptedTypes: file extensions accepted (e.g. [".pdf", ".docx", ".md", ".txt"])
+	// AcceptedTypes: file extensions accepted (e.g. [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".md", ".txt"])
 	// Empty = accept all document types
 	AcceptedTypes []string `json:"accepted_types,omitempty"`
 }
@@ -792,8 +792,8 @@ func EventPlanningTemplate() *WorkflowTemplate {
 
 func BidResponseTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
-		Type:        "bid_response",
-		Name:        "招投标文件",
+		Type: "bid_response",
+		Name: "招投标文件",
 		// Emphasize generation/writing so BM25 routing does not confuse with bid_review.
 		Description: "招标解析 → 资质响应 → 技术方案 → 商务报价 → 文件组装。适用于根据招标文件撰写/生成投标文件与响应材料。Bid response writing: parse tender, draft qualification/technical/commercial response, assemble bid package.",
 		Keywords:    []string{"招投标", "写标书", "做投标", "生成投标文件", "bid response", "tender response"},
@@ -1093,7 +1093,7 @@ func ChangjiangScholarReviewTemplate() *WorkflowTemplate {
 			{ID: "cj_completeness_check", Name: "基本信息完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
 				InputSchema: &PhaseInputSchema{
 					Title:       "提供申报材料",
-					Description: "请提供待评审的长江学者申报材料。支持上传文件（PDF/Word）、粘贴文本内容、或指定本机文件路径。",
+					Description: "请提供待评审的长江学者申报材料。支持上传 PDF、Word、PowerPoint、Excel 文件，粘贴文本内容，或指定本机文件路径。",
 					Fields: []PhaseInputField{
 						{Name: "material_path", Label: "申报材料文件路径", Type: "file", Placeholder: "如：D:\\申报材料\\长江学者申报书.pdf（如果文件在本机）"},
 						{Name: "material_text", Label: "或粘贴申报材料文本", Type: "textarea", Placeholder: "将申报书的主要内容粘贴到这里"},
@@ -1276,7 +1276,7 @@ func PatentApplicationTemplate() *WorkflowTemplate {
 							ID:    "file_mode",
 							Label: "交底书/申请材料文件",
 							Fields: []PhaseInputField{
-								{Name: "disclosure_path", Label: "交底书/申请材料文件路径", Type: "file", Required: true, Placeholder: "选择交底书或申请材料文件（Word/PDF）"},
+								{Name: "disclosure_path", Label: "交底书/申请材料文件路径", Type: "file", Required: true, Placeholder: "选择交底书或申请材料文件（PDF/Word/PowerPoint/Excel）"},
 							},
 						},
 						{
@@ -1340,7 +1340,7 @@ func USPatentApplicationTemplate() *WorkflowTemplate {
 							ID:    "file_mode",
 							Label: "Disclosure File / 交底书文件",
 							Fields: []PhaseInputField{
-								{Name: "disclosure_path", Label: "Disclosure File Path / 交底书文件路径", Type: "file", Required: true, Placeholder: "Select disclosure file (Word/PDF, Chinese or English)"},
+								{Name: "disclosure_path", Label: "Disclosure File Path / 交底书文件路径", Type: "file", Required: true, Placeholder: "Select disclosure file (PDF/Word/PowerPoint/Excel, Chinese or English)"},
 							},
 						},
 						{

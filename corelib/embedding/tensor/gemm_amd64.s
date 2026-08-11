@@ -761,8 +761,6 @@ dual_loop2:
 dual_loop1:
 	// R13 = remaining 8-float chunks (1 if leftover, or K/8 if K/8==1)
 dual_loop:
-	PREFETCHT0 64(DI)
-	PREFETCHT0 64(R15)
 
 	VMOVUPS (DI), Y8
 	VMOVUPS (R15), Y9

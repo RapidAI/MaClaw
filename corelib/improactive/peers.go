@@ -25,11 +25,12 @@ const (
 
 // Peers holds last-known owner peer IDs per IM channel.
 type Peers struct {
-	Version                 int       `json:"version"`
-	LansengerPrivateUserID  string    `json:"lansenger_private_user_id,omitempty"`
-	TelegramLastChatID      int64     `json:"telegram_last_chat_id,omitempty"`
-	QQLastOpenID            string    `json:"qq_last_open_id,omitempty"`
-	UpdatedAt               time.Time `json:"updated_at,omitempty"`
+	Version                        int               `json:"version"`
+	LansengerPrivateUserID         string            `json:"lansenger_private_user_id,omitempty"`
+	LansengerPrivateUserIDsByBotID map[string]string `json:"lansenger_private_user_ids_by_bot_id,omitempty"`
+	TelegramLastChatID             int64             `json:"telegram_last_chat_id,omitempty"`
+	QQLastOpenID                   string            `json:"qq_last_open_id,omitempty"`
+	UpdatedAt                      time.Time         `json:"updated_at,omitempty"`
 }
 
 // Store reads/writes peers under <maclaw data>/im_proactive/peers.json.
@@ -145,8 +146,21 @@ func (s *Store) Patch(fn func(*Peers)) error {
 
 func peersEqual(a, b Peers) bool {
 	return strings.TrimSpace(a.LansengerPrivateUserID) == strings.TrimSpace(b.LansengerPrivateUserID) &&
+		lansengerPeersByBotEqual(a.LansengerPrivateUserIDsByBotID, b.LansengerPrivateUserIDsByBotID) &&
 		a.TelegramLastChatID == b.TelegramLastChatID &&
 		strings.TrimSpace(a.QQLastOpenID) == strings.TrimSpace(b.QQLastOpenID)
+}
+
+func lansengerPeersByBotEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for id, userID := range a {
+		if strings.TrimSpace(userID) != strings.TrimSpace(b[id]) {
+			return false
+		}
+	}
+	return true
 }
 
 func writePeersFile(path string, data []byte) error {

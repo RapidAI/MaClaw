@@ -143,7 +143,7 @@ func (j *ProbeJob) Run(ctx context.Context) (result ProbeResult, retErr error) {
 		j.log.Event(logging.Warn, "probe", "identity", "IDENTITY_UNAVAILABLE", "identity.unavailable", identityErr.Error(), nil)
 	} else {
 		result.AppIdentity = identity
-		result.BoardRecognition = catalog.RecognizeApplicationIdentityEvidence(identity)
+		result.BoardRecognition = catalog.RecognizeApplicationIdentityWithROM(identity, result.Chip, result.Flash)
 		j.log.Event(logging.Info, "probe", "identity", "IDENTITY_OBSERVED", "identity.observed", "Received nonce-bound application identity.", map[string]any{"chip": identity.Chip, "flashBytes": identity.FlashBytes})
 	}
 	j.log.Event(logging.Info, "probe", "engine", "STAGE_COMPLETED", "stage.completed", "", map[string]any{"durationMs": time.Since(result.StartedAt).Milliseconds()})

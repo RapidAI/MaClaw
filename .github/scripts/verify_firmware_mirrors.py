@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release gate for the three ClawMateMaker firmware mirror objects.
+"""Release gate for the four ClawMateMaker firmware mirror objects.
 
 The desktop flasher can select the fastest of GitHub, Cloudflare R2 and
 Tencent COS only after it independently validates the signed archive.  This

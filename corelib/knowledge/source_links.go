@@ -1073,6 +1073,9 @@ func sourceLinkEvidence(item TopicRelevanceSource) []string {
 }
 
 func sourceGraphNode(source Source) SourceGraphNode {
+	if source.Kind == SourceKindImage {
+		source = ProjectImageSourceForTool(source)
+	}
 	return SourceGraphNode{
 		ID:           source.ID,
 		Label:        firstNonEmpty(source.Title, source.RelativePath, source.CanonicalURI, source.URI, source.ID),

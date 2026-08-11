@@ -2087,6 +2087,7 @@ func mobileDraftSourceLooksTextLike(draft mobileDocumentDraftRecord, raw []byte)
 		strings.Contains(ct, "officedocument") ||
 		strings.Contains(ct, "msword") ||
 		strings.Contains(ct, "spreadsheet") ||
+		strings.Contains(ct, "powerpoint") ||
 		ct == "application/octet-stream" {
 		// octet-stream still may be text — fall through to sniff.
 		if ct != "application/octet-stream" && ct != "" {
@@ -2097,7 +2098,8 @@ func mobileDraftSourceLooksTextLike(draft mobileDocumentDraftRecord, raw []byte)
 	switch {
 	case strings.HasSuffix(name, ".docx"), strings.HasSuffix(name, ".xlsx"),
 		strings.HasSuffix(name, ".doc"), strings.HasSuffix(name, ".xls"),
-		strings.HasSuffix(name, ".pptx"), strings.HasSuffix(name, ".png"),
+		strings.HasSuffix(name, ".ppt"), strings.HasSuffix(name, ".pptx"),
+		strings.HasSuffix(name, ".png"),
 		strings.HasSuffix(name, ".jpg"), strings.HasSuffix(name, ".jpeg"),
 		strings.HasSuffix(name, ".gif"), strings.HasSuffix(name, ".webp"),
 		strings.HasSuffix(name, ".pdf"):
@@ -5161,7 +5163,7 @@ func mobileReclaimStaleDocumentUploadClaims(now time.Time) int {
 
 func mobileUploadedFileIsImmediateDraft(filename string) bool {
 	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".txt", ".md", ".markdown", ".log", ".csv", ".json", ".docx", ".xlsx", ".pdf":
+	case ".txt", ".md", ".markdown", ".log", ".csv", ".json", ".pdf":
 		return true
 	default:
 		return false
@@ -6319,6 +6321,32 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			writeJSON(w, http.StatusAccepted, payload)
 			return
 		}
+		if mobileUploadedFileNeedsRemoteOfficeExtraction(name) {
+			// The desktop worker uses the shared OfficeRead boundary and its
+			// configured format-level fallback. Do not mark legacy Office files
+			// ready before that worker can extract them.
+			draft := mobileDocumentDraftRecord{
+				ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
+				OwnerID:   principal.UserID,
+				TenantID:  principal.TenantID,
+				Title:     mobileUploadTitle(name),
+				Template:  "report",
+				Markdown:  mobileDraftUnsupportedPreviewMarkdown(name),
+				UpdatedAt: now,
+			}
+			attachOriginal(&draft)
+			record.Status = "queued"
+			record.DraftID = draft.ID
+			record.Message = "已保存原件，等待桌面端 Office 文档解析。"
+			payload, admitted := admitDraft(draft, false)
+			if !admitted {
+				return
+			}
+			mobilePersistState()
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
+			writeJSON(w, http.StatusAccepted, payload)
+			return
+		}
 		// Unknown binary: still keep original as shareable draft.
 		draft := mobileDocumentDraftRecord{
 			ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
@@ -6340,6 +6368,18 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		mobilePersistState()
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		writeJSON(w, http.StatusAccepted, payload)
+	}
+}
+
+// mobileUploadedFileNeedsRemoteOfficeExtraction identifies the six Office
+// formats whose extraction belongs to the authenticated desktop worker. The
+// worker routes them through the same OfficeRead policy used by the GUI.
+func mobileUploadedFileNeedsRemoteOfficeExtraction(filename string) bool {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx":
+		return true
+	default:
+		return false
 	}
 }
 

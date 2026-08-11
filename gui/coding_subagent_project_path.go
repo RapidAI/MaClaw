@@ -1,21 +1,9 @@
 package main
 
-// coding_subagent_project_path.go resolves the effective project path for a
-// SubAgent task. When the orchestrator's declared ProjectPath doesn't cover
-// the task's file references, this module derives the correct project path
-// from those references.
-//
-// Root cause this solves: The orchestrator's ProjectPath is set at workflow
-// start time from the app's workspace directory. When the user's task targets
-// files outside that workspace (e.g. user says "modify D:\AI learning\...\file.py"
-// but workspace is D:\workprj\aicoder), the SubAgent's scope enforcement
-// (requireProjectWriteScope) rejects all operations, causing a drift loop.
-//
-// Mechanism: Per-task project path resolution — each task already has a Files
-// field listing paths it will modify, plus a Description that may contain
-// absolute paths. We find the common ancestor directory of all referenced paths
-// and use it as the effective project path when the declared ProjectPath doesn't
-// cover them.
+// coding_subagent_project_path.go keeps the workflow project root immutable
+// and extracts declared absolute paths solely for scope approval. Historical
+// root expansion from model-generated task text is deliberately forbidden:
+// task text must never widen a workflow security boundary.
 
 import (
 	"path/filepath"
@@ -23,41 +11,18 @@ import (
 	"strings"
 )
 
-// resolveEffectiveProjectPathForTask determines the working project path for
-// a single task. If the orchestrator's declared projectPath covers all task
-// file references, it's returned as-is. Otherwise, the common ancestor of
-// the task's file references becomes the effective project path.
-//
-// This function is pure (no I/O) and safe to call from any goroutine.
-func resolveEffectiveProjectPathForTask(task *TaskItem, declaredProjectPath string) string {
-	if task == nil {
-		return declaredProjectPath
-	}
+// resolveEffectiveProjectPathForTask returns the workflow's frozen project
+// root. Model-generated task text must never widen that security boundary.
+func resolveEffectiveProjectPathForTask(_ *TaskItem, declaredProjectPath string) string {
+	return declaredProjectPath
+}
 
-	// Collect absolute paths from task.Files and task.Description.
+// taskReferencesOutsideProjectPath reports whether a task names an absolute
+// path outside the frozen root. Relative paths are not evidence for a root
+// change.
+func taskReferencesOutsideProjectPath(task *TaskItem, declaredProjectPath string) bool {
 	absPaths := collectTaskAbsolutePaths(task)
-	if len(absPaths) == 0 {
-		return declaredProjectPath
-	}
-
-	// Check if all referenced paths are already within the declared project path.
-	if declaredProjectPath != "" && allPathsWithinDir(absPaths, declaredProjectPath) {
-		return declaredProjectPath
-	}
-
-	// Derive the common ancestor directory of all referenced paths.
-	ancestor := commonAncestorDir(absPaths)
-	if ancestor == "" {
-		return declaredProjectPath
-	}
-
-	// Safety: don't use a root directory (e.g. "C:\" or "/") as project path —
-	// that would give the SubAgent access to the entire filesystem.
-	if isRootOrNearRoot(ancestor) {
-		return declaredProjectPath
-	}
-
-	return ancestor
+	return len(absPaths) > 0 && !allPathsWithinDir(absPaths, declaredProjectPath)
 }
 
 // collectTaskAbsolutePaths extracts all absolute file paths from a task's

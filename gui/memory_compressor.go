@@ -29,8 +29,8 @@ func (a *App) newMemoryCompressor(store *memory.Store) *MemoryCompressor {
 		maintenance := memory.NewMaintenance(store, &archiverLLMCaller{app: a}, guiMemoryEventEmitter{app: a})
 		maintenance.InstallRuntime()
 		a.memoryMaintenance = maintenance
-		if a.memPipeline == nil {
-			a.memPipeline = maintenance.Pipeline()
+		if a.currentMemoryPipeline() == nil {
+			a.setMemoryPipeline(maintenance.Pipeline())
 		}
 		maintenance.Start()
 	}

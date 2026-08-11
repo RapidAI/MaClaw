@@ -109,9 +109,17 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		}
 	}
 
+	// A cache hit still enters the transcript so later follow-up context stays
+	// coherent, but it must remain a true no-model fast path. In particular,
+	// do not classify the cached prose as a new pending question and do not
+	// enqueue semantic extraction/sedimentation work that can call the LLM.
+	// The original answer already completed that processing when it was made.
+	isAnswerCacheHit := resp != nil && (resp.ResponseSource == "answer_cache" || resp.ResponseSource == "answer_cache_semantic")
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
-		h.updatePendingUserReplyFromHistory(userID, trimmed, resp)
+		if !isAnswerCacheHit {
+			h.updatePendingUserReplyFromHistory(userID, trimmed, resp)
+		}
 	}
 
 	// --- Post-compaction actions (inspired by Codex CLI) ---
@@ -215,7 +223,9 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		}()
 	}
 
-	h.schedulePostConversationProcessingWithRequestID(userID, requestID, trimmed)
+	if !isAnswerCacheHit {
+		h.schedulePostConversationProcessingWithRequestID(userID, requestID, trimmed)
+	}
 }
 
 func (h *IMMessageHandler) activePostConversationRequestID(userID string) string {

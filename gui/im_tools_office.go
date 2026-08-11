@@ -13,6 +13,10 @@ func (h *IMMessageHandler) toolOffice(args map[string]interface{}) string {
 	if args == nil {
 		args = map[string]interface{}{}
 	}
+	ownerID, hasRuntimeOwner := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "office failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
 	action := stringVal(args, "action")
 	// Normalize path alias before dispatch so shared handlers see file_path.
 	if stringVal(args, "file_path") == "" {
@@ -20,11 +24,16 @@ func (h *IMMessageHandler) toolOffice(args map[string]interface{}) string {
 			args["file_path"] = p
 		}
 	}
-	// Resolve relative paths against the *session* workdir (task tab →
+	// Resolve paths against the *session* workdir (task tab →
 	// …/tasks/<slug>-<id>/workspace), not the global EffectiveWorkspaceDir.
-	// Absolute paths and ~ expansion are handled by resolvePathWithBase.
+	// The shared file resolver also validates bot-profile directory boundaries
+	// after absolute and home-relative paths have been normalized.
 	if p := stringVal(args, "file_path"); p != "" {
-		args["file_path"] = h.resolveOfficeFilePath(p)
+		resolved, err := h.resolveOfficeFilePathForOwner(p, ownerID)
+		if err != nil {
+			return "office failed: " + err.Error()
+		}
+		args["file_path"] = resolved
 	}
 
 	switch action {
@@ -43,22 +52,20 @@ func (h *IMMessageHandler) toolOffice(args map[string]interface{}) string {
 	}
 }
 
-// resolveOfficeFilePath resolves office tool file_path against the active
-// session workdir (project/task tab), matching bash/read_file path semantics.
-func (h *IMMessageHandler) resolveOfficeFilePath(p string) string {
-	base := ""
-	if h != nil {
-		base = h.resolveToolWorkDirForOwner("", h.currentRuntimeOrLegacyPolicyOwnerID())
-	}
-	return resolvePathWithBase(p, base)
+// resolveOfficeFilePathForOwner resolves and authorizes an Office path using
+// the same owner-scoped boundary as read_file/write_file.  Office reads and
+// write_excel must not become an alternate route around a bot profile's local
+// directory restrictions.
+func (h *IMMessageHandler) resolveOfficeFilePathForOwner(p, ownerID string) (string, error) {
+	return h.resolveFileToolPathForOwner(p, ownerID)
 }
 
 // officeResolvedPath is a test helper: returns how office would resolve path
 // for a given session owner without invoking document parsers.
 func (h *IMMessageHandler) officeResolvedPathForOwner(path, ownerID string) string {
-	base := ""
-	if h != nil {
-		base = h.resolveToolWorkDirForOwner("", ownerID)
+	resolved, err := h.resolveOfficeFilePathForOwner(path, ownerID)
+	if err != nil {
+		return ""
 	}
-	return filepath.Clean(resolvePathWithBase(path, base))
+	return filepath.Clean(resolved)
 }

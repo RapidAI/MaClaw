@@ -92,6 +92,18 @@ const (
 	TaskExecPassed     TaskExecStatus = "passed"
 	TaskExecFailed     TaskExecStatus = "failed"
 	TaskExecSkipped    TaskExecStatus = "skipped"
+	// TaskExecInterrupted requires a ledger recovery probe before a new
+	// execution attempt can be created.
+	TaskExecInterrupted TaskExecStatus = "interrupted"
+	// TaskExecWaitingApproval means execution has not started because an
+	// explicit scope approval is still required. It is deliberately not a
+	// terminal/skip state: the same logical task can continue only after the
+	// host records an approval decision and starts a new ledger attempt.
+	TaskExecWaitingApproval TaskExecStatus = "waiting_approval"
+	// TaskExecWaitingChild is a durable handoff: the parent attempt released
+	// its lease after admitting read-only children. A fresh parent attempt must
+	// later decide how to use their bounded ledger results.
+	TaskExecWaitingChild TaskExecStatus = "waiting_child"
 )
 
 // TaskExecMode determines how a task is executed.
@@ -334,6 +346,14 @@ func (o *TaskExecutionOrchestrator) MarkDependencyDeadlockTasks() int {
 	if !o.Active {
 		return 0
 	}
+	// A parent that is waiting for approval/child evidence (or needs explicit
+	// interrupted-task recovery) intentionally has no runnable lease. Its
+	// dependents are not a dependency cycle and must remain pending for the
+	// later fresh attempt. Treating this as a deadlock would permanently skip
+	// valid downstream work before the parent handoff can be resolved.
+	if o.hasUnresolvedExecutionHandoffLocked() {
+		return 0
+	}
 	for _, task := range o.Tasks {
 		if task != nil && taskRunnableLocked(task) && o.taskDependenciesPassedLocked(task) {
 			return 0
@@ -348,6 +368,19 @@ func (o *TaskExecutionOrchestrator) MarkDependencyDeadlockTasks() int {
 		blocked++
 	}
 	return blocked
+}
+
+func (o *TaskExecutionOrchestrator) hasUnresolvedExecutionHandoffLocked() bool {
+	for _, task := range o.Tasks {
+		if task == nil {
+			continue
+		}
+		switch task.Status {
+		case TaskExecWaitingApproval, TaskExecWaitingChild, TaskExecInterrupted:
+			return true
+		}
+	}
+	return false
 }
 
 func taskRunnableLocked(task *TaskItem) bool {
@@ -377,7 +410,7 @@ func (o *TaskExecutionOrchestrator) taskDependencyBlockReasonLocked(task *TaskIt
 		switch dep.Status {
 		case TaskExecPassed:
 			continue
-		case TaskExecFailed, TaskExecSkipped:
+		case TaskExecFailed, TaskExecSkipped, TaskExecInterrupted:
 			return fmt.Sprintf("blocked because dependency T%d is %s", taskDisplayNumber(dep), dep.Status)
 		}
 	}
@@ -522,7 +555,7 @@ func (o *TaskExecutionOrchestrator) TaskStatus(task *TaskItem) (TaskExecStatus, 
 
 func isTerminalTaskStatus(status TaskExecStatus) bool {
 	switch status {
-	case TaskExecPassed, TaskExecFailed, TaskExecSkipped:
+	case TaskExecPassed, TaskExecFailed, TaskExecSkipped, TaskExecInterrupted, TaskExecWaitingChild:
 		return true
 	default:
 		return false
@@ -1115,6 +1148,14 @@ func (o *TaskExecutionOrchestrator) buildTaskContextLocked(task *TaskItem) strin
 			b.WriteString("\n")
 		case TaskExecSkipped:
 			b.WriteString(fmt.Sprintf("T%d: %s [skipped]\n", t.Index+1, title))
+		case TaskExecWaitingApproval:
+			b.WriteString(fmt.Sprintf("T%d: %s [waiting approval]", t.Index+1, title))
+			if t.ErrorSummary != "" {
+				b.WriteString(fmt.Sprintf(" - %s", compactSubAgentErrorSummary(t.ErrorSummary)))
+			}
+			b.WriteString("\n")
+		case TaskExecWaitingChild:
+			b.WriteString(fmt.Sprintf("T%d: %s [waiting child results]\n", t.Index+1, title))
 		case TaskExecInProgress, TaskExecTesting:
 			b.WriteString(fmt.Sprintf("T%d: %s [active]\n", t.Index+1, title))
 		default:
@@ -1188,6 +1229,13 @@ func (o *TaskExecutionOrchestrator) ProgressSummary() string {
 			}
 		case TaskExecSkipped:
 			b.WriteString(" [skipped]")
+		case TaskExecWaitingApproval:
+			b.WriteString(" [waiting approval]")
+			if t.ErrorSummary != "" {
+				b.WriteString(fmt.Sprintf(" - %s", compactSubAgentErrorSummary(t.ErrorSummary)))
+			}
+		case TaskExecWaitingChild:
+			b.WriteString(" [waiting child results]")
 		case TaskExecInProgress, TaskExecTesting:
 			b.WriteString(" [..]")
 		}

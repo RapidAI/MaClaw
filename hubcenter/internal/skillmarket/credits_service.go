@@ -40,7 +40,7 @@ func (s *CreditsService) CompleteExpertMarketPurchase(ctx context.Context, buyer
 	defer tx.Rollback()
 	var ownerID string
 	var price int64
-	if err := tx.QueryRowContext(ctx, `SELECT owner_user_id, price FROM sm_expert_market_listings WHERE id=? AND status='listed'`, listingID).Scan(&ownerID, &price); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT owner_user_id, price FROM sm_expert_market_listings WHERE id=? AND visibility='public' AND status='listed'`, listingID).Scan(&ownerID, &price); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrExpertMarketUnavailable
 		}
@@ -82,7 +82,7 @@ func (s *CreditsService) CompleteExpertMarketPurchase(ctx context.Context, buyer
 		}
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sm_expert_market_listings SET purchase_count=purchase_count+1, sales_amount=sales_amount+?, updated_at=? WHERE id=? AND status='listed'`, amount, now, listingID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE sm_expert_market_listings SET purchase_count=purchase_count+1, sales_amount=sales_amount+?, updated_at=? WHERE id=? AND visibility='public' AND status='listed'`, amount, now, listingID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

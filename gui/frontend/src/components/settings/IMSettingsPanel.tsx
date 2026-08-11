@@ -174,12 +174,14 @@ export const IMSettingsPanel = ({
                 setThirdPartyGatewayStatus={setThirdPartyGatewayStatus}
                 thirdPartyGatewayLocalMode={thirdPartyGatewayLocalMode}
                 setThirdPartyGatewayLocalModeState={setThirdPartyGatewayLocalModeState}
+                mode="im"
             />
         )}
 
         {imAuditPlatform && (
             <IMAuditPanel
-                platform={imAuditPlatform}
+                platform={imAuditPlatform.startsWith('lansenger:') ? 'lansenger' : imAuditPlatform}
+                botProfileID={imAuditPlatform.startsWith('lansenger:') ? imAuditPlatform.slice('lansenger:'.length) : ''}
                 onClose={() => setIMAuditPlatform(null)}
                 lang={lang}
             />

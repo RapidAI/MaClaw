@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, isACPAssistantSessionKey, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "../aiAssistantPanelSessionUtils";
+import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIDFromTaskTags, isACPAssistantSessionKey, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -44,5 +44,33 @@ describe("aiAssistantPanelSessionUtils", () => {
         expect(isACPAssistantSessionKey(owner)).toBe(true);
         expect(normalizeAssistantSessionKey(owner)).toBe(owner);
         expect(projectPathFromSessionKey(owner)).toBe("");
+    });
+
+    it("reads expert ids from durable task-management source tags", () => {
+        expect(expertIDFromTaskTags(["task_management", "source:expert:paper-review"])).toBe("paper-review");
+        expect(expertIDFromTaskTags(["source:expert:", "task_management"])).toBe("");
+        expect(expertIDFromTaskTags(["task_management"])).toBe("");
+    });
+
+    it("purges expert tab metadata and history that project-path purge cannot see", () => {
+        localStorage.setItem("ai_assistant_project_tabs", JSON.stringify([
+            { id: "expert-paper-review", type: "expert", title: "Paper", expertId: "paper-review" },
+            { id: "proj-keep", type: "project", projectPath: "D:/p/keep" },
+        ]));
+        localStorage.setItem("ai_assistant_project_tab_histories", JSON.stringify({
+            "expert-paper-review": [{ id: "h1", role: "user", content: "old" }],
+            "proj-keep": [{ id: "h2", role: "user", content: "keep" }],
+        }));
+
+        // Path-based purge must leave expert rows alone.
+        purgeDeletedProjectTabLocalCache("D:/tasks/expert-workspace");
+        expect(localStorage.getItem("ai_assistant_project_tabs") || "").toContain("expert-paper-review");
+        expect(localStorage.getItem("ai_assistant_project_tab_histories") || "").toContain("old");
+
+        purgeDeletedExpertTabLocalCache("paper-review");
+        expect(localStorage.getItem("ai_assistant_project_tabs") || "").not.toContain("expert-paper-review");
+        expect(localStorage.getItem("ai_assistant_project_tabs") || "").toContain("D:/p/keep");
+        expect(localStorage.getItem("ai_assistant_project_tab_histories") || "").not.toContain("expert-paper-review");
+        expect(localStorage.getItem("ai_assistant_project_tab_histories") || "").toContain("keep");
     });
 });

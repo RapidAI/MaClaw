@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -72,6 +73,12 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 			liftComputerUseStopForFreshRequest(requestID)
 		}
 		tools = ensureComputerUseTools(tools, allTools, true)
+	} else if localFileWorkBlocksComputerUse(userText) {
+		// The regular intent router can return a broad list while an attachment
+		// is being parsed. Keep Computer Use unavailable on this turn even when
+		// the generic route happens to include its definitions; otherwise their
+		// presence alone can lure the model into opening a terminal or Explorer.
+		tools = removeComputerUseTools(tools)
 	}
 
 	browserBeforeWF := len(browserDiagExtractNames(tools))
@@ -135,6 +142,10 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	}
 	tools = filterToolsForHardwareAutoSpeech(tools, platform)
 	baseTools = filterToolsForHardwareAutoSpeech(baseTools, platform)
+	// Keep the local-file fence last: client-declared tools and future pipeline
+	// stages above must not be able to reintroduce computer_* after routing has
+	// correctly selected local document handling.
+	tools = filterComputerUseToolsForLocalFileWork(ctx, userText, tools)
 
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
 	baseToolsForLLM := stripExecutionContractMetadataForLLM(baseTools)
@@ -147,6 +158,65 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		BrowserBeforeWF:  browserBeforeWF,
 		BrowserPinned:    browserSessionPinned,
 	}
+}
+
+// removeComputerUseTools removes every desktop-automation definition for a
+// local-file turn. Besides the ref-based computer_* surface, the legacy gui_*
+// tools can click/type/screenshot the host directly; leaving those advertised
+// gives a model the same confusing Explorer/terminal detour through a different
+// tool family. Keep this classifier shared with the execution gate so a stale
+// or hallucinated legacy call is rejected before it can touch the desktop.
+func removeComputerUseTools(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 {
+		return tools
+	}
+	filtered := make([]map[string]interface{}, 0, len(tools))
+	for _, def := range tools {
+		if isComputerUseToolDefinition(extractToolName(def)) {
+			continue
+		}
+		filtered = append(filtered, def)
+	}
+	return filtered
+}
+
+func isComputerUseToolDefinition(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return computeruse.IsComputerUseTool(name) ||
+		strings.HasPrefix(name, "computer_") ||
+		strings.HasPrefix(name, "gui_")
+}
+
+func localFileWorkBlocksComputerUse(userText string) bool {
+	return hasCurrentLocalFileWork(userText) && !hasExplicitComputerUseRequest(userText)
+}
+
+// filterComputerUseToolsForLocalFileWork is the final defense for every path
+// that composes a tool list. The context flag carries the decision after the
+// initial turn text has been replaced by a steering or recovery message.
+func filterComputerUseToolsForLocalFileWork(ctx *LoopContext, userText string, tools []map[string]interface{}) []map[string]interface{} {
+	if localFileWorkBlocksComputerUseExecution(ctx, userText, "computer_observe") {
+		return removeComputerUseTools(tools)
+	}
+	return tools
+}
+
+// localFileWorkBlocksComputerUseExecution is the enforcement predicate shared
+// by prompt routing and tool execution. A context fence is authoritative for
+// the active turn; the initial router only sets it when the original request
+// lacked explicit Computer Use intent, so a later injection cannot silently
+// change the original turn's permission.
+func localFileWorkBlocksComputerUseExecution(ctx *LoopContext, userText, toolName string) bool {
+	if !isComputerUseToolDefinition(toolName) {
+		return false
+	}
+	if ctx != nil && ctx.ComputerUseBlockedForLocalFileWork {
+		return true
+	}
+	if localFileWorkBlocksComputerUse(userText) {
+		return true
+	}
+	return false
 }
 
 func filterToolsForHardwareAutoSpeech(tools []map[string]interface{}, platform string) []map[string]interface{} {

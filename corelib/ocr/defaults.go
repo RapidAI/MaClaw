@@ -21,15 +21,12 @@ func RecModelFilename(tier string) string {
 	return fmt.Sprintf("ppocrv6_%s_rec.onnx", tier)
 }
 
-// DetModelURL returns the download URL for the detection model of the tier.
-func DetModelURL(tier string) string {
-	return fmt.Sprintf("https://huggingface.co/PaddlePaddle/PP-OCRv6_%s_det_onnx/resolve/main/inference.onnx", tier)
-}
-
-// RecModelURL returns the download URL for the recognition model of the tier.
-func RecModelURL(tier string) string {
-	return fmt.Sprintf("https://huggingface.co/PaddlePaddle/PP-OCRv6_%s_rec_onnx/resolve/main/inference.onnx", tier)
-}
+// ModelsZipFilename and DefaultModelsZipURL identify the PP-OCRv6 model bundle
+// (the det+rec ONNX files of every tier) distributed with MaClaw. Keep download
+// clients aligned by consuming these values instead of duplicating the release
+// asset details.
+const ModelsZipFilename = "ocr-models.zip"
+const DefaultModelsZipURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/ocr-models.zip"
 
 // ModelFileStatus reports whether path is a non-empty file that starts with a
 // plausible ONNX protobuf header (field 1, ir_version, as a varint). It

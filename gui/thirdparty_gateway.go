@@ -86,6 +86,12 @@ func (m *thirdPartyGatewayManager) currentLocalHandler() *IMMessageHandler {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Compatibility for the historical singleton handler. Newer runtimes use
+	// localHandlers, but lifecycle helpers such as embedding activation must
+	// still wire an already-created legacy handler.
+	if m.localHandler != nil {
+		return m.localHandler
+	}
 	if m.localHandlers == nil {
 		return nil
 	}
@@ -103,10 +109,10 @@ func (m *thirdPartyGatewayManager) localHardwareHandlers() []*IMMessageHandler {
 }
 
 type thirdPartyClientState struct {
-	NextSeq            int64
-	Messages           []thirdPartyOutgoingMessage
-	SeenEvents         map[string]string
-	Acked              map[string]string
+	NextSeq    int64
+	Messages   []thirdPartyOutgoingMessage
+	SeenEvents map[string]string
+	Acked      map[string]string
 	// AckedHighWater is the highest seq of acknowledged messages. Pruning drops
 	// acknowledged entries eagerly, so without this floor a poll with an older
 	// cursor could never advance past an already-acked message.
@@ -1675,10 +1681,48 @@ func (m *thirdPartyGatewayManager) hubGatewayPayload(req thirdPartyIncomingReque
 		"client_capabilities": m.clientCapabilities(clientID),
 		"client_tools":        m.clientTools(clientID),
 	}
+	if attachments := thirdPartyHubAttachments(req.Message.Attachments); len(attachments) > 0 {
+		// Do not embed server-media content in the WebSocket envelope. The Hub
+		// preserves source_media_id while it routes the turn back to this owning
+		// GUI, which resolves the opaque ID against its authenticated local media
+		// store just before Agent processing. Inline protocol media remains bounded
+		// by ThirdPartyMaxDirectBytes and can safely travel as base64.
+		payload["attachments"] = attachments
+	}
 	if req.Extra != nil {
 		payload["extra"] = req.Extra
 	}
 	return payload
+}
+
+// thirdPartyHubAttachments translates normalized third-party input to the Hub
+// attachment schema. Server-media IDs are opaque, owner-local capabilities: the
+// Hub must relay them unchanged but never dereference or expose their URLs.
+func thirdPartyHubAttachments(refs []coreim.ThirdPartyMediaReference) []map[string]any {
+	attachments := make([]map[string]any, 0, len(refs))
+	for _, ref := range refs {
+		attachment := map[string]any{
+			"type":      ref.Type,
+			"file_name": ref.FileName,
+			"mime_type": firstNonEmpty(ref.MimeType, ref.ContentType),
+			"size":      ref.SizeBytes,
+		}
+		if strings.TrimSpace(ref.Data) != "" {
+			attachment["data"] = ref.Data
+		} else if id := strings.TrimSpace(ref.ID); id != "" {
+			// Hub has no opaque-media fetch API for this GUI-owned store. Preserve
+			// only documents: resolving arbitrary 50 MiB media later would recreate
+			// the large WebSocket payload this reference transport avoids.
+			if !agent.IsBinaryDocumentAttachment(ref.FileName, firstNonEmpty(ref.MimeType, ref.ContentType)) {
+				continue
+			}
+			attachment["source_media_id"] = id
+		} else {
+			continue
+		}
+		attachments = append(attachments, attachment)
+	}
+	return attachments
 }
 
 func (m *thirdPartyGatewayManager) enqueueError(req thirdPartyIncomingRequest, replyTo, code, text string) {
@@ -1776,16 +1820,35 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 			m.enqueueError(req, maclawID, "bad_request", err.Error())
 			return
 		}
-		if messageKind == thirdPartyGatewayMessageImage {
+		// Server-owned media metadata is authoritative; never let a filename or
+		// MIME supplied by an incoming reference steer an Office document into
+		// the vision path. MIME only guides staging here; OfficeRead verifies the
+		// actual bytes when the document path is expanded/read.
+		isDocument := agent.IsBinaryDocumentAttachment(mediaName, mediaMime)
+		if isDocument {
+			// MIME may be the only trustworthy Office identity on an inline message.
+			// Preserve that suffix before FilePathPromptPrefix reaches extension-based
+			// routing; the reader still validates bytes before parsing.
+			mediaName = agent.NormalizeBinaryDocumentAttachmentFilename(mediaName, mediaMime)
+		}
+		if messageKind == thirdPartyGatewayMessageImage && !isDocument {
 			attachments = append(attachments, buildLocalImageAttachment(mediaData, mediaName, mediaMime))
 		} else {
+			if int64(len(mediaData)) > coreim.ThirdPartyMediaMaxBytesFor(mediaName, mediaMime) {
+				m.enqueueError(req, maclawID, "bad_request", fmt.Sprintf("media exceeds %d bytes", coreim.ThirdPartyMediaMaxBytesFor(mediaName, mediaMime)))
+				return
+			}
 			mediaPath, err := saveMediaToTempDir("thirdparty", "tp_", safeFileToken(req.User.ID), messageKind.String(), mediaData, mediaName)
 			if err != nil {
 				m.enqueueError(req, maclawID, "bad_request", err.Error())
 				return
 			}
-			prefix := "[media " + mediaLabel(messageKind.String()) + ": " + mediaPath + "]\n"
-			text = prefix + text
+			if isDocument {
+				text = agent.FilePathPromptPrefix + "\n" + mediaPath + "\n" + text
+			} else {
+				prefix := "[media " + mediaLabel(messageKind.String()) + ": " + mediaPath + "]\n"
+				text = prefix + text
+			}
 		}
 	}
 	if text == "" && len(attachments) == 0 {
@@ -1847,6 +1910,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 			ConversationID:   req.ConversationID,
 			ReplyToMessageID: maclawID,
 		},
+		AssistantBinding: m.app.hardwareAssistantBinding(req.ClientID),
 	}, onProgress)
 	log.Printf("[thirdparty-mgr] agent returned client=%s maclawID=%s deferred=%t hasResponse=%t elapsed=%s",
 		req.ClientID, maclawID, resp != nil && resp.Deferred, resp != nil,
@@ -2069,14 +2133,41 @@ func appendUniqueString(values []string, value string) []string {
 }
 
 func clientCanSynthesizeDeviceSpeech(m *thirdPartyGatewayManager, capabilities agent.ClientCapabilities) bool {
-	if m == nil || m.app == nil || m.app.ttsManager == nil || capabilities.Output.Audio == nil || !capabilities.Output.Audio.Playback {
+	if m == nil || m.app == nil || capabilities.Output.Audio == nil || !capabilities.Output.Audio.Playback {
 		return false
 	}
 	if !capabilities.SupportsOutputMIME("audio", "audio/mpeg") {
 		return false
 	}
 	cfg, err := m.app.LoadConfig()
-	return err == nil && cfg.TTSEnabled
+	if err != nil || !cfg.TTSEnabled {
+		return false
+	}
+	// The manager is lazy. Its model and voices are verified again immediately
+	// before synthesis, so planning speech need not depend on an unrelated
+	// desktop TTS request having initialized it first.
+	return true
+}
+
+// hardwareAssistantBinding converts the persisted device-local policy into
+// trusted per-turn metadata. It is never derived from hardware message text.
+func (a *App) hardwareAssistantBinding(clientID string) *agent.AssistantBinding {
+	if a == nil {
+		return nil
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil
+	}
+	policy := cfg.HardwareAgentBindings[normalizeThirdPartyID(clientID)].Normalized()
+	if policy.AssistantMode == corelib.LansengerAssistantModeGeneral {
+		return nil
+	}
+	return &agent.AssistantBinding{
+		BotProfileID: "hardware:" + normalizeThirdPartyID(clientID),
+		Mode:         policy.AssistantMode,
+		ExpertID:     policy.ExpertID,
+	}
 }
 
 func (m *thirdPartyGatewayManager) streamDeviceSpeechAfterResult(clientID, conversationID, replyTo string, parts []string) {
@@ -2097,8 +2188,13 @@ func (m *thirdPartyGatewayManager) streamDeviceSpeechAfterResult(clientID, conve
 		}
 		m.speechMu.Unlock()
 	}()
+	synth, releaseSynth, available := m.app.hardwareSpeechSynthesizer(clientID)
+	if !available {
+		return
+	}
+	defer releaseSynth()
 	started := time.Now()
-	ok := streamPreparedDeviceVoicePayload(m.app.ttsManager, parts, thirdPartyPlatform(clientID), func(part IMVoicePart, index, total int) bool {
+	ok := streamPreparedDeviceVoicePayload(synth, parts, thirdPartyPlatform(clientID), func(part IMVoicePart, index, total int) bool {
 		if ctx.Err() != nil {
 			return false
 		}
@@ -2521,12 +2617,9 @@ func (m *thirdPartyGatewayManager) decodeThirdPartyMedia(msg thirdPartyMessagePa
 	if media == nil || !uploaded {
 		return nil, "", "", fmt.Errorf("media %s not found", id)
 	}
-	if ref.FileName == "" {
-		ref.FileName = mediaFileName
-	}
-	if ref.MimeType == "" {
-		ref.MimeType = mediaMimeType
-	}
+	ref.FileName = mediaFileName
+	ref.MimeType = mediaMimeType
+	ref.ContentType = mediaMimeType
 	return mediaData, ref.FileName, ref.MimeType, nil
 }
 
@@ -2543,15 +2636,10 @@ func (m *thirdPartyGatewayManager) validateIncomingMediaReferences(req *thirdPar
 				return fmt.Errorf("message.attachments[%d].url media not found", i)
 			}
 			ref.ID = id
-			if ref.FileName == "" {
-				ref.FileName = media.FileName
-			}
-			if ref.MimeType == "" {
-				ref.MimeType = media.MimeType
-			}
-			if ref.SizeBytes == 0 {
-				ref.SizeBytes = media.SizeBytes
-			}
+			ref.FileName = media.FileName
+			ref.MimeType = media.MimeType
+			ref.ContentType = media.MimeType
+			ref.SizeBytes = media.SizeBytes
 		}
 		if strings.TrimSpace(ref.Data) != "" {
 			continue
@@ -2561,15 +2649,10 @@ func (m *thirdPartyGatewayManager) validateIncomingMediaReferences(req *thirdPar
 			if !ok {
 				return fmt.Errorf("message.attachments[%d].id media not found", i)
 			}
-			if ref.FileName == "" {
-				ref.FileName = media.FileName
-			}
-			if ref.MimeType == "" {
-				ref.MimeType = media.MimeType
-			}
-			if ref.SizeBytes == 0 {
-				ref.SizeBytes = media.SizeBytes
-			}
+			ref.FileName = media.FileName
+			ref.MimeType = media.MimeType
+			ref.ContentType = media.MimeType
+			ref.SizeBytes = media.SizeBytes
 		}
 	}
 	return nil
@@ -2600,6 +2683,7 @@ func (m *thirdPartyGatewayManager) prepareMedia(req coreim.ThirdPartyMediaPrepar
 	}
 	fileName := coreim.SafeThirdPartyFileName(req.FileName)
 	mimeType := strings.TrimSpace(req.MimeType)
+	maxBytes := coreim.ThirdPartyMediaMaxBytesFor(fileName, mimeType)
 	downloadURL := fmt.Sprintf("%s/media/%s?mediaToken=%s", strings.TrimRight(baseURL, "/"), id, token)
 	uploadURL := fmt.Sprintf("%s/media/%s/upload?mediaToken=%s", strings.TrimRight(baseURL, "/"), id, token)
 	obj := &thirdPartyMediaObject{
@@ -2623,7 +2707,7 @@ func (m *thirdPartyGatewayManager) prepareMedia(req coreim.ThirdPartyMediaPrepar
 		OK:        true,
 		RequestID: coreim.NewThirdPartyGatewayRequestID(),
 		Media:     ref,
-		Upload:    coreim.ThirdPartyMediaUpload{Method: http.MethodPut, URL: uploadURL, ContentType: mimeType, MaxBytes: thirdPartyMaxMediaBytes},
+		Upload:    coreim.ThirdPartyMediaUpload{Method: http.MethodPut, URL: uploadURL, ContentType: mimeType, MaxBytes: maxBytes},
 		Download:  coreim.ThirdPartyMediaDownload{URL: downloadURL},
 		ExpiresAt: time.Now().Add(24 * time.Hour).UnixMilli(),
 	}, nil
@@ -2639,15 +2723,20 @@ func (m *thirdPartyGatewayManager) storeMediaUpload(r *http.Request, id string) 
 	if !coreim.ThirdPartyMediaTokenOK(r, media.Token) {
 		return fmt.Errorf("invalid media token")
 	}
-	if r.ContentLength > thirdPartyMaxMediaBytes {
-		return fmt.Errorf("media exceeds %d bytes", thirdPartyMaxMediaBytes)
+	maxBytes := coreim.ThirdPartyMediaMaxBytesFor(media.FileName, media.MimeType)
+	contentTypeMaxBytes := coreim.ThirdPartyMediaMaxBytesFor(media.FileName, r.Header.Get("Content-Type"))
+	if contentTypeMaxBytes < maxBytes {
+		maxBytes = contentTypeMaxBytes
 	}
-	data, err := io.ReadAll(io.LimitReader(r.Body, thirdPartyMaxMediaBytes+1))
+	if r.ContentLength > maxBytes {
+		return fmt.Errorf("media exceeds %d bytes", maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > thirdPartyMaxMediaBytes {
-		return fmt.Errorf("media exceeds %d bytes", thirdPartyMaxMediaBytes)
+	if int64(len(data)) > maxBytes {
+		return fmt.Errorf("media exceeds %d bytes", maxBytes)
 	}
 	if media.SizeBytes > 0 && int64(len(data)) != media.SizeBytes {
 		return fmt.Errorf("media size mismatch: got %d bytes, want %d", len(data), media.SizeBytes)
@@ -2871,14 +2960,10 @@ func (a *App) SendHardwareDeviceVolume(clientID string, volume int) error {
 		return fmt.Errorf("hardware volume must be between 0 and 100")
 	}
 	a.imGatewaySyncMu.Lock()
-	cfg, err := a.requireHardwareEnabled()
+	_, err := a.requireHardwareEnabled()
 	if err != nil {
 		a.imGatewaySyncMu.Unlock()
 		return err
-	}
-	if cfg.IsThirdPartyGatewayLocalMode() {
-		a.imGatewaySyncMu.Unlock()
-		return fmt.Errorf("per-device volume is managed by Hub mode")
 	}
 	hub := a.hubClient()
 	if hub == nil || !hub.IsConnected() {
@@ -2890,6 +2975,61 @@ func (a *App) SendHardwareDeviceVolume(clientID string, volume int) error {
 	// one device cannot stall independent controls on another device.
 	a.imGatewaySyncMu.Unlock()
 	return hub.SendDeviceGatewayHardwareConfigForClient(clientID, map[string]any{"volume": volume})
+}
+
+// SendHardwareDeviceBrightness updates only one Hub-bound ESP32's backlight
+// level. It mirrors SendHardwareDeviceVolume: the choice is addressed to one
+// binding and Hub persists it for the next handshake, so it never broadcasts.
+func (a *App) SendHardwareDeviceBrightness(clientID string, brightness int) error {
+	if brightness < 0 || brightness > 100 {
+		return fmt.Errorf("hardware brightness must be between 0 and 100")
+	}
+	a.imGatewaySyncMu.Lock()
+	_, err := a.requireHardwareEnabled()
+	if err != nil {
+		a.imGatewaySyncMu.Unlock()
+		return err
+	}
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		a.imGatewaySyncMu.Unlock()
+		return fmt.Errorf("Hub is not connected")
+	}
+	// The Hub correlates this request by client ID. Release the gateway-wide
+	// lifecycle lock before waiting for its response so a slow brightness update
+	// on one device cannot stall independent controls on another device.
+	a.imGatewaySyncMu.Unlock()
+	return hub.SendDeviceGatewayHardwareConfigForClient(clientID, map[string]any{"brightness": brightness})
+}
+
+// SendHardwareDeviceScreenSleepTimeout updates one Hub-bound ESP32's idle
+// screen-off timeout. Zero means never turn the screen off automatically.
+func (a *App) SendHardwareDeviceScreenSleepTimeout(clientID string, seconds int) error {
+	if !validHardwareScreenSleepTimeout(seconds) {
+		return fmt.Errorf("hardware screen sleep timeout is unsupported")
+	}
+	a.imGatewaySyncMu.Lock()
+	_, err := a.requireHardwareEnabled()
+	if err != nil {
+		a.imGatewaySyncMu.Unlock()
+		return err
+	}
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		a.imGatewaySyncMu.Unlock()
+		return fmt.Errorf("Hub is not connected")
+	}
+	a.imGatewaySyncMu.Unlock()
+	return hub.SendDeviceGatewayHardwareConfigForClient(clientID, map[string]any{"screenSleepSeconds": seconds})
+}
+
+func validHardwareScreenSleepTimeout(seconds int) bool {
+	switch seconds {
+	case 0, 60, 180, 300, 600, 1800, 3600, 7200, 10800, 14400, 18000:
+		return true
+	default:
+		return false
+	}
 }
 
 // SendHardwareDevicePetProfile changes only one Hub-bound ESP32's rendered
@@ -2905,10 +3045,6 @@ func (a *App) SendHardwareDevicePetProfile(clientID, skin string) error {
 	if !cfg.HardwareAllowCustomPets {
 		a.imGatewaySyncMu.Unlock()
 		return fmt.Errorf("enable individual hardware pets before selecting a device pet")
-	}
-	if cfg.IsThirdPartyGatewayLocalMode() {
-		a.imGatewaySyncMu.Unlock()
-		return fmt.Errorf("per-device pets are managed by Hub mode")
 	}
 	hub := a.hubClient()
 	if hub == nil || !hub.IsConnected() {
@@ -2932,9 +3068,6 @@ func (a *App) SetHardwareAllowCustomPets(enabled bool) error {
 	cfg, err := a.requireHardwareEnabled()
 	if err != nil {
 		return err
-	}
-	if cfg.IsThirdPartyGatewayLocalMode() {
-		return fmt.Errorf("individual hardware pets are managed by Hub mode")
 	}
 	if cfg.HardwareAllowCustomPets == enabled {
 		return nil
@@ -2967,30 +3100,6 @@ func (a *App) requireHardwareEnabled() (corelib.AppConfig, error) {
 	return cfg, nil
 }
 
-func randomThirdPartyGatewayToken() (string, error) {
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("generate third-party gateway token: %w", err)
-	}
-	return hex.EncodeToString(raw[:]), nil
-}
-
-func validateHardwareGatewayInvariant(cfg corelib.AppConfig) error {
-	if !cfg.HardwareEnabled {
-		return nil
-	}
-	if !cfg.ThirdPartyGatewayEnabled {
-		return fmt.Errorf("disable hardware before turning off third-party access")
-	}
-	if cfg.IsThirdPartyGatewayLocalMode() {
-		return fmt.Errorf("hardware requires third-party access to use Hub mode")
-	}
-	if strings.TrimSpace(cfg.ThirdPartyGatewayToken) == "" {
-		return fmt.Errorf("hardware requires a third-party gateway token")
-	}
-	return nil
-}
-
 // syncEnabledHardwareStateToHub publishes all hardware state that must survive
 // a GUI reconnect. Hub owns the durable device registry and rejects device
 // traffic until this master switch is enabled.
@@ -3012,6 +3121,9 @@ func (a *App) syncEnabledHardwareStateToHub() error {
 	if err := a.SyncHardwareVolume(); err != nil {
 		log.Printf("[device-volume] hardware enable sync failed: %v", err)
 	}
+	if err := a.SyncHardwareBrightness(); err != nil {
+		log.Printf("[device-brightness] hardware enable sync failed: %v", err)
+	}
 	if cfg, err := a.LoadConfig(); err != nil {
 		log.Printf("[device-pet] load custom-pet permission for sync failed: %v", err)
 	} else if err := hub.SendDeviceGatewayAllowCustomPets(cfg.HardwareAllowCustomPets); err != nil {
@@ -3020,10 +3132,8 @@ func (a *App) syncEnabledHardwareStateToHub() error {
 	return nil
 }
 
-// SetHardwareEnabled manages the hardware switch together with its required
-// Hub-mode gateway settings. It is intentionally not a generic config patch:
-// changing only one field would leave a locally enabled device gateway in an
-// invalid transport state.
+// SetHardwareEnabled manages the Hub-backed hardware switch and its private,
+// system-owned credential. It deliberately does not alter IM gateway state.
 func (a *App) SetHardwareEnabled(enabled bool) (string, error) {
 	a.imGatewaySyncMu.Lock()
 	defer a.imGatewaySyncMu.Unlock()
@@ -3055,60 +3165,33 @@ func (a *App) SetHardwareEnabled(enabled bool) (string, error) {
 	if strings.TrimSpace(previous.RemoteMachineID) == "" {
 		return "", fmt.Errorf("please register to Hub before enabling hardware")
 	}
-	if previous.HardwareEnabled && previous.ThirdPartyGatewayEnabled && !previous.IsThirdPartyGatewayLocalMode() && strings.TrimSpace(previous.ThirdPartyGatewayToken) != "" {
-		status := a.restartThirdPartyGatewayLocked()
-		if status != gatewayConnectionStatusConnected.String() {
-			return status, fmt.Errorf("restart third-party access failed while restoring enabled hardware")
-		}
+	if previous.HardwareEnabled {
+		status := a.thirdPartyGatewayStatusLocked()
 		if err := a.syncEnabledHardwareStateToHub(); err != nil {
 			return status, fmt.Errorf("%w; local hardware remains enabled and will resync after Hub reconnect", err)
 		}
 		return status, nil
 	}
 
-	token := strings.TrimSpace(previous.ThirdPartyGatewayToken)
-	if token == "" {
-		token, err = randomThirdPartyGatewayToken()
-		if err != nil {
-			return "", err
-		}
-	}
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.HardwareEnabled = true
-		cfg.ThirdPartyGatewayEnabled = true
-		cfg.ThirdPartyGatewayToken = token
-		cfg.SetThirdPartyGatewayLocal(false)
 	}); err != nil {
 		return "", err
 	}
 
-	status := a.restartThirdPartyGatewayLocked()
-	var relayErr error
-	if status == gatewayConnectionStatusConnected.String() {
-		if relayErr = a.syncEnabledHardwareStateToHub(); relayErr == nil {
-			return status, nil
-		} else {
-			log.Printf("[device-hardware] enable relay failed, restoring settings: %v", relayErr)
-		}
+	status := a.thirdPartyGatewayStatusLocked()
+	relayErr := a.syncEnabledHardwareStateToHub()
+	if relayErr == nil {
+		return status, nil
 	}
+	log.Printf("[device-hardware] enable relay failed, restoring settings: %v", relayErr)
 	rollbackErr := a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.HardwareEnabled = previous.HardwareEnabled
-		cfg.ThirdPartyGatewayEnabled = previous.ThirdPartyGatewayEnabled
-		cfg.ThirdPartyGatewayToken = previous.ThirdPartyGatewayToken
-		cfg.ThirdPartyGatewayLocalMode = previous.ThirdPartyGatewayLocalMode
 	})
 	if rollbackErr != nil {
 		return status, fmt.Errorf("restart third-party access failed and restoring hardware settings also failed: %w", rollbackErr)
 	}
-	if previous.ThirdPartyGatewayEnabled && strings.TrimSpace(previous.ThirdPartyGatewayToken) != "" {
-		a.restartThirdPartyGatewayLocked()
-	} else if a.thirdPartyGateway != nil {
-		a.thirdPartyGateway.Stop()
-	}
-	if status == gatewayConnectionStatusConnected.String() {
-		return status, fmt.Errorf("enable hardware relay failed; hardware settings were restored: %w", relayErr)
-	}
-	return status, fmt.Errorf("restart third-party access failed; hardware settings were restored")
+	return status, fmt.Errorf("enable hardware relay failed; hardware settings were restored: %w", relayErr)
 }
 
 // CreateThirdPartyDevicePairing produces a six-digit, thirty-minute bootstrap
@@ -3122,84 +3205,37 @@ func (a *App) CreateThirdPartyDevicePairing() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.ensureThirdPartyGatewayLocked()
-	if a.thirdPartyGateway == nil {
-		return nil, fmt.Errorf("enable third-party access before pairing a device")
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	if hubURL == "" {
+		return nil, fmt.Errorf("Hub URL is not configured")
 	}
-	token := strings.TrimSpace(cfg.ThirdPartyGatewayToken)
-	if !cfg.ThirdPartyGatewayEnabled || token == "" {
-		return nil, fmt.Errorf("third-party gateway is not enabled")
+	hubClient := a.hubClient()
+	if hubClient == nil || !hubClient.IsConnected() {
+		return nil, fmt.Errorf("hardware requires the GUI to be connected to Hub")
 	}
-	expiresAt := time.Now().Add(30 * time.Minute)
-	m := a.thirdPartyGateway
-	m.mu.Lock()
-	now := time.Now()
-	for candidate, pairing := range m.pairings {
-		if !pairing.ExpiresAt.After(now) {
-			delete(m.pairings, candidate)
-		}
-	}
-	if len(m.pairings) >= thirdPartyMaxPendingPairings {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("too many pending device pairings; wait for an existing code to expire")
-	}
-	var code string
+	// Hub starts the real TTL while registering the reservation. Capture this
+	// timestamp before the synchronous confirmation wait so the GUI can only
+	// hide a code early, never keep showing one after Hub has expired it.
+	pairingStartedAt := time.Now()
 	for attempt := 0; attempt < 16; attempt++ {
 		var random [4]byte
 		if _, err := rand.Read(random[:]); err != nil {
-			m.mu.Unlock()
 			return nil, err
 		}
-		candidate := fmt.Sprintf("%06d", (uint32(random[0])<<24|uint32(random[1])<<16|uint32(random[2])<<8|uint32(random[3]))%1000000)
-		if _, exists := m.pairings[candidate]; !exists {
-			code = candidate
-			break
-		}
-	}
-	if code == "" {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("cannot allocate a unique device pairing code; try again")
-	}
-	if !cfg.IsThirdPartyGatewayLocalMode() {
-		hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
-		if hubURL == "" {
-			m.mu.Unlock()
-			return nil, fmt.Errorf("Hub URL is not configured")
-		}
-		// Reserve the code locally while Hub owns the actual pairing. This prevents
-		// concurrent requests from choosing the same six-digit code without making
-		// it exchangeable at the local endpoint.
-		m.pairings[code] = thirdPartyDevicePairing{ExpiresAt: expiresAt, Remote: true}
-		// Release the local gateway lock before WebSocket I/O so device requests
-		// are never stalled by Hub.
-		m.mu.Unlock()
-		hubClient := a.hubClient()
-		if hubClient == nil || !hubClient.IsConnected() {
-			m.removeRemotePairingReservation(code)
-			return nil, fmt.Errorf("Hub mode requires the GUI to be connected to Hub")
-		}
+		code := fmt.Sprintf("%06d", (uint32(random[0])<<24|uint32(random[1])<<16|uint32(random[2])<<8|uint32(random[3]))%1000000)
 		if err := hubClient.SendDeviceGatewayPairing(code); err != nil {
-			m.removeRemotePairingReservation(code)
+			// Hub is the authority on currently live pairings. A rare six-digit
+			// collision is safe to retry locally; every other failure must remain
+			// visible to the user instead of being masked as code allocation.
+			if strings.Contains(err.Error(), "PAIRING_CODE_COLLISION") {
+				continue
+			}
 			return nil, err
 		}
-		result := map[string]any{"pairCode": code, "expiresAt": expiresAt.Format(time.RFC3339), "transport": "hub", "gatewayURL": hubURL}
-		return result, nil
-	} else {
-		m.pairings[code] = thirdPartyDevicePairing{Token: token, ExpiresAt: expiresAt}
-		m.mu.Unlock()
-		host := strings.TrimSpace(cfg.ThirdPartyGatewayHost)
-		if host == "" {
-			host = thirdPartyDefaultHost
-		}
-		port := cfg.ThirdPartyGatewayPort
-		if port <= 0 {
-			port = thirdPartyDefaultPort
-		}
-		return map[string]any{
-			"pairCode": code, "expiresAt": expiresAt.Format(time.RFC3339),
-			"transport": "local", "gatewayURL": fmt.Sprintf("http://%s:%d", host, port),
-		}, nil
+		expiresAt := pairingStartedAt.Add(30 * time.Minute)
+		return map[string]any{"pairCode": code, "expiresAt": expiresAt.Format(time.RFC3339), "transport": "hub", "gatewayURL": hubURL}, nil
 	}
+	return nil, fmt.Errorf("cannot allocate a unique device pairing code; try again")
 }
 
 // ListThirdPartyHardwareDevices returns the Hub-owned bindings for this GUI.
@@ -3219,10 +3255,6 @@ func (a *App) ListThirdPartyHardwareDeviceBindings() (HardwareDeviceBindings, er
 		a.imGatewaySyncMu.Unlock()
 		return HardwareDeviceBindings{}, err
 	}
-	if cfg.IsThirdPartyGatewayLocalMode() {
-		a.imGatewaySyncMu.Unlock()
-		return HardwareDeviceBindings{Devices: []HardwareDeviceBinding{}, MaxDevices: 5}, nil
-	}
 	hub := a.hubClient()
 	if hub == nil || !hub.IsConnected() {
 		a.imGatewaySyncMu.Unlock()
@@ -3238,15 +3270,105 @@ func (a *App) ListThirdPartyHardwareDeviceBindings() (HardwareDeviceBindings, er
 		return HardwareDeviceBindings{}, err
 	}
 	aliases := cfg.HardwareDeviceAliases
-	if len(aliases) == 0 {
-		return bindings, nil
-	}
 	for index := range bindings.Devices {
 		if alias := strings.TrimSpace(aliases[bindings.Devices[index].ClientID]); alias != "" {
 			bindings.Devices[index].ClientName = alias
 		}
+		bindings.Devices[index].applyAgentBinding(cfg.HardwareAgentBindings[bindings.Devices[index].ClientID])
 	}
 	return bindings, nil
+}
+
+func (binding *HardwareDeviceBinding) applyAgentBinding(policy corelib.HardwareAgentBinding) {
+	if binding == nil {
+		return
+	}
+	policy = policy.Normalized()
+	binding.AssistantMode = policy.AssistantMode
+	binding.ExpertID = policy.ExpertID
+	binding.TTSVoiceID = effectiveHardwareReplyVoiceID(policy)
+}
+
+// effectiveHardwareReplyVoiceID keeps older or manually edited configurations
+// on the documented hardware default instead of accidentally borrowing the
+// desktop-wide voice. New writes are rejected earlier; this is a defensive
+// read path for persisted legacy data.
+func effectiveHardwareReplyVoiceID(policy corelib.HardwareAgentBinding) string {
+	voiceID := policy.Normalized().TTSVoiceID
+	if !tts.IsSupportedTTSVoiceID(voiceID) {
+		return corelib.DefaultHardwareTTSVoiceID
+	}
+	return voiceID
+}
+
+func normalizeHardwareAgentBinding(binding corelib.HardwareAgentBinding) (corelib.HardwareAgentBinding, error) {
+	binding = binding.Normalized()
+	if !tts.IsSupportedTTSVoiceID(binding.TTSVoiceID) {
+		return corelib.HardwareAgentBinding{}, fmt.Errorf("unsupported hardware reply voice %q", binding.TTSVoiceID)
+	}
+	if binding.AssistantMode == corelib.LansengerAssistantModeExpert {
+		if binding.ExpertID == "" {
+			return corelib.HardwareAgentBinding{}, fmt.Errorf("an AI expert must be selected for expert mode")
+		}
+		if loadExpertDefByID(binding.ExpertID) == nil {
+			return corelib.HardwareAgentBinding{}, fmt.Errorf("selected AI expert is unavailable")
+		}
+	} else {
+		binding.ExpertID = ""
+	}
+	return binding, nil
+}
+
+// GetHardwareAgentBinding returns the local assistant policy for one paired
+// hardware device. An absent entry is the normal general-assistant fallback.
+func (a *App) GetHardwareAgentBinding(clientID string) (corelib.HardwareAgentBinding, error) {
+	clientID = normalizeThirdPartyID(clientID)
+	if clientID == "" {
+		return corelib.HardwareAgentBinding{}, fmt.Errorf("hardware client ID is required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.HardwareAgentBinding{}, err
+	}
+	policy := cfg.HardwareAgentBindings[clientID].Normalized()
+	policy.TTSVoiceID = effectiveHardwareReplyVoiceID(policy)
+	return policy, nil
+}
+
+// SetHardwareAgentBinding validates and persists a device-local assistant
+// policy. Expert changes rebuild only this device's isolated runtime so its
+// next turn gets the selected persona and restrictions. A reply-voice-only
+// update deliberately leaves the runtime intact: voice is resolved per reply
+// and must not interrupt a conversation just to change synthesis output.
+func (a *App) SetHardwareAgentBinding(clientID string, binding corelib.HardwareAgentBinding) error {
+	clientID = normalizeThirdPartyID(clientID)
+	if clientID == "" {
+		return fmt.Errorf("hardware client ID is required")
+	}
+	policy, err := normalizeHardwareAgentBinding(binding)
+	if err != nil {
+		return err
+	}
+	rebuildRuntime := false
+	changed, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		current := cfg.HardwareAgentBindings[clientID].Normalized()
+		if current == policy {
+			return false
+		}
+		rebuildRuntime = current.AssistantMode != policy.AssistantMode || current.ExpertID != policy.ExpertID
+		if cfg.HardwareAgentBindings == nil {
+			cfg.HardwareAgentBindings = make(map[string]corelib.HardwareAgentBinding)
+		}
+		cfg.HardwareAgentBindings[clientID] = policy
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if changed && rebuildRuntime {
+		a.removeHardwareAgentRuntime(clientID)
+	}
+	return nil
 }
 
 // SetThirdPartyHardwareDeviceAlias saves a local-only label for one hardware
@@ -3299,15 +3421,15 @@ func (a *App) SetThirdPartyHardwareDeviceAlias(clientID, alias string) error {
 // DeleteThirdPartyHardwareDevice removes a durable Hub-owned hardware
 // binding. The Hub remains the authority for ownership and credentials.
 func (a *App) DeleteThirdPartyHardwareDevice(clientID string) error {
+	clientID = normalizeThirdPartyID(clientID)
+	if clientID == "" {
+		return fmt.Errorf("hardware client ID is required")
+	}
 	a.imGatewaySyncMu.Lock()
-	cfg, err := a.requireHardwareEnabled()
+	_, err := a.requireHardwareEnabled()
 	if err != nil {
 		a.imGatewaySyncMu.Unlock()
 		return err
-	}
-	if cfg.IsThirdPartyGatewayLocalMode() {
-		a.imGatewaySyncMu.Unlock()
-		return fmt.Errorf("durable hardware bindings are managed by Hub mode")
 	}
 	hub := a.hubClient()
 	if hub == nil || !hub.IsConnected() {
@@ -3330,16 +3452,26 @@ func (a *App) DeleteThirdPartyHardwareDevice(clientID string) error {
 	// inherit an obsolete nickname. A failed cleanup must not make an already
 	// completed unlink look like it failed.
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		if len(cfg.HardwareDeviceAliases) == 0 {
-			return
+		aliasCapacity := len(cfg.HardwareDeviceAliases)
+		if aliasCapacity > 0 {
+			aliasCapacity--
 		}
-		next := make(map[string]string, len(cfg.HardwareDeviceAliases)-1)
+		next := make(map[string]string, aliasCapacity)
 		for id, alias := range cfg.HardwareDeviceAliases {
 			if id != clientID {
 				next[id] = alias
 			}
 		}
 		cfg.HardwareDeviceAliases = next
+		if len(cfg.HardwareAgentBindings) > 0 {
+			nextPolicies := make(map[string]corelib.HardwareAgentBinding, len(cfg.HardwareAgentBindings)-1)
+			for id, policy := range cfg.HardwareAgentBindings {
+				if id != clientID {
+					nextPolicies[id] = policy
+				}
+			}
+			cfg.HardwareAgentBindings = nextPolicies
+		}
 	}); err != nil {
 		log.Printf("[hardware-alias] remove stale alias for %s: %v", clientID, err)
 	}
@@ -3360,11 +3492,6 @@ func (m *thirdPartyGatewayManager) removeRemotePairingReservation(code string) {
 func (a *App) StopThirdPartyGateway() {
 	a.imGatewaySyncMu.Lock()
 	defer a.imGatewaySyncMu.Unlock()
-	// Hardware owns this transport while it is enabled. A stale Wails stop
-	// request must not silently leave the persisted hardware state invalid.
-	if cfg, err := a.LoadConfig(); err == nil && cfg.HardwareEnabled {
-		return
-	}
 	if a.thirdPartyGateway != nil {
 		a.thirdPartyGateway.Stop()
 	}
@@ -3388,9 +3515,6 @@ func (a *App) SetThirdPartyGatewayLocalMode(enabled bool) error {
 	}
 	if !enabled && cfg.RemoteMachineID == "" {
 		return fmt.Errorf("please register to Hub before enabling Hub mode")
-	}
-	if enabled && cfg.HardwareEnabled {
-		return fmt.Errorf("disable hardware before switching third-party access to local mode")
 	}
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.SetThirdPartyGatewayLocal(enabled)

@@ -110,11 +110,14 @@ function emptyJob(isZh: boolean): WatchJob {
 export function UtilitiesWatchPanel({
     isZh,
     onBack,
+    botProfileId = '',
     /** When embedded under IM settings modal, hide redundant page title chrome. */
     compactHeader = false,
 }: {
     isZh: boolean;
     onBack: () => void;
+    /** Selected Lansenger bot; empty retains legacy single-bot bindings. */
+    botProfileId?: string;
     compactHeader?: boolean;
 }) {
     const { showConfirm } = useDialog();
@@ -293,13 +296,17 @@ export function UtilitiesWatchPanel({
             return;
         }
         try {
-            const raw = await app.ListLansengerWatchJobs();
+            const raw = app.ListLansengerWatchJobsForBot
+                ? await app.ListLansengerWatchJobsForBot(botProfileId)
+                : await app.ListLansengerWatchJobs();
             if (!aliveRef.current) return;
             setJobs(parseWailsJSON<WatchJob[]>(raw) || []);
             const extras = await Promise.all([
                 app.GetLansengerWatchStorePath ? app.GetLansengerWatchStorePath().catch(() => '') : Promise.resolve(''),
-                app.ListLansengerWatchChannels
-                    ? app.ListLansengerWatchChannels().catch(() => null)
+                app.ListLansengerWatchChannelsForBot
+                    ? app.ListLansengerWatchChannelsForBot(botProfileId).catch(() => null)
+                    : app.ListLansengerWatchChannels
+                      ? app.ListLansengerWatchChannels().catch(() => null)
                     : Promise.resolve(null),
             ]);
             if (!aliveRef.current) return;
@@ -311,9 +318,11 @@ export function UtilitiesWatchPanel({
                     /* ignore bad channel payload */
                 }
             }
-            if (app.ListLansengerWatchForwardResults) {
+            if (app.ListLansengerWatchForwardResultsForBot || app.ListLansengerWatchForwardResults) {
                 try {
-                    const fr = await app.ListLansengerWatchForwardResults();
+                    const fr = app.ListLansengerWatchForwardResultsForBot
+                        ? await app.ListLansengerWatchForwardResultsForBot(botProfileId)
+                        : await app.ListLansengerWatchForwardResults();
                     if (!aliveRef.current) return;
                     setForwardResults(parseWailsJSON<ForwardResult[]>(fr) || []);
                 } catch {
@@ -324,36 +333,44 @@ export function UtilitiesWatchPanel({
             if (!aliveRef.current) return;
             setError(e?.message || String(e));
         }
-    }, [apiMissingMsg]);
+    }, [apiMissingMsg, botProfileId]);
 
     const refreshChannels = useCallback(async () => {
         const app = await getApp();
-        if (!aliveRef.current || !app?.ListLansengerWatchChannels) return;
+        if (!aliveRef.current || (!app?.ListLansengerWatchChannelsForBot && !app?.ListLansengerWatchChannels)) return;
         try {
-            const raw = await app.ListLansengerWatchChannels();
+            const raw = app.ListLansengerWatchChannelsForBot
+                ? await app.ListLansengerWatchChannelsForBot(botProfileId)
+                : await app.ListLansengerWatchChannels();
             if (!aliveRef.current) return;
             setChannels(parseWailsJSON<IMChannel[]>(raw) || []);
-            if (app.ListLansengerWatchForwardResults) {
-                const fr = await app.ListLansengerWatchForwardResults();
+            if (app.ListLansengerWatchForwardResultsForBot || app.ListLansengerWatchForwardResults) {
+                const fr = app.ListLansengerWatchForwardResultsForBot
+                    ? await app.ListLansengerWatchForwardResultsForBot(botProfileId)
+                    : await app.ListLansengerWatchForwardResults();
                 if (!aliveRef.current) return;
                 setForwardResults(parseWailsJSON<ForwardResult[]>(fr) || []);
             }
         } catch {
             /* ignore */
         }
-    }, []);
+    }, [botProfileId]);
 
     const testForwardChannel = useCallback(
         async (channelId: string) => {
             const app = await getApp();
-            if (!app?.TestLansengerWatchForward) {
+            if (!app?.TestLansengerWatchForwardForBot && !app?.TestLansengerWatchForward) {
                 setError(apiMissingMsg);
                 return;
             }
             setBusy(true);
             setError('');
             try {
-                await app.TestLansengerWatchForward(channelId);
+                if (app.TestLansengerWatchForwardForBot) {
+                    await app.TestLansengerWatchForwardForBot(botProfileId, channelId);
+                } else {
+                    await app.TestLansengerWatchForward(channelId);
+                }
                 if (!aliveRef.current) return;
                 flashHint(t.testOk);
                 await refreshChannels();
@@ -365,7 +382,7 @@ export function UtilitiesWatchPanel({
                 if (aliveRef.current) setBusy(false);
             }
         },
-        [apiMissingMsg, flashHint, refreshChannels, t.testOk],
+        [apiMissingMsg, botProfileId, flashHint, refreshChannels, t.testOk],
     );
 
     const loadGroups = useCallback(async () => {
@@ -407,7 +424,9 @@ export function UtilitiesWatchPanel({
             return;
         }
         try {
-            const raw = await app.ListLansengerWatchRoster(groupId, q || '');
+            const raw = app.ListLansengerWatchRosterForBot
+                ? await app.ListLansengerWatchRosterForBot(botProfileId, groupId, q || '')
+                : await app.ListLansengerWatchRoster(groupId, q || '');
             if (!aliveRef.current || gen !== membersGenRef.current) return;
             const parsed = parseWailsJSON<RosterPayload>(raw);
             if (!parsed || !Array.isArray(parsed.members)) {
@@ -430,7 +449,7 @@ export function UtilitiesWatchPanel({
         } finally {
             if (aliveRef.current && gen === membersGenRef.current) setMembersLoading(false);
         }
-    }, [apiMissingMsg, isZh]);
+    }, [apiMissingMsg, botProfileId, isZh]);
 
     const loadLogs = useCallback(async (jobId?: string) => {
         if (!jobId) {
@@ -539,7 +558,9 @@ export function UtilitiesWatchPanel({
                 forward_channels: draft.forward_channels || [],
                 keywords: draft.keywords || [],
             };
-            const raw = await app.UpsertLansengerWatchJob(JSON.stringify(payload));
+            const raw = app.UpsertLansengerWatchJobForBot
+                ? await app.UpsertLansengerWatchJobForBot(botProfileId, JSON.stringify(payload))
+                : await app.UpsertLansengerWatchJob(JSON.stringify(payload));
             if (!aliveRef.current) return;
             const saved = parseWailsJSON<WatchJob>(raw);
             const base = emptyJob(isZh);
@@ -583,7 +604,11 @@ export function UtilitiesWatchPanel({
                 setError(apiMissingMsg);
                 return;
             }
-            await app.DeleteLansengerWatchJob(draft.id);
+            if (app.DeleteLansengerWatchJobForBot) {
+                await app.DeleteLansengerWatchJobForBot(botProfileId, draft.id);
+            } else {
+                await app.DeleteLansengerWatchJob(draft.id);
+            }
             if (!aliveRef.current) return;
             setDraft(null);
             await loadJobs();
@@ -617,7 +642,11 @@ export function UtilitiesWatchPanel({
             return;
         }
         try {
-            await app.AddLansengerWatchMember(draft.group_id, manualId.trim(), manualName.trim());
+            if (app.AddLansengerWatchMemberForBot) {
+                await app.AddLansengerWatchMemberForBot(botProfileId, draft.group_id, manualId.trim(), manualName.trim());
+            } else {
+                await app.AddLansengerWatchMember(draft.group_id, manualId.trim(), manualName.trim());
+            }
             if (!aliveRef.current) return;
             toggleTarget(manualId.trim(), manualName.trim() || manualId.trim());
             setManualId('');

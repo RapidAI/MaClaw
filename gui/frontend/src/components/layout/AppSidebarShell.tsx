@@ -10,6 +10,7 @@ import type { TaskManagementItem, TaskContextMenu } from './SidebarTaskManagemen
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
 import type { AssistantLightSchemeId } from '../ai/assistantLightSchemes';
+import type { LLMProfileStatusSummary } from './SidebarSystemStatus';
 interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navTab: string;
     taskManagementPaneWidth: number;
@@ -95,12 +96,15 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
 	showUtilitiesEntry?: boolean;
     utilitiesLabel?: string;
     availableProviders?: Array<{ name: string; url: string; isHubService: boolean; model?: string; models?: string[] }>;
-    onSwitchProvider?: (providerName: string) => void;
+    onSwitchProvider?: (providerID: string) => void;
     currentModel?: string;
     modelOptions?: string[];
     modelsLoading?: boolean;
     onSwitchModel?: (modelId: string) => void;
     onOpenModelMenu?: () => void;
+    onDismissModelMenu?: () => void;
+    providerSelectionPending?: boolean;
+    profileSavePending?: boolean;
     moaSticky?: {
         available: boolean;
         active: boolean;
@@ -109,6 +113,9 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
         presets?: Array<{ id: string; display_name?: string; ref_count?: number; enabled?: boolean }>;
     };
     onToggleMoASticky?: (on: boolean, presetId?: string) => void;
+    profileSummaries?: { assistant?: LLMProfileStatusSummary; coding?: LLMProfileStatusSummary } | null;
+    activeProfile?: 'assistant' | 'coding' | 'none';
+    codingInheritsAssistant?: boolean;
 }
 export const AppSidebarShell = ({
     navTab,
@@ -200,8 +207,14 @@ export const AppSidebarShell = ({
     modelsLoading = false,
     onSwitchModel,
     onOpenModelMenu,
+    onDismissModelMenu,
+    providerSelectionPending,
+    profileSavePending,
     moaSticky,
     onToggleMoASticky,
+    profileSummaries,
+    activeProfile,
+    codingInheritsAssistant,
 }: AppSidebarShellProps) => (
 <>
             <div data-window-drag style={{
@@ -307,8 +320,14 @@ export const AppSidebarShell = ({
                         modelsLoading={modelsLoading}
                         onSwitchModel={onSwitchModel}
                         onOpenModelMenu={onOpenModelMenu}
+                        onDismissModelMenu={onDismissModelMenu}
+                        providerSelectionPending={providerSelectionPending}
+                        profileSavePending={profileSavePending}
                         moaSticky={moaSticky}
                         onToggleMoASticky={onToggleMoASticky}
+                        profileSummaries={profileSummaries}
+                        activeProfile={activeProfile}
+                        codingInheritsAssistant={codingInheritsAssistant}
                     />
                 )}
             </div>

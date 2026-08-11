@@ -3,6 +3,9 @@
 // against the PaddleOCR Python reference (.tmp/ocr-models/ref_ocr.py).
 //
 // Usage: go run ./corelib/ocr/cmd/ocrdbg [-models DIR] <image>
+//
+// The OCR_DET / OCR_REC env vars override the model file paths (e.g. to
+// smoke-test the tiny or medium tiers instead of the default small tier).
 package main
 
 import (
@@ -31,10 +34,15 @@ func main() {
 		os.Exit(2)
 	}
 
-	eng, err := ocr.NewEngine(
-		filepath.Join(*models, ocr.DetModelFilename(ocr.DefaultModelTier)),
-		filepath.Join(*models, ocr.RecModelFilename(ocr.DefaultModelTier)),
-	)
+	detPath := os.Getenv("OCR_DET")
+	if detPath == "" {
+		detPath = filepath.Join(*models, ocr.DetModelFilename(ocr.DefaultModelTier))
+	}
+	recPath := os.Getenv("OCR_REC")
+	if recPath == "" {
+		recPath = filepath.Join(*models, ocr.RecModelFilename(ocr.DefaultModelTier))
+	}
+	eng, err := ocr.NewEngine(detPath, recPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "load models:", err)
 		os.Exit(1)

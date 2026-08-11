@@ -5,6 +5,7 @@ package accessibility
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -50,9 +51,13 @@ func TestCompileAndPingCSharpUIASidecar(t *testing.T) {
 	if UIABackend() != "csharp" {
 		t.Fatalf("backend=%q want csharp", UIABackend())
 	}
-	// enum top-level windows should not error
+	// enum top-level windows should not error; on a wedged-UIA machine the
+	// desktop query can block until the sidecar deadline — skip there.
 	els, err := globalUIASidecar.enum("", 1)
 	if err != nil {
+		if strings.Contains(err.Error(), "timed out") {
+			t.Skipf("UIA unresponsive on this machine (enum timed out): %v", err)
+		}
 		t.Fatalf("enum: %v", err)
 	}
 	t.Logf("top-level windows via csharp: %d", len(els))

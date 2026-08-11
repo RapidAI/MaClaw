@@ -58,13 +58,23 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     KnowledgeListSources: (...args: unknown[]) => KnowledgeListSourcesMock(...args),
     SelectVEAllowedDirectory: (...args: unknown[]) => SelectVEAllowedDirectoryMock(...args),
     ListLansengerWatchJobs: (...args: unknown[]) => ListLansengerWatchJobsMock(...args),
+    ListLansengerWatchJobsForBot: (_botProfileId: string) => ListLansengerWatchJobsMock(),
     UpsertLansengerWatchJob: (...args: unknown[]) => UpsertLansengerWatchJobMock(...args),
+    UpsertLansengerWatchJobForBot: (_botProfileId: string, raw: string) => UpsertLansengerWatchJobMock(raw),
     DeleteLansengerWatchJob: (...args: unknown[]) => DeleteLansengerWatchJobMock(...args),
+    DeleteLansengerWatchJobForBot: (_botProfileId: string, id: string) => DeleteLansengerWatchJobMock(id),
     ListLansengerWatchRoster: (...args: unknown[]) => ListLansengerWatchRosterMock(...args),
+    ListLansengerWatchRosterForBot: (_botProfileId: string, groupId: string, query: string) => ListLansengerWatchRosterMock(groupId, query),
     ListLansengerWatchChannels: (...args: unknown[]) => ListLansengerWatchChannelsMock(...args),
+    ListLansengerWatchChannelsForBot: (_botProfileId: string) => ListLansengerWatchChannelsMock(),
+    ListLansengerWatchForwardResults: vi.fn(async () => JSON.stringify([])),
+    ListLansengerWatchForwardResultsForBot: (_botProfileId: string) => JSON.stringify([]),
+    TestLansengerWatchForward: vi.fn(async () => undefined),
+    TestLansengerWatchForwardForBot: (_botProfileId: string, _channel: string) => undefined,
     GetLansengerWatchStorePath: (...args: unknown[]) => GetLansengerWatchStorePathMock(...args),
     ListLansengerWatchTranscripts: (...args: unknown[]) => ListLansengerWatchTranscriptsMock(...args),
     AddLansengerWatchMember: (...args: unknown[]) => AddLansengerWatchMemberMock(...args),
+    AddLansengerWatchMemberForBot: (_botProfileId: string, groupId: string, staffId: string, name: string) => AddLansengerWatchMemberMock(groupId, staffId, name),
     ListSurveys: vi.fn(async () => JSON.stringify({ surveys: [] })),
     RestartQQBot: vi.fn(async () => 'disconnected'),
     SetQQBotLocalMode: vi.fn(async () => undefined),
@@ -258,6 +268,7 @@ describe('Lansenger Follow e2e', () => {
             expect(screen.queryByTestId('lansenger-follow-button')).toBeNull();
         });
     });
+
 
     it('does not open Follow on Escape during IME composition', async () => {
         await openFollowPanel();

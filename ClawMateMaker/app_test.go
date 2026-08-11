@@ -15,6 +15,7 @@ import (
 
 	"clawmatemaker/internal/catalog"
 	"clawmatemaker/internal/device"
+	"clawmatemaker/internal/flash"
 	"clawmatemaker/internal/jobs"
 	"clawmatemaker/internal/logging"
 )
@@ -50,15 +51,33 @@ func TestEmbeddedFrontendKeepsPortBoundDiagnostics(t *testing.T) {
 		"AutoDetectPortFirmware",
 		"ConfirmDetectedBoard",
 		"Connected device details · {port}",
-		"Firmware is not a product picker",
-		"function renderBoards(){const host=$('#boards');if(!host)return;host.innerHTML='';if(!board){host.hidden=true;return}",
-		"board=matched;renderBoards();firmware=item.status==='firmware_ready'?item.firmware:null;",
-		"The catalog is a result of the selected port's identity, never a chooser.",
-		"function applyAutoDetectedItem(item){if(!item?.device)return;selectDevice(item.device,true);",
+		"Firmware is not a product picker.",
+		"const renderMatchedFirmware=()=>",
+		"one serial port → one read-only identity → one immutable firmware result",
+		"applyAutoDetectedItem=(item)=>",
 		"filtering at this one boundary makes it impossible",
-		"if(board)renderBoards();",
 		"showDetectedHardware",
-		"The hardware identity and the package acquisition are separate facts.",
+		"Hardware identity and package acquisition are separate facts.",
+		"refresh:'重新获取固件'",
+		"offline:'改用离线固件'",
+		"FIRMWARE_PACKAGE_INVALID",
+		"Nothing was written; get the official firmware again.",
+		"channel.disabled=true",
+		"channel.disabled=false",
+		"retryHint:'当前官方包未就绪。",
+		"showDetectedHardware(matched,item.reason)",
+		"channel.removeAttribute('aria-disabled')",
+		"const showRecoveryCandidates=",
+		"recoveryCatalog:'恢复：确认实物板型'",
+		"recoveryBoardHint:'设备无法提供可用于自动匹配的运行时身份。",
+		"if(showRecoveryCandidates(item,port,generation))return false;",
+		"const selectRecoveryBoard=async(candidate)=>",
+		"api().ConfirmBoard(chosen.port,candidate.id,lastProbeJobID)",
+		"option.onclick=()=>void selectRecoveryBoard(candidate)",
+		"const resetPortPreparation=()=>",
+		"identifyGeneration++;",
+		"probe.__portFirstReset=true",
+		"role=\"status\" aria-live=\"polite\" aria-atomic=\"true\"",
 		"__busyIndicator",
 		"selected-badge",
 		"active?' selected is-selected-port'",
@@ -76,6 +95,7 @@ func TestEmbeddedFrontendKeepsPortBoundDiagnostics(t *testing.T) {
 		"activeFlashJobID=''",
 		"JOB_CREATED",
 		"Cloudflare R2",
+		"Waveshare S3 Touch AMOLED 1.75C",
 		"zh-TW",
 	} {
 		if !strings.Contains(string(contents), want) {
@@ -116,6 +136,183 @@ func TestConfirmDetectedBoardRejectsProbeWithoutUniqueRuntimeIdentity(t *testing
 	}
 	if _, err := a.ConfirmDetectedBoard("COM3", jobID); err == nil || !strings.Contains(err.Error(), "uniquely supported board identity") {
 		t.Fatalf("unexpected automatic confirmation result: %v", err)
+	}
+}
+
+func TestConfirmDetectedBoardRejectsWaveshareROMOnlyEvidence(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	probe := jobs.ProbeResult{
+		JobID:         jobID,
+		Port:          "COM3",
+		Status:        "succeeded",
+		DeviceBinding: "binding",
+		FinishedAt:    time.Now().UTC(),
+		Chip:          flash.ChipInfo{Chip: "ESP32-S3"},
+		Flash:         flash.FlashInfo{SizeBytes: 32 * 1024 * 1024},
+		// ROM capacity correctly identifies the only 32 MiB profile, but normal
+		// flashing still requires the same fresh protocol:2 evidence as FlashJob.
+		BoardRecognition: catalog.Recognition{Status: "probable", CandidateBoards: []string{"waveshare-amoled-1.75c"}},
+	}
+	writer, err := logging.New(a.logRoot, jobID, "attempt-probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteSummary(probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ConfirmDetectedBoard("COM3", jobID); err == nil || !strings.Contains(err.Error(), "protocol:2") {
+		t.Fatalf("ROM-only Waveshare evidence minted confirmation: %v", err)
+	}
+}
+
+func TestConfirmDetectedBoardRejectsRuntimeIdentityWithProfileMismatch(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	probe := jobs.ProbeResult{
+		JobID:         jobID,
+		Port:          "COM3",
+		Status:        "succeeded",
+		DeviceBinding: "binding",
+		FinishedAt:    time.Now().UTC(),
+		AppIdentity: device.AppIdentity{
+			Protocol:              device.ProtocolVersion,
+			FirmwareTargetBoardID: "waveshare-s3-touch-amoled-1.75c-v1",
+			Chip:                  "esp32s3",
+			FlashBytes:            16 * 1024 * 1024,
+		},
+	}
+	writer, err := logging.New(a.logRoot, jobID, "attempt-probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteSummary(probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ConfirmDetectedBoard("COM3", jobID); err == nil || !strings.Contains(err.Error(), "uniquely supported board identity") {
+		t.Fatalf("inconsistent runtime identity minted confirmation: %v", err)
+	}
+}
+
+func TestConfirmDetectedBoardRejectsRuntimeIdentityThatContradictsROMFlash(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	probe := jobs.ProbeResult{
+		JobID:         jobID,
+		Port:          "COM3",
+		Status:        "succeeded",
+		DeviceBinding: "binding",
+		FinishedAt:    time.Now().UTC(),
+		Chip:          flash.ChipInfo{Chip: "ESP32-S3"},
+		Flash:         flash.FlashInfo{SizeBytes: 16 * 1024 * 1024},
+		AppIdentity: device.AppIdentity{
+			Protocol:              device.ProtocolVersion,
+			FirmwareTargetBoardID: "waveshare-s3-touch-amoled-1.75c-v1",
+			Chip:                  "esp32s3",
+			FlashBytes:            32 * 1024 * 1024,
+		},
+	}
+	writer, err := logging.New(a.logRoot, jobID, "attempt-probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteSummary(probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ConfirmDetectedBoard("COM3", jobID); err == nil || !strings.Contains(err.Error(), "uniquely supported board identity") {
+		t.Fatalf("runtime identity contradicted ROM flash but minted confirmation: %v", err)
+	}
+}
+
+func TestConfirmDetectedBoardRejectsLegacyRuntimeIdentity(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	probe := jobs.ProbeResult{
+		JobID:         jobID,
+		Port:          "COM3",
+		Status:        "succeeded",
+		DeviceBinding: "binding",
+		FinishedAt:    time.Now().UTC(),
+		Chip:          flash.ChipInfo{Chip: "ESP32-S3"},
+		Flash:         flash.FlashInfo{SizeBytes: 16 * 1024 * 1024},
+		AppIdentity: device.AppIdentity{
+			Protocol:              1,
+			FirmwareTargetBoardID: "fangtang-4g-v1",
+			Chip:                  "esp32s3",
+			FlashBytes:            16 * 1024 * 1024,
+		},
+	}
+	writer, err := logging.New(a.logRoot, jobID, "attempt-probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteSummary(probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ConfirmDetectedBoard("COM3", jobID); err == nil || !strings.Contains(err.Error(), "uniquely supported board identity") {
+		t.Fatalf("legacy runtime identity minted confirmation: %v", err)
+	}
+}
+
+func TestConfirmDetectedBoardRecomputesInsteadOfTrustingPersistedRecognition(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	probe := jobs.ProbeResult{
+		JobID:         jobID,
+		Port:          "COM3",
+		Status:        "succeeded",
+		DeviceBinding: "binding",
+		FinishedAt:    time.Now().UTC(),
+		Chip:          flash.ChipInfo{Chip: "ESP32-S3"},
+		Flash:         flash.FlashInfo{SizeBytes: 16 * 1024 * 1024},
+		// This stale/corrupt cache entry must not bypass live evidence: 16 MiB
+		// ROM data alone cannot prove a specific one of the three 16 MiB boards.
+		BoardRecognition: catalog.Recognition{Status: "probable", CandidateBoards: []string{"waveshare-amoled-1.75c"}},
+	}
+	writer, err := logging.New(a.logRoot, jobID, "attempt-probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteSummary(probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ConfirmDetectedBoard("COM3", jobID); err == nil || !strings.Contains(err.Error(), "uniquely supported board identity") {
+		t.Fatalf("persisted recognition bypassed raw ROM evidence: %v", err)
 	}
 }
 
@@ -450,6 +647,26 @@ func TestAppCompareFirmwareVersions(t *testing.T) {
 	}
 }
 
+func TestWaveshareFlashPlanUsesItsExact32MiBProfileCapacity(t *testing.T) {
+	profile, err := catalog.Profile("waveshare-amoled-1.75c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.FlashBytes != 32*1024*1024 {
+		t.Fatalf("Waveshare flash capacity = %d", profile.FlashBytes)
+	}
+	// flashReservedFirmware binds ExpectedFlashBytes directly from the profile;
+	// retain this source-level guard so a new profile cannot silently inherit
+	// the old 16 MiB default at the irreversible write boundary.
+	source, err := os.ReadFile("app.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), "ExpectedFlashBytes: profile.FlashBytes") {
+		t.Fatal("flash request does not use the selected profile flash capacity")
+	}
+}
+
 func TestAutoDetectionResultExposesOnlySafeHostAccessEvidence(t *testing.T) {
 	result := AutoDetectionResult{Devices: []AutoDetectedDevice{{
 		Device: device.Candidate{Port: "COM4"},
@@ -511,7 +728,7 @@ func writeSuccessfulProbeEvidence(t *testing.T, a *App, jobID, port string, fini
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(jobs.ProbeResult{JobID: jobID, Port: port, Status: "succeeded", DeviceBinding: "3d7db9c93eb0c7c08860de80f196319679595ade1f572454d659f83d84f02556", StartedAt: finishedAt.Add(-time.Second), FinishedAt: finishedAt})
+	raw, err := json.Marshal(jobs.ProbeResult{JobID: jobID, Port: port, Status: "succeeded", DeviceBinding: "3d7db9c93eb0c7c08860de80f196319679595ade1f572454d659f83d84f02556", Chip: flash.ChipInfo{Chip: "ESP32-S3"}, Flash: flash.FlashInfo{SizeBytes: 16 * 1024 * 1024}, StartedAt: finishedAt.Add(-time.Second), FinishedAt: finishedAt})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,6 +804,37 @@ func TestConfirmBoardRejectsProbeWithoutROMIdentity(t *testing.T) {
 	}
 	if _, err := a.ConfirmBoard("COM3", "bread-compact", jobID); err == nil {
 		t.Fatal("probe without ROM identity minted a board confirmation")
+	}
+}
+
+func TestConfirmBoardRejectsManualSelectionThatContradictsROMCapacity(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	probe := jobs.ProbeResult{
+		JobID:         jobID,
+		Port:          "COM3",
+		Status:        "succeeded",
+		DeviceBinding: "binding",
+		FinishedAt:    time.Now().UTC(),
+		Chip:          flash.ChipInfo{Chip: "ESP32-S3"},
+		Flash:         flash.FlashInfo{SizeBytes: 16 * 1024 * 1024},
+	}
+	writer, err := logging.New(a.logRoot, jobID, "attempt-probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteSummary(probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ConfirmBoard("COM3", "waveshare-amoled-1.75c", jobID); err == nil || !strings.Contains(err.Error(), "ROM evidence does not match") {
+		t.Fatalf("manual 32 MiB profile selection on 16 MiB ROM was accepted: %v", err)
 	}
 }
 

@@ -2454,6 +2454,7 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 	intervalMin := scheduleIntArg(args, "interval_minutes", 0)
 
 	t := scheduler.ScheduledTask{
+		BotProfileID:    h.lansengerBotProfileID,
 		Name:            name,
 		Action:          action,
 		Hour:            hour,
@@ -2508,7 +2509,7 @@ func (h *IMMessageHandler) toolListScheduledTasks() string {
 	if manager == nil {
 		return "定时任务管理器未初始化"
 	}
-	tasks := manager.List()
+	tasks := h.filterScheduledTasksForBot(manager.List())
 	if len(tasks) == 0 {
 		return "当前没有定时任务。"
 	}
@@ -2564,7 +2565,7 @@ func (h *IMMessageHandler) toolRunScheduledTask(args map[string]interface{}) str
 	if id == "" {
 		return "缺少 id 参数；请先用 manage_schedule(action=list) 查询任务 ID"
 	}
-	task := manager.Get(id)
+	task := h.scheduledTaskForBot(manager, id)
 	if task == nil {
 		return fmt.Sprintf("未找到定时任务（ID: %s）", id)
 	}
@@ -2590,7 +2591,7 @@ func (h *IMMessageHandler) toolSetScheduledTaskPaused(args map[string]interface{
 	if id == "" {
 		return "缺少 id 参数；请先用 manage_schedule(action=list) 查询任务 ID"
 	}
-	task := manager.Get(id)
+	task := h.scheduledTaskForBot(manager, id)
 	if task == nil {
 		return fmt.Sprintf("未找到定时任务（ID: %s）", id)
 	}
@@ -2622,9 +2623,23 @@ func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) 
 	}
 	var err error
 	if id != "" {
+		if h.scheduledTaskForBot(manager, id) == nil {
+			return "未找到定时任务（ID: " + id + "）"
+		}
 		err = manager.Delete(id)
 	} else {
-		err = manager.DeleteByName(name)
+		var match *scheduler.ScheduledTask
+		for _, task := range h.filterScheduledTasksForBot(manager.List()) {
+			if task.Name == name {
+				copy := task
+				match = &copy
+				break
+			}
+		}
+		if match == nil {
+			return "未找到定时任务（名称: " + name + "）"
+		}
+		err = manager.Delete(match.ID)
 	}
 	if err != nil {
 		return fmt.Sprintf("删除失败: %s", err.Error())
@@ -2651,8 +2666,10 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 	}
 	// Full replace or partial patch (fail_on_error) without wiping delivery.
 	var current *scheduler.TaskDelivery
-	if cur := manager.Get(id); cur != nil {
+	if cur := h.scheduledTaskForBot(manager, id); cur != nil {
 		current = cur.Delivery
+	} else {
+		return fmt.Sprintf("未找到定时任务（ID: %s）", id)
 	}
 	if err := scheduler.PrepareDeliveryForUpdate(current, args, func(a map[string]interface{}) (*scheduler.TaskDelivery, error) {
 		return h.parseAndResolveScheduleDelivery(a)
@@ -2665,7 +2682,7 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 	}
 	h.emitAppEvent("scheduled-tasks-changed")
 	// Show updated task info.
-	if t := manager.Get(id); t != nil {
+	if t := h.scheduledTaskForBot(manager, id); t != nil {
 		next := "-"
 		if t.NextRunAt != nil {
 			next = t.NextRunAt.Format("2006-01-02 15:04")
@@ -2677,6 +2694,43 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s%s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next, extra)
 	}
 	return "定时任务已更新"
+}
+
+// filterScheduledTasksForBot ensures a profile-bound handler cannot enumerate
+// the shared scheduler's desktop or another bot's task actions/targets.
+func (h *IMMessageHandler) filterScheduledTasksForBot(tasks []scheduler.ScheduledTask) []scheduler.ScheduledTask {
+	profileID := ""
+	if h != nil {
+		profileID = strings.TrimSpace(h.lansengerBotProfileID)
+	}
+	if profileID == "" {
+		return tasks
+	}
+	out := make([]scheduler.ScheduledTask, 0, len(tasks))
+	for _, task := range tasks {
+		owner := strings.TrimSpace(task.BotProfileID)
+		if owner == "" && task.Delivery != nil {
+			owner = strings.TrimSpace(task.Delivery.BotProfileID)
+		}
+		if owner == profileID {
+			out = append(out, task)
+		}
+	}
+	return out
+}
+
+func (h *IMMessageHandler) scheduledTaskForBot(manager *scheduler.Manager, id string) *scheduler.ScheduledTask {
+	if manager == nil {
+		return nil
+	}
+	task := manager.Get(id)
+	if task == nil {
+		return nil
+	}
+	if len(h.filterScheduledTasksForBot([]scheduler.ScheduledTask{*task})) != 1 {
+		return nil
+	}
+	return task
 }
 
 // toolListScheduleDeliveryTargets lists push destinations for a channel (generic).
@@ -2698,7 +2752,8 @@ func (h *IMMessageHandler) toolListScheduleDeliveryTargets(args map[string]inter
 		stringVal(args, "group_name"),
 		stringVal(args, "name"),
 	)
-	text, err := h.app.listScheduleDeliveryTargets(channel, query)
+	profileID := h.lansengerBotProfileID
+	text, err := h.app.listScheduleDeliveryTargetsForBot(channel, query, profileID)
 	if err != nil {
 		return fmt.Sprintf("查询投递目标失败: %s", err.Error())
 	}
@@ -2708,6 +2763,7 @@ func (h *IMMessageHandler) toolListScheduleDeliveryTargets(args map[string]inter
 // parseAndResolveScheduleDelivery builds delivery from args (full object or shorthand)
 // and resolves group_name → group_id via the channel's target catalog.
 func (h *IMMessageHandler) parseAndResolveScheduleDelivery(args map[string]interface{}) (*scheduler.TaskDelivery, error) {
+	profileID := h.lansengerBotProfileID
 	d, err := parseScheduleDeliveryArgs(args)
 	if err != nil {
 		return nil, fmt.Errorf("delivery 配置无效: %w", err)
@@ -2715,16 +2771,33 @@ func (h *IMMessageHandler) parseAndResolveScheduleDelivery(args map[string]inter
 	if d == nil {
 		return nil, nil
 	}
+	bindLansengerDeliveryBotProfile(d, profileID)
 	if h.app == nil {
 		if err := d.EnsureResolved(); err != nil {
 			return nil, fmt.Errorf("%w（无法查询通道目标：app 未初始化）", err)
 		}
 		return d, nil
 	}
-	if err := h.app.resolveScheduleDelivery(d); err != nil {
+	if err := h.app.resolveScheduleDeliveryForBot(d, profileID); err != nil {
 		return nil, err
 	}
 	return d, nil
+}
+
+// bindLansengerDeliveryBotProfile applies only trusted runtime metadata that
+// was injected by the profile gateway. A model-visible delivery object cannot
+// choose an arbitrary bot profile.
+func bindLansengerDeliveryBotProfile(d *scheduler.TaskDelivery, profileID string) {
+	if d == nil {
+		return
+	}
+	d.Normalize()
+	// Never trust bot_profile_id parsed from model-produced tool arguments.
+	// A profile handler supplies its identity from private handler state below.
+	d.BotProfileID = ""
+	if d.Channel == scheduler.DeliveryChannelLansenger {
+		d.BotProfileID = strings.TrimSpace(profileID)
+	}
 }
 
 // scheduleArgsTouchDelivery reports whether args intend to set/clear delivery.

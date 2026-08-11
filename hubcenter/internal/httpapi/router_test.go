@@ -124,6 +124,105 @@ func TestRouterDoesNotServePetPackHelp(t *testing.T) {
 	}
 }
 
+func TestHubDeviceCredentialBackupRoundTripRequiresCurrentHubSecret(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	registered := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"installation_id": "hub-device-credential-recovery",
+		"owner_email":     "owner@example.com",
+		"name":            "Recovery Hub",
+		"base_url":        "https://recovery.example.com",
+	})
+	hubID, _ := registered["hub_id"].(string)
+	hubSecret, _ := registered["hub_secret"].(string)
+	if hubID == "" || hubSecret == "" {
+		t.Fatalf("registration credentials missing: %#v", registered)
+	}
+	snapshot := `{"tokens":{"token-a":{"ClientID":"esp32-a","MachineID":"machine-a"}}}`
+	put := doJSONRequest(t, svc.handler, http.MethodPut, "/api/hubs/"+hubID+"/device-credentials", map[string]any{
+		"hub_secret":         hubSecret,
+		"device_credentials": snapshot,
+	}, "")
+	if put.Code != http.StatusOK {
+		t.Fatalf("backup status=%d body=%s", put.Code, put.Body.String())
+	}
+
+	denied := doJSONRequest(t, svc.handler, http.MethodGet, "/api/hubs/"+hubID+"/device-credentials", nil, "wrong-secret")
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong secret status=%d body=%s", denied.Code, denied.Body.String())
+	}
+
+	get := doJSONRequest(t, svc.handler, http.MethodGet, "/api/hubs/"+hubID+"/device-credentials", nil, hubSecret)
+	if get.Code != http.StatusOK {
+		t.Fatalf("recovery status=%d body=%s", get.Code, get.Body.String())
+	}
+	var body map[string]any
+	_ = json.NewDecoder(get.Body).Decode(&body)
+	if body["found"] != true || body["device_credentials"] != snapshot {
+		t.Fatalf("unexpected recovery response: %#v", body)
+	}
+}
+
+func TestHubDeviceCredentialBackupAcceptsSnapshotLargerThanFourMiB(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	registered := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"installation_id": "hub-large-device-credential-recovery",
+		"owner_email":     "owner@example.com",
+		"name":            "Large Recovery Hub",
+		"base_url":        "https://recovery.example.com",
+	})
+	hubID, _ := registered["hub_id"].(string)
+	hubSecret, _ := registered["hub_secret"].(string)
+	if hubID == "" || hubSecret == "" {
+		t.Fatalf("registration credentials missing: %#v", registered)
+	}
+
+	// Five ESP32 devices sharing an eight-frame custom pet can legitimately
+	// exceed the old 4 MiB ceiling. The raw snapshot remains opaque here.
+	snapshot := `{"tokens":{"device-token":{"pet":{"asset":{"data":"` + strings.Repeat("x", 5<<20) + `"}}}}}`
+	put := doJSONRequest(t, svc.handler, http.MethodPut, "/api/hubs/"+hubID+"/device-credentials", map[string]any{
+		"device_credentials": snapshot,
+	}, hubSecret)
+	if put.Code != http.StatusOK {
+		t.Fatalf("large backup status=%d body=%s", put.Code, put.Body.String())
+	}
+
+	get := doJSONRequest(t, svc.handler, http.MethodGet, "/api/hubs/"+hubID+"/device-credentials", nil, hubSecret)
+	if get.Code != http.StatusOK {
+		t.Fatalf("large recovery status=%d body=%s", get.Code, get.Body.String())
+	}
+	var body struct {
+		Found       bool   `json:"found"`
+		Credentials string `json:"device_credentials"`
+	}
+	if err := json.NewDecoder(get.Body).Decode(&body); err != nil {
+		t.Fatalf("decode large recovery response: %v", err)
+	}
+	if !body.Found || body.Credentials != snapshot {
+		t.Fatalf("large snapshot was not preserved: found=%v size=%d", body.Found, len(body.Credentials))
+	}
+}
+
+func TestHubDeviceCredentialBackupAcceptsEscapedSnapshotAtServiceLimit(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	registered := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"installation_id": "hub-escaped-device-credential-recovery",
+		"owner_email":     "owner@example.com",
+		"name":            "Escaped Recovery Hub",
+		"base_url":        "https://recovery.example.com",
+	})
+	hubID, _ := registered["hub_id"].(string)
+	hubSecret, _ := registered["hub_secret"].(string)
+	// Control bytes double in JSON. This is still a valid maximum-size raw
+	// snapshot and must not be rejected merely by the HTTP envelope limit.
+	snapshot := strings.Repeat("\b", deviceCredentialBackupSnapshotMaxBytes/2)
+	put := doJSONRequest(t, svc.handler, http.MethodPut, "/api/hubs/"+hubID+"/device-credentials", map[string]any{
+		"device_credentials": snapshot,
+	}, hubSecret)
+	if put.Code != http.StatusOK {
+		t.Fatalf("escaped backup status=%d body=%s", put.Code, put.Body.String())
+	}
+}
+
 func responseErrorCode(t *testing.T, rr *httptest.ResponseRecorder) string {
 	t.Helper()
 	var payload struct {
@@ -1254,6 +1353,19 @@ func TestExpertMarketAdminRoutesRequireAdminToken(t *testing.T) {
 			t.Fatalf("%s %s: expected 401, got %d body=%s", route.method, route.path, resp.Code, resp.Body.String())
 		}
 	}
+	for _, path := range []string{
+		"/api/v1/expert-market/experts/example/make-private",
+		"/api/v1/expert-market/experts/example/publish",
+	} {
+		resp := doJSONRequest(t, svc.handler, http.MethodPost, path, nil, "")
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("%s must require user session: got %d body=%s", path, resp.Code, resp.Body.String())
+		}
+	}
+	privateDelete := doJSONRequest(t, svc.handler, http.MethodDelete, "/api/v1/expert-market/experts/example/private", nil, "")
+	if privateDelete.Code != http.StatusUnauthorized {
+		t.Fatalf("private delete must require user session: got %d body=%s", privateDelete.Code, privateDelete.Body.String())
+	}
 	retired := doJSONRequest(t, svc.handler, http.MethodPost, "/api/v1/admin/expert-market/experts/example/list", nil, "")
 	if retired.Code != http.StatusNotFound {
 		t.Fatalf("retired list route: expected 404, got %d body=%s", retired.Code, retired.Body.String())
@@ -1811,14 +1923,16 @@ func TestUpdateHubNameHandlerUpdatesAdminDisplayName(t *testing.T) {
 		t.Fatalf("register hub: %v", err)
 	}
 
-	if _, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
+	reRegistered, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
 		InstallationID: "inst_rename_secret_source",
 		OwnerEmail:     "owner-rename@example.com",
+		RecoverySecret: registerResult.HubSecret,
 		Name:           "Self Reported Before Override",
 		BaseURL:        "https://rename.example.com",
 		Visibility:     "shared",
 		EnrollmentMode: "open",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("re-register hub before admin override: %v", err)
 	}
 	beforeOverrideResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
@@ -1867,6 +1981,7 @@ func TestUpdateHubNameHandlerUpdatesAdminDisplayName(t *testing.T) {
 	if _, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
 		InstallationID: "inst_rename_secret_source",
 		OwnerEmail:     "owner-rename@example.com",
+		RecoverySecret: reRegistered.HubSecret,
 		Name:           "Self Reported Name",
 		BaseURL:        "https://rename.example.com",
 		Visibility:     "shared",

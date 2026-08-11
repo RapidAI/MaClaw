@@ -31,6 +31,7 @@ const expectedScripts = [
   'usage-stats-tab.js',
   'failure-logs-tab.js',
   'knowledge-management-tab.js',
+  'digital-assets-tab.js',
   'notification-tab.js',
   'admin-module-health.js',
   'overview-tenant-info.js',
@@ -51,7 +52,9 @@ const expectedExports = {
   'llm-provider-tab.js': ['loadLlmProviders', 'openLlmProviderTab', 'saveLLMProviders'],
   'llm-service-tabs.js': ['loadLlmServiceGroups', 'openLlmServiceGroupTab', 'saveLLMServiceAdmin'],
   'usage-stats-tab.js': ['loadUsageStats'],
-  'knowledge-management-tab.js': ['loadKnowledgeShares', 'forceDeleteKnowledgeShare']
+  'knowledge-management-tab.js': ['loadKnowledgeShares', 'forceDeleteKnowledgeShare'],
+  'admin-ui.js': ['confirmDialog', 'promptDialog', 'dismissActiveDialog', 'isDialogOpen', 'admin-ui-dialog-overlay', 'mountDialogSession', 'DIALOG_Z_INDEX', '20000', 'bindModalOverlayDismiss', 'isImeComposing', 'skipDismiss'],
+  'digital-assets-tab.js': ['loadDigitalAssetLibraries', 'createDigitalAssetLibrary', 'digital-assets-merge-src', 'import/local-dir', 'import/browser-dir', 'digitalAssetsBrowserDir', 'digitalAssetsServerDir', 'trackJob', 'openContentDialog', 'import-jobs', '/sources', 'beginProgress', 'phaseLabel', 'jobIdOf', 'digitalAssetsProgressTimeout', 'digitalAssetsPhaseImporting', 'deleteContentSources', 'sources/delete', 'digitalAssetsContentDeleteSelected', 'digitalAssetsContentSearch', 'loadMoreContentSources', 'digitalAssetsContentLoadMore', 'offset=', 'scheduleContentJobsPoll', 'refreshContentJobsOnly', 'wireContentScrollLoadMore', 'maybeAutoFillSources', 'jobsStatusSignature', 'contentAutoFillRounds', 'renderAclPanel', 'renderDepartmentTree', 'saveLibraryAcl', 'loadSecurityGroups', 'set_acl', 'digitalAssetsAclSave', 'digital-assets-acl-dept', 'acl_mode', '/api/admin/security/groups', 'captureAclDraftFromDom', 'itemWithAclDraft', 'digitalAssetsAclClearDepartmentsBtn', 'digitalAssetsAclDeptFilter', 'digitalAssetsAclEmptyRestrictedWarn', 'unknownSelectedDepartments', 'showConfirm', 'showPrompt', 'confirmDialog', 'promptDialog', 'digitalAssetsDeleteLibraryConfirm', 'digitalAssetsCreateNamePrompt', 'admin-ui-dialog-overlay', 'isDialogOpen', 'createLibraryBusy', 'isAdminDialogOpen', 'aclSaveGuard', 'contentDeleteGuard', 'deleteLibraryBusy']
 };
 
 function fail(message) {
@@ -211,7 +214,7 @@ function assertTenantAdminUIHooks() {
   if (!admin.includes("normalized === 'system'") || !admin.includes("String(profile.scope || '').toLowerCase() === 'tenant'") || !admin.includes('openDefaultImSub')) {
     fail('admin.js must avoid global-only system loads for tenant admins.');
   }
-  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemFreeStatusBadge', 'tenantSystemFreeTestBtn', 'tenantSystemLLMDefaultsSaveBtn'].forEach(function(marker) {
+  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemFreeStatusBadge', 'tenantSystemFreeTestBtn', 'tenantSystemLLMDefaultsSaveBtn', 'id="tenantDigitalAssetsSettingsCard"', 'tenantDigitalAssetsEnabledToggle', 'tenantDigitalAssetsSyncToggle'].forEach(function(marker) {
     if (!html.includes(marker)) {
       fail('index.html is missing tenant-safe mail settings marker: ' + marker);
     }
@@ -227,6 +230,11 @@ function assertTenantAdminUIHooks() {
   ['loadTenantMigrationSettings', 'saveTenantMigrationSettings', 'TENANT_MIGRATION_MIN_MB', 'TENANT_MIGRATION_MAX_MB', '/api/admin/migration/settings'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing tenant migration settings marker: ' + marker);
+    }
+  });
+  ['loadTenantDigitalAssetsSettings', 'toggleTenantDigitalAssetsEnabled', 'toggleTenantDigitalAssetsSync', '/api/admin/digital-assets/settings', 'TENANT_DIGITAL_ASSETS_SETTINGS_I18N'].forEach(function(marker) {
+    if (!system.includes(marker)) {
+      fail('system-tab.js is missing tenant digital assets settings marker: ' + marker);
     }
   });
   ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'getTenantSystemFreeCache', 'setTenantSystemFreeCache', 'fetchTenantSystemFreeStatus', 'formatTenantSystemFreeDetail', 'renderTenantSystemFreeStatus', 'applyTenantSystemFreeStatusUI', '/api/admin/llm/system-free', '/api/admin/llm/system-free/test', 'testTenantSystemFreeLLM', 'openSystemFreeServiceGroup', 'skipPeer', 'systemFreeConfigToasted', 'tenantSystemFreeTestInflight'].forEach(function(marker) {
@@ -258,7 +266,7 @@ function assertTenantAdminUIHooks() {
     }
   });
   const bootstrap = read('admin-bootstrap.js');
-  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadTenantMigrationSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
+  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadTenantMigrationSettings', 'loadTenantDigitalAssetsSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
     if (!bootstrap.includes(marker)) {
       fail('admin-bootstrap.js is missing scoped refresh marker: ' + marker);
     }
@@ -614,6 +622,59 @@ function assertUsageStatsSubtabState() {
     }
   });
 }
+
+function assertDigitalAssetDepartmentTreeRender() {
+  const source = read('digital-assets-tab.js');
+  const normalizeTree = extractNamedFunction(source, 'normalizeSecurityGroupTree');
+  const renderTree = extractNamedFunction(source, 'renderDepartmentTree');
+  const panel = extractNamedFunction(source, 'renderAclPanel');
+  if (!renderTree.includes("}).join('');")) {
+    fail('digital-assets-tab.js renderDepartmentTree must return rendered HTML text.');
+  }
+  if (/\bknownRows\.join\(/.test(panel)) {
+    fail('digital-assets-tab.js must not call join() on knownRows; it is already rendered HTML text.');
+  }
+  if (!panel.includes("+ knownRows")) {
+    fail('digital-assets-tab.js must append rendered department tree HTML directly.');
+  }
+  ['normalizeSecurityGroupTree', 'seenIDs', 'digitalAssetsMaxDepartmentTreeDepth', "Array.isArray(node.children) ? node.children : []"].forEach(function(marker) {
+    if (!source.includes(marker)) {
+      fail('digital-assets-tab.js is missing department tree resilience marker: ' + marker);
+    }
+  });
+  const sandbox = {};
+  vm.runInNewContext('var digitalAssetsMaxDepartmentTreeDepth = 64;\n' + normalizeTree + '\nthis.normalizeSecurityGroupTree = normalizeSecurityGroupTree;', sandbox, { filename: 'digital-assets-tab.js:normalizeSecurityGroupTree' });
+  const normalized = sandbox.normalizeSecurityGroupTree([
+    { id: 'root', name: 'Root', children: [{ id: 'child', name: 'Child', children: [{ id: 'root', name: 'Cycle' }] }] },
+    { id: 'child', name: 'Duplicate' },
+    { id: '  ', name: 'Malformed' },
+    { id: 'other', name: 'Other', children: 'not-an-array' }
+  ]);
+  if (normalized.length !== 2 || normalized[0].children.length !== 1 || normalized[0].children[0].children.length !== 0 || normalized[1].id !== 'other') {
+    fail('digital-assets-tab.js must remove malformed, cyclic, and duplicate department tree nodes.');
+  }
+  let deepTree = { id: 'node-0' };
+  let cursor = deepTree;
+  for (let i = 1; i <= 70; i += 1) {
+    cursor.children = [{ id: 'node-' + i }];
+    cursor = cursor.children[0];
+  }
+  let normalizedDepth = 0;
+  let deepCursor = sandbox.normalizeSecurityGroupTree([deepTree])[0];
+  while (deepCursor) {
+    normalizedDepth += 1;
+    deepCursor = deepCursor.children[0];
+  }
+  if (normalizedDepth !== 65) {
+    fail('digital-assets-tab.js must cap an oversized department tree before rendering.');
+  }
+  const selectionHandler = extractNamedFunction(source, 'aclRestrictionChanged');
+  ['restricted && selected > digitalAssetsMaxAclDepartments', 'changedCheckbox.checked = false', 'digitalAssetsMaxAclDepartments'].forEach(function(marker) {
+    if (!selectionHandler.includes(marker)) {
+      fail('digital-assets-tab.js must prevent selecting departments over the ACL limit: ' + marker);
+    }
+  });
+}
 function assertAdminApiRoutesRegistered() {
   const routerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'router.go');
   const router = fs.readFileSync(routerPath, 'utf8');
@@ -932,6 +993,7 @@ assertScopedRefreshHooks();
 assertMaclawAppEvidenceReviewMarkers();
 assertUsageRankingEmailFilter();
 assertUsageStatsSubtabState();
+assertDigitalAssetDepartmentTreeRender();
 assertLegacyMirrorRemoved();
 assertRemovedLegacyFilesDocumented();
 assertLLMProviderPricingHooks();
@@ -1010,6 +1072,25 @@ function assertConfigAgentHooks() {
     fail('overview-config-agent.js is missing catalog filter performance helpers');
   }
 }
+
+function assertAdminUiDialogTests() {
+  const testFile = path.join(root, 'admin-ui-dialog.test.js');
+  if (!fs.existsSync(testFile)) {
+    fail('admin-ui-dialog.test.js is missing');
+    return;
+  }
+  const { spawnSync } = require('child_process');
+  // Test file resolves admin-ui.js via __dirname; cwd only affects relative paths in the harness.
+  const result = spawnSync(process.execPath, [testFile], {
+    encoding: 'utf8',
+    cwd: root
+  });
+  if (result.status !== 0) {
+    fail('admin-ui-dialog.test.js failed:\n' + String(result.stdout || '') + String(result.stderr || ''));
+  }
+}
+
+assertAdminUiDialogTests();
 
 if (!process.exitCode) {
   console.log('Admin module validation passed.');

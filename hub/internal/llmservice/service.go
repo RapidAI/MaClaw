@@ -2166,7 +2166,7 @@ func detectCapabilityNeeds(body map[string]any) map[string]int {
 			}
 		}
 	}
-	addKeywordWeight("document", 8, "document", "pdf", "docx", "markdown", "contract", "manual", "spec", "report", "summary", "summarize", "read file")
+	addKeywordWeight("document", 8, "document", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet", "markdown", "contract", "manual", "spec", "report", "summary", "summarize", "read file")
 	addKeywordWeight("reasoning", 5, "reason", "analyze", "analysis", "think", "math", "proof", "deduce")
 	addKeywordWeight("tools", 8, "tool", "browser", "search", "function", "call tool", "execute", "fetch")
 	return needs

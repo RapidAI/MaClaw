@@ -115,8 +115,33 @@ func (o *GUIStateObserver) Verify(criteria []taskengine.CriterionSpec) (*taskeng
 	}
 
 	result := &taskengine.VerifyResult{Passed: true}
+	// OCR runs at most once per Verify call: every text_contains criterion
+	// matches against the same cached screenshot, so repeated Recognize calls
+	// would be redundant — and with a vision-LLM-backed provider each one is
+	// a full model request.
+	var cachedOCR []taskengine.OCRResult
+	var ocrAttempted bool
+	var ocrErr error
+	getOCRResults := func() ([]taskengine.OCRResult, error) {
+		if ocrAttempted {
+			return cachedOCR, ocrErr
+		}
+		ocrAttempted = true
+		switch {
+		case o.ocr == nil || !o.ocr.IsAvailable():
+			ocrErr = fmt.Errorf("OCR not available")
+		case getScreenshot() == "":
+			ocrErr = fmt.Errorf("screenshot not available")
+		default:
+			cachedOCR, ocrErr = o.ocr.Recognize(cachedScreenshot)
+			if ocrErr != nil {
+				ocrErr = fmt.Errorf("OCR: %w", ocrErr)
+			}
+		}
+		return cachedOCR, ocrErr
+	}
 	for _, c := range criteria {
-		cr := o.checkOne(c, getScreenshot, getElements)
+		cr := o.checkOne(c, getScreenshot, getElements, getOCRResults)
 		result.Details = append(result.Details, cr)
 		if !cr.Passed {
 			result.Passed = false
@@ -188,10 +213,10 @@ func (o *GUIStateObserver) TakeCheckpoint(stepIndex int) taskengine.Checkpoint {
 
 // ── criterion checks ──
 
-func (o *GUIStateObserver) checkOne(c taskengine.CriterionSpec, getScreenshot func() string, getElements func() []taskengine.UIElement) taskengine.CriterionResult {
+func (o *GUIStateObserver) checkOne(c taskengine.CriterionSpec, getScreenshot func() string, getElements func() []taskengine.UIElement, getOCRResults func() ([]taskengine.OCRResult, error)) taskengine.CriterionResult {
 	switch c.Type {
 	case "text_contains", "ocr_contains":
-		return o.checkTextContains(c, getScreenshot)
+		return o.checkTextContains(c, getOCRResults)
 	case "element_exists":
 		return o.checkElementExists(c, getElements)
 	case "element_value":
@@ -208,19 +233,12 @@ func (o *GUIStateObserver) checkOne(c taskengine.CriterionSpec, getScreenshot fu
 }
 
 // checkTextContains: screenshot → OCR → check text contains pattern.
-func (o *GUIStateObserver) checkTextContains(c taskengine.CriterionSpec, getScreenshot func() string) taskengine.CriterionResult {
-	if o.ocr == nil || !o.ocr.IsAvailable() {
-		return taskengine.CriterionResult{Criterion: c, Passed: false, Error: "OCR not available"}
-	}
-
-	imgB64 := getScreenshot()
-	if imgB64 == "" {
-		return taskengine.CriterionResult{Criterion: c, Passed: false, Error: "screenshot not available"}
-	}
-
-	results, err := o.ocr.Recognize(imgB64)
+// OCR results come from the caller's per-Verify cache so multiple
+// text_contains criteria share a single recognition pass.
+func (o *GUIStateObserver) checkTextContains(c taskengine.CriterionSpec, getOCRResults func() ([]taskengine.OCRResult, error)) taskengine.CriterionResult {
+	results, err := getOCRResults()
 	if err != nil {
-		return taskengine.CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("OCR: %v", err)}
+		return taskengine.CriterionResult{Criterion: c, Passed: false, Error: err.Error()}
 	}
 
 	var allText []string

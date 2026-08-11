@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'security' | 'migration' | 'system' | 'assetManagement';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
 
 /**
  * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
@@ -25,6 +25,7 @@ export const SETTINGS_CONTENT_TAB_IDS = [
     'security',
     'migration',
     'system',
+    'hardware',
     'assetManagement',
 ] as const satisfies readonly SettingsTabId[];
 
@@ -85,6 +86,7 @@ const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> =
     im: 'services',
     security: 'system',
     system: 'system',
+    hardware: 'system',
     assetManagement: 'system',
 };
 
@@ -120,6 +122,7 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
     security: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5L3 3.5v4c0 3.5 2.5 5.5 5 7 2.5-1.5 5-3.5 5-7v-4z"/></svg>',
     migration: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l-2.5 2 2.5 2"/><path d="M12 6l2.5 2-2.5 2"/><path d="M1.5 8h5M9.5 8h5"/></svg>',
     system: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.8 1.5h2.4l.3 1.8.9.4 1.5-1 1.7 1.7-1 1.5.4.9 1.8.3v2.4l-1.8.3-.4.9 1 1.5-1.7 1.7-1.5-1-.9.4-.3 1.8H6.8l-.3-1.8-.9-.4-1.5 1-1.7-1.7 1-1.5-.4-.9-1.8-.3V6.8l1.8-.3.4-.9-1-1.5 1.7-1.7 1.5 1 .9-.4z"/><circle cx="8" cy="8" r="2"/></svg>',
+    hardware: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2"/><circle cx="8" cy="8" r="1.5"/></svg>',
     assetManagement: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M2 6.5h12M5 10h3"/></svg>',
 };
 
@@ -235,6 +238,12 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             label: textForLang(lang, 'System', '系统', '系統'),
             desc: textForLang(lang, 'Heartbeat, screen dimming and other system settings', '心跳、熄屏等系统级设置', '心跳、熄屏等系統級設定'),
             icon: settingsTabIcons.system,
+        },
+        {
+            id: 'hardware' as const,
+            label: textForLang(lang, 'Hardware Access', '硬件接入', '硬體接入'),
+            desc: textForLang(lang, 'Pair and manage hardware devices', '配对和管理硬件设备', '配對和管理硬體裝置'),
+            icon: settingsTabIcons.hardware,
         },
         {
             id: 'assetManagement' as const,

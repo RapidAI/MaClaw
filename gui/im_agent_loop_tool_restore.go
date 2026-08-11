@@ -65,6 +65,7 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *Loo
 		}
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
+	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
 
 	tools = stripExecutionContractMetadataForLLM(tools)
 	return tools, estimateToolsTokens(tools), directModeToolsFiltered

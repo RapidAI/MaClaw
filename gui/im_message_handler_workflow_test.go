@@ -787,7 +787,8 @@ func TestWorkflowStartProjectPathHonorsProjectTabWorkingDirOverride(t *testing.T
 		t.Fatalf("MkdirAll overrideDir: %v", err)
 	}
 	ownerID := projectSessionOwnerID(taskPath)
-	handler.app.tabWorkingDirOverrides.Store(normalizeProjectSessionPath(taskPath), filepath.Clean(overrideDir))
+	handler.app.tabWorkingDirOverrides.Store("proj-agent-self-evo", filepath.Clean(overrideDir))
+	handler.app.assistantSessionWorkingDirs.Store(ownerID, filepath.Clean(overrideDir))
 
 	if got := handler.app.EffectiveWorkingDirForOwner(ownerID); got != filepath.Clean(overrideDir) {
 		t.Fatalf("EffectiveWorkingDirForOwner = %q, want override %q", got, overrideDir)

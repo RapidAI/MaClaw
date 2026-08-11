@@ -302,7 +302,7 @@ func (a *App) ListDevices() ([]device.Candidate, error) { return device.ListCand
 //  3. download and verify an allow-listed Release asset for every candidate
 //     whose running application reports one known nonce-bound board target.
 //
-// USB/ROM evidence alone cannot distinguish the three supported products, so
+// USB/ROM evidence alone cannot distinguish the four supported products, so
 // ambiguous identity is a normal result rather than an error. The caller must
 // still have the user confirm each physical board before FlashFirmware.
 func (a *App) AutoDetectFirmware() (AutoDetectionResult, error) {
@@ -371,7 +371,22 @@ func (a *App) autoDetectCandidate(candidate device.Candidate) (AutoDetectedDevic
 		}
 		return item, nil
 	}
-	recognition := probe.BoardRecognition
+	// A ROM probe can establish chip and Flash capacity, and therefore uniquely
+	// narrows a 32 MiB device to Waveshare.  It cannot establish that a normal
+	// application-only write is safe, though: FlashJob deliberately requires a
+	// fresh protocol-v2 application identity just before writing.  Require the
+	// same evidence here so this convenience path never displays a prepared
+	// package that the final write boundary must reject.
+	if probe.AppIdentity.Protocol != device.ProtocolVersion {
+		item.Status = "requires_confirmation"
+		if probe.AppIdentity.Protocol == 1 {
+			item.Reason = "This device reports legacy protocol:1 identity. Automatic firmware matching is unavailable until the device runs protocol:2 firmware; no firmware package was selected."
+		} else {
+			item.Reason = "This device did not report a nonce-bound protocol:2 application identity. Automatic firmware matching is blocked; no firmware package was selected."
+		}
+		return item, nil
+	}
+	recognition := catalog.RecognizeApplicationIdentityWithROM(probe.AppIdentity, probe.Chip, probe.Flash)
 	if recognition.Status != "probable" || len(recognition.CandidateBoards) != 1 {
 		item.Status = "requires_confirmation"
 		item.Reason = recognition.Reason
@@ -961,7 +976,7 @@ func (a *App) flashReservedFirmware(port, boardID string, verified verifiedPacka
 	if verified.boardID != boardID {
 		return jobs.FlashResult{}, fmt.Errorf("verified firmware reference does not match the selected board")
 	}
-	job, err := jobs.NewFlashJob(a.logsPath(), jobs.FlashRequest{Port: port, PackagePath: verified.path, Trust: releaseTrustStore(), ExpectedChip: "esp32-s3", ExpectedFlashBytes: 16 * 1024 * 1024, ExpectedDeviceBinding: expectedDeviceBinding, BoardID: profile.FirmwareBoardID, Recovery: recovery, RetryOfJobID: retryOfJobID}, a.emitLog)
+	job, err := jobs.NewFlashJob(a.logsPath(), jobs.FlashRequest{Port: port, PackagePath: verified.path, Trust: releaseTrustStore(), ExpectedChip: "esp32-s3", ExpectedFlashBytes: profile.FlashBytes, ExpectedDeviceBinding: expectedDeviceBinding, BoardID: profile.FirmwareBoardID, Recovery: recovery, RetryOfJobID: retryOfJobID}, a.emitLog)
 	if err != nil {
 		return jobs.FlashResult{}, err
 	}
@@ -1191,7 +1206,8 @@ func (a *App) ConfirmBoard(port, boardID, probeJobID string) (BoardConfirmation,
 	if strings.TrimSpace(port) == "" || strings.TrimSpace(probeJobID) == "" {
 		return BoardConfirmation{}, fmt.Errorf("port and successful probe job ID are required to confirm a board")
 	}
-	if _, err := catalog.Profile(boardID); err != nil {
+	profile, err := catalog.Profile(boardID)
+	if err != nil {
 		return BoardConfirmation{}, err
 	}
 	if !logging.SafeJobID(probeJobID) {
@@ -1206,6 +1222,9 @@ func (a *App) ConfirmBoard(port, boardID, probeJobID string) (BoardConfirmation,
 	}
 	if probe.FinishedAt.After(time.Now().UTC()) || time.Since(probe.FinishedAt) > boardConfirmationTTL {
 		return BoardConfirmation{}, fmt.Errorf("probe evidence expired; run the read-only check again before confirming the board")
+	}
+	if err := catalog.ValidateProfileROMBinding(profile, probe.Chip, probe.Flash); err != nil {
+		return BoardConfirmation{}, fmt.Errorf("probe ROM evidence does not match selected board: %w", err)
 	}
 	bytes := make([]byte, 24)
 	if _, err := rand.Read(bytes); err != nil {
@@ -1245,10 +1264,14 @@ func (a *App) ConfirmDetectedBoard(port, probeJobID string) (BoardConfirmation, 
 	if probe.FinishedAt.After(time.Now().UTC()) || time.Since(probe.FinishedAt) > boardConfirmationTTL {
 		return BoardConfirmation{}, fmt.Errorf("probe evidence expired; run the read-only check again before confirming the board")
 	}
-	recognition := probe.BoardRecognition
-	if recognition.Status != "probable" && probe.AppIdentity.FirmwareTargetBoardID != "" {
-		recognition = catalog.RecognizeApplicationIdentityEvidence(probe.AppIdentity)
+	// Never treat BoardRecognition persisted in summary.json as write authority.
+	// Re-derive it from the raw ROM and nonce-bound application evidence every
+	// time a confirmation is minted, so a stale or malformed old summary cannot
+	// turn a different board into an automatically confirmed one.
+	if probe.AppIdentity.Protocol != device.ProtocolVersion {
+		return BoardConfirmation{}, fmt.Errorf("the selected device did not report one uniquely supported board identity from fresh protocol:2 runtime evidence")
 	}
+	recognition := catalog.RecognizeApplicationIdentityWithROM(probe.AppIdentity, probe.Chip, probe.Flash)
 	if recognition.Status != "probable" || len(recognition.CandidateBoards) != 1 {
 		return BoardConfirmation{}, fmt.Errorf("the selected device did not report one uniquely supported board identity")
 	}

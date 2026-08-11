@@ -292,19 +292,18 @@ func TestSeedFullEnvironmentWorkspaceApprovals(t *testing.T) {
 	}, false)
 	sa.seedFullEnvironmentWorkspaceApprovals()
 
-	// Paths under project should already be in-scope via projectPath checks elsewhere;
-	// seed specifically approves parent so sibling under parent is allowed.
-	if msg := sa.scopeApproval.check("read_file", sibling, project); msg != "" {
-		t.Fatalf("seeded parent should allow sibling path, got %q", msg)
+	// Full-environment setup must not silently approve sibling repositories.
+	if msg := sa.scopeApproval.check("read_file", sibling, project); msg == "" {
+		t.Fatal("sibling path must require explicit scope approval")
 	}
-	if calls != 0 {
-		t.Fatalf("seeded approval should not prompt, calls=%d", calls)
+	if calls != 1 {
+		t.Fatalf("scope approval callback calls=%d, want 1", calls)
 	}
 
 	// Far outside parent should still prompt/deny.
 	far := filepath.Join(filepath.Dir(parent), "totally-elsewhere", "x.go")
 	if msg := sa.scopeApproval.check("read_file", far, project); msg == "" {
-		t.Fatal("path outside seeded parent should not be auto-allowed")
+		t.Fatal("path outside project should not be auto-allowed")
 	}
 }
 

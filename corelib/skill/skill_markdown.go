@@ -495,7 +495,7 @@ func looksLikeMarkdownSampleInputPath(raw string) bool {
 		return true
 	}
 	switch strings.ToLower(filepath.Ext(base)) {
-	case ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp", ".md", ".txt", ".csv", ".json", ".docx", ".xlsx", ".pptx":
+	case ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp", ".md", ".txt", ".csv", ".json", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx":
 		stem := strings.TrimSuffix(base, filepath.Ext(base))
 		return looksLikeMarkdownSampleInputName(stem)
 	default:
@@ -520,7 +520,8 @@ func looksLikeMarkdownSampleInputName(raw string) bool {
 	case "input", "file", "document", "doc", "report", "sample", "example", "photo", "image",
 		"pdf", "markdown", "text", "csv", "json", "your-file", "your-input", "your-document",
 		"your-pdf", "input-file", "input-document", "input-pdf", "input-image", "source-file",
-		"source-document", "source-pdf", "pdf-file", "image-file", "document-file":
+		"source-document", "source-pdf", "pdf-file", "image-file", "document-file",
+		"doc-file", "xls-file", "ppt-file", "word-file", "excel-file", "presentation-file":
 		return true
 	default:
 		return false
@@ -1009,8 +1010,11 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 				command = parameterized
 				log.Printf("[skill-parser] %s: step from parameterized usage example: %s", parsed.name, command)
 			} else {
-				// Direct bash command block uses the resolved content.
-				command = resolved
+				// Direct bash command blocks may still document a canonical
+				// --input/--output invocation. Normalize those sample arguments
+				// before preserving the block so legacy Office examples do not
+				// hard-code a fixture path into a reusable skill.
+				command = parameterizeMarkdownSampleCommandArgs(resolved)
 				snippet := resolved
 				if len(snippet) > 60 {
 					snippet = snippet[:60] + "..."
@@ -1392,12 +1396,25 @@ func joinMarkdownShellContinuationLines(block string) string {
 func parameterizeMarkdownSampleCommandArgs(command string) string {
 	fields := strings.Fields(command)
 	result := command
+	inputParameterized := false
 	for i, field := range fields {
 		if replacement, ok := parameterizeMarkdownFlagAssignment(field); ok {
 			result = replaceCommandTokenOnce(result, field, replacement)
 			continue
 		}
-		if !strings.HasPrefix(strings.TrimSpace(field), "-") || i+1 >= len(fields) {
+		trimmed := strings.TrimSpace(field)
+		if !strings.HasPrefix(trimmed, "-") {
+			// A direct usage block commonly has its input as the first positional
+			// argument (for example `parser report.doc --output result.doc`).
+			// Restrict this to known sample names so ordinary commands and arbitrary
+			// positional arguments remain unchanged.
+			if !inputParameterized && !isNonInputMarkdownCommandOptionValue(fields, i) && looksLikeMarkdownSampleInputPath(field) {
+				result = replaceCommandTokenOnce(result, field, "{{input}}")
+				inputParameterized = true
+			}
+			continue
+		}
+		if i+1 >= len(fields) {
 			continue
 		}
 		next := fields[i+1]
@@ -1542,7 +1559,7 @@ func looksLikeMarkdownSampleOutputPath(raw string) bool {
 		return true
 	}
 	switch strings.ToLower(filepath.Ext(base)) {
-	case ".pdf", ".md", ".txt", ".csv", ".json", ".docx", ".xlsx", ".pptx", ".png", ".jpg", ".jpeg", ".webp":
+	case ".pdf", ".md", ".txt", ".csv", ".json", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".png", ".jpg", ".jpeg", ".webp":
 		return true
 	default:
 		return false

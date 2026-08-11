@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestOfficeResolvedPathUsesTaskWorkspace(t *testing.T) {
@@ -28,7 +30,7 @@ func TestOfficeResolvedPathUsesTaskWorkspace(t *testing.T) {
 	}
 
 	h := &IMMessageHandler{app: app}
-	owner := desktopUserID + ":" + created.ProjectPath
+	owner := projectSessionOwnerID(created.ProjectPath)
 	got := h.officeResolvedPathForOwner("note.txt", owner)
 	if filepath.Clean(got) != filepath.Clean(target) {
 		t.Fatalf("office relative resolve = %q, want %q", got, target)
@@ -54,7 +56,7 @@ func TestToolOfficeReadDocumentFromTaskWorkspace(t *testing.T) {
 	docx := filepath.Join(ws, "a.docx")
 	writeMinimalDOCXForOfficeTest(t, docx, "task-workspace-body")
 
-	owner := desktopUserID + ":" + created.ProjectPath
+	owner := projectSessionOwnerID(created.ProjectPath)
 	h := &IMMessageHandler{
 		app: app,
 		currentLoopCtx: &LoopContext{
@@ -63,6 +65,12 @@ func TestToolOfficeReadDocumentFromTaskWorkspace(t *testing.T) {
 				PolicyOwnerID: owner,
 			},
 		},
+	}
+	if got := h.currentRuntimeOrLegacyPolicyOwnerID(); got != owner {
+		t.Fatalf("runtime owner = %q, want %q", got, owner)
+	}
+	if got := h.officeResolvedPathForOwner("a.docx", owner); filepath.Clean(got) != filepath.Clean(docx) {
+		t.Fatalf("resolved office path = %q, want %q", got, docx)
 	}
 
 	out := h.toolOffice(map[string]interface{}{
@@ -74,6 +82,158 @@ func TestToolOfficeReadDocumentFromTaskWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(out, "task-workspace-body") {
 		t.Fatalf("expected extracted body, got: %s", out)
+	}
+}
+
+func TestToolOfficeHonorsAssistantBindingFileBoundary(t *testing.T) {
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	outsideDir := filepath.Join(root, "outside")
+	for _, dir := range []string{workDir, outsideDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMinimalDOCXForOfficeTest(t, filepath.Join(workDir, "inside.docx"), "inside-office-body")
+	outsideDoc := filepath.Join(outsideDir, "outside.docx")
+	writeMinimalDOCXForOfficeTest(t, outsideDoc, "outside-office-body")
+
+	owner := "lansenger:bot-support:office-boundary"
+	cleanup, errText := bindAssistantForTurn(IMUserMessage{
+		UserID: owner,
+		AssistantBinding: &agent.AssistantBinding{
+			BotProfileID:     "support",
+			WorkingDirectory: workDir,
+		},
+	})
+	if errText != "" {
+		t.Fatalf("bind assistant: %s", errText)
+	}
+	defer cleanup()
+
+	h := &IMMessageHandler{}
+	inside := h.toolOffice(map[string]interface{}{
+		"action":                         "read_document",
+		"path":                           "inside.docx",
+		registeredToolPolicyOwnerIDField: owner,
+	})
+	if !strings.Contains(inside, "inside-office-body") {
+		t.Fatalf("relative Office path should resolve in profile workdir, got: %s", inside)
+	}
+
+	outside := h.toolOffice(map[string]interface{}{
+		"action":                         "read_document",
+		"file_path":                      outsideDoc,
+		registeredToolPolicyOwnerIDField: owner,
+	})
+	if !strings.Contains(outside, "outside its authorized directories") {
+		t.Fatalf("Office path outside bot profile boundary was accepted: %s", outside)
+	}
+
+	writeOutside := h.toolOffice(map[string]interface{}{
+		"action":                         "write_excel",
+		"file_path":                      filepath.Join(outsideDir, "outside.xlsx"),
+		"data":                           map[string]interface{}{"sheets": []interface{}{}},
+		registeredToolPolicyOwnerIDField: owner,
+	})
+	if !strings.Contains(writeOutside, "outside its authorized directories") {
+		t.Fatalf("write_excel outside bot profile boundary was accepted: %s", writeOutside)
+	}
+}
+
+func TestToolOfficeAllowsAssistantBindingAllDirectories(t *testing.T) {
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	outsideDir := filepath.Join(root, "outside")
+	for _, dir := range []string{workDir, outsideDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outsideDoc := filepath.Join(outsideDir, "outside.docx")
+	writeMinimalDOCXForOfficeTest(t, outsideDoc, "allow-all-office-body")
+
+	owner := "lansenger:bot-support:office-allow-all"
+	cleanup, errText := bindAssistantForTurn(IMUserMessage{
+		UserID: owner,
+		AssistantBinding: &agent.AssistantBinding{
+			BotProfileID:        "support",
+			WorkingDirectory:    workDir,
+			AllowAllDirectories: true,
+		},
+	})
+	if errText != "" {
+		t.Fatalf("bind assistant: %s", errText)
+	}
+	defer cleanup()
+
+	out := (&IMMessageHandler{}).toolOffice(map[string]interface{}{
+		"action":                         "read_document",
+		"file_path":                      outsideDoc,
+		registeredToolPolicyOwnerIDField: owner,
+	})
+	if !strings.Contains(out, "allow-all-office-body") {
+		t.Fatalf("allow-all profile should retain absolute Office path behavior, got: %s", out)
+	}
+}
+
+func TestToolOfficeRejectsSymlinkedOutputPathOutsideAssistantBinding(t *testing.T) {
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	outsideDir := filepath.Join(root, "outside")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(workDir, "linked-output")
+	if err := os.Symlink(outsideDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	owner := "lansenger:bot-support:office-symlink-output"
+	cleanup, errText := bindAssistantForTurn(IMUserMessage{
+		UserID: owner,
+		AssistantBinding: &agent.AssistantBinding{
+			BotProfileID:     "support",
+			WorkingDirectory: workDir,
+		},
+	})
+	if errText != "" {
+		t.Fatalf("bind assistant: %s", errText)
+	}
+	defer cleanup()
+
+	out := (&IMMessageHandler{}).toolOffice(map[string]interface{}{
+		"action":                         "write_excel",
+		"file_path":                      filepath.Join("linked-output", "outside.xlsx"),
+		"data":                           map[string]interface{}{"sheets": []interface{}{}},
+		registeredToolPolicyOwnerIDField: owner,
+	})
+	if !strings.Contains(out, "outside its authorized directories") {
+		t.Fatalf("Office write through symlinked parent escaped profile boundary: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "outside.xlsx")); !os.IsNotExist(err) {
+		t.Fatalf("Office write created external file through symlink: %v", err)
+	}
+}
+
+func TestToolOfficeRejectsMissingExplicitRuntimeOwner(t *testing.T) {
+	if !toolAcceptsRuntimePolicyOwnerArg("office") {
+		t.Fatal("office must receive the hidden runtime owner at execution")
+	}
+	h := &IMMessageHandler{currentLoopCtx: &LoopContext{Runtime: RuntimeContext{
+		RequestID:     "req-office-missing-owner",
+		PolicyOwnerID: desktopUserID,
+	}}}
+	out := h.toolOffice(map[string]interface{}{
+		"action":                         "read_document",
+		"path":                           "does-not-matter.docx",
+		registeredToolPolicyOwnerIDField: "",
+	})
+	if !strings.Contains(out, "runtime owner is missing") {
+		t.Fatalf("Office tool should fail closed instead of using desktop owner, got: %s", out)
 	}
 }
 

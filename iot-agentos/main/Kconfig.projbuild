@@ -253,4 +253,91 @@ config MACLAW_CONVERSATION_ID
     help
         Kept stable to preserve the MaClawSrv third-party conversation session.
 
+config MACLAW_TEST_BUILD
+    bool "Enable test-only firmware hooks (never release)"
+    default n
+    help
+        Enables compile-time test hooks used only to verify fail-closed
+        lifecycle paths. This option is intentionally off in every supported
+        release sdkconfig and does not create an HTTP, Hub, console, or input
+        path for changing a test condition at runtime.
+
+if MACLAW_TEST_BUILD
+
+choice MACLAW_PROVISIONING_FAILURE_INJECTION
+    prompt "Provisioning post-save failure injection (test builds only)"
+    default MACLAW_PROVISIONING_FAILURE_NONE
+    help
+        Select exactly one deterministic failure point for the post-save
+        restart coordinator. The selected condition is fixed at compile time
+        and exists only in a dedicated test artifact. It must never be set in
+        a production profile or release package.
+
+    config MACLAW_PROVISIONING_FAILURE_NONE
+        bool "None"
+
+    config MACLAW_PROVISIONING_FAILURE_LIFECYCLE_PRIMITIVES
+        bool "Restart lifecycle primitive unavailable"
+
+    config MACLAW_PROVISIONING_FAILURE_TASK_CREATE
+        bool "Restart coordinator task creation fails"
+
+    config MACLAW_PROVISIONING_FAILURE_TASK_REGISTRY_REGISTER
+        bool "Restart coordinator task registry registration fails"
+
+endchoice
+
+config MACLAW_PROVISIONING_TEST_FORCE_PORTAL
+    bool "Force the setup portal at boot (test builds only)"
+    default n
+    help
+        Opens the provisioning portal for deterministic hardware-in-the-loop
+        verification without modifying the durable force-setup flag. This is
+        compiled only when MACLAW_TEST_BUILD is enabled and must never be set
+        in a production profile or release package.
+
+config MACLAW_DISPLAY_FAILURE_INITIALIZATION
+    bool "Inject a selected display bring-up rollback point (test only)"
+    default n
+    help
+        Enables exactly one compile-time display initialization fault point.
+        It requires MACLAW_TEST_BUILD and has no runtime setter, console, Hub
+        or production-release path.
+
+config MACLAW_DISPLAY_FAILURE_STAGE
+    int "Display bring-up fault stage (1=backlight, 2=SPI, 3=panel IO, 4=panel, 5=panel init)"
+    range 1 5
+    default 5
+    depends on MACLAW_DISPLAY_FAILURE_INITIALIZATION
+    help
+        After the selected profile has completed this private stage, it returns
+        a synthetic failure through its existing rollback label. The numeric
+        stage is intentionally an adapter-local acquisition boundary, never a
+        Device or Platform API contract.
+
+config MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION
+    bool "Inject a compact-renderer post-panel rollback point (test only)"
+    default n
+    help
+        Enables exactly one compile-time fault after the shared compact
+        renderer has acquired its display hardware. This validates the
+        boot-lifetime diagnostic-retain path used by Bread Compact and
+        Fangtang-4G. It has no runtime setter, console, Hub or
+        production-release path.
+
+config MACLAW_COMPACT_RENDERER_FAILURE_STAGE
+    int "Compact-renderer fault stage (1=input, 2=audio, 3=peripheral, 4=scanner semaphore, 5=before scanner task)"
+    range 1 5
+    default 1
+    depends on MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION
+    help
+        The shared compact renderer returns a synthetic failure immediately
+        after completing the selected acquisition step. Stage 5 fails before
+        publishing the scanner task, matching a task-create failure without
+        leaving a synthetic task alive. The stage numbers describe a
+        renderer-local lifecycle test seam; they are not Device, Platform or
+        profile-adapter API.
+
+endif
+
 endmenu

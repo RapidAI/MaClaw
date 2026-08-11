@@ -1,9 +1,9 @@
 # ClawMate Maker：ESP32 跨平台刷机工具设计
 
-> 状态：实现中 v0.7（自动多设备识别与 Release 下载）
+> 状态：已完成 v0.7（自动多设备识别、四板型签名发布与 Release 下载）
 > 目标平台：Windows 10/11、macOS 12+（Intel / Apple Silicon）、主流 x86_64 / arm64 Linux
-> 当前 Windows 实机只读验证：EchoEar 2ST、Bread Compact、Fangtang 4G（均为 ESP32-S3、16 MB Flash、8 MB PSRAM）
-> 当前发布流水线：三种板型均有独立 profile、精确 Release asset 名和签名包校验规则；截至 2026-08-07，`RapidAI/MaClaw` 最新 GitHub Release 尚无 `.clawfw` 资产。已修复无效 legacy gitlink 导致的递归 submodule checkout；受保护 Release workflow 完成并发布三种签名资产后，线上自动下载路径即可端到端验证。
+> 当前 Windows 实机只读验证：EchoEar 2ST、Bread Compact、Fangtang 4G（均为 ESP32-S3、16 MB Flash、8 MB PSRAM）；Waveshare S3 Touch AMOLED 1.75C 已注册为独立 ESP32-S3、32 MiB Flash profile，须在独立硬件上完成同等验证。
+> 当前发布流水线：四种板型均有独立 profile、精确 Release asset 名和签名包校验规则。Waveshare 使用 `waveshare-s3-touch-amoled-1.75c-v1`、`maclaw-s3-32m-factory-v1` 和专属 32 MiB 包，绝不接受任一 16 MiB 包；其余三种为 16 MiB。受保护 Release workflow 会构建、签名、验证并发布四种资产，线上自动下载路径具备端到端门禁。
 > 协议发布门禁：Release CI 会同时校验 `firmware_identity.c` 的 protocol:2 字段、nonce-bound IDENTIFY/BOOT_STATUS 查询处理和生成配置中的 USB Serial/JTAG 次级控制台；缺少任一项时拒绝生成 `.clawfw`。
 > 文档日期：2026-08-07
 
@@ -24,7 +24,7 @@ ClawMate Maker 应当是一个“发布固件安装器”，不是一个缩小�
 - MVP 安全策略：只支持明确读取为 Secure Boot Disabled、Flash Encryption Disabled，且 anti-rollback/eFuse secure version 处于未启用基线的设备；任一状态启用、非基线或无法可靠判断时 fail-closed。安全量产设备另行设计密钥、加密下载和 anti-rollback 流程，不由普通 manifest 声明直接放行。
 - 断电边界：当前真实布局只有一个 factory App 分区，App-only 是原地更新，不能提供 A/B 原子切换或自动回滚。MVP 的承诺是“写入中断后仍可通过 ROM Bootloader 恢复”，不是“断电后旧版本仍可启动”；产品文案、状态机和硬件在环测试必须一致表达这一限制。
 
-现有 `iot-agentos` 已给出首个设备的真实约束：ESP-IDF 6.0.2、目标 `esp32s3`、16 MB Flash，当前完整布局为 `0x0` bootloader、`0x8000` partition table、`0x10000` App、`0x3b0000` srmodels、`0x6b0000` storage。该布局必须由发布流水线生成清单，不能硬编码为全局默认值。
+现有 `iot-agentos` 已给出四种设备的真实约束：均为 ESP-IDF 6.0.2、目标 `esp32s3`；EchoEar 2ST、Bread Compact、Fangtang 4G 使用各自 16 MiB layout，Waveshare S3 Touch AMOLED 1.75C 使用 32 MiB `maclaw-s3-32m-factory-v1` layout（`0x0` bootloader、`0x8000` partition table、`0x10000` App、`0x510000` model、`0xa10000` storage）。每个布局必须由发布流水线生成并签入包清单，不能硬编码为全局默认值。
 
 ## 2. 产品目标与非目标
 
@@ -153,7 +153,7 @@ ROM 探测虽然不写 Flash，但会复位正在运行的设备，因此属于�
 - 读取分区表扇区（ESP32-S3 当前默认从 `0x8000` 开始，但实际读取地址由 chip/profile 约束），校验 magic/MD5、解析条目并生成规范化 `layoutFingerprint`。App-only 不依赖旧固件自行报告布局。
 - 从当前 App 分区开头读取足以覆盖 `esp_app_desc` 的小范围数据，解析 `project_name`、`version`、`idf_ver` 和 secure version；无需读取完整 App 镜像。
 
-ROM Bootloader 通常不能可靠探测外部/封装内 PSRAM 的实际容量和可用性。能力证据必须标注 `source`、`observedAt` 和 `confidence`：Flash 容量以 ROM/JEDEC 读数为写入硬边界；PSRAM 只能来自经过 nonce 查询的运行时自检、制造身份/profile 或写后目标固件自检。App 已损坏且无制造身份时，PSRAM 为 `unknown`，不能伪装成已探测；是否允许完整恢复由板型置信度策略决定，成功最终仍要求目标固件报告满足 manifest 的 PSRAM 容量/自检。对会导致越界写入的 Flash 未知一律阻止；对只影响启动能力的 PSRAM 未知可在 `probable` 板型人工确认后尝试完整恢复，但不能允许 App-only 自动更新。
+ROM Bootloader 通常不能可靠探测外部/封装内 PSRAM 的实际容量和可用性。能力证据必须标注 `source`、`observedAt` 和 `confidence`：Flash 容量以 ROM/JEDEC 读数为写入硬边界；PSRAM 只能来自经过 nonce 查询的运行时自检、制造身份/profile 或写后目标固件自检。App 已损坏且无制造身份时，PSRAM 为 `unknown`，不能伪装成已探测；是否允许完整恢复由板型置信度策略决定，成功最终仍要求目标固件报告满足 manifest 的 PSRAM 容量/自检。对会导致越界写入的 Flash 未知一律阻止；对只影响启动能力的 PSRAM 未知可在 `probable` 板型人工确认后尝试完整恢复，但不能允许 App-only 自动更新。恢复界面必须与普通自动匹配分离：缺少 protocol:2 身份时，不得自动预取或展示“已匹配固件”；仅在存在持久化恢复锁、ROM 已精确确认 ESP32-S3 与 Flash 容量、且用户按实物标签确认板型后，才可获取该板型的完整恢复包。
 
 `layoutFingerprint` 规范输入固定为按 offset 排序的有效条目序列，每项编码 type、subtype、offset、size、label UTF-8 字节和 flags；忽略表尾 `0xFF` padding，但保留 label/flags 差异。解析必须校验 magic、终止项、条目数量、MD5 记录、地址对齐、重叠和 Flash 边界；缺少/错误 MD5 是否允许仅由 profile 对已验证旧布局显式声明，默认阻止 App-only。CI 和客户端共享 golden vectors，不能分别实现不同规范化算法。
 
@@ -187,7 +187,7 @@ ESP32 ROM 通常只能确认芯片，不能可靠区分使用同一芯片的不�
 规则：仅经过验证的制造身份才能直接产生 `confirmed` 并一键继续；`probable` 必须让用户确认；同类硬件候选超过一个为 `ambiguous`；任何物理身份、自报目标或芯片能力冲突均为 `conflict`。`ambiguous`/`conflict` 禁止刷写。用户确认只能消解证据不足，不能覆盖芯片、容量、布局或安全状态冲突。
 ### 5.3.1 端口优先的自动匹配交互（实现约束）
 
-用户可以选择一个串口，但不应被要求从 EchoEar 2ST、Bread Compact、Fangtang 4G 中手动选择固件。对所选端口，桌面端必须自动执行只读 ROM/应用身份探测；只有收到 nonce-bound 且唯一映射到官方 catalog 的运行中 `firmware_target_board_id` 时，才能自动选择该板型的唯一签名 `.clawfw` 资产、下载并验证它。若身份未知、冲突、非唯一、端口变化或签名验证失败，则显示原因并阻止刷写；禁止按 VID/PID、端口名或第一个候选项猜测固件。
+用户可以选择一个串口，但不应被要求从 EchoEar 2ST、Bread Compact、Fangtang 4G 中手动选择固件。对所选端口，桌面端必须自动执行只读 ROM/应用身份探测；只有收到 nonce-bound、协议版本严格为 `protocol:2` 且唯一映射到官方 catalog 的运行中 `firmware_target_board_id` 时，才能自动选择该板型的唯一签名 `.clawfw` 资产、下载并验证它。`protocol:1`、未返回身份、身份未知、冲突、非唯一、端口变化或签名验证失败均必须显示原因并阻止刷写，且不得预取固件或创建写入确认；ROM 容量即使唯一指向 Waveshare 32 MiB，也不能绕过这一正式运行时身份门槛。这样不会出现“界面已就绪、写入前才因协议或身份缺失被拒绝”的状态分裂。禁止按 VID/PID、端口名、Flash 容量或第一个候选项猜测固件。
 
 “自动匹配”不等于绕过用户确认：界面在开始刷写时必须显示自动识别的板型、端口与刷写影响，要求用户确认实物与识别结果一致后，才创建一次性的、端口与新鲜 probe 证据绑定的写入授权。该确认不显示板型选择器，也不允许用户将授权改绑至另一块板或另一端口。
 
@@ -894,7 +894,7 @@ type Session interface {
 ### 17.2 硬件在环矩阵
 
 - 每个受支持板型至少 2 台；若当前只有一个硬件 revision，必须记录限制，新增 revision 发布前补齐交叉升级验证，不能虚构“不同 revision”覆盖。
-- 三个 OS 各验证：首次完整刷写、App-only、断线恢复、低速回退、离线包、错误固件阻止。
+- 三种 OS 各验证：首次完整刷写、App-only、断线恢复、低速回退、离线包、错误固件阻止。
 - 用可控 USB 电源开关在每个镜像和启动关键提交点断电，验证重新连接后不会自动复位未知状态设备，并可按恢复计划完成。
 - 对当前单 factory App，在擦除开始、每个写 block、写后校验和复位前断电；验证工具明确进入 `RECOVERY_REQUIRED`，ROM 下载模式可重新写入，且产品不错误承诺旧 App 可启动。
 - 验证用户数据：App-only 前后 Wi-Fi/Token/storage 保持；完整刷写按提示清除。
@@ -983,4 +983,3 @@ type Session interface {
 - `iot-agentos/tools/flash-app-on-com3.ps1` 已验证“检查 Espressif VID/PID + 固件 SHA-256 + App-only + hard reset + 启动日志”的最小闭环。ClawMate Maker 应把这些思路泛化为跨平台、动态端口、签名 manifest 和结构化启动验证，不再固定 COM3、Python 路径或单个 hash。
 - 当前 `firmware_identity.c` 的 `protocol:1` 是实验版：使用 `BOOT_OK`、编译期 `board_id`、`firmware_version`、`local_ready/service_ready`。Phase 0 必须把它迁移到第 10.3 节冻结的正式 `protocol:2`；桌面端不得把实验版事件静默解释为正式成功证明。
 - 现有 MaClaw Wails/React 主题使用钢蓝、蓝灰和克制语义色，ClawMate Maker 可复用其产品语言，但应保持独立进程和独立发布，以降低主应用与硬件恢复流程的耦合风险。
-

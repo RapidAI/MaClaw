@@ -2021,21 +2021,10 @@ func localizationFocusedTestSuggestions(rootCauseFile, symbol string) []string {
 	return uniqueSortedSubAgentStrings(out)
 }
 
-func (s *CodingSubAgent) persistLocalizationExperience(task *TaskItem, e *CodingSubAgentLocalizationEvidence, commands []CodingSubAgentCommandResult) {
-	if s == nil || s.codingKB == nil || task == nil || e == nil || validateLocalizationEvidence(e, "") != nil {
+func persistLocalizationExperience(app *App, store *knowledge.CodingKnowledgeStore, projectPath, taskTitle string, e *CodingSubAgentLocalizationEvidence, commands []CodingSubAgentCommandResult, runtimeTaskID string) {
+	if store == nil || e == nil || validateLocalizationEvidence(e, "") != nil {
 		return
 	}
-	persistLocalizationExperience(s.codingKB, s.projectPath, task.Title, e, commands)
-}
-
-func (r *RemoteCodingSubAgent) persistLocalizationExperience(task string, e *CodingSubAgentLocalizationEvidence, commands []CodingSubAgentCommandResult) {
-	if r == nil || r.codingKB == nil || e == nil || validateLocalizationEvidence(e, "") != nil {
-		return
-	}
-	persistLocalizationExperience(r.codingKB, r.projectDir, task, e, commands)
-}
-
-func persistLocalizationExperience(store *knowledge.CodingKnowledgeStore, projectPath, taskTitle string, e *CodingSubAgentLocalizationEvidence, commands []CodingSubAgentCommandResult) {
 	if len(e.FocusedTests) == 0 {
 		e.FocusedTests = localizationFocusedTestSuggestions(e.RootCauseFile, e.RootCauseSymbol)
 	}
@@ -2056,10 +2045,27 @@ func persistLocalizationExperience(store *knowledge.CodingKnowledgeStore, projec
 		FailedAttempts:   append(failed, e.RejectedHypotheses...),
 		Labels:           []string{"bug-localization", "root-cause", filepath.ToSlash(e.RootCauseFile)},
 		SourceTaskTitle:  taskTitle,
-		Status:           knowledge.CodingStatusActive,
-		Confidence:       0.8 + e.Confidence*0.4,
+		CreatedBy:        "runtime",
+		// Agent-produced localization is reusable guidance, not a reviewed rule.
+		// Keep it staged even when the execution evidence was strong.
+		Status:     knowledge.CodingStatusCandidate,
+		Confidence: 0.8 + e.Confidence*0.4,
 	}
+	if app == nil {
+		// Keep legacy/direct callers from silently writing a model-generated
+		// active rule when they do not execute under the durable Runtime.
+		log.Printf("[coding-localization] skip automatic experience without runtime application binding")
+		return
+	}
+	provenance, err := codingExperienceRuntimeProvenance(app, runtimeTaskID)
+	if err != nil {
+		log.Printf("[coding-localization] skip automatic experience without runtime provenance: %v", err)
+		return
+	}
+	exp.SourceRuntimeTaskID = provenance.TaskID
+	exp.SourceRuntimeAttemptID = provenance.AttemptID
+	exp.EvidenceDigest = provenance.EvidenceDigest
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = store.SaveExperience(ctx, exp)
+	_, _ = store.SaveRuntimeExperience(ctx, exp)
 }

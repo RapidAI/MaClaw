@@ -18,6 +18,7 @@ import (
 type IMAuditMessage struct {
 	ID                  int64  `json:"id"`
 	Timestamp           string `json:"timestamp"`
+	BotProfileID        string `json:"bot_profile_id,omitempty"`
 	UserID              string `json:"user_id"`
 	Platform            string `json:"platform"`
 	Role                string `json:"role"` // "user" | "assistant"
@@ -123,6 +124,7 @@ func createIMAuditSchema(db *sql.DB) error {
 CREATE TABLE IF NOT EXISTS im_audit_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    bot_profile_id TEXT NOT NULL DEFAULT '',
     user_id TEXT NOT NULL,
     platform TEXT NOT NULL,
     role TEXT NOT NULL,
@@ -160,6 +162,7 @@ CREATE INDEX IF NOT EXISTS idx_im_audit_platform_user ON im_audit_messages(platf
 		return err
 	}
 	for _, column := range []struct{ name, definition string }{
+		{"bot_profile_id", "TEXT NOT NULL DEFAULT ''"},
 		{"attachment_path", "TEXT NOT NULL DEFAULT ''"},
 		{"attachment_name", "TEXT NOT NULL DEFAULT ''"},
 		{"attachment_media_type", "TEXT NOT NULL DEFAULT ''"},
@@ -171,6 +174,9 @@ CREATE INDEX IF NOT EXISTS idx_im_audit_platform_user ON im_audit_messages(platf
 		if _, err := db.Exec("ALTER TABLE im_audit_messages ADD COLUMN " + column.name + " " + column.definition); err != nil {
 			return err
 		}
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_im_audit_bot_user_ts ON im_audit_messages(bot_profile_id, user_id, timestamp, id)"); err != nil {
+		return err
 	}
 	return nil
 }
@@ -291,10 +297,10 @@ func (s *IMAuditStore) persistBatch(batch []IMAuditMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	const insertSQL = `INSERT INTO im_audit_messages (timestamp, user_id, platform, role, content, attachment_path, attachment_name, attachment_media_type, attachment_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const insertSQL = `INSERT INTO im_audit_messages (timestamp, bot_profile_id, user_id, platform, role, content, attachment_path, attachment_name, attachment_media_type, attachment_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if len(batch) == 1 {
 		m := batch[0]
-		_, err := s.db.Exec(insertSQL, m.Timestamp, m.UserID, m.Platform, m.Role, m.Content, m.AttachmentPath, m.AttachmentName, m.AttachmentMediaType, m.AttachmentSize)
+		_, err := s.db.Exec(insertSQL, m.Timestamp, m.BotProfileID, m.UserID, m.Platform, m.Role, m.Content, m.AttachmentPath, m.AttachmentName, m.AttachmentMediaType, m.AttachmentSize)
 		return err
 	}
 
@@ -314,7 +320,7 @@ func (s *IMAuditStore) persistBatch(batch []IMAuditMessage) error {
 		return fmt.Errorf("prepare insert: %w", err)
 	}
 	for _, m := range batch {
-		if _, err := stmt.Exec(m.Timestamp, m.UserID, m.Platform, m.Role, m.Content, m.AttachmentPath, m.AttachmentName, m.AttachmentMediaType, m.AttachmentSize); err != nil {
+		if _, err := stmt.Exec(m.Timestamp, m.BotProfileID, m.UserID, m.Platform, m.Role, m.Content, m.AttachmentPath, m.AttachmentName, m.AttachmentMediaType, m.AttachmentSize); err != nil {
 			_ = stmt.Close()
 			return fmt.Errorf("insert message: %w", err)
 		}
@@ -350,13 +356,19 @@ func (s *IMAuditStore) flush() {
 
 // Query returns paginated messages matching the filters.
 func (s *IMAuditStore) Query(platform, userID, keyword string, page int) (*IMAuditQueryResult, error) {
+	return s.QueryForBot(platform, "", userID, keyword, page)
+}
+
+// QueryForBot returns paginated history restricted to a Lansenger bot profile.
+// Empty botProfileID preserves the existing cross-bot API behavior.
+func (s *IMAuditStore) QueryForBot(platform, botProfileID, userID, keyword string, page int) (*IMAuditQueryResult, error) {
 	s.flush()
 	if page < 1 {
 		page = 1
 	}
 	offset := (page - 1) * imAuditPageSize
 
-	where, args := buildIMAuditWhere(platform, userID, keyword)
+	where, args := buildIMAuditWhereForBot(platform, botProfileID, userID, keyword)
 
 	// Count and fetch from one snapshot so concurrent audit writes cannot make
 	// the reported total disagree with the returned page.
@@ -373,7 +385,7 @@ func (s *IMAuditStore) Query(platform, userID, keyword string, page int) (*IMAud
 	}
 
 	// Fetch page — copy args to avoid mutating the original slice.
-	querySQL := "SELECT id, timestamp, user_id, platform, role, content, attachment_path, attachment_name, attachment_media_type, attachment_size FROM im_audit_messages" + where +
+	querySQL := "SELECT id, timestamp, bot_profile_id, user_id, platform, role, content, attachment_path, attachment_name, attachment_media_type, attachment_size FROM im_audit_messages" + where +
 		" ORDER BY timestamp ASC, id ASC LIMIT ? OFFSET ?"
 	queryArgs := make([]interface{}, len(args), len(args)+2)
 	copy(queryArgs, args)
@@ -386,7 +398,7 @@ func (s *IMAuditStore) Query(platform, userID, keyword string, page int) (*IMAud
 	var messages []IMAuditMessage
 	for rows.Next() {
 		var m IMAuditMessage
-		if err := rows.Scan(&m.ID, &m.Timestamp, &m.UserID, &m.Platform, &m.Role, &m.Content, &m.AttachmentPath, &m.AttachmentName, &m.AttachmentMediaType, &m.AttachmentSize); err != nil {
+		if err := rows.Scan(&m.ID, &m.Timestamp, &m.BotProfileID, &m.UserID, &m.Platform, &m.Role, &m.Content, &m.AttachmentPath, &m.AttachmentName, &m.AttachmentMediaType, &m.AttachmentSize); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("im audit: scan: %w", err)
 		}
@@ -485,7 +497,22 @@ func (s *IMAuditStore) AllAttachmentPaths() ([]string, error) {
 
 // ListUsers returns distinct user IDs for the given platform.
 func (s *IMAuditStore) ListUsers(platform string) ([]string, error) {
+	return s.ListUsersForBot(platform, "")
+}
+
+// ListUsersForBot returns distinct user IDs restricted to one bot profile.
+// An empty botProfileID keeps the existing cross-bot behavior.
+func (s *IMAuditStore) ListUsersForBot(platform, botProfileID string) ([]string, error) {
 	s.flush()
+	if strings.TrimSpace(botProfileID) != "" {
+		where, args := buildIMAuditWhereForBot(platform, botProfileID, "", "")
+		rows, err := s.db.Query(`SELECT DISTINCT user_id FROM im_audit_messages`+where+` ORDER BY user_id`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("im audit: list bot users: %w", err)
+		}
+		defer rows.Close()
+		return scanIMAuditUsers(rows)
+	}
 	var rows *sql.Rows
 	var err error
 	platformKind := normalizeIMAuditPlatformKind(platform)
@@ -508,6 +535,10 @@ func (s *IMAuditStore) ListUsers(platform string) ([]string, error) {
 	}
 	defer rows.Close()
 
+	return scanIMAuditUsers(rows)
+}
+
+func scanIMAuditUsers(rows *sql.Rows) ([]string, error) {
 	var users []string
 	for rows.Next() {
 		var u string
@@ -559,9 +590,15 @@ func (s *IMAuditStore) Stats() (*IMAuditStats, error) {
 
 // ExportCSV exports matching messages to a CSV file and returns the file path.
 func (s *IMAuditStore) ExportCSV(platform, userID, keyword, outputDir string) (string, error) {
+	return s.ExportCSVForBot(platform, "", userID, keyword, outputDir)
+}
+
+// ExportCSVForBot exports only records belonging to botProfileID. Empty keeps
+// backwards-compatible all-bot export semantics.
+func (s *IMAuditStore) ExportCSVForBot(platform, botProfileID, userID, keyword, outputDir string) (string, error) {
 	s.flush()
-	where, args := buildIMAuditWhere(platform, userID, keyword)
-	querySQL := "SELECT timestamp, user_id, platform, role, content, attachment_name, attachment_media_type, attachment_size, attachment_path FROM im_audit_messages" + where +
+	where, args := buildIMAuditWhereForBot(platform, botProfileID, userID, keyword)
+	querySQL := "SELECT timestamp, bot_profile_id, user_id, platform, role, content, attachment_name, attachment_media_type, attachment_size, attachment_path FROM im_audit_messages" + where +
 		" ORDER BY timestamp ASC, id ASC"
 
 	rows, err := s.db.Query(querySQL, args...)
@@ -594,17 +631,17 @@ func (s *IMAuditStore) ExportCSV(platform, userID, keyword, outputDir string) (s
 	w := csv.NewWriter(f)
 
 	// Header
-	if err := w.Write([]string{"时间", "用户ID", "平台", "角色", "内容", "附件名称", "附件类型", "附件大小(字节)", "本地路径"}); err != nil {
+	if err := w.Write([]string{"时间", "机器人ID", "用户ID", "平台", "角色", "内容", "附件名称", "附件类型", "附件大小(字节)", "本地路径"}); err != nil {
 		return "", fmt.Errorf("im audit: write csv header: %w", err)
 	}
 
 	for rows.Next() {
-		var ts, uid, plat, role, content, attachmentName, attachmentType, attachmentPath string
+		var ts, botID, uid, plat, role, content, attachmentName, attachmentType, attachmentPath string
 		var attachmentSize int64
-		if err := rows.Scan(&ts, &uid, &plat, &role, &content, &attachmentName, &attachmentType, &attachmentSize, &attachmentPath); err != nil {
+		if err := rows.Scan(&ts, &botID, &uid, &plat, &role, &content, &attachmentName, &attachmentType, &attachmentSize, &attachmentPath); err != nil {
 			return "", fmt.Errorf("im audit: scan csv row: %w", err)
 		}
-		if err := w.Write(safeIMAuditCSVRow([]string{ts, uid, plat, role, content, attachmentName, attachmentType, fmt.Sprint(attachmentSize), attachmentPath})); err != nil {
+		if err := w.Write(safeIMAuditCSVRow([]string{ts, botID, uid, plat, role, content, attachmentName, attachmentType, fmt.Sprint(attachmentSize), attachmentPath})); err != nil {
 			return "", fmt.Errorf("im audit: write csv row: %w", err)
 		}
 	}
@@ -708,9 +745,17 @@ func (s *IMAuditStore) Close() error {
 // Platform values are normalized at write time. Third-party records may be the
 // bare Hub platform or a client-specific local gateway value.
 func buildIMAuditWhere(platform, userID, keyword string) (string, []interface{}) {
+	return buildIMAuditWhereForBot(platform, "", userID, keyword)
+}
+
+func buildIMAuditWhereForBot(platform, botProfileID, userID, keyword string) (string, []interface{}) {
 	var conditions []string
 	var args []interface{}
 
+	if botProfileID = strings.TrimSpace(botProfileID); botProfileID != "" {
+		conditions = append(conditions, "bot_profile_id = ?")
+		args = append(args, botProfileID)
+	}
 	platformKind := normalizeIMAuditPlatformKind(platform)
 	if platformKind.IsThirdParty() {
 		// GLOB's literal prefix is indexable by SQLite. LIKE is case-insensitive

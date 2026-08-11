@@ -72,7 +72,7 @@ func TestIMAuditThirdPartyPlatformFilters(t *testing.T) {
 		t.Fatalf("read export: %v", err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "时间,用户ID,平台,角色,内容") {
+	if !strings.Contains(text, "时间,机器人ID,用户ID,平台,角色,内容") {
 		t.Fatalf("export header is not localized correctly: %q", text)
 	}
 	if strings.Contains(text, "qq message") || !strings.Contains(text, "hello from a") || !strings.Contains(text, "reply from b") || !strings.Contains(text, "hello through hub") {
@@ -277,6 +277,48 @@ func TestIMAuditStoreMigratesAndQueriesAttachmentColumns(t *testing.T) {
 	got := result.Messages[0]
 	if got.AttachmentName != "report.pdf" || got.AttachmentSize != 1234 || got.AttachmentPath == "" {
 		t.Fatalf("attachment=%#v", got)
+	}
+}
+
+func TestIMAuditStoreIsolatesLansengerHistoryByBotProfile(t *testing.T) {
+	store, err := NewIMAuditStore(filepath.Join(t.TempDir(), "im_audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	for _, message := range []IMAuditMessage{
+		{BotProfileID: "bot-a", UserID: "same-user", Platform: "lansenger", Role: "user", Content: "only bot a"},
+		{BotProfileID: "bot-b", UserID: "same-user", Platform: "lansenger", Role: "assistant", Content: "only bot b"},
+		{UserID: "legacy-user", Platform: "lansenger", Role: "user", Content: "legacy history"},
+	} {
+		if !store.WriteCritical(message) {
+			t.Fatal("critical audit write was not accepted")
+		}
+	}
+
+	result, err := store.QueryForBot("lansenger", "bot-a", "", "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 1 || len(result.Messages) != 1 || result.Messages[0].BotProfileID != "bot-a" || result.Messages[0].Content != "only bot a" {
+		t.Fatalf("bot-a history was not isolated: %#v", result)
+	}
+	users, err := store.ListUsersForBot("lansenger", "bot-a")
+	if err != nil || len(users) != 1 || users[0] != "same-user" {
+		t.Fatalf("bot-a users = %#v, err=%v", users, err)
+	}
+
+	exportPath, err := store.ExportCSVForBot("lansenger", "bot-a", "", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(exported); !strings.Contains(text, "bot-a") || strings.Contains(text, "bot-b") || strings.Contains(text, "legacy history") {
+		t.Fatalf("bot-scoped csv leaked another profile's history: %q", text)
 	}
 }
 

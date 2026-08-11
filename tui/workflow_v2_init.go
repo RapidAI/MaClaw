@@ -12,12 +12,18 @@ package main
 // compatibility. Production code never uses it (initWorkflowEngine removed).
 
 import (
+	"context"
+	"crypto/sha256"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
@@ -39,6 +45,7 @@ func (app *TUIApp) initWorkflowV2TUI() *tuiWorkflowV2State {
 	// Determine storage backend
 	var store v2.WorkflowStore
 	dataDir := commands.ResolveDataDir()
+	app.initCodingRuntimeStoreTUI(dataDir)
 	if dataDir != "" {
 		dbPath := filepath.Join(dataDir, "workflow_v2.db")
 		sqlStore, err := v2.NewSQLiteStore(dbPath)
@@ -85,8 +92,7 @@ func (app *TUIApp) initWorkflowV2TUI() *tuiWorkflowV2State {
 	// Use a V2-backed WorkflowChecker shim so the filter detects V2 active workflows.
 	checker := &tuiV2WorkflowChecker{machine: machine, understanding: understanding}
 	filter := v2.NewQuickFilter(checker)
-
-	return &tuiWorkflowV2State{
+	workflowState := &tuiWorkflowV2State{
 		router:        router,
 		machine:       machine,
 		store:         store,
@@ -94,6 +100,232 @@ func (app *TUIApp) initWorkflowV2TUI() *tuiWorkflowV2State {
 		understanding: understanding,
 		filter:        filter,
 	}
+	// The Ledger commits before a host projects the bounded completion into
+	// Workflow V2. Repair that narrow crash window during initialization; this
+	// reads only durable state and never invokes a model, tool, or executor.
+	app.repairCompletedTUIWorkflowCodingProjections(workflowState)
+
+	return workflowState
+}
+
+// initCodingRuntimeStoreTUI initializes the shared, host-neutral execution
+// ledger. Startup only expires abandoned leases; it never resumes an executor
+// or replays prior tool calls.
+func (app *TUIApp) initCodingRuntimeStoreTUI(dataDir string) {
+	if app == nil || dataDir == "" || app.codingRuntimeStore != nil {
+		return
+	}
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(dataDir, "coding_runtime.db"))
+	if err != nil {
+		log.Printf("[TUI-coding-runtime] SQLite store init failed: %v", err)
+		return
+	}
+	if expired, err := store.ExpireLeases(time.Now().UTC()); err != nil {
+		log.Printf("[TUI-coding-runtime] expire stale leases failed: %v", err)
+	} else if len(expired) > 0 {
+		log.Printf("[TUI-coding-runtime] marked %d stale attempt(s) interrupted; read-only recovery is required", len(expired))
+	}
+	if interrupted, err := store.InterruptUnstartedChildren(time.Now().UTC()); err != nil {
+		log.Printf("[TUI-coding-runtime] reconcile unstarted child tasks failed: %v", err)
+	} else if len(interrupted) > 0 {
+		log.Printf("[TUI-coding-runtime] marked %d waiting parent attempt(s) interrupted; child dispatch is not replayed", len(interrupted))
+	}
+	app.codingRuntimeStore = store
+}
+
+// runTUIWorkflowCodingAttempt is the TUI's explicit bridge from a Workflow V2
+// implementation phase to the durable coding runtime. Ordinary chat, document
+// planning, and artifact phases deliberately stay on their existing direct
+// RunLoop path. The TUI remains a serial local host: it does not declare an
+// isolated writer or opt into parallel writer admission.
+func (app *TUIApp) runTUIWorkflowCodingAttempt(ctx context.Context, cb *tuiCallbacks, state *v2.WorkflowState, phase *v2.Phase, userText string, history []agent.ConversationEntry) (agent.LoopResult, *codingruntime.Task, *codingruntime.Attempt, error) {
+	if app == nil || cb == nil || state == nil || phase == nil {
+		return agent.LoopResult{}, nil, nil, fmt.Errorf("TUI coding runtime requires app, callbacks, workflow state, and phase")
+	}
+	if app.codingRuntimeStore == nil {
+		return agent.LoopResult{}, nil, nil, fmt.Errorf("TUI coding runtime ledger is unavailable")
+	}
+	if !tuiWorkflowPhaseUsesCodingRuntime(state, phase) {
+		return agent.LoopResult{}, nil, nil, fmt.Errorf("workflow phase %q is not a local coding-runtime execution phase", phase.ID)
+	}
+	projectPath := strings.TrimSpace(state.ProjectPath)
+	if projectPath == "" {
+		return agent.LoopResult{}, nil, nil, fmt.Errorf("workflow coding phase requires a project path")
+	}
+	// A Workflow V2 implementation phase is a write-capable task. Do not let
+	// a bare model completion advance it: corelib must observe a changed local
+	// Git workspace before it can be recorded as completed.
+	policy := codingruntime.PolicySnapshot{ProjectRoot: projectPath, Mode: "local", FinalWorkspaceGateRequired: true}
+	digest, err := codingruntime.PolicyDigest(policy)
+	if err != nil {
+		return agent.LoopResult{}, nil, nil, fmt.Errorf("freeze TUI coding policy: %w", err)
+	}
+	policy.Digest = digest
+	if existing, getErr := app.codingRuntimeStore.GetTask(tuiWorkflowRuntimeTaskID(state.ID, phase.ID)); getErr == nil {
+		// The Ledger is the source of truth for executor completion. A process
+		// can die after Runner commits the terminal Attempt but before this host
+		// projects it into Workflow V2. On restart, repair only that projection:
+		// do not invoke a model, tool, or executor a second time.
+		if existing.Status == codingruntime.TaskCompleted {
+			return tuiCompletedCodingRuntimeProjection(*existing), existing, nil, nil
+		}
+		if existing.Status == codingruntime.TaskInterrupted {
+			return agent.LoopResult{}, existing, nil, codingruntime.ErrRecoveryRequired
+		}
+		if existing.Status != codingruntime.TaskQueued && existing.Status != codingruntime.TaskWaitingApproval {
+			return agent.LoopResult{}, existing, nil, fmt.Errorf("TUI coding runtime task is not ready for a new attempt: %s", existing.Status)
+		}
+	} else if getErr != codingruntime.ErrNotFound {
+		return agent.LoopResult{}, nil, nil, fmt.Errorf("load TUI coding runtime task: %w", getErr)
+	}
+	var loopResult agent.LoopResult
+	executor := codingagent.LoopExecutor{Run: func(runCtx context.Context, request codingruntime.ExecutionRequest) agent.LoopResult {
+		// tuiCallbacks already owns the UI's cancellation and tool-policy
+		// boundary. RunLoop's ShouldStop observes the same cancel channel; the
+		// runner context is checked by LoopExecutor before and after this call.
+		cb.bindRuntimeTask(app.codingRuntimeStore, request.Attempt)
+		cb.runtimeMu.Lock()
+		cb.runtimeChildApp = app
+		cb.childExecutions = &codingruntime.ChildExecutionRegistry{}
+		cb.runtimeMu.Unlock()
+		defer cb.clearRuntimeTask()
+		loopResult = codingagent.Run(cb, userText, userText, history, nil, nil)
+		return loopResult
+	}}
+	taskID := tuiWorkflowRuntimeTaskID(state.ID, phase.ID)
+	runner := codingruntime.Runner{
+		Store:           app.codingRuntimeStore,
+		LeaseOwner:      "tui:workflow:" + state.ID,
+		LeaseDuration:   15 * time.Minute,
+		WorkspaceProber: codingruntime.NewLocalGitWorkspaceProber(projectPath),
+	}
+	task, attempt, err := runner.Run(ctx, codingruntime.Task{
+		TaskID:        taskID,
+		WorkflowID:    state.ID,
+		PhaseID:       phase.ID,
+		OwnerID:       "tui-user",
+		ProjectRef:    projectPath,
+		Mode:          "local",
+		RequestedWork: tuiWorkflowRequestedWork(state, phase, userText),
+		PolicyDigest:  digest,
+	}, policy, executor)
+	return loopResult, task, attempt, err
+}
+
+// tuiCompletedCodingRuntimeProjection is intentionally a bounded synthetic
+// loop result. It exists solely to let the caller project a durably completed
+// attempt into Workflow V2 after a crash. It contains no prior model response,
+// command, tool argument, or replay plan, and must never be fed back to an
+// executor as continuation context.
+func tuiCompletedCodingRuntimeProjection(task codingruntime.Task) agent.LoopResult {
+	return agent.LoopResult{Text: fmt.Sprintf("Coding runtime task %s completed durably. Workflow projection was repaired without replaying the executor.", task.TaskID)}
+}
+
+// repairCompletedTUIWorkflowCodingProjections restores only a missing
+// Workflow V2 projection after a completed Ledger task survived a process
+// exit. The deterministic task ID ties the active execution phase to one
+// durable task, so no mutable prompt, command, transcript, or executor state
+// is needed (or consulted) for repair.
+func (app *TUIApp) repairCompletedTUIWorkflowCodingProjections(wf *tuiWorkflowV2State) {
+	if app == nil || app.codingRuntimeStore == nil || wf == nil || wf.machine == nil {
+		return
+	}
+	userIDs, err := wf.machine.ListAllStoredUserIDs()
+	if err != nil {
+		log.Printf("[TUI-coding-runtime] list workflows for completed projection repair failed: %v", err)
+		return
+	}
+	for _, userID := range userIDs {
+		state := wf.machine.GetActive(strings.TrimSpace(userID))
+		phase := (*v2.Phase)(nil)
+		if state != nil {
+			phase = state.ActivePhase()
+		}
+		if !tuiWorkflowPhaseUsesCodingRuntime(state, phase) {
+			continue
+		}
+		taskID := tuiWorkflowRuntimeTaskID(state.ID, phase.ID)
+		task, getErr := app.codingRuntimeStore.GetTask(taskID)
+		if getErr != nil || task == nil || task.Status != codingruntime.TaskCompleted || task.WorkflowID != state.ID || task.PhaseID != phase.ID || strings.TrimSpace(task.ProjectRef) != strings.TrimSpace(state.ProjectPath) {
+			continue
+		}
+		projection := tuiCompletedCodingRuntimeProjection(*task)
+		if err := wf.machine.RecordOutput(strings.TrimSpace(userID), projection.Text); err != nil {
+			log.Printf("[TUI-coding-runtime] completed workflow projection still pending: user=%s workflow=%s err=%v", userID, state.ID, err)
+			continue
+		}
+		log.Printf("[TUI-coding-runtime] repaired completed workflow projection without executor replay: user=%s workflow=%s", userID, state.ID)
+	}
+}
+
+// prepareTUIWorkflowCodingRecovery exposes the core recovery protocol to the
+// TUI command layer. It is deliberately read-only: it prepares a plan, probes
+// the local Git workspace, and returns an explanation without allocating an
+// attempt or calling a model/tool executor.
+func (app *TUIApp) prepareTUIWorkflowCodingRecovery(ctx context.Context, taskID string) (*codingruntime.RecoveryPlan, string, error) {
+	if app == nil || app.codingRuntimeStore == nil {
+		return nil, "", fmt.Errorf("TUI coding runtime ledger is unavailable")
+	}
+	service := codingruntime.RecoveryService{Store: app.codingRuntimeStore}
+	plan, err := service.PrepareRecoveryForTask(strings.TrimSpace(taskID))
+	if err != nil {
+		return nil, "", err
+	}
+	if strings.ToLower(strings.TrimSpace(plan.Task.Mode)) != "local" || strings.TrimSpace(plan.Task.ProjectRef) == "" {
+		return nil, "", fmt.Errorf("TUI recovery supports only a declared local coding workspace")
+	}
+	plan, err = service.ProbeWorkspace(ctx, plan, codingruntime.NewLocalGitWorkspaceProber(plan.Task.ProjectRef))
+	if err != nil {
+		return nil, "", err
+	}
+	summary, err := service.PresentRecoveryDiff(plan)
+	if err != nil {
+		return nil, "", err
+	}
+	return plan, summary, nil
+}
+
+// confirmTUIWorkflowCodingRecovery records a human confirmation after a fresh
+// read-only probe. A confirmation only queues the stable task for a future,
+// explicit new attempt; it never invokes the old executor or reuses commands.
+func (app *TUIApp) confirmTUIWorkflowCodingRecovery(ctx context.Context, taskID string, confirmed bool) (string, error) {
+	plan, summary, err := app.prepareTUIWorkflowCodingRecovery(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	service := codingruntime.RecoveryService{Store: app.codingRuntimeStore}
+	if err := service.ConfirmContinuation(plan, plan.Interrupted.Policy, confirmed); err != nil {
+		return "", err
+	}
+	if !confirmed {
+		return summary + "; continuation was declined; no executor was run", nil
+	}
+	return summary + "; continuation was confirmed; task is queued but no executor was run", nil
+}
+
+func tuiWorkflowPhaseUsesCodingRuntime(state *v2.WorkflowState, phase *v2.Phase) bool {
+	if state == nil || phase == nil {
+		return false
+	}
+	// A confirmable phase produces reviewable output and must return through the
+	// Workflow state machine before any write-capable runtime is admitted. This
+	// is intentionally checked here (not only in template definitions): stored
+	// workflows can outlive a template change, and a malformed/custom phase must
+	// fail closed instead of bypassing the confirmation boundary.
+	return state.Type == string(v2.WorkflowCoding) && !phase.NeedsConfirm && phase.Kind == v2.PhaseKindExecution && phase.ExecMode == v2.ExecModeSubAgent
+}
+
+func tuiWorkflowRuntimeTaskID(workflowID, phaseID string) string {
+	// Workflow IDs and phase IDs originate from the local state machine. Hash
+	// them nevertheless so the runtime ID stays bounded and never absorbs user
+	// prompt text or filesystem paths.
+	sum := sha256.Sum256([]byte(strings.TrimSpace(workflowID) + "\n" + strings.TrimSpace(phaseID)))
+	return fmt.Sprintf("tui-coding-%x", sum[:16])
+}
+
+func tuiWorkflowRequestedWork(state *v2.WorkflowState, phase *v2.Phase, userText string) string {
+	parts := []string{strings.TrimSpace(state.Summary), strings.TrimSpace(phase.Name), strings.TrimSpace(userText)}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 // tuiWorkflowV2ConfirmClassifier uses LLM to classify user intent during

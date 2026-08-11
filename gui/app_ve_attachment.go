@@ -14,13 +14,14 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // File size limits.
 const (
-	maxTextFileSize     = 500 * 1024       // 500KB
-	maxImageFileSize    = 10 * 1024 * 1024 // 10MB
-	maxDocumentFileSize = 20 * 1024 * 1024 // 20MB
+	maxTextFileSize     = 500 * 1024                   // 500KB
+	maxImageFileSize    = 10 * 1024 * 1024             // 10MB
+	maxDocumentFileSize = agent.MaxOfficeReadFileBytes // PDF and six Office formats share the reader boundary
 )
 
 // File type extension sets.
@@ -36,7 +37,10 @@ var (
 		".gif": true, ".webp": true, ".bmp": true,
 	}
 	documentExtensions = map[string]bool{
-		".pdf": true, ".docx": true,
+		".pdf": true,
+		".doc": true, ".docx": true,
+		".xls": true, ".xlsx": true,
+		".ppt": true, ".pptx": true,
 	}
 )
 
@@ -76,7 +80,7 @@ func validateFileSize(path string, category string) error {
 		}
 	case "document":
 		if size > maxDocumentFileSize {
-			return fmt.Errorf("document file exceeds 20MB limit (%d bytes)", size)
+			return fmt.Errorf("document file exceeds %d MiB limit (%d bytes)", maxDocumentFileSize>>20, size)
 		}
 	default:
 		return fmt.Errorf("unknown file category: %s", category)
@@ -96,6 +100,17 @@ var veFileRelayHTTPClient = &http.Client{
 }
 
 const veFileAttachmentMaxSize = 50 * 1024 * 1024 // 50 MB
+
+// veFileAttachmentMaxBytesFor keeps the direct single-file VE sender aligned
+// with the shared PDF/Office reader. Other attachments retain the wider relay
+// size cap. This does not trust an extension as content: actual extraction
+// still performs signature, ZIP/OLE, and encryption checks.
+func veFileAttachmentMaxBytesFor(filePath string) int64 {
+	if documentExtensions[strings.ToLower(filepath.Ext(filePath))] {
+		return agent.MaxOfficeReadFileBytes
+	}
+	return veFileAttachmentMaxSize
+}
 
 // uploadToFileRelay uploads a file to the Hub file relay endpoint via multipart/form-data.
 // Returns the file_url on success.
@@ -224,8 +239,18 @@ func mimeTypeForFile(path string) string {
 		return "image/bmp"
 	case ".pdf":
 		return "application/pdf"
+	case ".doc":
+		return "application/msword"
 	case ".docx":
 		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".xls":
+		return "application/vnd.ms-excel"
+	case ".xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".ppt":
+		return "application/vnd.ms-powerpoint"
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 	default:
 		return "application/octet-stream"
 	}
@@ -271,8 +296,8 @@ func buildLocalVEFileAttachmentMessage(filePath, displayName, content string) (a
 	if info.IsDir() {
 		return a2a.GroupDiscussionMessage{}, nil, fmt.Errorf("%s is a directory", filePath)
 	}
-	if info.Size() > veFileAttachmentMaxSize {
-		return a2a.GroupDiscussionMessage{}, nil, fmt.Errorf("file is too large: %d bytes; VE mode limit is 50 MB", info.Size())
+	if maxBytes := veFileAttachmentMaxBytesFor(filePath); info.Size() > maxBytes {
+		return a2a.GroupDiscussionMessage{}, nil, fmt.Errorf("file is too large: %d bytes; VE mode limit is %d MiB", info.Size(), maxBytes>>20)
 	}
 
 	filename := cleanVEAttachmentDisplayName(displayName)

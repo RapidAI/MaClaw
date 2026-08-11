@@ -2,9 +2,17 @@ package browser
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// ErrVisionUnsupported is returned (wrapped) by the sendImage callback when the
+// currently active model has no image-input capability. It signals a
+// configuration/capability state, not an endpoint failure: composite providers
+// must NOT count it against the vision circuit breaker or log it as a failure,
+// because it is the expected steady state for text-only models.
+var ErrVisionUnsupported = errors.New("current model does not support vision")
 
 // LLMVisionProvider uses a multimodal LLM to recognize text in screenshots.
 type LLMVisionProvider struct {
@@ -45,8 +53,10 @@ func (p *LLMVisionProvider) Recognize(pngBase64 string) ([]OCRResult, error) {
 
 	var results []OCRResult
 	if err := json.Unmarshal([]byte(resp), &results); err != nil {
-		// Fallback: treat entire response as a single text result
-		return []OCRResult{{Text: resp, Confidence: 0.5}}, nil
+		// Unparseable output (prose, markdown tables, ...) carries no bounding
+		// boxes — downstream element labeling would silently degrade. Report an
+		// error so composite providers can fall back to the local OCR engine.
+		return nil, fmt.Errorf("LLM vision: response is not a JSON array: %w", err)
 	}
 	return results, nil
 }

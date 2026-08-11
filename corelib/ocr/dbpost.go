@@ -40,13 +40,25 @@ type point struct{ x, y float64 }
 // dbPostProcess runs DB post-processing on an HxW probability map and returns
 // boxes mapped to the (destW, destH) original image coordinate space.
 func dbPostProcess(prob []float32, width, height, destW, destH int) []DetBox {
-	bitmap := make([]uint8, width*height)
+	return dbPostProcessS(prob, width, height, destW, destH, nil)
+}
+
+// dbPostProcessS is dbPostProcess with an optional per-Engine scratch for the
+// binarized map, the contour label grid and fillPoly's intersection list.
+func dbPostProcessS(prob []float32, width, height, destW, destH int, sc *engineScratch) []DetBox {
+	var bitmap []uint8
+	if sc != nil {
+		bitmap = u8Scratch(&sc.bitmap, width*height)
+		clear(bitmap) // reused buffer holds stale 1s from the previous frame
+	} else {
+		bitmap = make([]uint8, width*height)
+	}
 	for i, p := range prob {
 		if p > dbThresh {
 			bitmap[i] = 1
 		}
 	}
-	contours := findContours(bitmap, width, height)
+	contours := findContoursS(bitmap, width, height, sc)
 	if len(contours) > dbMaxCandidates {
 		contours = contours[:dbMaxCandidates]
 	}
@@ -61,7 +73,7 @@ func dbPostProcess(prob []float32, width, height, destW, destH int) []DetBox {
 		if len(approx) < 4 {
 			continue
 		}
-		score := boxScoreFast(prob, width, height, approx)
+		score := boxScoreFastS(prob, width, height, approx, sc)
 		if score < dbBoxThresh {
 			continue
 		}
@@ -125,9 +137,20 @@ var nbd8 = [8][2]int{{0, -1}, {1, -1}, {1, 0}, {1, 1}, {0, 1}, {-1, 1}, {-1, 0},
 // findContours returns all borders (outer and hole) of the binary image,
 // compressed like CHAIN_APPROX_SIMPLE (collinear intermediate points dropped).
 func findContours(bitmap []uint8, w, h int) [][]point {
+	return findContoursS(bitmap, w, h, nil)
+}
+
+// findContoursS is findContours with an optional scratch label grid.
+func findContoursS(bitmap []uint8, w, h int, sc *engineScratch) [][]point {
 	// labeled grid: 0 background, 1 unvisited foreground, >1 assigned border id,
 	// negative values mark pixels visited with a 0 right-neighbor.
-	f := make([]int32, w*h)
+	var f []int32
+	if sc != nil {
+		f = i32Scratch(&sc.labels, w*h)
+		clear(f) // reused buffer holds stale labels from the previous frame
+	} else {
+		f = make([]int32, w*h)
+	}
 	for i, v := range bitmap {
 		if v != 0 {
 			f[i] = 1
@@ -396,6 +419,11 @@ func dpArc(pts []point, a, b int, epsilon float64) []point {
 // boxScoreFast computes the mean probability inside the polygon, restricted
 // to its bounding box (PaddleOCR box_score_fast).
 func boxScoreFast(prob []float32, w, h int, poly []point) float32 {
+	return boxScoreFastS(prob, w, h, poly, nil)
+}
+
+// boxScoreFastS is boxScoreFast with an optional scratch intersection list.
+func boxScoreFastS(prob []float32, w, h int, poly []point, sc *engineScratch) float32 {
 	xmin, xmax := math.MaxInt, math.MinInt
 	ymin, ymax := math.MaxInt, math.MinInt
 	for _, p := range poly {
@@ -411,7 +439,14 @@ func boxScoreFast(prob []float32, w, h int, poly []point) float32 {
 
 	mw, mh := xmax-xmin+1, ymax-ymin+1
 	mask := getMaskScratch(mw * mh)
-	fillPoly(mask, mw, mh, poly, xmin, ymin)
+	var xs []float64
+	if sc != nil {
+		xs = sc.xs
+	}
+	xs = fillPoly(mask, mw, mh, poly, xmin, ymin, xs)
+	if sc != nil {
+		sc.xs = xs
+	}
 
 	var sum float64
 	var cnt int
@@ -451,13 +486,15 @@ func getMaskScratch(n int) []uint8 {
 func putMaskScratch(b []uint8) { maskScratchPool.Put(b[:0]) }
 
 // fillPoly rasterizes a polygon (even-odd scanline) into mask; coordinates
-// are shifted by (ox, oy). Matches cv2.fillPoly for simple polygons.
-func fillPoly(mask []uint8, w, h int, poly []point, ox, oy int) {
+// are shifted by (ox, oy). Matches cv2.fillPoly for simple polygons. xs is an
+// optional reusable scanline-intersection buffer; the (possibly grown) slice
+// is returned so the caller can keep it for the next call.
+func fillPoly(mask []uint8, w, h int, poly []point, ox, oy int, xs []float64) []float64 {
 	n := len(poly)
 	if n < 3 {
-		return
+		return xs
 	}
-	xs := make([]float64, 0, n) // scanline intersections; reused across rows
+	xs = xs[:0]
 	for y := 0; y < h; y++ {
 		yc := float64(y+oy) + 0.5 // pixel center
 		xs = xs[:0]
@@ -480,6 +517,7 @@ func fillPoly(mask []uint8, w, h int, poly []point, ox, oy int) {
 			}
 		}
 	}
+	return xs
 }
 
 // ---------------------------------------------------------------------------
@@ -580,8 +618,14 @@ func getMiniBoxes(pts []point) ([4]point, float64) {
 		{cx - hw*ca - hh*sa, cy - hw*sa + hh*ca},
 	}
 	// Order by x, then split left/right pair by y (PaddleOCR ordering).
-	order := []int{0, 1, 2, 3}
-	sort.SliceStable(order, func(i, j int) bool { return corners[order[i]].x < corners[order[j]].x })
+	// Stable insertion sort on a stack array — sort.Slice on a heap slice
+	// showed up as a per-box allocation.
+	order := [4]int{0, 1, 2, 3}
+	for i := 1; i < 4; i++ {
+		for j := i; j > 0 && corners[order[j]].x < corners[order[j-1]].x; j-- {
+			order[j], order[j-1] = order[j-1], order[j]
+		}
+	}
 	i1, i4 := order[0], order[1]
 	if corners[order[1]].y > corners[order[0]].y {
 		i1, i4 = order[0], order[1]

@@ -319,8 +319,10 @@ Object.assign(I18N.zh, { deleteKnowledgeBatch: "\u5220\u9664", deleteKnowledgeBa
 Object.assign(I18N.zh, { clearOwnKnowledge: "\u6e05\u9664", clearOwnKnowledgeConfirm: "\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u4e2d\u7684\u6240\u6709\u6570\u636e\u5c06\u88ab\u6e05\u9664\uff0c\u4e14\u4e0d\u53ef\u6062\u590d\u3002\u786e\u8ba4\u7ee7\u7eed\uff1f", clearOwnKnowledgePasswordPrompt: "\u8bf7\u8f93\u5165\u7ba1\u7406\u5458\u5bc6\u7801\u6216 Admin Secret\uff0c\u7528\u4e8e\u6e05\u9664\u8be5\u77e5\u8bc6\u5e93\uff1a", clearOwnKnowledgeDone: "\u77e5\u8bc6\u5e93\u5df2\u6e05\u9664\uff0c\u5220\u9664\u6765\u6e90\u6570\uff1a{count}", clearOwnKnowledgeAuthRequired: "\u9700\u8981\u8f93\u5165\u7ba1\u7406\u5458\u51ed\u636e\u3002" });
 Object.assign(I18N.en, { enterTextFirst: "Enter text before importing.", chooseFileFirst: "Choose at least one document or archive.", enterURLFirst: "Enter at least one URL.", customTopicRequired: "Enter the custom topic hint.", customLabelRequired: "Enter the custom labels.", customTitleRequired: "Enter the custom title.", importQueued: "Import submitted. Checking progress...", importProgress: "Checking progress {current}/{total}..." });
 Object.assign(I18N.zh, { enterTextFirst: "\u8bf7\u5148\u8f93\u5165\u8981\u5bfc\u5165\u7684\u6587\u672c\u3002", chooseFileFirst: "\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u6587\u6863\u6216\u538b\u7f29\u5305\u3002", enterURLFirst: "\u8bf7\u5148\u8f93\u5165\u81f3\u5c11\u4e00\u4e2a URL\u3002", customTopicRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u4e3b\u9898\u63d0\u793a\u3002", customLabelRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u7b7e\u3002", customTitleRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u9898\u3002", importQueued: "\u5bfc\u5165\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6...", importProgress: "\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6 {current}/{total}..." });
-Object.assign(I18N.en, { knowledgeNav: "Knowledge", knowledgeTitle: "Knowledge Base", knowledgeHint: "Import into your own knowledge base and search readable knowledge scopes.", knowledgeQuery: "Knowledge query", knowledgeQueryHint: "Search your own knowledge plus connected readable scopes. Other users' private knowledge is not queried.", knowledgeQueryPlaceholder: "Search knowledge...", knowledgeLimit: "Results", knowledgeNoResults: "No matching knowledge", knowledgeQueryFailed: "Knowledge query failed", knowledgeResultType: "Type", knowledgeResultScore: "Score" });
-Object.assign(I18N.zh, { knowledgeNav: "\u77e5\u8bc6\u5e93", knowledgeTitle: "\u77e5\u8bc6\u5e93", knowledgeHint: "\u5bfc\u5165\u5230\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\uff0c\u5e76\u67e5\u8be2\u81ea\u5df1\u53ef\u8bfb\u7684\u77e5\u8bc6\u8303\u56f4\u3002", knowledgeQuery: "\u77e5\u8bc6\u67e5\u8be2", knowledgeQueryHint: "\u4ec5\u641c\u7d22\u81ea\u6709\u77e5\u8bc6\u548c\u5df2\u5173\u8054\u7684\u53ef\u8bfb\u8303\u56f4\uff0c\u4e0d\u67e5\u5176\u5b83\u7528\u6237\u7684\u79c1\u6709\u77e5\u8bc6\u3002", knowledgeQueryPlaceholder: "\u641c\u7d22\u77e5\u8bc6...", knowledgeLimit: "\u7ed3\u679c\u6570", knowledgeNoResults: "\u672a\u627e\u5230\u5339\u914d\u77e5\u8bc6", knowledgeQueryFailed: "\u77e5\u8bc6\u67e5\u8be2\u5931\u8d25", knowledgeResultType: "\u7c7b\u578b", knowledgeResultScore: "\u5206\u6570" });
+Object.assign(I18N.en, { knowledgeNav: "Knowledge", knowledgeTitle: "Knowledge Base", knowledgeHint: "Import into your own knowledge base and search readable knowledge scopes.", knowledgeQuery: "Knowledge query", knowledgeQueryHint: "Search your own knowledge plus connected readable scopes. Other users' private knowledge is not queried.", knowledgeQueryPlaceholder: "Search knowledge...", knowledgeLimit: "Results", knowledgeNoResults: "No matching knowledge", knowledgeQueryFailed: "Knowledge query failed", knowledgeResultType: "Type", knowledgeResultScore: "Score",
+  enterpriseLibraries: "Enterprise knowledge", enterpriseLibrariesHint: "Hub-synced digital assets on this service (one-way Hub→local). Disable sync to stop updates for a library; use Purge to delete local cache (including revoked keep_local).", enterpriseNoLibraries: "No enterprise libraries yet. Connect Hub credentials in settings and run Sync now.", enterpriseHubConfigured: "Hub configured", enterpriseHubMissing: "Hub credentials missing (RemoteHubURL + Viewer Token)", enterpriseSyncNow: "Sync now", enterpriseSyncOn: "Sync on", enterpriseSyncOff: "Sync off", enterpriseEnableSync: "Enable sync", enterpriseDisableSync: "Disable sync", enterpriseAccessActive: "Active", enterpriseAccessHubOff: "Hub sync off", enterpriseAccessRevoked: "Revoked (local cache)", enterpriseLastSync: "Last sync", enterpriseRev: "rev", enterpriseSyncDone: "Enterprise sync finished.", enterpriseSyncFailed: "Enterprise sync failed", enterpriseToggleFailed: "Failed to update sync preference", enterprisePurge: "Purge", enterprisePurgeConfirm: "Delete local cache for this enterprise library? It will only return after the next Hub sync.", enterprisePurged: "Local cache purged", enterprisePurgeFailed: "Purge failed" });
+Object.assign(I18N.zh, { knowledgeNav: "\u77e5\u8bc6\u5e93", knowledgeTitle: "\u77e5\u8bc6\u5e93", knowledgeHint: "\u5bfc\u5165\u5230\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\uff0c\u5e76\u67e5\u8be2\u81ea\u5df1\u53ef\u8bfb\u7684\u77e5\u8bc6\u8303\u56f4\u3002", knowledgeQuery: "\u77e5\u8bc6\u67e5\u8be2", knowledgeQueryHint: "\u4ec5\u641c\u7d22\u81ea\u6709\u77e5\u8bc6\u548c\u5df2\u5173\u8054\u7684\u53ef\u8bfb\u8303\u56f4\uff0c\u4e0d\u67e5\u5176\u5b83\u7528\u6237\u7684\u79c1\u6709\u77e5\u8bc6\u3002", knowledgeQueryPlaceholder: "\u641c\u7d22\u77e5\u8bc6...", knowledgeLimit: "\u7ed3\u679c\u6570", knowledgeNoResults: "\u672a\u627e\u5230\u5339\u914d\u77e5\u8bc6", knowledgeQueryFailed: "\u77e5\u8bc6\u67e5\u8be2\u5931\u8d25", knowledgeResultType: "\u7c7b\u578b", knowledgeResultScore: "\u5206\u6570",
+  enterpriseLibraries: "\u4f01\u4e1a\u77e5\u8bc6\u5e93", enterpriseLibrariesHint: "\u672c\u670d\u52a1\u4ece Hub \u5355\u5411\u540c\u6b65\u7684\u6570\u5b57\u8d44\u4ea7\u3002\u7981\u6b62\u540c\u6b65\u540e\u4e0d\u518d\u62c9\u53d6\u66f4\u65b0\uff1b\u53ef\u7528\u300c\u6e05\u9664\u7f13\u5b58\u300d\u5220\u9664\u672c\u5730\u5e93\uff08\u542b\u5df2\u64a4\u9500 keep_local\uff09\u3002", enterpriseNoLibraries: "\u6682\u65e0\u4f01\u4e1a\u77e5\u8bc6\u5e93\u3002\u8bf7\u5728\u8bbe\u7f6e\u4e2d\u914d\u7f6e Hub \u51ed\u636e\u5e76\u70b9\u51fb\u300c\u7acb\u5373\u540c\u6b65\u300d\u3002", enterpriseHubConfigured: "Hub \u5df2\u914d\u7f6e", enterpriseHubMissing: "\u7f3a\u5c11 Hub \u51ed\u636e\uff08RemoteHubURL + Viewer Token\uff09", enterpriseSyncNow: "\u7acb\u5373\u540c\u6b65", enterpriseSyncOn: "\u540c\u6b65\u5df2\u5f00\u542f", enterpriseSyncOff: "\u540c\u6b65\u5df2\u7981\u6b62", enterpriseEnableSync: "\u5f00\u542f\u540c\u6b65", enterpriseDisableSync: "\u7981\u6b62\u540c\u6b65", enterpriseAccessActive: "\u53ef\u7528", enterpriseAccessHubOff: "Hub \u5df2\u505c\u540c\u6b65", enterpriseAccessRevoked: "\u5df2\u64a4\u9500\uff08\u672c\u5730\u4ecd\u4fdd\u7559\uff09", enterpriseLastSync: "\u4e0a\u6b21\u540c\u6b65", enterpriseRev: "rev", enterpriseSyncDone: "\u4f01\u4e1a\u77e5\u8bc6\u5e93\u540c\u6b65\u5b8c\u6210\u3002", enterpriseSyncFailed: "\u4f01\u4e1a\u77e5\u8bc6\u5e93\u540c\u6b65\u5931\u8d25", enterpriseToggleFailed: "\u66f4\u65b0\u540c\u6b65\u5f00\u5173\u5931\u8d25", enterprisePurge: "\u6e05\u9664\u7f13\u5b58", enterprisePurgeConfirm: "\u5220\u9664\u8be5\u4f01\u4e1a\u5e93\u7684\u672c\u5730\u7f13\u5b58\uff1f\u4ec5\u5728\u4e0b\u6b21 Hub \u540c\u6b65\u540e\u91cd\u65b0\u62c9\u53d6\u3002", enterprisePurged: "\u672c\u5730\u7f13\u5b58\u5df2\u6e05\u9664", enterprisePurgeFailed: "\u6e05\u9664\u5931\u8d25" });
 Object.assign(I18N.en, { memoryManager: "Memory management", memoryManagerHint: "View, search, add, edit, and delete this user's long-term memory.", memorySearch: "Search memory", memoryCategory: "Category", memoryContent: "Memory content", memoryContentRequired: "Enter memory content.", memoryContentTooLong: "Memory content must be {max} characters or fewer.", memoryTags: "Tags", memoryTagsHint: "Comma or newline separated", memoryTagsTooMany: "Use {max} tags or fewer.", memoryTagTooLong: "Each tag must be {max} characters or fewer.", memoryRefresh: "Refresh", memoryClear: "Clear", memoryAdd: "Add memory", memoryUpdate: "Update memory", memoryCancelEdit: "Cancel edit", memoryEmpty: "No memory entries", memorySaved: "Memory saved", memoryDeleted: "Memory deleted", memoryUpdated: "Memory updated", memoryEdit: "Edit", memoryDelete: "Delete", memoryAllCategories: "All categories", memoryTotal: "Total", memoryAccessCount: "Access", memoryUpdatedAt: "Updated", memoryLoadMore: "Load more" });
 Object.assign(I18N.zh, { memoryManager: "\u8bb0\u5fc6\u7ba1\u7406", memoryManagerHint: "\u67e5\u770b\u3001\u641c\u7d22\u3001\u65b0\u589e\u3001\u7f16\u8f91\u548c\u5220\u9664\u5f53\u524d\u7528\u6237\u7684\u957f\u671f\u8bb0\u5fc6\u3002", memorySearch: "\u641c\u7d22\u8bb0\u5fc6", memoryCategory: "\u5206\u7c7b", memoryContent: "\u8bb0\u5fc6\u5185\u5bb9", memoryContentRequired: "\u8bf7\u8f93\u5165\u8bb0\u5fc6\u5185\u5bb9\u3002", memoryContentTooLong: "\u8bb0\u5fc6\u5185\u5bb9\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryTags: "\u6807\u7b7e", memoryTagsHint: "\u9017\u53f7\u6216\u6362\u884c\u5206\u9694", memoryTagsTooMany: "\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u3002", memoryTagTooLong: "\u5355\u4e2a\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryRefresh: "\u5237\u65b0", memoryClear: "\u6e05\u9664", memoryAdd: "\u6dfb\u52a0\u8bb0\u5fc6", memoryUpdate: "\u66f4\u65b0\u8bb0\u5fc6", memoryCancelEdit: "\u53d6\u6d88\u7f16\u8f91", memoryEmpty: "\u6682\u65e0\u8bb0\u5fc6\u6761\u76ee", memorySaved: "\u8bb0\u5fc6\u5df2\u4fdd\u5b58", memoryDeleted: "\u8bb0\u5fc6\u5df2\u5220\u9664", memoryUpdated: "\u8bb0\u5fc6\u5df2\u66f4\u65b0", memoryEdit: "\u7f16\u8f91", memoryDelete: "\u5220\u9664", memoryAllCategories: "\u5168\u90e8\u5206\u7c7b", memoryTotal: "\u603b\u6570", memoryAccessCount: "\u8bbf\u95ee", memoryUpdatedAt: "\u66f4\u65b0", memoryLoadMore: "\u52a0\u8f7d\u66f4\u591a" });
 Object.assign(I18N.en, { mcpManager: "MCP", mcpManagerHint: "Use capability marketplace first. Add manually by JSON or compact editor only when needed.", mcpMarketplace: "Capability Marketplace", mcpMarketplaceHint: "Search and install MCP capabilities from Hub/HubCenter. Manual config stays compact.", mcpInstalled: "Installed MCP", mcpNoServers: "No MCP servers", mcpManualAdd: "Add MCP", mcpModeMarket: "Marketplace", mcpModeRemote: "Remote HTTP", mcpModeLocal: "Local stdio", mcpModeJson: "JSON import", mcpName: "Name", mcpEndpoint: "Endpoint", mcpCommand: "Command", mcpArgs: "Args", mcpEnv: "Env", mcpHeaders: "Headers", mcpAuthType: "Auth", mcpSecret: "Secret", mcpAutoStart: "Auto start", mcpDisabled: "Disabled", mcpAdd: "Add", mcpEdit: "Edit", mcpSave: "Save MCP", mcpClose: "Close", mcpAddParam: "Add param", mcpParamName: "Param", mcpParamValue: "Value", mcpStart: "Start", mcpStop: "Stop", mcpCheck: "Check", mcpDelete: "Delete", mcpAdded: "MCP added", mcpUpdated: "MCP updated", mcpDeleted: "MCP deleted", mcpJson: "MCP JSON", mcpJsonHint: "Paste Claude-style mcpServers JSON or an array/object of MaClaw MCP entries.", mcpOpenGui: "Open MaClaw GUI > MCP > Marketplace for market install." });
@@ -451,7 +453,7 @@ function configIssueMessage(issue = {}) { const msg = String(issue.message || ""
 const TOKEN_REFRESH_GRACE_MS = 2 * 60 * 1000;
 const TOKEN_REFRESH_ACTIVITY_WINDOW_MS = 10 * 60 * 1000;
 const TOKEN_REFRESH_RECHECK_MS = 60 * 1000;
-const state = { token: "", tokenExpiresAt: 0, tokenRefreshTimer: 0, tokenRefreshPromise: null, lastActivityAt: 0, me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", skillPage: 1, mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, migrationStatus: null, migrationInstances: [], migrationLoading: false, migrationJob: null, migrationJobTimer: 0, knowledgeBatchPage: 1, knowledgeBatchTotal: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", imAuditOpen: false, imSubTab: "qq", imRuntimes: {}, weixinRuntime: null, weixinQRCodeURL: "", weixinQRToken: "", weixinQRStatus: "", weixinQRMessage: "", weixinQRPollTimer: 0, imStartingKey: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
+const state = { token: "", tokenExpiresAt: 0, tokenRefreshTimer: 0, tokenRefreshPromise: null, lastActivityAt: 0, me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", skillPage: 1, mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, migrationStatus: null, migrationInstances: [], migrationLoading: false, migrationJob: null, migrationJobTimer: 0, knowledgeBatchPage: 1, knowledgeBatchTotal: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", imAuditOpen: false, imSubTab: "qq", imRuntimes: {}, weixinRuntime: null, weixinQRCodeURL: "", weixinQRToken: "", weixinQRStatus: "", weixinQRMessage: "", weixinQRPollTimer: 0, imStartingKey: "", settingsTab: "", hardwareDevices: [], hardwareVoices: [], hardwareExperts: [], busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
 const saved = sessionStorage.getItem("maclaw.user.token") || "";
 const savedExpiry = sessionStorage.getItem("maclaw.user.token_expires_at") || "";
 const launchToken = params.get("launch_token") || "";
@@ -668,11 +670,129 @@ async function renderAssistant() {
 }
 async function renderKnowledge() {
   setTitle(t("knowledgeTitle"), t("knowledgeHint"));
-  $("content").innerHTML = `<section class="panel stack knowledge-page">${renderKnowledgeQuery()}${renderKnowledgeImporter()}</section>`;
+  $("content").innerHTML = `<section class="panel stack knowledge-page">${renderEnterpriseLibrariesPanel()}${renderKnowledgeQuery()}${renderKnowledgeImporter()}</section>`;
+  bindEnterpriseLibrariesPanel();
   bindKnowledgeQuery();
   bindKnowledgeImporter();
   loadKnowledgeAccessSummary();
   loadKnowledgeImportBatches();
+  loadEnterpriseLibraries();
+}
+function renderEnterpriseLibrariesPanel() {
+  return `<div class="knowledge-search enterprise-knowledge-panel" aria-label="${esc(t("enterpriseLibraries"))}">
+    <div class="knowledge-section-head">
+      <strong>${esc(t("enterpriseLibraries"))}</strong>
+      <span class="helper">${esc(t("enterpriseLibrariesHint"))}</span>
+    </div>
+    <div class="row enterprise-lib-actions">
+      <button id="enterpriseSyncNowBtn" type="button" class="primary">${esc(t("enterpriseSyncNow"))}</button>
+      <span id="enterpriseHubBadge" class="helper muted">...</span>
+    </div>
+    <div id="enterpriseLibrariesList" class="knowledge-result-list" aria-live="polite"><div class="muted">${esc(t("loading"))}</div></div>
+  </div>`;
+}
+function bindEnterpriseLibrariesPanel() {
+  const btn = $("enterpriseSyncNowBtn");
+  if (btn) {
+    btn.onclick = async () => {
+      try {
+        btn.disabled = true;
+        await api("/api/v1/enterprise-knowledge/sync/now", { method: "POST", body: "{}" });
+        toast(t("enterpriseSyncDone"));
+        await loadEnterpriseLibraries();
+      } catch (e) {
+        if (!handleAPIError(e)) toast(`${t("enterpriseSyncFailed")}: ${e.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  }
+}
+async function loadEnterpriseLibraries() {
+  const list = $("enterpriseLibrariesList");
+  const badge = $("enterpriseHubBadge");
+  if (!list) return;
+  try {
+    const st = await api("/api/v1/enterprise-knowledge/sync/status");
+    if (badge) {
+      badge.textContent = st.hub_configured
+        ? `${t("enterpriseHubConfigured")}${st.hub_url ? ` · ${st.hub_url}` : ""}`
+        : t("enterpriseHubMissing");
+    }
+    const libs = Array.isArray(st.libraries) ? st.libraries : [];
+    if (!libs.length) {
+      list.innerHTML = `<div class="muted">${esc(t("enterpriseNoLibraries"))}</div>`;
+      return;
+    }
+    list.innerHTML = libs.map((lib) => {
+      const id = String(lib.library_id || "");
+      const name = lib.name || id || t("unknown");
+      const userOn = lib.user_sync_enabled !== false;
+      const hubOff = lib.hub_sync_enabled === false || String(lib.access_state || "") === "sync_disabled";
+      const revoked = String(lib.access_state || "") === "revoked";
+      const access = revoked ? (t("enterpriseAccessRevoked") || "revoked") : (hubOff ? t("enterpriseAccessHubOff") : (String(lib.access_state || "") === "active" ? t("enterpriseAccessActive") : (lib.access_state || t("unknown"))));
+      const userLabel = userOn ? t("enterpriseSyncOn") : t("enterpriseSyncOff");
+      const meta = [
+        access,
+        userLabel,
+        lib.last_rev != null ? `${t("enterpriseRev")} ${lib.last_rev}` : "",
+        lib.last_sync_at ? `${t("enterpriseLastSync")}: ${lib.last_sync_at}` : "",
+        id ? `ID ${id}` : "",
+      ].filter(Boolean).join(" · ");
+      const toggleLabel = userOn ? t("enterpriseDisableSync") : t("enterpriseEnableSync");
+      return `<div class="knowledge-result-item enterprise-lib-row" data-library-id="${esc(id)}">
+        <div class="knowledge-result-main">
+          <strong>${esc(name)}</strong>
+          <div class="helper muted">${esc(meta)}</div>
+          ${lib.last_error ? `<div class="error helper">${esc(lib.last_error)}</div>` : ""}
+        </div>
+        <div class="row enterprise-lib-actions">
+          <button type="button" class="secondary enterprise-toggle-sync" data-library-id="${esc(id)}" data-enabled="${userOn ? "1" : "0"}">${esc(toggleLabel)}</button>
+          <button type="button" class="danger enterprise-purge-lib" data-library-id="${esc(id)}" data-library-name="${esc(name)}">${esc(t("enterprisePurge"))}</button>
+        </div>
+      </div>`;
+    }).join("");
+    list.querySelectorAll(".enterprise-toggle-sync").forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.libraryId || "";
+        const next = b.dataset.enabled !== "1";
+        try {
+          b.disabled = true;
+          await api(`/api/v1/enterprise-knowledge/libraries/${encodeURIComponent(id)}/user-sync`, {
+            method: "POST",
+            body: JSON.stringify({ enabled: next }),
+          });
+          await loadEnterpriseLibraries();
+        } catch (e) {
+          if (!handleAPIError(e)) toast(`${t("enterpriseToggleFailed")}: ${e.message}`);
+        } finally {
+          b.disabled = false;
+        }
+      };
+    });
+    list.querySelectorAll(".enterprise-purge-lib").forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.libraryId || "";
+        if (!id) return;
+        if (!confirm(t("enterprisePurgeConfirm"))) return;
+        try {
+          b.disabled = true;
+          await api(`/api/v1/enterprise-knowledge/libraries/${encodeURIComponent(id)}?confirm=true`, { method: "DELETE" });
+          toast(t("enterprisePurged"));
+          await loadEnterpriseLibraries();
+        } catch (e) {
+          if (!handleAPIError(e)) toast(`${t("enterprisePurgeFailed")}: ${e.message}`);
+        } finally {
+          b.disabled = false;
+        }
+      };
+    });
+  } catch (e) {
+    if (!handleAPIError(e)) {
+      list.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+      if (badge) badge.textContent = t("enterpriseHubMissing");
+    }
+  }
 }
 function renderKnowledgeQuery() {
   return `<div class="knowledge-search" role="search" aria-label="${esc(t("knowledgeQuery"))}"><div class="knowledge-section-head"><strong>${esc(t("knowledgeQuery"))}</strong><span class="helper">${esc(t("knowledgeQueryHint"))}</span></div><form id="knowledgeSearchForm" class="knowledge-search-form"><label class="knowledge-search-main" for="knowledgeQueryText">${esc(t("knowledgeQuery"))}<input id="knowledgeQueryText" type="search" placeholder="${esc(t("knowledgeQueryPlaceholder"))}" autocomplete="off"></label><label class="knowledge-search-limit" for="knowledgeQueryLimit">${esc(t("knowledgeLimit"))}<select id="knowledgeQueryLimit"><option value="5">5</option><option value="8" selected>8</option><option value="12">12</option><option value="20">20</option></select></label><button id="knowledgeSearchBtn" type="submit" class="primary">${esc(t("search"))}</button></form><div id="knowledgeSearchResults" class="knowledge-result-list" aria-live="polite"></div></div>`;
@@ -1277,21 +1397,99 @@ async function renderSettings() {
   setTitle(t("settingsTitle"), t("settingsHint"));
   try {
     setBusy(true);
-    const [schema, cfgResp, skillsResp, mcpResp, wxStatus, imStatus] = await Promise.all([api("/api/v1/config/schema"), api("/api/v1/config"), api("/api/v1/skills"), api("/api/v1/mcp/servers"), api("/api/v1/im/weixin/status").catch(() => null), api("/api/v1/im/status").catch(() => null)]);
+    const [schema, cfgResp, skillsResp, mcpResp, wxStatus, imStatus, hardwareDevices, hardwareVoices, hardwareExperts] = await Promise.all([api("/api/v1/config/schema"), api("/api/v1/config"), api("/api/v1/skills"), api("/api/v1/mcp/servers"), api("/api/v1/im/weixin/status").catch(() => null), api("/api/v1/im/status").catch(() => null), api("/api/v1/hardware-devices").catch(() => ({ items: [] })), api("/api/v1/hardware-devices/tts-voices").catch(() => ({ items: [] })), api("/api/v1/hardware-devices/experts").catch(() => ({ items: [] }))]);
     state.schema = items(schema);
     state.config = userConfigDraft(cfgResp.app_config);
     state.skills = items(skillsResp);
     state.mcpServers = items(mcpResp);
     state.weixinRuntime = wxStatus;
     state.imRuntimes = imStatus?.items || {};
+    state.hardwareDevices = items(hardwareDevices);
+    state.hardwareVoices = items(hardwareVoices);
+    state.hardwareExperts = items(hardwareExperts);
     const validation = await api("/api/v1/config/validate", { method: "POST", body: JSON.stringify({ app_config: state.config }) });
     const valid = validation.valid ? "ok" : "error";
-    $("content").innerHTML = `<section class="panel stack settings-panel"><div class="settings-head"><div><h2>${t("sharedConfig")}</h2><p class="helper">${t("sharedConfigHint")}</p></div><div class="settings-actions"><span id="cfgStatus" class="badge ${valid}">${validation.valid ? t("valid") : t("needsAttention")}</span><button id="saveCfg" type="button" class="primary">${t("save")}</button><button id="validateCfg" type="button" class="secondary">${t("validate")}</button><button id="testCfg" type="button" class="secondary">${t("test")}</button></div></div><div id="issues" class="stack"></div><div id="cfgTabs" class="cfg-tabs" role="tablist" aria-label="${esc(t("sharedConfig"))}"></div><form id="cfgForm" class="fields"></form><details class="cfg-output"><summary>${t("configResponse")}</summary><pre id="cfgOut" class="code"></pre></details></section>`;
+    $("content").innerHTML = `<section class="panel stack settings-panel"><div class="settings-head"><div><h2>${t("sharedConfig")}</h2><p class="helper">${t("sharedConfigHint")}</p></div><div class="settings-actions"><span id="cfgStatus" class="badge ${valid}">${validation.valid ? t("valid") : t("needsAttention")}</span><button id="saveCfg" type="button" class="primary">${t("save")}</button><button id="validateCfg" type="button" class="secondary">${t("validate")}</button><button id="testCfg" type="button" class="secondary">${t("test")}</button></div></div><div id="issues" class="stack"></div><div id="cfgTabs" class="cfg-tabs" role="tablist" aria-label="${esc(t("sharedConfig"))}"></div><form id="cfgForm" class="fields"></form>${renderHardwareDeviceManager()}<details class="cfg-output"><summary>${t("configResponse")}</summary><pre id="cfgOut" class="code"></pre></details></section>`;
     renderIssues(validation); renderConfigFields();
     $("saveCfg").onclick = saveConfig; $("validateCfg").onclick = validateConfig; $("testCfg").onclick = testConfig;
+    bindHardwareDeviceManager();
     setConfigOutput({ me: state.me, app_config: state.config });
   } catch (e) { if (!handleAPIError(e)) renderError(e); }
   finally { setBusy(false); }
+}
+
+function hardwareEscID(value) { return encodeURIComponent(String(value || "")); }
+function renderHardwareDeviceManager() {
+  const devices = Array.isArray(state.hardwareDevices) ? state.hardwareDevices : [];
+  const experts = Array.isArray(state.hardwareExperts) ? state.hardwareExperts : [];
+  const voices = Array.isArray(state.hardwareVoices) ? state.hardwareVoices : [];
+  const voiceOptions = [`<option value="">${esc(locale === "zh" ? "继承用户默认音色" : "Inherit user default voice")}</option>`].concat(voices.map((v) => `<option value="${esc(v.id)}">${esc(v.name || v.id)} (${esc(v.id)})</option>`)).join("");
+  const expertOptions = [`<option value="">${esc(locale === "zh" ? "选择专家" : "Select an expert")}</option>`].concat(experts.map((e) => `<option value="${esc(e.id)}">${esc(e.name || e.id)}</option>`)).join("");
+  const rows = devices.map((d) => {
+    const id = String(d.device_id || d.client_id || "");
+    const status = String(d.status || "ready");
+    const expert = d.expert_name || d.expert_id || (locale === "zh" ? "普通 AI 助手" : "General AI assistant");
+    return `<article class="hardware-device-card"><div class="split"><div><strong>${esc(d.client_id || id)}</strong><p class="helper">${esc(expert)} · ${esc(d.effective_tts_voice_id || "zf_xiaoyi")}</p></div><span class="badge ${status === "degraded" ? "warn" : "ok"}">${esc(status)}</span></div><form data-hardware-device-form="${esc(id)}" class="fields hardware-device-form"><label>${esc(locale === "zh" ? "助手模式" : "Assistant mode")}<select name="assistant_mode"><option value="general" ${d.assistant_mode !== "expert" ? "selected" : ""}>${esc(locale === "zh" ? "普通 AI 助手" : "General AI assistant")}</option><option value="expert" ${d.assistant_mode === "expert" ? "selected" : ""}>${esc(locale === "zh" ? "指定 AI 专家" : "Specific AI expert")}</option></select></label><label>${esc(locale === "zh" ? "AI 专家" : "AI expert")}<select name="expert_id">${expertOptions}</select></label><label>${esc(locale === "zh" ? "语音音色" : "Voice")}<select name="tts_voice_id">${voiceOptions}</select></label><label class="hardware-prompt-label">${esc(locale === "zh" ? "初始提示词（每轮生效）" : "Initial prompt (applies every turn)")}<textarea name="initial_prompt" maxlength="8192" rows="3">${esc(d.initial_prompt || "")}</textarea></label><input name="version" type="hidden" value="${esc(String(d.version || ""))}"><div class="settings-actions"><button type="submit" class="secondary">${esc(t("save"))}</button><button type="button" class="danger secondary" data-delete-hardware-device="${esc(id)}">${esc(locale === "zh" ? "解绑并删除" : "Unpair and delete")}</button></div></form></article>`;
+  }).join("") || `<p class="helper">${esc(locale === "zh" ? "尚未配对硬件。使用配对码完成设备配对后，会在此处显示。" : "No hardware is paired yet. Devices appear here after pairing.")}</p>`;
+  const expertRows = experts.map((e) => `<div class="split hardware-expert-row"><div><strong>${esc(e.name || e.id)}</strong><p class="helper">${esc(e.id)}${e.tools?.length ? ` · ${esc(e.tools.join(", "))}` : ""}</p></div><button type="button" class="danger secondary" data-delete-hardware-expert="${esc(e.id)}">${esc(locale === "zh" ? "删除专家" : "Delete expert")}</button></div>`).join("") || `<p class="helper">${esc(locale === "zh" ? "尚未创建可供硬件使用的 AI 专家。" : "No hardware AI experts yet.")}</p>`;
+  return `<section class="panel stack hardware-device-manager"><div><h2>${esc(locale === "zh" ? "硬件 AI 助手" : "Hardware AI assistants")}</h2><p class="helper">${esc(locale === "zh" ? "每个绑定硬件拥有独立 Agent、AI 专家、初始提示词和语音音色。" : "Each paired device has its own agent, expert, initial prompt, and voice.")}</p></div><div class="stack">${rows}</div><details class="hardware-expert-manager"><summary>${esc(locale === "zh" ? "管理硬件 AI 专家" : "Manage hardware AI experts")}</summary><div class="stack"><form id="hardwareExpertForm" class="fields hardware-expert-form"><label>${esc(locale === "zh" ? "专家 ID" : "Expert ID")}<input name="id" required maxlength="128" pattern="[A-Za-z0-9._-]+" placeholder="customer-support"></label><label>${esc(locale === "zh" ? "专家名称" : "Expert name")}<input name="name" required maxlength="128"></label><label class="hardware-prompt-label">${esc(locale === "zh" ? "专家系统提示词" : "Expert system prompt")}<textarea name="system_prompt" required maxlength="32768" rows="4"></textarea></label><label>${esc(locale === "zh" ? "允许的工具（以逗号分隔；留空表示不限制）" : "Allowed tools (comma separated; empty means unrestricted)")}<input name="tools" placeholder="web_search, web_fetch"></label><label>${esc(locale === "zh" ? "允许的技能（以逗号分隔；留空表示不限制）" : "Allowed skills (comma separated; empty means unrestricted)")}<input name="skills" placeholder="weather"></label><div class="settings-actions"><button type="submit" class="secondary">${esc(locale === "zh" ? "保存专家" : "Save expert")}</button></div></form><div class="stack">${expertRows}</div></div></details></section>`;
+}
+function bindHardwareDeviceManager() {
+  document.querySelectorAll("[data-hardware-device-form]").forEach((form) => {
+    const id = form.dataset.hardwareDeviceForm || "";
+    const device = (state.hardwareDevices || []).find((d) => String(d.device_id || d.client_id) === id) || {};
+    const expertSelect = form.querySelector('[name="expert_id"]');
+    const voiceSelect = form.querySelector('[name="tts_voice_id"]');
+    if (expertSelect) expertSelect.value = device.expert_id || "";
+    if (voiceSelect) voiceSelect.value = device.tts_voice_id || "";
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const payload = Object.fromEntries(data.entries());
+      payload.version = Number(payload.version || 0);
+      try {
+        const updated = await api(`/api/v1/hardware-devices/${hardwareEscID(id)}/agent-binding`, { method: "PATCH", body: JSON.stringify(payload) });
+        state.hardwareDevices = (state.hardwareDevices || []).map((item) => String(item.device_id || item.client_id) === id ? updated : item);
+        toast(t("saved"));
+        renderSettings();
+      } catch (err) { if (!handleAPIError(err)) toast(err.message); }
+    };
+  });
+  document.querySelectorAll("[data-delete-hardware-device]").forEach((button) => {
+    button.onclick = async () => {
+      const id = button.dataset.deleteHardwareDevice || "";
+      if (!window.confirm(locale === "zh" ? "解绑并删除该硬件的独立 Agent 与对话？此操作不可恢复。" : "Unpair this device and delete its dedicated agent and conversations? This cannot be undone.")) return;
+      try {
+        await api(`/api/v1/hardware-devices/${hardwareEscID(id)}`, { method: "DELETE" });
+        state.hardwareDevices = (state.hardwareDevices || []).filter((item) => String(item.device_id || item.client_id) !== id);
+        toast(t("saved"));
+        renderSettings();
+      } catch (err) { if (!handleAPIError(err)) toast(err.message); }
+    };
+  });
+  const expertForm = $("hardwareExpertForm");
+  if (expertForm) expertForm.onsubmit = async (event) => {
+    event.preventDefault();
+    const data = new FormData(expertForm);
+    const splitList = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+    const payload = { id: data.get("id"), name: data.get("name"), system_prompt: data.get("system_prompt"), tools: splitList(data.get("tools")), skills: splitList(data.get("skills")) };
+    try {
+      await api("/api/v1/hardware-devices/experts", { method: "POST", body: JSON.stringify(payload) });
+      toast(t("saved"));
+      renderSettings();
+    } catch (err) { if (!handleAPIError(err)) toast(err.message); }
+  };
+  document.querySelectorAll("[data-delete-hardware-expert]").forEach((button) => {
+    button.onclick = async () => {
+      const id = button.dataset.deleteHardwareExpert || "";
+      if (!window.confirm(locale === "zh" ? "删除此 AI 专家？已选择它的设备将进入待重新配置状态。" : "Delete this AI expert? Devices using it will need reconfiguration.")) return;
+      try {
+        await api(`/api/v1/hardware-devices/experts/${hardwareEscID(id)}`, { method: "DELETE" });
+        toast(t("saved"));
+        renderSettings();
+      } catch (err) { if (!handleAPIError(err)) toast(err.message); }
+    };
+  });
 }
 const SKILL_PAGE_SIZE = 20;
 function skillName(s) { return s.name || s.Name || t("unknown"); }
@@ -1676,7 +1874,7 @@ function renderKnowledgeImporter() {
   const fileFields = [
     knowledgeField("knowledgeFileTopic", t("topicHint"), datalistTextInput("knowledgeFileTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)),
     knowledgeField("knowledgeFileLabels", t("labels"), datalistTextInput("knowledgeFileLabels", KNOWLEDGE_LABEL_SUGGESTIONS)),
-    knowledgeField("knowledgeFileInput", t("chooseFiles"), `<input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar">`, "knowledge-span-2"),
+    knowledgeField("knowledgeFileInput", t("chooseFiles"), `<input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.ppt,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar">`, "knowledge-span-2"),
     `${knowledgeButton("knowledgeFileImportBtn", "upload", t("import"), "knowledge-span-2")}`
   ].join("");
   const urlFields = [

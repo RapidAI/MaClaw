@@ -194,7 +194,9 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	defer func() { _ = svc.Close() }()
 	server := NewHTTPServer(svc, "admin-secret", nil)
+	defer server.Close()
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -7258,7 +7260,7 @@ func TestThirdPartyGatewayBuildsAgentAttachmentsForSmallDirectMedia(t *testing.T
 	if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
-	content, attachments := manager.thirdPartyAgentInput(p, req)
+	content, attachments := manager.thirdPartyAgentInput(p, req, "")
 	if len(attachments) != 1 {
 		t.Fatalf("attachments len = %d, want 1; content=%s", len(attachments), content)
 	}
@@ -7301,7 +7303,7 @@ func TestThirdPartyGatewayKeepsLargeServerMediaAsURLForAgent(t *testing.T) {
 	if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
-	content, attachments := manager.thirdPartyAgentInput(p, req)
+	content, attachments := manager.thirdPartyAgentInput(p, req, "")
 	if len(attachments) != 0 {
 		t.Fatalf("large media should not be inlined: %#v", attachments)
 	}
@@ -7310,6 +7312,46 @@ func TestThirdPartyGatewayKeepsLargeServerMediaAsURLForAgent(t *testing.T) {
 	}
 }
 
+func TestThirdPartyGatewayStagesLargeOfficeMediaInInstanceWorkspace(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	data := bytes.Repeat([]byte("office-document"), coreim.ThirdPartyMaxDirectBytes/len("office-document")+1)
+	manager.media["office-large"] = &srvThirdPartyMediaObject{
+		Principal: principal,
+		ClientID:  "client-a",
+		ID:        "office-large",
+		Token:     "token",
+		Type:      "file",
+		FileName:  "report.docx",
+		MimeType:  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		Data:      data,
+		Uploaded:  true,
+	}
+	req := srvThirdPartyIncomingRequest{ClientID: "client-a", EventID: "evt-office-large", ConversationID: "room-a", Message: srvThirdPartyMessageBody{Type: "file", Attachments: []srvThirdPartyMessageMediaRef{{ID: "office-large", Type: "file"}}}}
+	if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if err := manager.validateIncomingMediaReferences(principal, &req); err != nil {
+		t.Fatalf("validate server media: %v", err)
+	}
+	workspace := t.TempDir()
+	content, attachments := manager.thirdPartyAgentInput(principal, req, workspace)
+	if len(attachments) != 0 {
+		t.Fatalf("large Office media must be workspace-staged, not base64 attached: %#v", attachments)
+	}
+	entries, err := os.ReadDir(filepath.Join(workspace, ".attachments"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("workspace staging entries=%#v err=%v", entries, err)
+	}
+	stagedPath := filepath.Join(workspace, ".attachments", entries[0].Name())
+	staged, err := os.ReadFile(stagedPath)
+	if err != nil || !bytes.Equal(staged, data) {
+		t.Fatalf("staged Office media mismatch err=%v", err)
+	}
+	if filepath.Ext(stagedPath) != ".docx" || !strings.Contains(content, stagedPath) {
+		t.Fatalf("agent input must expose the workspace Office path: content=%q path=%q", content, stagedPath)
+	}
+}
 func TestThirdPartyGatewayRejectsExternalIncomingMediaURL(t *testing.T) {
 	manager := newSrvThirdPartyGatewayManager(nil)
 	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
@@ -7334,6 +7376,30 @@ func TestThirdPartyGatewayRejectsExternalIncomingMediaURL(t *testing.T) {
 	}
 }
 
+func TestThirdPartyGatewayPrepareMediaUsesDocumentLimit(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	for _, tc := range []struct {
+		name     string
+		fileName string
+		mimeType string
+		want     int64
+	}{
+		{name: "pdf", fileName: "report.pdf", want: agent.MaxOfficeReadFileBytes},
+		{name: "doc mime", fileName: "photo.png", mimeType: "application/msword", want: agent.MaxOfficeReadFileBytes},
+		{name: "ordinary media", fileName: "photo.png", mimeType: "image/png", want: coreim.ThirdPartyMaxMediaBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prepared, err := manager.prepareMedia(principal, coreim.ThirdPartyMediaPrepareRequest{ClientID: "client-a", Type: "file", FileName: tc.fileName, MimeType: tc.mimeType}, "http://127.0.0.1:18777/api/im-gateway/v1")
+			if err != nil {
+				t.Fatalf("prepareMedia: %v", err)
+			}
+			if prepared.Upload.MaxBytes != tc.want {
+				t.Fatalf("upload max bytes = %d, want %d", prepared.Upload.MaxBytes, tc.want)
+			}
+		})
+	}
+}
 func TestThirdPartyGatewayRejectsUploadSizeMismatch(t *testing.T) {
 	manager := newSrvThirdPartyGatewayManager(nil)
 	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
@@ -7395,12 +7461,38 @@ func TestThirdPartyGatewayAcceptsServerMediaURLOnlyReference(t *testing.T) {
 	if req.Message.Attachments[0].ID != prepared.Media.ID || req.Message.Attachments[0].FileName != "report.txt" {
 		t.Fatalf("server media URL should be normalized to id and metadata: %#v", req.Message.Attachments[0])
 	}
-	content, attachments := manager.thirdPartyAgentInput(p, req)
+	content, attachments := manager.thirdPartyAgentInput(p, req, "")
 	if len(attachments) != 1 || !strings.Contains(content, "attached inline") {
 		t.Fatalf("server media should be passed to agent: attachments=%#v content=%q", attachments, content)
 	}
 }
 
+func TestThirdPartyGatewayServerMediaMetadataOverridesClientReference(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	prepared, err := manager.prepareMedia(principal, coreim.ThirdPartyMediaPrepareRequest{ClientID: "client-a", Type: "file", FileName: "report.docx", MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}, "http://127.0.0.1:18777/api/im-gateway/v1")
+	if err != nil {
+		t.Fatalf("prepareMedia: %v", err)
+	}
+	uploadURL, err := url.Parse(prepared.Upload.URL)
+	if err != nil {
+		t.Fatalf("parse upload URL: %v", err)
+	}
+	if err := manager.storeMediaUpload(httptest.NewRequest(http.MethodPut, uploadURL.RequestURI(), strings.NewReader("document-body")), prepared.Media.ID); err != nil {
+		t.Fatalf("storeMediaUpload: %v", err)
+	}
+	req := srvThirdPartyIncomingRequest{ClientID: "client-a", EventID: "evt-authoritative-media", ConversationID: "room-a", Message: srvThirdPartyMessageBody{Type: "file", Attachments: []srvThirdPartyMessageMediaRef{{ID: prepared.Media.ID, Type: "file", FileName: "photo.png", MimeType: "image/png", SizeBytes: 1}}}}
+	if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if err := manager.validateIncomingMediaReferences(principal, &req); err != nil {
+		t.Fatalf("validate server media: %v", err)
+	}
+	got := req.Message.Attachments[0]
+	if got.FileName != "report.docx" || got.MimeType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || got.SizeBytes != int64(len("document-body")) {
+		t.Fatalf("server media metadata must be authoritative: %#v", got)
+	}
+}
 func TestThirdPartyGatewayNormalizesMediaMessages(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

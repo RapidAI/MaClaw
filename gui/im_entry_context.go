@@ -24,7 +24,13 @@ type imEntryContextResult struct {
 	EntriesBeforeClear        []agent.ConversationEntry
 	UnfinishedSlot            *agent.UnfinishedTaskSlot
 	FreshTask                 bool
+	ConfirmedResume           bool
+	SkipWorkflowRouting       bool
+	WorkflowActive            bool
+	WorkflowChoicePending     bool
+	TemplateSubAgentPending   bool
 	WorkflowAgentLoop         bool
+	WorkflowReviewPending     bool
 	WorkflowDocPhase          bool
 	WorkflowPhaseID           string
 	PhasePrompt               string // Carried synchronously from runWorkflowV2Phase; avoids sync.Map race
@@ -44,9 +50,11 @@ type imEntryContextResult struct {
 
 func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imEntryContextResult {
 	result := imEntryContextResult{
-		EntriesBeforeClear: opts.EntriesBeforeClear,
-		UnfinishedSlot:     opts.UnfinishedSlot,
-		FreshTask:          opts.FreshTask,
+		EntriesBeforeClear:  opts.EntriesBeforeClear,
+		UnfinishedSlot:      opts.UnfinishedSlot,
+		FreshTask:           opts.FreshTask,
+		ConfirmedResume:     opts.ConfirmedResume,
+		SkipWorkflowRouting: opts.SkipWorkflowRouting,
 	}
 	startedAt := time.Now()
 	lastPhaseAt := startedAt
@@ -82,6 +90,10 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	msg := opts.Message
 	trimmed := *opts.Trimmed
 
+	// App-exit slots (written at graceful shutdown for in-flight sessions) bind
+	// automatically: reopening the restored/historical tab is the resume intent.
+	opts.Decision = applyAppExitAutoResumeDecision(*msg, trimmed, result.UnfinishedSlot, opts.Decision)
+
 	if slotFreshTask, resp, handled := h.applyExplicitTaskSlotAction(msg, opts.Trimmed, opts.Decision, &result.EntriesBeforeClear, &result.UnfinishedSlot); handled {
 		slotActionElapsed = time.Since(lastPhaseAt)
 		result.Handled = true
@@ -94,6 +106,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	lastPhaseAt = time.Now()
 
 	workflowReviewPending := h.workflowReviewPending(msg.UserID, msg.IsBackground)
+	result.WorkflowReviewPending = workflowReviewPending
 	if !workflowReviewPending {
 		result.PendingUserReplyContext, result.HasPendingUserReply = h.bindPendingUserReplyAnswer(*msg, trimmed, &result.EntriesBeforeClear, &result.UnfinishedSlot)
 	} else {
@@ -123,6 +136,13 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	isExplicitWorkflowCommand := strings.HasPrefix(trimmed, workflowChoiceCommandPrefix)
 	hasActiveWorkflow := h.hasWorkflowRoutingContinuation(msg.UserID)
 	hasPendingTemplateExecution := h.hasPendingTemplateSubAgentExecution(msg.UserID)
+	_, hasPendingWorkflowChoice := h.pendingWorkflowChoice.Load(msg.UserID)
+	result.WorkflowActive = hasActiveWorkflow
+	result.WorkflowChoicePending = hasPendingWorkflowChoice
+	// A pure-coding template can be armed before the workflow router sets its
+	// WorkflowAgentLoop marker (for example when V2 is disabled). It is still a
+	// stateful continuation and must never replay an independent-answer cache.
+	result.TemplateSubAgentPending = hasPendingTemplateExecution
 	shouldRouteWorkflow := !v2Disabled || isExplicitWorkflowCommand || hasActiveWorkflow || hasPendingTemplateExecution
 	if v2State != nil && shouldRouteWorkflow && !opts.SkipWorkflowRouting {
 		workflowRoute = h.routeWithWorkflowV2(*msg, trimmed)

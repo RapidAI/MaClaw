@@ -27,15 +27,21 @@ office(action="read_document", file_path="完整路径")
 - PDF：.pdf
 - Word：.docx（新）、.doc（旧 Word 97-2003）
 - Excel：.xlsx/.csv（新）、.xls（旧）；结构化表格可用 office(action="read_excel", file_path="...")
-- PowerPoint：.pptx（新）
+- PowerPoint：.pptx（新）、.ppt（旧 PowerPoint 97-2003）
 - 文本：.txt/.md（也可用 read_file）
 
 等价 action：read_doc / read_docx / read_pdf / read_word  
 可选 max_chars；截断时用 next_offset 继续。
 
-### 2) craft_tool（其它格式 / office 失败时必须尝试）
-当出现以下情况，**必须**用 craft_tool 生成一次性解析脚本，不要停下来让用户自己转格式：
-- 扩展名不在上面列表（如 .ppt .rtf .odt .wps .et .dps .pages .epub .mobi .msg .eml .html .htm 等）
+### 2) 先判定 office 的安全边界
+若 office 返回 error_class=encrypted、error_class=malformed、error_class=source_changed、error_class=input_too_large 或 error_class=output_too_large：
+- 必须遵循工具返回的安全、版本或资源提示
+- **禁止**对同一文件调用 craft_tool、Skill、bash、PowerShell COM、LibreOffice 或其他解析器绕过
+- encrypted 当前不接收密码，也不支持提供密码后解密或读取
+
+### 3) craft_tool（其它格式 / 普通 office 失败时必须尝试）
+仅当失败不属于上述 error_class 时，当出现以下情况，**必须**用 craft_tool 生成一次性解析脚本，不要停下来让用户自己转格式：
+- 扩展名不在上面列表（如 .rtf .odt .wps .et .dps .pages .epub .mobi .msg .eml .html .htm 等）
 - office 返回“读取失败 / 暂不支持 / 没有可读取文本”
 - 扫描版 PDF 需要 OCR
 
@@ -44,19 +50,19 @@ craft_tool(task="读取本地文件并提取全部可读文本输出到 stdout�
 
 成功后基于脚本输出继续分析。若脚本有用可 save_as_skill 固化。
 
-### 3) Skill 市场
+### 4) Skill 市场
 manage_skill(action="search", query="文档解析 document parse <格式>")  
 找到后 manage_skill(action="run", name="...", args={...})
 
-### 4) bash 备选（office + craft_tool 都失败后再用）
+### 5) bash 备选（office + craft_tool 都失败后再用）
 - .docx: python-docx
-- .doc/.xls/.ppt: PowerShell COM 或 LibreOffice 转换
+- .doc/.xls/.ppt：这些受支持旧格式先走 office；只有普通读取失败时才允许 PowerShell COM 或 LibreOffice 转换
 - .pdf: pymupdf；扫描件再 OCR
 
 ### 禁止
 - 【严禁】对二进制 Office/PDF 使用 read_file（乱码）
 - 【严禁】未调用 office 就说「无法解析 legacy .doc / 无法读取」
-- 【严禁】office 失败后不调用 craft_tool 就放弃
+- 【严禁】普通 office 失败后不调用 craft_tool 就放弃；上述 error_class 的安全拒绝除外
 - 【严禁】说「无法访问本地文件」——office/craft_tool/bash 都能读本机路径
 - 仅当 office + craft_tool + Skill + bash 都明确失败，才请用户另存为 .docx/.pdf/.txt，并列出已尝试结果
 `
@@ -1080,7 +1086,7 @@ title: 第2页标题
 解析用户提供的专利文档/技术资料，提炼核心技术方案。
 
 根据用户输入方式处理：
-- **用户提供了文件路径**：先用上方"文档解析方法"中的 bash + Python 命令提取文本内容，再基于提取的文本进行分析。如果上方没有"文档解析方法"section，则自行用 bash 调 Python 解析（pymupdf 读 PDF、python-docx 读 docx）。
+- **用户提供了文件路径**：先遵循上方“文档解析方法”：优先使用已自动注入的正文；需要读取时使用 office(action="read_document")，并严格遵循其 error_class。若为 encrypted、malformed、source_changed、input_too_large 或 output_too_large，禁止对同一文件自行用 bash/Python 或其他解析器绕过；只有普通 office 失败或不支持格式才按该方法允许的 craft_tool、Skill、bash 恢复。随后仅基于成功取得的文本分析。
 - **用户粘贴了文本内容**：直接基于文本内容分析。
 - **用户只提供了专利号/关键词**：使用 web_search 搜索专利全文，获取后分析。
 
@@ -1459,10 +1465,11 @@ title: 第2页标题
 **方式一：交底书/申请材料文件（file_mode）**
 - 先用内置工具提取文档文本（不要对二进制文档用 read_file）：
   - 若消息中已有「系统已自动解析文档正文」/ auto_extract：**优先直接用注入正文**；仅 truncated=true 或失败时再 office 分页
-  - 否则优先：office(action="read_document", file_path="路径")  — 支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx
+  - 否则优先：office(action="read_document", file_path="路径")  — 支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx
   - .txt/.md：read_file
-  - office 失败或不支持的格式（.ppt/.rtf/.odt/.wps 等）：必须 craft_tool(task="读取路径并提取纯文本...") 生成解析脚本
-  - 仍失败：manage_skill 搜索文档解析 Skill；或 bash（python-docx / pymupdf / PowerShell COM / LibreOffice）
+  - 先检查 office 返回的 error_class；encrypted、malformed、source_changed、input_too_large、output_too_large 必须遵循原提示，禁止对同一文件用 craft_tool、Skill、bash、PowerShell COM、LibreOffice 或其他解析器绕过；encrypted 不接收密码也不支持密码解密
+  - 仅普通 office 失败或不支持的格式（.rtf/.odt/.wps 等）：必须 craft_tool(task="读取路径并提取纯文本...") 生成解析脚本
+  - 上述允许的恢复路径仍失败：manage_skill 搜索文档解析 Skill；或 bash（python-docx / pymupdf / PowerShell COM / LibreOffice）
 - 如果以上方法都失败：发明/实用新型告知用户改用"手工输入"方式；外观设计告知用户改用"外观设计图片或照片"方式
 
 **方式二：手工输入（manual_mode）**
@@ -2071,11 +2078,12 @@ Check the form data above for the input mode:
 - The file path is shown above as "Disclosure File Path / 交底书文件路径". Replace FILE_PATH below with that value.
 - Extract text (never use read_file on binary Office/PDF):
   0. If the message already contains auto-extracted body ("系统已自动解析文档正文" / auto_extract markers): use that first; only call office when truncated=true or extract failed
-  1. Else prefer office(action="read_document", file_path="FILE_PATH") for .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx
+  1. Else prefer office(action="read_document", file_path="FILE_PATH") for .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx
   2. .txt/.md: read_file
-  3. If office fails or format is unsupported (.ppt/.rtf/.odt/.wps/etc.): MUST call craft_tool(task="Read FILE_PATH and print full plain text to stdout; use Python/COM/LibreOffice as needed; no GUI")
-  4. Then manage_skill search/run for document parsers, or bash helpers
-- If ALL methods fail: inform user to use "Manual Input" mode instead, listing what was tried.
+  3. First inspect office error_class. For encrypted, malformed, source_changed, input_too_large, or output_too_large: follow the returned safety, version, or resource guidance; do NOT retry the same file through craft_tool, Skill, bash, PowerShell COM, LibreOffice, or another parser. Encrypted Office files do not accept passwords and password decryption is unsupported.
+  4. Only for an ordinary office failure or an unsupported format (.rtf/.odt/.wps/etc.): MUST call craft_tool(task="Read FILE_PATH and print full plain text to stdout; use Python/COM/LibreOffice as needed; no GUI")
+  5. If that allowed recovery fails, then manage_skill search/run for document parsers, or bash helpers
+- If ALL allowed methods fail: inform user to use "Manual Input" mode instead, listing what was tried. For the five error_class values above, do not suggest a parser bypass; ask the user to resolve the reported condition first.
 - If the disclosure is in Chinese, you MUST translate the technical content into English for the patent document while preserving all technical details. Keep the original Chinese in internal analysis notes for reference.
 
 **Mode 2: Manual Input (manual_mode)**

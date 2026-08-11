@@ -107,25 +107,72 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	}
 }
 
-func TestPreserveBackendOwnedFieldsKeepsHardwareGatewayInvariant(t *testing.T) {
-	hubMode := false
-	localMode := true
+func TestLoadConfigPromotesHistoricPPTOfficeReadScopeOnce(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	configDir := filepath.Join(tmpHome, ".maclaw")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"office_read_engine":"officeread","office_read_formats":["ppt"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	want := []string{"doc", "docx", "ppt", "pptx", "xls", "xlsx"}
+	if !cfg.OfficeReadScopeMigrated || !reflect.DeepEqual(cfg.OfficeReadFormats, want) {
+		t.Fatalf("promoted OfficeRead scope = %#v, want %#v", cfg, want)
+	}
+
+	persisted, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disk corelib.AppConfig
+	if err := json.Unmarshal(persisted, &disk); err != nil {
+		t.Fatal(err)
+	}
+	if !disk.OfficeReadScopeMigrated || !reflect.DeepEqual(disk.OfficeReadFormats, want) {
+		t.Fatalf("persisted promoted OfficeRead scope = %#v, want %#v", disk, want)
+	}
+
+	if _, err := app.PatchConfigFields(map[string]interface{}{"office_read_formats": []interface{}{"doc"}}); err != nil {
+		t.Fatalf("apply format-level rollback: %v", err)
+	}
+	app.configMu.Lock()
+	app.invalidateConfigCacheLocked()
+	app.configMu.Unlock()
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("reload partial scope: %v", err)
+	}
+	if !reloaded.OfficeReadScopeMigrated || !reflect.DeepEqual(reloaded.OfficeReadFormats, []string{"doc"}) {
+		t.Fatalf("explicit partial rollback was overwritten: %#v", reloaded)
+	}
+}
+
+func TestPreserveBackendOwnedFieldsKeepsHardwareEnabledIndependentOfIMToken(t *testing.T) {
 	ondisk := corelib.AppConfig{
-		HardwareEnabled:            true,
-		ThirdPartyGatewayEnabled:   true,
-		ThirdPartyGatewayToken:     "confirmed-token",
-		ThirdPartyGatewayLocalMode: &hubMode,
+		HardwareEnabled:        true,
+		ThirdPartyGatewayToken: "confirmed-im-token",
 	}
 	incoming := ondisk
 	incoming.HardwareEnabled = false
-	incoming.ThirdPartyGatewayEnabled = false
-	incoming.ThirdPartyGatewayToken = "stale-token"
-	incoming.ThirdPartyGatewayLocalMode = &localMode
+	incoming.ThirdPartyGatewayToken = "updated-im-token"
 
 	preserveBackendOwnedFields(&incoming, &ondisk)
 
-	if !incoming.HardwareEnabled || !incoming.ThirdPartyGatewayEnabled || incoming.ThirdPartyGatewayToken != "confirmed-token" || incoming.IsThirdPartyGatewayLocalMode() {
-		t.Fatalf("hardware gateway transport was not preserved: %#v", incoming)
+	if !incoming.HardwareEnabled {
+		t.Fatalf("system-owned hardware transport was not preserved: %#v", incoming)
+	}
+	if incoming.ThirdPartyGatewayToken != "updated-im-token" {
+		t.Fatalf("IM token was incorrectly restored by hardware protection: %#v", incoming)
 	}
 }
 
@@ -137,6 +184,21 @@ func TestPreserveBackendOwnedFieldsKeepsHardwareDeviceAliases(t *testing.T) {
 
 	if got := incoming.HardwareDeviceAliases; len(got) != 1 || got["esp32-a"] != "Desk Pet" {
 		t.Fatalf("hardware aliases were not preserved: %#v", got)
+	}
+}
+
+func TestPreserveBackendOwnedFieldsKeepsHardwareAgentBindings(t *testing.T) {
+	ondisk := corelib.AppConfig{HardwareAgentBindings: map[string]corelib.HardwareAgentBinding{
+		"esp32-a": {AssistantMode: corelib.LansengerAssistantModeExpert, ExpertID: "builtin-pptx-maker", TTSVoiceID: "zm_yunxi"},
+	}}
+	incoming := corelib.AppConfig{HardwareAgentBindings: map[string]corelib.HardwareAgentBinding{
+		"esp32-b": {TTSVoiceID: "af_heart"},
+	}}
+
+	preserveBackendOwnedFields(&incoming, &ondisk)
+
+	if got := incoming.HardwareAgentBindings; len(got) != 1 || got["esp32-a"].ExpertID != "builtin-pptx-maker" || got["esp32-a"].TTSVoiceID != "zm_yunxi" {
+		t.Fatalf("hardware agent bindings were not preserved: %#v", got)
 	}
 }
 
@@ -985,6 +1047,9 @@ func TestGetSettingsTabConfigFiltersByTab(t *testing.T) {
 	if im["pet_ambient_city"] != "Shanghai" {
 		t.Fatalf("im pet_ambient_city = %#v", im["pet_ambient_city"])
 	}
+	if _, hasCache := im["answer_cache"]; hasCache {
+		t.Fatalf("IM DTO must not include per-bot answer_cache: %#v", im)
+	}
 
 	// Self-loading tabs return empty maps without leaking unrelated config.
 	empty, err := app.GetSettingsTabConfig("memory")
@@ -1159,6 +1224,24 @@ func TestFilterSettingsTabConfigNilSafe(t *testing.T) {
 	}
 }
 
+func TestFilterSettingsTabConfigGeneralIncludesOfficeReadPolicy(t *testing.T) {
+	fallback := false
+	emitMarkdown := true
+	cfg := corelib.AppConfig{
+		OfficeReadEngine:       "dual",
+		OfficeReadFormats:      []string{"doc", "xls"},
+		OfficeReadFallback:     &fallback,
+		OfficeReadEmitMarkdown: &emitMarkdown,
+	}
+	out, err := filterSettingsTabConfig(&cfg, "general")
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	if out["office_read_engine"] != "dual" || !reflect.DeepEqual(out["office_read_formats"], []interface{}{"doc", "xls"}) || out["office_read_fallback"] != false || out["office_read_emit_markdown"] != true {
+		t.Fatalf("general OfficeRead policy = %#v", out)
+	}
+}
+
 // TestGetSettingsTabConfigConcurrentTabs exercises parallel tab DTO reads against
 // a warm snap (mirrors settings rail spam / fast tab switching).
 func TestGetSettingsTabConfigConcurrentTabs(t *testing.T) {
@@ -1300,6 +1383,47 @@ func TestPublishedConfigIsLockFreeHotPath(t *testing.T) {
 		// First-run defaults should be present; ActiveTool is normally set.
 		t.Logf("snapshot loaded under write lock: ActiveTool=%q", cfg.ActiveTool)
 	}
+}
+
+// TestPeekConfigSerializesLegacyCachePromotion verifies that the compatibility
+// path for tests and legacy callers never reads the write-side config cache
+// concurrently with a publisher. The fast path remains atomic and lock-free;
+// this only exercises the deliberately cold, snap-missing promotion path.
+func TestPeekConfigSerializesLegacyCachePromotion(t *testing.T) {
+	app := &App{}
+
+	const (
+		readers = 8
+		rounds  = 200
+	)
+	start := make(chan struct{})
+	var readersWG sync.WaitGroup
+	readersWG.Add(readers)
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer readersWG.Done()
+			<-start
+			for round := 0; round < rounds; round++ {
+				if app.PeekConfig() == nil {
+					t.Error("PeekConfig returned nil for a valid legacy seed")
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	for round := 0; round < rounds; round++ {
+		app.configMu.Lock()
+		// Deliberately retain a valid legacy cache while removing the published
+		// snap. This is the transition that previously let PeekConfig read the
+		// write-side fields without synchronization.
+		app.configCache = corelib.AppConfig{ActiveTool: fmt.Sprintf("tool-%d", round)}
+		app.configCacheValid = true
+		app.configSnap.Store(nil)
+		app.configMu.Unlock()
+	}
+	readersWG.Wait()
 }
 
 // TestFirstRunConfigDefersDiskWriteOutsideLock ensures bootstrap does not hold
@@ -1487,6 +1611,173 @@ func TestPatchConfigFieldsUpdatesOnlyRequestedGeneralFields(t *testing.T) {
 	}
 	if !patched.LogDetailEnabled {
 		t.Fatal("LogDetailEnabled = false, want preserved true")
+	}
+}
+
+func TestPatchConfigFieldsRejectsGlobalAnswerCache(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	_, err := app.PatchConfigFields(map[string]interface{}{
+		"answer_cache": map[string]interface{}{"enabled": true, "ttl_days": 0},
+	})
+	if err == nil {
+		t.Fatal("PatchConfigFields(answer_cache) unexpectedly succeeded")
+	}
+}
+
+func TestPatchConfigFieldsOfficeReadPolicy(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"office_read_engine":        "DUAL",
+		"office_read_formats":       []interface{}{".xls", "doc", "xls"},
+		"office_read_fallback":      false,
+		"office_read_emit_markdown": true,
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if patched.OfficeReadEngine != "dual" || !reflect.DeepEqual(patched.OfficeReadFormats, []string{"doc", "xls"}) || patched.OfficeReadFallback == nil || *patched.OfficeReadFallback || patched.OfficeReadEmitMarkdown == nil || !*patched.OfficeReadEmitMarkdown {
+		t.Fatalf("OfficeRead policy = %#v", patched)
+	}
+	if _, err := app.PatchConfigFields(map[string]interface{}{"office_read_engine": "unsafe"}); err == nil {
+		t.Fatal("expected invalid OfficeRead engine to be rejected")
+	}
+	if _, err := app.PatchConfigFields(map[string]interface{}{"office_read_formats": []interface{}{"pdf"}}); err == nil {
+		t.Fatal("expected unsupported OfficeRead format to be rejected")
+	}
+	if _, err := app.PatchConfigFields(map[string]interface{}{"office_read_formats": []interface{}{"doc", ""}}); err == nil {
+		t.Fatal("expected empty OfficeRead format to be rejected")
+	}
+	reloaded, err := (&App{testHomeDir: tmpHome}).LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after patch: %v", err)
+	}
+	if reloaded.OfficeReadEngine != "dual" || !reflect.DeepEqual(reloaded.OfficeReadFormats, []string{"doc", "xls"}) || reloaded.OfficeReadFallback == nil || *reloaded.OfficeReadFallback || reloaded.OfficeReadEmitMarkdown == nil || !*reloaded.OfficeReadEmitMarkdown {
+		t.Fatalf("reloaded OfficeRead policy = %#v", reloaded)
+	}
+}
+
+// TestOfficeReadFormatLevelRollbackDrill records the repository-side portion
+// of the release plan's rollback drill. A format can be removed without
+// disturbing unrelated configuration, and the global legacy switch remains an
+// immediate wider rollback when multiple formats need to be disabled.
+func TestOfficeReadFormatLevelRollbackDrill(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.PatchConfigFields(map[string]interface{}{
+		"office_read_engine":        "officeread",
+		"office_read_formats":       []interface{}{"doc", "xls"},
+		"office_read_fallback":      true,
+		"office_read_emit_markdown": true,
+		"remote_email":              "rollback-owner@example.com",
+	}); err != nil {
+		t.Fatalf("seed OfficeRead policy: %v", err)
+	}
+
+	// Narrow rollback: remove only XLS from the rollout allowlist.
+	rolledBack, err := app.PatchConfigFields(map[string]interface{}{
+		"office_read_formats": []interface{}{"doc"},
+	})
+	if err != nil {
+		t.Fatalf("format-level rollback: %v", err)
+	}
+	if rolledBack.OfficeReadEngine != "officeread" || !reflect.DeepEqual(rolledBack.OfficeReadFormats, []string{"doc"}) ||
+		rolledBack.OfficeReadFallback == nil || !*rolledBack.OfficeReadFallback ||
+		rolledBack.OfficeReadEmitMarkdown == nil || !*rolledBack.OfficeReadEmitMarkdown ||
+		rolledBack.RemoteEmail != "rollback-owner@example.com" {
+		t.Fatalf("narrow rollback changed unrelated policy: %#v", rolledBack)
+	}
+
+	// Wide rollback: retain the persisted format audit trail while the engine
+	// immediately routes all formats back to legacy extraction.
+	wideRollback, err := app.PatchConfigFields(map[string]interface{}{
+		"office_read_engine": "legacy",
+	})
+	if err != nil {
+		t.Fatalf("global legacy rollback: %v", err)
+	}
+	if wideRollback.OfficeReadEngine != "legacy" || !reflect.DeepEqual(wideRollback.OfficeReadFormats, []string{"doc"}) ||
+		wideRollback.RemoteEmail != "rollback-owner@example.com" {
+		t.Fatalf("wide rollback changed persisted policy unexpectedly: %#v", wideRollback)
+	}
+	reloaded, err := (&App{testHomeDir: tmpHome}).LoadConfig()
+	if err != nil {
+		t.Fatalf("reload rolled-back config: %v", err)
+	}
+	if reloaded.OfficeReadEngine != "legacy" || !reflect.DeepEqual(reloaded.OfficeReadFormats, []string{"doc"}) ||
+		reloaded.RemoteEmail != "rollback-owner@example.com" {
+		t.Fatalf("rollback did not survive reload: %#v", reloaded)
+	}
+}
+
+func TestNewAppOfficeReadProviderAppliesFormatRollbackImmediately(t *testing.T) {
+	for _, key := range []string{
+		"MACLAW_OFFICE_READ_ENGINE",
+		"MACLAW_OFFICE_READ_FORMATS",
+		"MACLAW_OFFICE_READ_FALLBACK",
+		"MACLAW_OFFICE_READ_EMIT_MARKDOWN",
+	} {
+		t.Setenv(key, "")
+	}
+	// NewApp owns the process-wide extractor provider. Preserve the previous
+	// host binding so this integration test cannot affect later GUI tests.
+	restoreProvider := agent.SetOfficeReadConfigProvider(func() agent.OfficeReadConfig { return agent.OfficeReadConfig{} })
+	defer restoreProvider()
+
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := NewApp()
+	app.testHomeDir = tmpHome
+
+	if _, err := app.PatchConfigFields(map[string]interface{}{
+		"office_read_engine":        "officeread",
+		"office_read_formats":       []interface{}{"doc", "docx"},
+		"office_read_fallback":      true,
+		"office_read_emit_markdown": true,
+	}); err != nil {
+		t.Fatalf("seed OfficeRead policy: %v", err)
+	}
+	policy := agent.CurrentOfficeReadRuntimePolicy()
+	if policy.Engine != agent.OfficeExtractEngineOfficeRead || !reflect.DeepEqual(policy.Formats, []string{"doc", "docx"}) || !policy.Fallback || !policy.EmitMarkdown {
+		t.Fatalf("initial persisted runtime policy = %#v", policy)
+	}
+	if !agent.OfficeReadRichContentEnabledForFormat("docx") {
+		t.Fatal("enabled DOCX rich-content policy did not reach the extractor")
+	}
+
+	// This is the GUI-side narrow rollback: the next extraction must receive
+	// the reduced persisted policy without app restart or tool re-registration.
+	if _, err := app.PatchConfigFields(map[string]interface{}{
+		"office_read_formats": []interface{}{"doc"},
+	}); err != nil {
+		t.Fatalf("format-level rollback: %v", err)
+	}
+	policy = agent.CurrentOfficeReadRuntimePolicy()
+	if policy.Engine != agent.OfficeExtractEngineOfficeRead || !reflect.DeepEqual(policy.Formats, []string{"doc"}) || !policy.Fallback || !policy.EmitMarkdown {
+		t.Fatalf("narrow rollback did not reach runtime policy: %#v", policy)
+	}
+	if agent.OfficeReadRichContentEnabledForFormat("docx") {
+		t.Fatal("removed DOCX format remained enabled for rich-content extraction")
+	}
+
+	if _, err := app.PatchConfigFields(map[string]interface{}{
+		"office_read_engine": "legacy",
+	}); err != nil {
+		t.Fatalf("global legacy rollback: %v", err)
+	}
+	policy = agent.CurrentOfficeReadRuntimePolicy()
+	if policy.Engine != agent.OfficeExtractEngineLegacy || !reflect.DeepEqual(policy.Formats, []string{"doc"}) || agent.OfficeReadRichContentEnabledForFormat("doc") {
+		t.Fatalf("global rollback did not reach runtime policy: %#v", policy)
 	}
 }
 
@@ -2132,58 +2423,58 @@ func TestPatchConfigFieldsUpdatesHardwareConfiguration(t *testing.T) {
 	}
 }
 
-func TestPatchConfigRejectsHardwareGatewayInvariantViolations(t *testing.T) {
-	tests := []struct {
-		name  string
-		patch func(*corelib.AppConfig)
-		want  string
-	}{
-		{
-			name: "disabled gateway",
-			patch: func(cfg *corelib.AppConfig) {
-				cfg.HardwareEnabled = true
-				cfg.ThirdPartyGatewayEnabled = false
-				cfg.SetThirdPartyGatewayLocal(false)
-				cfg.ThirdPartyGatewayToken = "token"
-			},
-			want: "turning off third-party access",
-		},
-		{
-			name: "local mode",
-			patch: func(cfg *corelib.AppConfig) {
-				cfg.HardwareEnabled = true
-				cfg.ThirdPartyGatewayEnabled = true
-				cfg.SetThirdPartyGatewayLocal(true)
-				cfg.ThirdPartyGatewayToken = "token"
-			},
-			want: "Hub mode",
-		},
-		{
-			name: "missing token",
-			patch: func(cfg *corelib.AppConfig) {
-				cfg.HardwareEnabled = true
-				cfg.ThirdPartyGatewayEnabled = true
-				cfg.SetThirdPartyGatewayLocal(false)
-				cfg.ThirdPartyGatewayToken = ""
-			},
-			want: "gateway token",
-		},
+func TestPatchConfigAllowsHardwareAndIMGatewayToBeConfiguredIndependently(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HardwareEnabled = true
+		cfg.ThirdPartyGatewayToken = "im-token-is-not-a-hardware-token"
+	}); err != nil {
+		t.Fatalf("PatchConfig error=%v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HardwareEnabled || cfg.ThirdPartyGatewayToken != "im-token-is-not-a-hardware-token" {
+		t.Fatalf("hardware and IM configuration were not persisted independently: %#v", cfg)
+	}
+}
+
+func TestHardwareConfigurationDoesNotDependOnIMToken(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"hardware_enabled":true,"thirdparty_gateway_token":"legacy-im-token","hardware_gateway_token":"obsolete-desktop-token"}`)
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			app := &App{testHomeDir: t.TempDir()}
-			if err := app.PatchConfig(tt.patch); err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("PatchConfig error=%v, want %q", err, tt.want)
-			}
-			cfg, err := app.LoadConfig()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.HardwareEnabled {
-				t.Fatalf("rejected patch was published: %#v", cfg)
-			}
-		})
+	full, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !full.HardwareEnabled || full.ThirdPartyGatewayToken != "legacy-im-token" {
+		t.Fatalf("hardware configuration did not preserve the independent IM token: %#v", full)
+	}
+	persisted, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persisted, []byte(`"hardware_gateway_token"`)) {
+		t.Fatal("obsolete desktop hardware token was not removed from config")
+	}
+	if _, err := app.PatchConfigFields(map[string]interface{}{"thirdparty_gateway_token": "rotated-im-token"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.HardwareEnabled || after.ThirdPartyGatewayToken != "rotated-im-token" {
+		t.Fatalf("IM token update affected hardware transport: before=%#v after=%#v", full, after)
 	}
 }
 
@@ -2340,6 +2631,38 @@ func TestPatchConfigFieldsCoversFrontendLiteralCallers(t *testing.T) {
 			parts = append(parts, key+" in "+strings.Join(missing[key], ","))
 		}
 		t.Fatalf("frontend PatchConfigFields literal callers missing backend cases: %v", parts)
+	}
+}
+
+func TestPatchConfigFieldsCodingKnowledgeReviewedProjectBudget(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"coding_knowledge_max_reviewed_per_project":        float64(321),
+		"coding_knowledge_max_reviewed_tokens_per_project": float64(54_321),
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields(coding knowledge reviewed budget): %v", err)
+	}
+	if patched.CodingKnowledgeMaxReviewedPerProject != 321 || patched.CodingKnowledgeMaxReviewedTokensPerProject != 54_321 {
+		t.Fatalf("reviewed project budget = %#v", patched)
+	}
+	if _, err := app.PatchConfigFields(map[string]interface{}{"coding_knowledge_max_reviewed_per_project": 0}); err == nil {
+		t.Fatal("zero reviewed experience budget should be rejected")
+	}
+	if _, err := app.PatchConfigFields(map[string]interface{}{"coding_knowledge_max_reviewed_tokens_per_project": 1_000_001}); err == nil {
+		t.Fatal("oversized reviewed token budget should be rejected")
+	}
+
+	reloaded, err := (&App{testHomeDir: tmpHome}).LoadConfig()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if reloaded.CodingKnowledgeMaxReviewedPerProject != 321 || reloaded.CodingKnowledgeMaxReviewedTokensPerProject != 54_321 {
+		t.Fatalf("persisted reviewed project budget = %#v", reloaded)
 	}
 }
 
@@ -3443,6 +3766,14 @@ func TestNormalizeHardwareWelcomeVoiceID(t *testing.T) {
 			}
 		})
 	}
+	for _, voiceID := range tts.SupportedTTSVoiceIDs {
+		t.Run("supports bundled voice "+voiceID, func(t *testing.T) {
+			got, err := normalizeHardwareWelcomeVoiceID(voiceID)
+			if err != nil || got != voiceID {
+				t.Fatalf("normalizeHardwareWelcomeVoiceID(%q) = (%q, %v), want (%q, nil)", voiceID, got, err, voiceID)
+			}
+		})
+	}
 }
 
 func TestPrepareHardwareWelcomeWAVAcceptsESP32PCM(t *testing.T) {
@@ -3493,6 +3824,145 @@ func TestPrepareHardwareWelcomeWAVRejectsSilentPCM(t *testing.T) {
 	}
 }
 
+func TestSynthesizeHardwareWelcomeWAVRetriesUntilTheAudioFits(t *testing.T) {
+	makeWAV := func(totalBytes int) []byte {
+		pcmBytes := totalBytes - 44
+		if pcmBytes%2 != 0 {
+			pcmBytes--
+		}
+		pcm := make([]byte, pcmBytes)
+		for i := 0; i < len(pcm); i += 2 {
+			pcm[i] = 0x40
+		}
+		wav := make([]byte, 44+len(pcm))
+		copy(wav[0:4], "RIFF")
+		binary.LittleEndian.PutUint32(wav[4:8], uint32(len(wav)-8))
+		copy(wav[8:12], "WAVE")
+		copy(wav[12:16], "fmt ")
+		binary.LittleEndian.PutUint32(wav[16:20], 16)
+		binary.LittleEndian.PutUint16(wav[20:22], 1)
+		binary.LittleEndian.PutUint16(wav[22:24], 1)
+		binary.LittleEndian.PutUint32(wav[24:28], 16000)
+		binary.LittleEndian.PutUint32(wav[28:32], 32000)
+		binary.LittleEndian.PutUint16(wav[32:34], 2)
+		binary.LittleEndian.PutUint16(wav[34:36], 16)
+		copy(wav[36:40], "data")
+		binary.LittleEndian.PutUint32(wav[40:44], uint32(len(pcm)))
+		copy(wav[44:], pcm)
+		return wav
+	}
+
+	var speeds []float32
+	wav, err := synthesizeHardwareWelcomeWAV(func(speed float32) ([]byte, error) {
+		speeds = append(speeds, speed)
+		if len(speeds) < 3 {
+			return makeWAV(hardwareWelcomeMaxWAVBytes + 4096), nil
+		}
+		return makeWAV(hardwareWelcomeTargetWAVBytes), nil
+	})
+	if err != nil {
+		t.Fatalf("synthesize welcome WAV: %v", err)
+	}
+	if len(speeds) != 3 || speeds[0] != hardwareWelcomeSpeechSpeed || speeds[1] <= speeds[0] || speeds[2] <= speeds[1] {
+		t.Fatalf("synthesis speeds = %v, want default followed by bounded faster retries", speeds)
+	}
+	if len(wav) > hardwareWelcomeMaxWAVBytes {
+		t.Fatalf("prepared welcome WAV is %d bytes, limit is %d", len(wav), hardwareWelcomeMaxWAVBytes)
+	}
+}
+
+func TestSynthesizeHardwareWelcomeWAVStopsAfterBoundedRetries(t *testing.T) {
+	makeOversizedWAV := func() []byte {
+		pcm := make([]byte, hardwareWelcomeMaxWAVBytes)
+		for i := 0; i < len(pcm); i += 2 {
+			pcm[i] = 0x40
+		}
+		wav := make([]byte, 44+len(pcm))
+		copy(wav[0:4], "RIFF")
+		binary.LittleEndian.PutUint32(wav[4:8], uint32(len(wav)-8))
+		copy(wav[8:12], "WAVE")
+		copy(wav[12:16], "fmt ")
+		binary.LittleEndian.PutUint32(wav[16:20], 16)
+		binary.LittleEndian.PutUint16(wav[20:22], 1)
+		binary.LittleEndian.PutUint16(wav[22:24], 1)
+		binary.LittleEndian.PutUint32(wav[24:28], 16000)
+		binary.LittleEndian.PutUint32(wav[28:32], 32000)
+		binary.LittleEndian.PutUint16(wav[32:34], 2)
+		binary.LittleEndian.PutUint16(wav[34:36], 16)
+		copy(wav[36:40], "data")
+		binary.LittleEndian.PutUint32(wav[40:44], uint32(len(pcm)))
+		copy(wav[44:], pcm)
+		return wav
+	}
+
+	var calls int
+	_, err := synthesizeHardwareWelcomeWAV(func(float32) ([]byte, error) {
+		calls++
+		return makeOversizedWAV(), nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "shorten the welcome text") {
+		t.Fatalf("oversize welcome error=%v", err)
+	}
+	if calls != hardwareWelcomeMaxSynthesisAttempts {
+		t.Fatalf("synthesis calls = %d, want bounded %d", calls, hardwareWelcomeMaxSynthesisAttempts)
+	}
+}
+
+func TestSynthesizeHardwareWelcomeWAVRequestsShorterTextWhenSpeedCapWouldBeExceeded(t *testing.T) {
+	_, err := synthesizeHardwareWelcomeWAV(func(speed float32) ([]byte, error) {
+		pcm := make([]byte, hardwareWelcomeMaxWAVBytes*2)
+		for i := 0; i < len(pcm); i += 2 {
+			pcm[i] = 0x40
+		}
+		wav := make([]byte, 44+len(pcm))
+		copy(wav[0:4], "RIFF")
+		binary.LittleEndian.PutUint32(wav[4:8], uint32(len(wav)-8))
+		copy(wav[8:12], "WAVE")
+		copy(wav[12:16], "fmt ")
+		binary.LittleEndian.PutUint32(wav[16:20], 16)
+		binary.LittleEndian.PutUint16(wav[20:22], 1)
+		binary.LittleEndian.PutUint16(wav[22:24], 1)
+		binary.LittleEndian.PutUint32(wav[24:28], 16000)
+		binary.LittleEndian.PutUint32(wav[28:32], 32000)
+		binary.LittleEndian.PutUint16(wav[32:34], 2)
+		binary.LittleEndian.PutUint16(wav[34:36], 16)
+		copy(wav[36:40], "data")
+		binary.LittleEndian.PutUint32(wav[40:44], uint32(len(pcm)))
+		copy(wav[44:], pcm)
+		return wav, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "shorten the welcome text") {
+		t.Fatalf("oversize welcome error=%v", err)
+	}
+}
+
+func TestHardwareWelcomeSynthesisSpeed(t *testing.T) {
+	targetBytes := float64(hardwareWelcomeTargetWAVBytes)
+	maxSpeed := float64(hardwareWelcomeMaxSpeechSpeed)
+	defaultSpeed := float64(hardwareWelcomeSpeechSpeed)
+	tooLargeForSafeRetry := int(targetBytes * maxSpeed / defaultSpeed)
+	tests := []struct {
+		name      string
+		wavBytes  int
+		wantRetry bool
+	}{
+		{name: "already fits", wavBytes: hardwareWelcomeMaxWAVBytes, wantRetry: false},
+		{name: "near limit retries", wavBytes: hardwareWelcomeMaxWAVBytes + 1, wantRetry: true},
+		{name: "cannot fit at safe speed", wavBytes: tooLargeForSafeRetry + 1, wantRetry: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			speed, canRetry := hardwareWelcomeSynthesisSpeed(tt.wavBytes)
+			if canRetry != tt.wantRetry {
+				t.Fatalf("hardwareWelcomeSynthesisSpeed(%d) canRetry=%v, want %v", tt.wavBytes, canRetry, tt.wantRetry)
+			}
+			if tt.wantRetry && speed <= hardwareWelcomeSpeechSpeed {
+				t.Fatalf("retry speed = %f, want > %f", speed, hardwareWelcomeSpeechSpeed)
+			}
+		})
+	}
+}
+
 func TestRemoteHardwareWelcomeAudioUsesTheSelectedDeviceVolume(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -3500,9 +3970,6 @@ func TestRemoteHardwareWelcomeAudioUsesTheSelectedDeviceVolume(t *testing.T) {
 	app := &App{testHomeDir: tmpHome}
 	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.HardwareEnabled = true
-		cfg.ThirdPartyGatewayEnabled = true
-		cfg.ThirdPartyGatewayToken = "gateway-token"
-		cfg.SetThirdPartyGatewayLocal(false)
 		cfg.HardwareVolume = 0
 		cfg.HardwareWelcomeAudioPath = "missing.wav"
 	}); err != nil {
@@ -3558,9 +4025,6 @@ func TestHardwareWelcomeLocalPreviewDataURLAndRemoteRoute(t *testing.T) {
 	}
 	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.HardwareEnabled = true
-		cfg.ThirdPartyGatewayEnabled = true
-		cfg.ThirdPartyGatewayToken = "gateway-token"
-		cfg.SetThirdPartyGatewayLocal(false)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3900,6 +4364,82 @@ func TestSaveConfigPreservesDefaultLaunchModeFromStaleSnapshot(t *testing.T) {
 	}
 	if saved.DefaultLaunchMode != "local" {
 		t.Fatalf("DefaultLaunchMode = %q, want local", saved.DefaultLaunchMode)
+	}
+}
+
+func TestSaveConfigPreservesDualLLMProfilesFromStaleSnapshot(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	current := corelib.AppConfig{
+		Language: "zh",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Model: "assistant-model"},
+			{ID: "coding", Name: "Coding", URL: "https://coding.example/v1", Model: "coding-model"},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "coding", Model: "coding-model"},
+		},
+	}
+	if err := app.SaveConfig(current); err != nil {
+		t.Fatalf("SaveConfig(current) error = %v", err)
+	}
+
+	stale := current
+	stale.Language = "en"
+	stale.MaclawLLMProfiles = &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+		Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "stale-assistant-model"},
+		Coding:    corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "stale-coding-model"},
+	}
+	if err := app.SaveConfig(stale); err != nil {
+		t.Fatalf("SaveConfig(stale) error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.Language != "en" {
+		t.Fatalf("Language = %q, want en", saved.Language)
+	}
+	if got := saved.MaclawLLMProfiles; got == nil || got.Assistant.Model != "assistant-model" || got.Coding.ProviderID != "coding" || got.Coding.Model != "coding-model" {
+		t.Fatalf("dual LLM profiles were overwritten by stale full save: %#v", got)
+	}
+}
+
+func TestPatchConfigFieldsRejectsLegacyProviderSwitchForProfileManagedConfig(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "assistant", Name: "Assistant", URL: "https://assistant.example/v1", Model: "assistant-model"},
+			{ID: "coding", Name: "Coding", URL: "https://coding.example/v1", Model: "coding-model"},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "coding", Model: "coding-model"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if _, err := app.PatchConfigFields(map[string]interface{}{"maclaw_llm_current_provider": "Coding"}); err == nil || !strings.Contains(err.Error(), "LLM profiles are enabled") {
+		t.Fatalf("PatchConfigFields legacy provider switch error = %v, want profile-managed rejection", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.MaclawLLMCurrentProvider != "Assistant" || saved.MaclawLLMProfiles == nil || saved.MaclawLLMProfiles.Coding.ProviderID != "coding" {
+		t.Fatalf("legacy provider switch changed profile-managed config: %#v", saved)
 	}
 }
 

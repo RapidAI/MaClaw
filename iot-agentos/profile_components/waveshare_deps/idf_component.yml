@@ -1,0 +1,6 @@
+## Waveshare S3 Touch AMOLED 1.75C-only display/touch dependencies.
+dependencies:
+  idf:
+    version: '>=4.1.0'
+  espressif/esp_lcd_co5300: ^2.0.3
+  waveshare/esp_lcd_touch_cst9217: ^1.0.3

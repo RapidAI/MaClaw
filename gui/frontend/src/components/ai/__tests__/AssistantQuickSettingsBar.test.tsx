@@ -87,6 +87,51 @@ describe('AssistantQuickSettingsBar', () => {
         expect(status.parentElement).toBe(bar);
     });
 
+    it('does not expose a writable model chip when the task scope is unknown', () => {
+        renderBar({
+            activeProfile: 'none',
+            availableProviders: [{ id: 'p1', name: 'Provider', url: '', isHubService: false, model: 'model-a', models: ['model-a'] }],
+            currentModel: 'model-a',
+            onSwitchModel: vi.fn(),
+        });
+        expect(screen.queryByTestId('qs-model-chip')).toBeNull();
+    });
+
+    it('routes following coding profile to settings without opening a writable menu', () => {
+        const onOpenLLMSettings = vi.fn();
+        renderBar({
+            activeProfile: 'coding',
+            codingInheritsAssistant: true,
+            availableProviders: [{ id: 'p1', name: 'Provider', url: '', isHubService: false, model: 'model-a', models: ['model-a'] }],
+            currentModel: 'model-a',
+            onSwitchModel: vi.fn(),
+            onOpenLLMSettings,
+        });
+        const chip = screen.getByTestId('qs-model-chip');
+        expect(chip.textContent).toContain('model-a');
+        expect(chip.getAttribute('aria-haspopup')).toBeNull();
+        fireEvent.click(chip);
+        expect(onOpenLLMSettings).toHaveBeenCalledTimes(1);
+        expect(screen.queryByTestId('qs-model-menu')).toBeNull();
+    });
+
+    it('disables the model chip while an atomic profile save is pending', () => {
+        const onOpenModelMenu = vi.fn();
+        renderBar({
+            availableProviders: [{ id: 'p1', name: 'Provider', url: '', isHubService: false, model: 'model-a', models: ['model-a'] }],
+            currentModel: 'model-a',
+            onSwitchModel: vi.fn(),
+            onOpenModelMenu,
+            profileSavePending: true,
+        });
+
+        const chip = screen.getByTestId('qs-model-chip') as HTMLButtonElement;
+        expect(chip.disabled).toBe(true);
+        fireEvent.click(chip);
+        expect(onOpenModelMenu).not.toHaveBeenCalled();
+        expect(screen.queryByRole('listbox')).toBeNull();
+    });
+
     it('invokes the theme callback when the theme chip is clicked', () => {
         const { props } = renderBar();
         fireEvent.click(screen.getByTestId('qs-theme-toggle'));
@@ -146,6 +191,62 @@ describe('AssistantQuickSettingsBar', () => {
         expect(screen.getByText('gpt-4o')).toBeTruthy();
     });
 
+    it('keeps the picker open after staging a provider so its model can be chosen next', () => {
+        const onSwitchProvider = vi.fn();
+        renderBar({
+            availableProviders: [
+                { id: 'hub', name: 'hub-official', url: '', isHubService: true, configured: true },
+                { id: 'openai', name: 'openai-custom', url: 'https://api.example.com', isHubService: false, configured: true },
+            ],
+            currentModel: 'gpt-5',
+            modelOptions: ['gpt-5', 'gpt-4o'],
+            onSwitchProvider,
+            onSwitchModel: vi.fn(),
+        });
+
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        fireEvent.click(screen.getByRole('option', { name: 'openai-custom' }));
+
+        expect(onSwitchProvider).toHaveBeenCalledWith('openai');
+        expect(screen.getByRole('listbox')).toBeTruthy();
+    });
+
+    it('uses provider ids so duplicate provider names still stage the clicked provider', () => {
+        const onSwitchProvider = vi.fn();
+        renderBar({
+            availableProviders: [
+                { id: 'primary', name: 'Custom API', url: 'https://one.example.com', isHubService: false, configured: true },
+                { id: 'secondary', name: 'Custom API', url: 'https://two.example.com', isHubService: false, configured: true },
+            ],
+            currentModel: 'model-a',
+            modelOptions: ['model-a'],
+            onSwitchProvider,
+            onSwitchModel: vi.fn(),
+        });
+
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        fireEvent.click(screen.getAllByRole('option', { name: 'Custom API' })[0]);
+
+        expect(onSwitchProvider).toHaveBeenCalledWith('secondary');
+    });
+
+    it('discards a staged provider when the picker is dismissed', () => {
+        const onDismissModelMenu = vi.fn();
+        renderBar({
+            availableProviders: [{ name: 'hub-official', url: '', isHubService: true, configured: true }],
+            currentModel: 'gpt-5',
+            modelOptions: ['gpt-5'],
+            onSwitchModel: vi.fn(),
+            providerSelectionPending: true,
+            onDismissModelMenu,
+        });
+
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        fireEvent.keyDown(document, { key: 'Escape' });
+
+        expect(onDismissModelMenu).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps the model chip neutral (not green ON style) when the menu is open', () => {
         renderBar({
             availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
@@ -176,11 +277,14 @@ describe('AssistantQuickSettingsBar', () => {
     });
 
     it('closes the portaled model menu when app navigation hides the retained panel', () => {
+        const onDismissModelMenu = vi.fn();
         const { rerender } = renderBar({
             availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
             currentModel: 'grok-4.5',
             modelOptions: ['grok-4.5', 'grok-3'],
             onSwitchModel: vi.fn(),
+            providerSelectionPending: true,
+            onDismissModelMenu,
         });
         fireEvent.click(screen.getByTestId('qs-model-chip'));
         expect(screen.getByRole('listbox')).toBeTruthy();
@@ -201,11 +305,14 @@ describe('AssistantQuickSettingsBar', () => {
                 currentModel="grok-4.5"
                 modelOptions={['grok-4.5', 'grok-3']}
                 onSwitchModel={vi.fn()}
+                providerSelectionPending
+                onDismissModelMenu={onDismissModelMenu}
                 onLanguageChange={vi.fn()}
             />,
         );
 
         expect(screen.queryByRole('listbox')).toBeNull();
+        expect(onDismissModelMenu).toHaveBeenCalledTimes(1);
     });
 
     it('shows only the model list when there is a single provider', () => {
@@ -268,11 +375,14 @@ describe('AssistantQuickSettingsBar', () => {
     });
 
     it('closes the menu when model picker data disappears', () => {
+        const onDismissModelMenu = vi.fn();
         const { rerender } = renderBar({
             availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
             currentModel: 'grok-4.5',
             modelOptions: ['grok-4.5'],
             onSwitchModel: vi.fn(),
+            providerSelectionPending: true,
+            onDismissModelMenu,
         });
         fireEvent.click(screen.getByTestId('qs-model-chip'));
         expect(screen.getByRole('listbox')).toBeTruthy();
@@ -287,11 +397,14 @@ describe('AssistantQuickSettingsBar', () => {
                 ttsEnabled={false}
                 ttsPlaying={false}
                 onToggleTts={vi.fn()}
+                providerSelectionPending
+                onDismissModelMenu={onDismissModelMenu}
                 onLanguageChange={vi.fn()}
             />,
         );
         expect(screen.queryByRole('listbox')).toBeNull();
         expect(screen.queryByTestId('qs-model-chip')).toBeNull();
+        expect(onDismissModelMenu).toHaveBeenCalledTimes(1);
     });
 
     it('re-syncs switches when maclaw-config-changed is dispatched (e.g. from settings panels)', async () => {

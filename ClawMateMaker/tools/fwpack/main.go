@@ -257,6 +257,9 @@ func validateSDKConfigHeader(pathname, firmwareBoard, layoutID string, releaseSe
 	if flashBytes == 16*1024*1024 && values["CONFIG_ESPTOOLPY_FLASHSIZE_16MB"] != "1" {
 		return errors.New("sdkconfig must declare CONFIG_ESPTOOLPY_FLASHSIZE_16MB for the official 16 MiB profile")
 	}
+	if flashBytes == 32*1024*1024 && values["CONFIG_ESPTOOLPY_FLASHSIZE_32MB"] != "1" {
+		return errors.New("sdkconfig must declare CONFIG_ESPTOOLPY_FLASHSIZE_32MB for the official 32 MiB profile")
+	}
 	return nil
 }
 

@@ -69,6 +69,22 @@ func TestEngineRecordAndKeywordCLI(t *testing.T) {
 	}
 }
 
+func TestEngineProcessForBotScopesSameGroupJobs(t *testing.T) {
+	store := NewStore(t.TempDir())
+	eng := &Engine{Store: store}
+	jobs := []Job{
+		{ID: "support", BotProfileID: "support", Enabled: true, GroupID: "g", TargetStaffIDs: []string{"u"}, RecordAll: true},
+		{ID: "sales", BotProfileID: "sales", Enabled: true, GroupID: "g", TargetStaffIDs: []string{"u"}, RecordAll: true},
+	}
+	res := eng.ProcessForBot(context.Background(), jobs, "support", Incoming{IsGroup: true, GroupID: "g", SpeakerID: "u", Text: "hello"})
+	if len(res.MatchedJobIDs) != 1 || res.MatchedJobIDs[0] != "support" {
+		t.Fatalf("support matched jobs = %v", res.MatchedJobIDs)
+	}
+	if files, err := store.ListTranscriptFiles("sales"); err != nil || len(files) != 0 {
+		t.Fatalf("sales job must not run; files=%v err=%v", files, err)
+	}
+}
+
 func TestEngineKeywordAnyoneAndForward(t *testing.T) {
 	store := NewStore(t.TempDir())
 	eng := &Engine{

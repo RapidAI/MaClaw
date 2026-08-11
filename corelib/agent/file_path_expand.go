@@ -14,6 +14,7 @@ package agent
 //   - History strip removes injected bodies on subsequent turns
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -49,15 +50,21 @@ const (
 	defaultAutoInjectMaxRunesPerFile = 20_000
 	defaultAutoInjectMaxRunesTotal   = 40_000
 
-	// Skip full native parse for oversized files (memory / latency).
-	// Model can still use office(read_document) which pages internally.
-	defaultAutoInjectMaxFileBytes = 32 << 20 // 32 MiB
+	// Keep automatic injection and read_document on the same full-source
+	// boundary. Paging limits the result sent to the model, but extraction still
+	// needs to parse the complete container and therefore cannot safely bypass
+	// this input cap.
+	defaultAutoInjectMaxFileBytes = MaxOfficeReadFileBytes
 )
 
 // ExpandUserSelectedFilePaths finds the GUI marker section, extracts supported
 // document files via native parsers, and appends the text bodies. Image and
 // other non-document paths are left listed only. Idempotent when already expanded.
 func ExpandUserSelectedFilePaths(text string) string {
+	return expandUserSelectedFilePathsWithSettings(text, currentOfficeReadSettings())
+}
+
+func expandUserSelectedFilePathsWithSettings(text string, settings officeReadSettings) string {
 	if strings.TrimSpace(text) == "" {
 		return text
 	}
@@ -91,7 +98,7 @@ func ExpandUserSelectedFilePaths(text string) string {
 			docPaths = append(docPaths, p)
 		}
 	}
-	extracted := formatAutoExtractedDocuments(docPaths, defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal, nil)
+	extracted := formatAutoExtractedDocumentsWithSettings(docPaths, defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal, nil, settings)
 	hasExtract := false
 	for _, block := range extracted {
 		if block != "" {
@@ -137,14 +144,14 @@ func ExpandUserSelectedFilePaths(text string) string {
 // injection (bounded). Returns "" only when the path is not a document type.
 // Soft failures still return a short error block so the model can fall back.
 func FormatAutoExtractedDocument(filePath string) string {
-	block, _ := formatAutoExtractedDocument(filePath, defaultAutoInjectMaxRunesPerFile)
+	block, _ := formatAutoExtractedDocumentWithSettings(filePath, defaultAutoInjectMaxRunesPerFile, currentOfficeReadSettings())
 	return block
 }
 
 // FormatAutoExtractedDocuments extracts multiple documents under a shared total
 // rune budget (used by IM multi-attachment paths).
 func FormatAutoExtractedDocuments(filePaths []string) []string {
-	return FormatAutoExtractedDocumentsWithBudget(filePaths, defaultAutoInjectMaxRunesTotal, nil)
+	return formatAutoExtractedDocumentsWithSettings(filePaths, defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal, nil, currentOfficeReadSettings())
 }
 
 // AppendDocumentExtractsToDescriptions attaches bounded auto-extract blocks to
@@ -152,6 +159,10 @@ func FormatAutoExtractedDocuments(filePaths []string) []string {
 // path-marker extracts already present in userText and skips duplicate paths.
 // Non-attachment lines are left unchanged. Exported so GUI/TUI stay in sync.
 func AppendDocumentExtractsToDescriptions(fileDescriptions []string, userText string) []string {
+	return appendDocumentExtractsToDescriptionsWithSettings(fileDescriptions, userText, currentOfficeReadSettings())
+}
+
+func appendDocumentExtractsToDescriptionsWithSettings(fileDescriptions []string, userText string, settings officeReadSettings) []string {
 	if len(fileDescriptions) == 0 {
 		return fileDescriptions
 	}
@@ -183,7 +194,7 @@ func AppendDocumentExtractsToDescriptions(fileDescriptions []string, userText st
 	for i, d := range docs {
 		paths[i] = d.path
 	}
-	blocks := FormatAutoExtractedDocumentsWithBudget(paths, RemainingAutoInjectBudget(userText), AlreadyAutoExtractedPaths(userText))
+	blocks := formatAutoExtractedDocumentsWithSettings(paths, defaultAutoInjectMaxRunesPerFile, RemainingAutoInjectBudget(userText), AlreadyAutoExtractedPaths(userText), settings)
 	any := false
 	for _, block := range blocks {
 		if block != "" {
@@ -282,6 +293,10 @@ func indexExtractedPath(out map[string]struct{}, p string) {
 }
 
 func formatAutoExtractedDocuments(filePaths []string, perFile, totalBudget int, skipPaths map[string]struct{}) []string {
+	return formatAutoExtractedDocumentsWithSettings(filePaths, perFile, totalBudget, skipPaths, currentOfficeReadSettings())
+}
+
+func formatAutoExtractedDocumentsWithSettings(filePaths []string, perFile, totalBudget int, skipPaths map[string]struct{}, settings officeReadSettings) []string {
 	if perFile <= 0 {
 		perFile = defaultAutoInjectMaxRunesPerFile
 	}
@@ -324,7 +339,7 @@ func formatAutoExtractedDocuments(filePaths []string, perFile, totalBudget int, 
 		if limit > budget {
 			limit = budget
 		}
-		block, used := formatAutoExtractedDocument(p, limit)
+		block, used := formatAutoExtractedDocumentWithSettings(p, limit, settings)
 		out = append(out, block)
 		if used > 0 {
 			budget -= used
@@ -404,6 +419,10 @@ func extractIntAttr(line, key string) int {
 // formatAutoExtractedDocument returns (block, injectedRuneCount).
 // injectedRuneCount is 0 for soft-error blocks (they do not consume the budget).
 func formatAutoExtractedDocument(filePath string, maxRunes int) (string, int) {
+	return formatAutoExtractedDocumentWithSettings(filePath, maxRunes, currentOfficeReadSettings())
+}
+
+func formatAutoExtractedDocumentWithSettings(filePath string, maxRunes int, settings officeReadSettings) (string, int) {
 	filePath = strings.TrimSpace(filePath)
 	if filePath == "" || !IsDocumentFilePath(filePath) {
 		return "", 0
@@ -418,28 +437,56 @@ func formatAutoExtractedDocument(filePath string, maxRunes int) (string, int) {
 	resolved := resolveOfficeToolPath(filePath)
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return autoExtractErrorBlock(filePath, "", fmt.Sprintf("读取失败: %v", err)), 0
+		// OS errors commonly contain the resolved absolute path. The selected path
+		// is already present in the block envelope, so do not echo the error text.
+		return autoExtractErrorBlock(filePath, "", "读取失败（error_class=unavailable）"), 0
 	}
 	if info.IsDir() {
 		return autoExtractErrorBlock(filePath, "", "路径是目录"), 0
 	}
 	if info.Size() > defaultAutoInjectMaxFileBytes {
-		return autoExtractErrorBlock(filePath, "",
-			fmt.Sprintf("文件过大（%d bytes > %d），已跳过自动注入；请用 office(action=\"read_document\", file_path=%q) 分页读取",
-				info.Size(), defaultAutoInjectMaxFileBytes, filePath)), 0
+		return autoExtractPolicyErrorBlock(filePath, "", "input_too_large"), 0
 	}
 
-	text, format, err := extractOfficeTextCached(resolved, info)
+	text, format, err := extractOfficeTextCachedWithSettings(resolved, info, settings)
+	// ExtractOfficeText intentionally auto-routes a misnamed OOXML/PDF source
+	// for generic document reads. Auto-injection is different: its path is
+	// retained in the chat envelope and establishes the attachment's text-like
+	// identity. Do not inject a signature-routed Office/PDF payload as .md/.csv
+	// (or similar), because that would label binary-origin content incorrectly.
+	if err == nil && isPlainTextDocumentFormat(plainFormat(resolved)) && !isPlainTextDocumentFormat(format) {
+		text = ""
+		err = ErrOfficeReadFormatMismatch
+	}
 	if err != nil {
 		// Plain-text-ish types: fall back to raw read when native parsers reject them.
-		if plain, plainErr := tryReadPlainDocument(resolved, format, info.Size()); plainErr == nil && strings.TrimSpace(plain) != "" {
-			text, format, err = plain, plainFormat(resolved), nil
+		// Do not reopen an input already rejected by the shared Office boundary:
+		// an encrypted/malformed/oversized container or a reliable format mismatch
+		// must never enter chat context merely because it has a text-like suffix.
+		if !IsOfficeReadRichContentBlocked(err) && isPlainTextDocumentFormat(plainFormat(resolved)) {
+			// A malformed PDF/Office container can fail in its own extractor before
+			// that extractor returns text. Its signature is nevertheless reliable,
+			// so do not fall back to raw bytes under a text-like extension.
+			if sniffed := sniffOfficeFormat(resolved); sniffed != "" && !isPlainTextDocumentFormat(sniffed) {
+				err = ErrOfficeReadFormatMismatch
+			} else {
+				if plain, plainErr := tryReadPlainDocument(resolved, format, info.Size()); plainErr == nil && strings.TrimSpace(plain) != "" {
+					text, format, err = plain, plainFormat(resolved), nil
+				}
+			}
 		}
 	}
 	if err != nil {
-		log.Printf("[auto-extract] native parse failed path=%q format=%q err=%v", resolved, format, err)
+		// Extraction errors can embed an absolute path, document metadata, or
+		// third-party parser details. Auto-extract logging is rollout telemetry,
+		// not a diagnostic dump; keep it safe to collect outside the user turn.
+		log.Printf("[auto-extract] native parse failed format=%q error_class=%s", format, autoExtractErrorClass(err))
+		errorClass := autoExtractErrorClass(err)
+		if guidance, blocked := officeReadBlockedFailureGuidance(errorClass); blocked {
+			return autoExtractPolicyErrorBlock(filePath, format, errorClass, guidance), 0
+		}
 		return autoExtractErrorBlock(filePath, format,
-			fmt.Sprintf("原生解析失败: %v\n建议: office(action=\"read_document\", file_path=%q) 或 craft_tool 生成解析脚本。", err, filePath)), 0
+			fmt.Sprintf("原生解析失败（error_class=%s）\n建议: office(action=\"read_document\", file_path=%q) 或 craft_tool 生成解析脚本。", errorClass, filePath)), 0
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -477,6 +524,19 @@ func formatAutoExtractedDocument(filePath string, maxRunes int) (string, int) {
 	return b.String(), injected
 }
 
+func autoExtractErrorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, errOfficeReadInputTooLarge) {
+		return "input_too_large"
+	}
+	if errors.Is(err, ErrOfficeReadUnsafeContainer) {
+		return "malformed"
+	}
+	return officeReadErrorClass(err, "")
+}
+
 func autoExtractErrorBlock(filePath, format, msg string) string {
 	short := msg
 	// Keep attribute short; full message stays in the body for the model.
@@ -490,6 +550,19 @@ func autoExtractErrorBlock(filePath, format, msg string) string {
 	}
 	fmt.Fprintf(&b, " error=%q ---\n%s\n%spath=%q ---", short, msg, AutoExtractEndMarker, filePath)
 	return b.String()
+}
+
+// autoExtractPolicyErrorBlock keeps automatic attachment extraction aligned
+// with read_document: policy and container-safety failures may not advertise a
+// fallback parser for the same rejected input.
+func autoExtractPolicyErrorBlock(filePath, format, errorClass string, guidance ...string) string {
+	msg := fmt.Sprintf("自动注入已跳过（error_class=%s）。", errorClass)
+	if len(guidance) > 0 && guidance[0] != "" {
+		msg += "\n" + guidance[0]
+	} else if fallback, blocked := officeReadBlockedFailureGuidance(errorClass); blocked {
+		msg += "\n" + fallback
+	}
+	return autoExtractErrorBlock(filePath, format, msg)
 }
 
 // tryReadPlainDocument reads small text-like files when office extract fails.
@@ -538,6 +611,15 @@ func plainFormat(filePath string) string {
 		return "txt"
 	}
 	return ext
+}
+
+func isPlainTextDocumentFormat(format string) bool {
+	switch strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".") {
+	case "txt", "text", "md", "markdown", "json", "xml", "yaml", "yml", "log", "csv", "rtf":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseSelectedFilePathLines splits the section after FilePathPromptPrefix into

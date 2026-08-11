@@ -28,6 +28,12 @@ center:
     - https://hubs.maclaw.top
     - https://hc-2.example.com
     - https://hc-3.example.com
+  # Generated once after first registration. Keep this value when rebuilding
+  # Hub's local data directory so existing ESP32 hardware bindings recover.
+  installation_id: ""
+  # Saved after the first registration. Retain it together with installation_id
+  # if rebuilding the Hub data directory so recovery can re-register itself.
+  owner_email: ""
   register_on_startup: true
   heartbeat_interval_sec: 30
 
@@ -36,6 +42,13 @@ hub:
   description: Self-hosted MaClaw remote hub
   visibility: private
   corporate_email_domain: ""
+
+# Enterprise digital asset libraries (Admin "Digital Assets" + client one-way sync).
+# Process-level seed only: when true, tenants start with the feature on until an admin toggles it.
+# Tenant admins can enable/disable anytime under System Settings → Digital Assets (no restart).
+# Env MACLAW_DIGITAL_ASSETS_ENABLED=true also seeds enabled=true for tenants without a saved setting.
+digital_assets:
+  enabled: false
 
 mail:
   enabled: false

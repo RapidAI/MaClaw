@@ -1,6 +1,7 @@
 package ve
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -48,6 +49,51 @@ func TestFileRelay_Upload_Success(t *testing.T) {
 	}
 	if !bytes.Equal(data, content) {
 		t.Error("file content mismatch")
+	}
+}
+
+func TestFileRelay_Upload_NormalizesMislabelledPDFMetadata(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+	content := []byte("%PDF-1.7\nmislabelled")
+
+	meta, err := fr.Upload("cover.png", "image/png", "session-1", "user-1", int64(len(content)), bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("Upload failed: %v", err)
+	}
+	if meta.Filename != "cover.pdf" || meta.MimeType != "application/pdf" {
+		t.Fatalf("metadata = %+v, want cover.pdf/application/pdf", meta)
+	}
+	if _, err := os.Stat(fr.FilePath(meta)); err != nil {
+		t.Fatalf("normalized file path is missing: %v", err)
+	}
+}
+
+func TestFileRelay_Upload_NormalizesMislabelledDOCXMetadata(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+	var payload bytes.Buffer
+	zw := zip.NewWriter(&payload)
+	entry, err := zw.Create("word/document.xml")
+	if err != nil {
+		t.Fatalf("create docx entry: %v", err)
+	}
+	if _, err := entry.Write([]byte("<w:document/>")); err != nil {
+		t.Fatalf("write docx entry: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close docx: %v", err)
+	}
+
+	meta, err := fr.Upload("cover.png", "image/png", "session-1", "user-1", int64(payload.Len()), bytes.NewReader(payload.Bytes()))
+	if err != nil {
+		t.Fatalf("Upload failed: %v", err)
+	}
+	if meta.Filename != "cover.docx" || meta.MimeType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+		t.Fatalf("metadata = %+v, want cover.docx/docx MIME", meta)
+	}
+	if _, err := os.Stat(fr.FilePath(meta)); err != nil {
+		t.Fatalf("normalized file path is missing: %v", err)
 	}
 }
 
@@ -304,6 +350,60 @@ func TestFileRelay_HandleUpload_HTTP(t *testing.T) {
 	}
 }
 
+func TestFileRelay_HandleUpload_InfersAllOfficeFormatsWithoutMultipartMIME(t *testing.T) {
+	formats := []struct {
+		filename string
+		mimeType string
+	}{
+		{"legacy.doc", "application/msword"},
+		{"modern.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		{"legacy.xls", "application/vnd.ms-excel"},
+		{"modern.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+		{"legacy.ppt", "application/vnd.ms-powerpoint"},
+		{"modern.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+	}
+
+	for _, format := range formats {
+		t.Run(format.filename, func(t *testing.T) {
+			fr := NewFileRelay(t.TempDir())
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			part, err := writer.CreateFormFile("file", format.filename)
+			if err != nil {
+				t.Fatalf("CreateFormFile: %v", err)
+			}
+			if _, err := part.Write([]byte("office fixture")); err != nil {
+				t.Fatalf("write form file: %v", err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close multipart writer: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/ve/files/upload", &body)
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			rec := httptest.NewRecorder()
+			fr.HandleUpload(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("upload %s: got %d: %s", format.filename, rec.Code, rec.Body.String())
+			}
+
+			var response struct {
+				FileID string `json:"file_id"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode upload response: %v", err)
+			}
+			meta := fr.GetFile(response.FileID)
+			if meta == nil {
+				t.Fatal("uploaded file metadata not found")
+			}
+			if meta.MimeType != format.mimeType {
+				t.Fatalf("mime type = %q, want %q", meta.MimeType, format.mimeType)
+			}
+		})
+	}
+}
+
 func TestFileRelay_HandleDownload_HTTP(t *testing.T) {
 	dir := t.TempDir()
 	fr := NewFileRelay(dir)
@@ -544,7 +644,12 @@ func TestIsAllowedMIME(t *testing.T) {
 		{"image/webp", true},
 		{"image/bmp", true},
 		{"application/pdf", true},
+		{"application/msword", true},
+		{"application/vnd.ms-excel", true},
+		{"application/vnd.ms-powerpoint", true},
 		{"application/vnd.openxmlformats-officedocument.wordprocessingml.document", true},
+		{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", true},
+		{"application/vnd.openxmlformats-officedocument.presentationml.presentation", true},
 		{"application/x-executable", false},
 		{"application/octet-stream", false},
 		{"video/mp4", false},
@@ -570,7 +675,12 @@ func TestDetectMIMEType(t *testing.T) {
 		{"test.gif", "image/gif"},
 		{"test.webp", "image/webp"},
 		{"test.pdf", "application/pdf"},
+		{"test.doc", "application/msword"},
 		{"test.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		{"test.xls", "application/vnd.ms-excel"},
+		{"test.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+		{"test.ppt", "application/vnd.ms-powerpoint"},
+		{"test.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
 		{"test.go", "text/plain"},
 		{"test.py", "text/plain"},
 		{"test.unknown", "application/octet-stream"},
@@ -615,6 +725,9 @@ func TestFileCategory(t *testing.T) {
 		{"image/png", "image"},
 		{"image/jpeg", "image"},
 		{"application/pdf", "document"},
+		{"application/msword", "document"},
+		{"application/vnd.ms-excel", "document"},
+		{"application/vnd.ms-powerpoint", "document"},
 		{"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "document"},
 	}
 	for _, tt := range tests {

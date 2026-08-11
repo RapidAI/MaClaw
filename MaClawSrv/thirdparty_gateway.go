@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +44,7 @@ const (
 type srvThirdPartyGatewayManager struct {
 	svc      *agentservice.Service
 	aiModels *srvAIModelManager
+	bindings *srvDeviceAgentBindingStore
 
 	mu               sync.Mutex
 	clients          map[string]*srvThirdPartyClientState
@@ -55,9 +58,9 @@ type srvThirdPartyRuntimeInstance struct {
 }
 
 type srvThirdPartyClientState struct {
-	Next               int64
-	Messages           []srvThirdPartyOutgoingMessage
-	Acked              map[string]string
+	Next     int64
+	Messages []srvThirdPartyOutgoingMessage
+	Acked    map[string]string
 	// AckedHighWater is the highest cursor of acknowledged messages. Pruning
 	// drops acknowledged entries eagerly, so without this floor a poll with an
 	// older cursor could never advance past an already-acked message.
@@ -111,12 +114,21 @@ type srvThirdPartyToolResultRequest = coreim.ThirdPartyToolResultRequest
 
 type srvThirdPartyOutgoingMessage = coreim.ThirdPartyOutgoingMessage
 
-func newSrvThirdPartyGatewayManager(svc *agentservice.Service, aiModels ...*srvAIModelManager) *srvThirdPartyGatewayManager {
+func newSrvThirdPartyGatewayManager(svc *agentservice.Service, dependencies ...any) *srvThirdPartyGatewayManager {
 	var asrManager *srvAIModelManager
-	if len(aiModels) > 0 {
-		asrManager = aiModels[0]
+	var bindings *srvDeviceAgentBindingStore
+	for _, dependency := range dependencies {
+		switch value := dependency.(type) {
+		case *srvAIModelManager:
+			asrManager = value
+		case *srvDeviceAgentBindingStore:
+			bindings = value
+		}
 	}
-	return &srvThirdPartyGatewayManager{svc: svc, aiModels: asrManager, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}, media: map[string]*srvThirdPartyMediaObject{}}
+	if bindings == nil && svc != nil {
+		bindings = newSrvDeviceAgentBindingStore(svc.DataRoot())
+	}
+	return &srvThirdPartyGatewayManager{svc: svc, aiModels: asrManager, bindings: bindings, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}, media: map[string]*srvThirdPartyMediaObject{}}
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayHealth(w http.ResponseWriter, r *http.Request) {
@@ -499,7 +511,7 @@ func (s *HTTPServer) validateThirdPartyGatewayTokenUnique(ctx context.Context, p
 func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p agentservice.Principal, req srvThirdPartyIncomingRequest, maclawID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	instanceID, err := m.ensureThirdPartyInstance(ctx, p)
+	binding, instanceID, err := m.ensureHardwareInstance(ctx, p, req.ClientID)
 	if err != nil {
 		m.enqueueError(p, req, maclawID, "third-party channel is not ready: "+err.Error())
 		return
@@ -508,17 +520,23 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 		Platform:  "thirdparty",
 		ContactID: req.ClientID + ":" + req.ConversationID,
 		Extra: map[string]string{
-			"runtime":          "maclawsrv",
-			"client_id":        req.ClientID,
-			"conversation_id":  req.ConversationID,
-			"event_id":         req.EventID,
-			"maclaw_id":        maclawID,
-			"message_type":     req.Message.Type,
-			"attachment_count": strconv.Itoa(len(req.Message.Attachments)),
+			"runtime":           "maclawsrv",
+			"client_id":         req.ClientID,
+			"conversation_id":   req.ConversationID,
+			"event_id":          req.EventID,
+			"maclaw_id":         maclawID,
+			"message_type":      req.Message.Type,
+			"device_binding_id": binding.DeviceID,
+			"attachment_count":  strconv.Itoa(len(req.Message.Attachments)),
 		},
 	})
 	voiceTranscript, voiceOK := m.transcribeThirdPartyVoice(ctx, p, req)
-	content, attachments := m.thirdPartyAgentInput(p, req)
+	instance, instanceErr := m.svc.GetInstance(ctx, p, instanceID)
+	if instanceErr != nil {
+		m.enqueueError(p, req, maclawID, "third-party message failed: "+instanceErr.Error())
+		return
+	}
+	content, attachments := m.thirdPartyAgentInput(p, req, instance.Workspace)
 	if voiceOK {
 		content = voiceTranscript
 		metadata["asr_transcript"] = voiceTranscript
@@ -532,18 +550,30 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 		Attachments:        attachments,
 		Metadata:           metadata,
 		SessionMetadata:    metadata,
-		ClientSessionKey:   "thirdparty:" + req.ClientID + ":" + req.ConversationID,
+		ClientSessionKey:   "hardware:" + binding.DeviceID + ":" + req.ConversationID,
 		ClientMessageID:    req.EventID,
 		ClientCapabilities: m.clientCapabilities(thirdPartyClientKey(p, req.ClientID)),
 	}
 	_, _, assistant, err := m.svc.SendMessage(ctx, p, instanceID, sendInput)
 	if errors.Is(err, agentservice.ErrInstanceNotFound) {
-		m.clearCachedRuntimeInstanceID(p)
-		instanceID, retryErr := m.ensureThirdPartyInstance(ctx, p)
+		// A hardware instance is intentionally not cached in the legacy
+		// user-wide IM runtime cache. Clear only this device's persisted stale
+		// reference before resolving/recreating its dedicated instance.
+		_ = m.bindings.clearInstanceIf(p, req.ClientID, instanceID)
+		var retryErr error
+		binding, instanceID, retryErr = m.ensureHardwareInstance(ctx, p, req.ClientID)
 		if retryErr != nil {
 			err = retryErr
 		} else {
-			_, _, assistant, err = m.svc.SendMessage(ctx, p, instanceID, sendInput)
+			instance, instanceErr = m.svc.GetInstance(ctx, p, instanceID)
+			if instanceErr != nil {
+				err = instanceErr
+			} else {
+				content, attachments = m.thirdPartyAgentInput(p, req, instance.Workspace)
+				sendInput.Content = content
+				sendInput.Attachments = attachments
+				_, _, assistant, err = m.svc.SendMessage(ctx, p, instanceID, sendInput)
+			}
 		}
 	}
 	if err != nil {
@@ -551,7 +581,7 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 		return
 	}
 	if assistant != nil && strings.TrimSpace(assistant.Content) != "" {
-		m.enqueueAssistantReply(ctx, p, req, maclawID, assistant.ID, assistant.Content, assistant.CreatedAt)
+		m.enqueueAssistantReply(ctx, p, req, maclawID, assistant.ID, assistant.Content, assistant.CreatedAt, binding)
 	}
 	_ = parent
 }
@@ -561,7 +591,7 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 // automatically; text-originated turns use the user's existing automatic TTS
 // preference. A TTS/model/media failure always degrades to useful text when the
 // client supports it.
-func (m *srvThirdPartyGatewayManager) enqueueAssistantReply(ctx context.Context, p agentservice.Principal, req srvThirdPartyIncomingRequest, replyTo, assistantID, text string, createdAt time.Time) {
+func (m *srvThirdPartyGatewayManager) enqueueAssistantReply(ctx context.Context, p agentservice.Principal, req srvThirdPartyIncomingRequest, replyTo, assistantID, text string, createdAt time.Time, bindings ...srvDeviceAgentBinding) {
 	text = strings.TrimSpace(text)
 	if m == nil || text == "" {
 		return
@@ -586,7 +616,11 @@ func (m *srvThirdPartyGatewayManager) enqueueAssistantReply(ctx context.Context,
 		// Hardware replies should stay short enough for bounded RAM/download
 		// clients. The full useful answer is still carried by the text half.
 		spoken := tts.CapSpeechText(text, 64)
-		wav, _, err := m.aiModels.synthesizeText(ctx, cfg, spoken)
+		voiceID := ""
+		if len(bindings) > 0 {
+			voiceID = bindings[0].TTSVoiceID
+		}
+		wav, _, err := m.aiModels.synthesizeTextWithVoice(ctx, cfg, voiceID, spoken)
 		if err == nil {
 			if msg, ok := m.prepareAssistantAudio(p, req.ClientID, req.ConversationID, replyTo, assistantID, wav, createdAt); ok {
 				audio = &msg
@@ -622,6 +656,17 @@ func (m *srvThirdPartyGatewayManager) enqueueAssistantReply(ctx context.Context,
 	if allows("audio") && audio != nil {
 		m.enqueue(p, req, *audio)
 	}
+}
+
+func (m *srvThirdPartyGatewayManager) ensureHardwareInstance(ctx context.Context, p agentservice.Principal, clientID string) (srvDeviceAgentBinding, string, error) {
+	if m == nil || m.svc == nil || m.bindings == nil {
+		return srvDeviceAgentBinding{}, "", errors.New("hardware device runtime is unavailable")
+	}
+	binding, instance, err := m.bindings.ensureInstance(ctx, m.svc, p, clientID)
+	if err != nil {
+		return srvDeviceAgentBinding{}, "", err
+	}
+	return binding, instance.ID, nil
 }
 
 // prepareAssistantAudio chooses inline or same-origin URL delivery using the
@@ -713,7 +758,7 @@ func (m *srvThirdPartyGatewayManager) transcribeThirdPartyVoice(ctx context.Cont
 	return "", false
 }
 
-func (m *srvThirdPartyGatewayManager) thirdPartyAgentInput(p agentservice.Principal, req srvThirdPartyIncomingRequest) (string, []agent.MessageAttachment) {
+func (m *srvThirdPartyGatewayManager) thirdPartyAgentInput(p agentservice.Principal, req srvThirdPartyIncomingRequest, workspace string) (string, []agent.MessageAttachment) {
 	content := coreim.ThirdPartyIncomingContent(req)
 	if len(req.Message.Attachments) == 0 {
 		return content, nil
@@ -737,6 +782,10 @@ func (m *srvThirdPartyGatewayManager) thirdPartyAgentInput(p agentservice.Princi
 			continue
 		}
 		if ok && len(data) > coreim.ThirdPartyMaxDirectBytes {
+			if path, err := storeThirdPartyAttachmentInWorkspace(workspace, ref, data); err == nil {
+				notes = append(notes, fmt.Sprintf("- %s %s saved to %s for agent document reading (%d bytes)", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), path, len(data)))
+				continue
+			}
 			if strings.TrimSpace(ref.URL) != "" {
 				notes = append(notes, fmt.Sprintf("- %s %s available at server media URL; size=%d bytes; url=%s", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), len(data), ref.URL))
 			} else {
@@ -755,6 +804,36 @@ func (m *srvThirdPartyGatewayManager) thirdPartyAgentInput(p agentservice.Princi
 		}
 	}
 	return content, attachments
+}
+
+// storeThirdPartyAttachmentInWorkspace keeps server-media attachments inside
+// the selected instance workspace. Large documents cannot be sent as base64 to
+// agentservice, but read_document can safely access this staged path and apply
+// the shared OfficeRead/PDF preflight.
+func storeThirdPartyAttachmentInWorkspace(workspace string, ref coreim.ThirdPartyMediaReference, data []byte) (string, error) {
+	if strings.TrimSpace(workspace) == "" || len(data) == 0 {
+		return "", errors.New("workspace attachment staging is unavailable")
+	}
+	maxBytes := coreim.ThirdPartyMediaMaxBytesFor(ref.FileName, ref.MimeType)
+	if int64(len(data)) > maxBytes {
+		return "", fmt.Errorf("media exceeds %d bytes", maxBytes)
+	}
+	dir := filepath.Join(workspace, ".attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	name := agent.NormalizeBinaryDocumentAttachmentFilename(ref.FileName, ref.MimeType)
+	if name == "" {
+		name = coreim.SafeThirdPartyFileName(ref.FileName)
+	}
+	if name == "" || name == "file" {
+		name = "attachment"
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%d_%s", time.Now().UnixMilli(), filepath.Base(name)))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func thirdPartyReadableTextAttachment(ref coreim.ThirdPartyMediaReference, data []byte) (string, bool) {
@@ -826,15 +905,10 @@ func (m *srvThirdPartyGatewayManager) validateIncomingMediaReferences(p agentser
 				return fmt.Errorf("message.attachments[%d].url media not found", i)
 			}
 			ref.ID = id
-			if ref.FileName == "" {
-				ref.FileName = media.FileName
-			}
-			if ref.MimeType == "" {
-				ref.MimeType = media.MimeType
-			}
-			if ref.SizeBytes == 0 {
-				ref.SizeBytes = media.SizeBytes
-			}
+			ref.FileName = media.FileName
+			ref.MimeType = media.MimeType
+			ref.ContentType = media.MimeType
+			ref.SizeBytes = media.SizeBytes
 		}
 		if strings.TrimSpace(ref.Data) != "" {
 			continue
@@ -844,15 +918,10 @@ func (m *srvThirdPartyGatewayManager) validateIncomingMediaReferences(p agentser
 			if !ok {
 				return fmt.Errorf("message.attachments[%d].id media not found", i)
 			}
-			if ref.FileName == "" {
-				ref.FileName = media.FileName
-			}
-			if ref.MimeType == "" {
-				ref.MimeType = media.MimeType
-			}
-			if ref.SizeBytes == 0 {
-				ref.SizeBytes = media.SizeBytes
-			}
+			ref.FileName = media.FileName
+			ref.MimeType = media.MimeType
+			ref.ContentType = media.MimeType
+			ref.SizeBytes = media.SizeBytes
 		}
 	}
 	return nil
@@ -1016,6 +1085,7 @@ func (m *srvThirdPartyGatewayManager) prepareMedia(p agentservice.Principal, req
 	}
 	fileName := coreim.SafeThirdPartyFileName(req.FileName)
 	mimeType := strings.TrimSpace(req.MimeType)
+	maxBytes := coreim.ThirdPartyMediaMaxBytesFor(fileName, mimeType)
 	downloadURL := fmt.Sprintf("%s/media/%s?mediaToken=%s", strings.TrimRight(baseURL, "/"), id, token)
 	uploadURL := fmt.Sprintf("%s/media/%s/upload?mediaToken=%s", strings.TrimRight(baseURL, "/"), id, token)
 	obj := &srvThirdPartyMediaObject{
@@ -1040,7 +1110,7 @@ func (m *srvThirdPartyGatewayManager) prepareMedia(p agentservice.Principal, req
 		OK:        true,
 		RequestID: coreim.NewThirdPartyGatewayRequestID(),
 		Media:     ref,
-		Upload:    coreim.ThirdPartyMediaUpload{Method: http.MethodPut, URL: uploadURL, ContentType: mimeType, MaxBytes: srvThirdPartyMaxMediaBytes},
+		Upload:    coreim.ThirdPartyMediaUpload{Method: http.MethodPut, URL: uploadURL, ContentType: mimeType, MaxBytes: maxBytes},
 		Download:  coreim.ThirdPartyMediaDownload{URL: downloadURL},
 		ExpiresAt: time.Now().Add(24 * time.Hour).UnixMilli(),
 	}, nil
@@ -1056,15 +1126,20 @@ func (m *srvThirdPartyGatewayManager) storeMediaUpload(r *http.Request, id strin
 	if !coreim.ThirdPartyMediaTokenOK(r, media.Token) {
 		return errors.New("invalid media token")
 	}
-	if r.ContentLength > srvThirdPartyMaxMediaBytes {
-		return fmt.Errorf("media exceeds %d bytes", srvThirdPartyMaxMediaBytes)
+	maxBytes := coreim.ThirdPartyMediaMaxBytesFor(media.FileName, media.MimeType)
+	contentTypeMaxBytes := coreim.ThirdPartyMediaMaxBytesFor(media.FileName, r.Header.Get("Content-Type"))
+	if contentTypeMaxBytes < maxBytes {
+		maxBytes = contentTypeMaxBytes
 	}
-	data, err := io.ReadAll(io.LimitReader(r.Body, srvThirdPartyMaxMediaBytes+1))
+	if r.ContentLength > maxBytes {
+		return fmt.Errorf("media exceeds %d bytes", maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > srvThirdPartyMaxMediaBytes {
-		return fmt.Errorf("media exceeds %d bytes", srvThirdPartyMaxMediaBytes)
+	if int64(len(data)) > maxBytes {
+		return fmt.Errorf("media exceeds %d bytes", maxBytes)
 	}
 	if media.SizeBytes > 0 && int64(len(data)) != media.SizeBytes {
 		return fmt.Errorf("media size mismatch: got %d bytes, want %d", len(data), media.SizeBytes)
@@ -1163,6 +1238,16 @@ func (m *srvThirdPartyGatewayManager) clearCachedRuntimeInstanceID(p agentservic
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.runtimeInstances, principalRuntimeKey(p))
+}
+
+func (m *srvThirdPartyGatewayManager) stopDeviceClient(p agentservice.Principal, clientID string) {
+	if m == nil {
+		return
+	}
+	clientKey := thirdPartyClientKey(p, strings.TrimSpace(clientID))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.clients, clientKey)
 }
 
 func (m *srvThirdPartyGatewayManager) markIncoming(clientKey, eventID, maclawID string) (bool, string) {

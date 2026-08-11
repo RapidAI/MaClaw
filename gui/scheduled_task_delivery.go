@@ -50,11 +50,11 @@ func (a *App) deliveryStateStore() *scheduler.DeliveryStateStore {
 }
 
 // deliverScheduledTaskTarget sends one target and returns the concrete peer id used (for memory).
-func (a *App) deliverScheduledTaskTarget(ctx context.Context, channel string, target scheduler.DeliveryTarget, text string) (peer string, err error) {
+func (a *App) deliverScheduledTaskTarget(ctx context.Context, channel, botProfileID string, target scheduler.DeliveryTarget, text string) (peer string, err error) {
 	channel = scheduler.DefaultDeliveryChannel(channel)
 	switch channel {
 	case scheduler.DeliveryChannelLansenger:
-		return a.deliverLansengerScheduledTarget(ctx, target, text)
+		return a.deliverLansengerScheduledTarget(ctx, botProfileID, target, text)
 	case scheduler.DeliveryChannelWeixin:
 		return a.deliverWeixinScheduledTarget(ctx, target, text)
 	case scheduler.DeliveryChannelTelegram:
@@ -135,13 +135,14 @@ func (a *App) deliverQQScheduledTarget(ctx context.Context, target scheduler.Del
 	return used, nil
 }
 
-func (a *App) deliverLansengerScheduledTarget(ctx context.Context, target scheduler.DeliveryTarget, text string) (string, error) {
+func (a *App) deliverLansengerScheduledTarget(ctx context.Context, botProfileID string, target scheduler.DeliveryTarget, text string) (string, error) {
+	botProfileID = strings.TrimSpace(botProfileID)
 	switch target.Kind {
 	case scheduler.DeliveryKindGroup:
 		if strings.TrimSpace(target.GroupID) == "" {
 			return "", fmt.Errorf("lansenger group target missing group_id")
 		}
-		gw, err := a.lansengerGatewayForSend()
+		gw, err := a.lansengerGatewayForSend(botProfileID)
 		if err != nil {
 			return "", err
 		}
@@ -165,21 +166,24 @@ func (a *App) deliverLansengerScheduledTarget(ctx context.Context, target schedu
 			return "", fmt.Errorf("lansenger user target missing user_id")
 		}
 		// user_id=self → remembered peer, else live private session.
-		userID = a.deliveryStateStore().ResolveSelfPeer(scheduler.DeliveryChannelLansenger, userID)
+		userID = a.resolveLansengerDeliverySelfPeer(botProfileID, userID)
 		if scheduler.IsSelfPeerID(userID) {
-			a.ensureLansengerGateway()
-			if a.lansengerGateway == nil {
-				return "", fmt.Errorf("lansenger: user_id=self 需要 staffId，或先用蓝信私聊机器人一次")
-			}
-			if err := a.lansengerGateway.SendProactiveText(text); err != nil {
+			manager, err := a.lansengerGatewayManagerForSend(botProfileID)
+			if err != nil {
 				return "", err
 			}
-			if peer := a.lansengerGateway.LastPrivatePeerID(); peer != "" {
+			if manager == nil {
+				return "", fmt.Errorf("lansenger: user_id=self 需要 staffId，或先用蓝信私聊机器人一次")
+			}
+			if err := manager.SendProactiveText(text); err != nil {
+				return "", err
+			}
+			if peer := manager.LastPrivatePeerID(); peer != "" {
 				return peer, nil
 			}
 			return "", nil
 		}
-		gw, err := a.lansengerGatewayForSend()
+		gw, err := a.lansengerGatewayForSend(botProfileID)
 		if err != nil {
 			return "", err
 		}
@@ -198,14 +202,38 @@ func (a *App) deliverLansengerScheduledTarget(ctx context.Context, target schedu
 
 // lansengerGatewayForSend returns a live gateway, or a short-lived REST client
 // built from saved credentials (same pattern as ListLansengerGroups).
-func (a *App) lansengerGatewayForSend() (*lansenger.Gateway, error) {
+func (a *App) lansengerGatewayManagerForSend(botProfileID string) (*lansengerGatewayManager, error) {
 	if a == nil {
 		return nil, fmt.Errorf("app unavailable")
 	}
-	if a.lansengerGateway != nil {
-		a.lansengerGateway.mu.Lock()
-		gw := a.lansengerGateway.gateway
-		a.lansengerGateway.mu.Unlock()
+	botProfileID = strings.TrimSpace(botProfileID)
+	if botProfileID != "" {
+		if a.lansengerGateways == nil {
+			return nil, fmt.Errorf("lansenger bot profile %q is unavailable", botProfileID)
+		}
+		manager := a.lansengerGateways.manager(botProfileID)
+		if manager == nil {
+			return nil, fmt.Errorf("lansenger bot profile %q is unavailable", botProfileID)
+		}
+		return manager, nil
+	}
+	return a.lansengerGateway, nil
+}
+
+// lansengerGatewayForSend returns a live gateway, or a short-lived REST client
+// built from the selected bot profile's credentials. A non-empty profile ID is
+// fail-closed: it never falls back to the compatibility/default gateway.
+func (a *App) lansengerGatewayForSend(botProfileID string) (*lansenger.Gateway, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app unavailable")
+	}
+	botProfileID = strings.TrimSpace(botProfileID)
+	if manager, err := a.lansengerGatewayManagerForSend(botProfileID); err != nil {
+		return nil, err
+	} else if manager != nil {
+		manager.mu.Lock()
+		gw := manager.gateway
+		manager.mu.Unlock()
 		if gw != nil {
 			return gw, nil
 		}
@@ -216,10 +244,25 @@ func (a *App) lansengerGatewayForSend() (*lansenger.Gateway, error) {
 	}
 	appID := strings.TrimSpace(cfg.LansengerAppID)
 	appSecret := strings.TrimSpace(cfg.LansengerAppSecret)
+	apiURL := strings.TrimSpace(cfg.LansengerApiGatewayURL())
+	wssURL := strings.TrimSpace(cfg.LansengerWebSocketGatewayURL())
+	if botProfileID != "" {
+		profile, ok := lansengerBotProfileFromConfig(cfg, botProfileID)
+		if !ok {
+			return nil, fmt.Errorf("lansenger bot profile %q is unavailable", botProfileID)
+		}
+		appID = strings.TrimSpace(profile.AppID)
+		appSecret = strings.TrimSpace(profile.AppSecret)
+		if v := strings.TrimSpace(profile.GatewayURL); v != "" {
+			apiURL = v
+		}
+		if v := strings.TrimSpace(profile.WSSURL); v != "" {
+			wssURL = v
+		}
+	}
 	if appID == "" || appSecret == "" {
 		return nil, fmt.Errorf("蓝信未配置 App ID / App Secret")
 	}
-	apiURL := strings.TrimSpace(cfg.LansengerApiGatewayURL())
 	if apiURL == "" {
 		return nil, fmt.Errorf("蓝信网关地址为空")
 	}
@@ -227,6 +270,22 @@ func (a *App) lansengerGatewayForSend() (*lansenger.Gateway, error) {
 		AppID:            appID,
 		AppSecret:        appSecret,
 		ApiGatewayURL:    apiURL,
-		WebSocketBaseURL: strings.TrimSpace(cfg.LansengerWebSocketGatewayURL()),
+		WebSocketBaseURL: wssURL,
 	}, nil), nil
+}
+
+func (a *App) resolveLansengerDeliverySelfPeer(botProfileID, userID string) string {
+	userID = strings.TrimSpace(userID)
+	if !scheduler.IsSelfPeerID(userID) {
+		return userID
+	}
+	if manager, err := a.lansengerGatewayManagerForSend(botProfileID); err == nil && manager != nil {
+		if peer := manager.LastPrivatePeerID(); peer != "" {
+			return peer
+		}
+	}
+	if strings.TrimSpace(botProfileID) == "" {
+		return a.deliveryStateStore().ResolveSelfPeer(scheduler.DeliveryChannelLansenger, userID)
+	}
+	return userID
 }

@@ -4,6 +4,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestExpertIDFromUserID(t *testing.T) {
@@ -114,7 +117,127 @@ func swapExpertStoreForTest(t *testing.T) {
 	t.Helper()
 	old := defaultExpertStore
 	defaultExpertStore = newExpertStore(filepath.Join(t.TempDir(), "experts", "experts.json"))
-	t.Cleanup(func() { defaultExpertStore = old })
+	expertDefCache.Range(func(key, _ interface{}) bool {
+		expertDefCache.Delete(key)
+		return true
+	})
+	t.Cleanup(func() {
+		defaultExpertStore = old
+		expertDefCache.Range(func(key, _ interface{}) bool {
+			expertDefCache.Delete(key)
+			return true
+		})
+	})
+}
+
+func TestAssistantBindingUnavailableExpertIsRejected(t *testing.T) {
+	swapExpertStoreForTest(t)
+	binding := &agent.AssistantBinding{
+		BotProfileID: "support",
+		Mode:         corelib.LansengerAssistantModeExpert,
+		ExpertID:     "deleted-support-expert",
+	}
+	cleanup, got := bindAssistantForTurn(IMUserMessage{UserID: "lansenger:bot-support:conversation-1", AssistantBinding: binding})
+	if got != unavailableAssistantBindingExpertMessage {
+		t.Fatalf("unavailable binding error = %q, want %q", got, unavailableAssistantBindingExpertMessage)
+	}
+	cleanup()
+	if err := defaultExpertStore.Save(ExpertDefinition{ID: binding.ExpertID, Name: "Support"}); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, got = bindAssistantForTurn(IMUserMessage{UserID: "lansenger:bot-support:conversation-1", AssistantBinding: binding})
+	defer cleanup()
+	if got != "" {
+		t.Fatalf("available binding should pass, got %q", got)
+	}
+}
+
+func TestCloneAssistantBindingCopiesDirectorySlices(t *testing.T) {
+	original := &agent.AssistantBinding{
+		BotProfileID: "support", DocumentDirectories: []string{"docs"}, AllowedDirectories: []string{"work"},
+	}
+	clone := cloneAssistantBinding(original)
+	if clone == nil || clone == original {
+		t.Fatalf("clone = %#v", clone)
+	}
+	clone.DocumentDirectories[0] = "other-docs"
+	clone.AllowedDirectories[0] = "other-work"
+	if original.DocumentDirectories[0] != "docs" || original.AllowedDirectories[0] != "work" {
+		t.Fatalf("clone mutated original: %#v", original)
+	}
+}
+
+func TestPrepareAssistantBindingDoesNotPublishBeforeActivation(t *testing.T) {
+	swapExpertStoreForTest(t)
+	const expertID = "support-expert"
+	if err := defaultExpertStore.Save(ExpertDefinition{ID: expertID, Name: "Support"}); err != nil {
+		t.Fatal(err)
+	}
+	userID := "lansenger:bot-support:conversation-1"
+	scope, errText := prepareAssistantBindingTurn(IMUserMessage{UserID: userID, AssistantBinding: &agent.AssistantBinding{
+		BotProfileID: "support", Mode: corelib.LansengerAssistantModeExpert, ExpertID: expertID,
+	}})
+	if errText != "" || scope == nil {
+		t.Fatalf("prepare = %#v, %q", scope, errText)
+	}
+	if got := assistantBindingForUserID(userID); got != nil {
+		t.Fatalf("prepared binding was published early: %#v", got)
+	}
+	cleanup := activateAssistantBindingForTurn(userID, scope)
+	defer cleanup()
+	if got := expertDefForUserID(userID); got == nil || got.ID != expertID {
+		t.Fatalf("activated binding expert = %#v", got)
+	}
+}
+
+func TestAssistantBindingKeepsExpertPolicySnapshotForTurn(t *testing.T) {
+	swapExpertStoreForTest(t)
+	const expertID = "shared-support-expert"
+	if err := defaultExpertStore.Save(ExpertDefinition{ID: expertID, Name: "Support"}); err != nil {
+		t.Fatal(err)
+	}
+	botUserID := "lansenger:bot-support:conversation-1"
+	cleanup, errText := bindAssistantForTurn(IMUserMessage{UserID: botUserID, AssistantBinding: &agent.AssistantBinding{
+		BotProfileID: "support", Mode: corelib.LansengerAssistantModeExpert, ExpertID: expertID,
+	}})
+	if errText != "" {
+		t.Fatalf("bind expert turn: %q", errText)
+	}
+	t.Cleanup(cleanup)
+	if expertDefForUserID(botUserID) == nil {
+		t.Fatal("expert definition should be available during the bound turn")
+	}
+
+	if err := defaultExpertStore.Delete(expertID, false); err != nil {
+		t.Fatal(err)
+	}
+	invalidateExpertDefCache(expertID)
+	if got := expertDefForUserID(botUserID); got == nil {
+		t.Fatal("active expert turn lost its restrictive policy after deletion")
+	}
+	cleanup()
+	if got := expertDefForUserID(botUserID); got != nil {
+		t.Fatalf("completed turn retained expert policy: %#v", got)
+	}
+}
+
+func TestInvalidateExpertDefCacheClearsAllSessionCacheKeys(t *testing.T) {
+	const expertID = "shared-support-expert"
+	desktopKey := expertSessionUserID(expertID) + "\x00" + expertID
+	botKey := "lansenger:bot-support:conversation-1\x00" + expertID
+	expertDefCache.Store(desktopKey, expertDefCacheEntry{})
+	expertDefCache.Store(botKey, expertDefCacheEntry{})
+	t.Cleanup(func() {
+		expertDefCache.Delete(desktopKey)
+		expertDefCache.Delete(botKey)
+	})
+	invalidateExpertDefCache(expertID)
+	if _, ok := expertDefCache.Load(desktopKey); ok {
+		t.Fatal("desktop cache key was not invalidated")
+	}
+	if _, ok := expertDefCache.Load(botKey); ok {
+		t.Fatal("bot cache key was not invalidated")
+	}
 }
 
 func TestNormalizeAIAssistantSessionUserIDExpert(t *testing.T) {

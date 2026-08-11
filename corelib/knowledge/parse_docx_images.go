@@ -4,11 +4,20 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 )
+
+// Keep supporting OOXML metadata reasonably bounded even when these exported
+// extractors are called outside the normal knowledge-import preflight. Image
+// enrichment must not turn a small compressed XML part into an unbounded
+// allocation.
+const maxKnowledgeOfficeImageXMLBytes int64 = 8 * 1024 * 1024
+
+var errKnowledgeOfficeImagePartTooLarge = errors.New("embedded Office image part exceeds limit")
 
 // ExtractDOCXImages extracts embedded images from a DOCX file and returns
 // DocumentNodes of type "image" with position context from surrounding text.
@@ -33,27 +42,11 @@ func ExtractDOCXImages(source Source, filePath string, textNodes []DocumentNode)
 		return nil, nil, err
 	}
 
-	// Step 2: Read all media files from zip into memory
-	mediaFiles := make(map[string][]byte) // "word/media/image1.png" → bytes
-	for _, f := range r.File {
-		if strings.HasPrefix(f.Name, "word/media/") && !f.FileInfo().IsDir() {
-			data, err := readZipFile(f)
-			if err != nil {
-				continue
-			}
-			mediaFiles[f.Name] = data
-		}
-	}
-
-	if len(mediaFiles) == 0 {
-		return nil, nil, nil // no images
-	}
-
-	// Step 3: Parse document.xml to find image positions (paragraph index + alt text)
+	// Step 2: Parse document.xml to find image positions (paragraph index + alt text)
 	var documentXML []byte
 	for _, f := range r.File {
 		if f.Name == "word/document.xml" {
-			documentXML, err = readZipFile(f)
+			documentXML, err = readZipFileAtMost(f, maxKnowledgeOfficeImageXMLBytes)
 			if err != nil {
 				return nil, nil, fmt.Errorf("read document.xml: %w", err)
 			}
@@ -69,13 +62,41 @@ func ExtractDOCXImages(source Source, filePath string, textNodes []DocumentNode)
 		return nil, nil, nil
 	}
 
-	// Step 4: Create image DocumentNodes with context
+	// Step 3: Index media entries without inflating them. Only referenced images
+	// are read below; a document with an unused media directory must not consume
+	// the image-import budget.
+	mediaFiles := make(map[string]*zip.File)
+	for _, f := range r.File {
+		if strings.HasPrefix(f.Name, "word/media/") && !f.FileInfo().IsDir() {
+			mediaFiles[f.Name] = f
+		}
+	}
+
+	// Step 4: Create image DocumentNodes with context. Do not retain more than
+	// the shared per-document payload budget before handing the result to the
+	// common asset pipeline.
 	var nodes []DocumentNode
 	imageBytes := make(map[string][]byte)
+	var retainedBytes int64
+	mediaData := make(map[string][]byte)
+	mediaReadFailed := make(map[string]bool)
 
 	for _, ref := range imageRefs {
-		data, ok := mediaFiles[ref.mediaPath]
+		data, ok := mediaData[ref.mediaPath]
 		if !ok {
+			media, exists := mediaFiles[ref.mediaPath]
+			if !exists || mediaReadFailed[ref.mediaPath] || media.UncompressedSize64 < 500 || media.UncompressedSize64 > uint64(MaxKnowledgeImageAssetBytes) || media.UncompressedSize64 > uint64(maxKnowledgeDocumentImageBytes-retainedBytes) {
+				continue
+			}
+			data, err = readZipFileAtMost(media, MaxKnowledgeImageAssetBytes)
+			if err != nil || len(data) > int(maxKnowledgeDocumentImageBytes-retainedBytes) {
+				mediaReadFailed[ref.mediaPath] = true
+				continue
+			}
+			retainedBytes += int64(len(data))
+			mediaData[ref.mediaPath] = data
+		}
+		if len(data) == 0 {
 			continue
 		}
 
@@ -94,9 +115,9 @@ func ExtractDOCXImages(source Source, filePath string, textNodes []DocumentNode)
 				Type:     NodeTypeImage,
 				Title:    ref.altText,
 				Metadata: map[string]string{
-					MetaImageFormat:   strings.TrimPrefix(ext, "."),
-					MetaImageIsVector: "true",
-					MetaImageAltText:  ref.altText,
+					MetaImageFormat:    strings.TrimPrefix(ext, "."),
+					MetaImageIsVector:  "true",
+					MetaImageAltText:   ref.altText,
 					"_image_bytes_key": nodeID,
 				},
 			})
@@ -145,7 +166,7 @@ func parseDocxRels(r *zip.ReadCloser) (map[string]string, error) {
 		if f.Name != "word/_rels/document.xml.rels" {
 			continue
 		}
-		data, err := readZipFile(f)
+		data, err := readZipFileAtMost(f, maxKnowledgeOfficeImageXMLBytes)
 		if err != nil {
 			return nil, fmt.Errorf("read rels: %w", err)
 		}
@@ -246,12 +267,26 @@ func getDocxImageContext(paragraphIndex int, textNodes []DocumentNode) (before, 
 // --- helpers ---
 
 func readZipFile(f *zip.File) ([]byte, error) {
+	return readZipFileAtMost(f, maxKnowledgeOfficeImageXMLBytes)
+}
+
+func readZipFileAtMost(f *zip.File, maxBytes int64) ([]byte, error) {
+	if f == nil || maxBytes < 0 || f.UncompressedSize64 > uint64(maxBytes) {
+		return nil, errKnowledgeOfficeImagePartTooLarge
+	}
 	rc, err := f.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(rc)
+	data, err := io.ReadAll(io.LimitReader(rc, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, errKnowledgeOfficeImagePartTooLarge
+	}
+	return data, nil
 }
 
 func normalizeFormatName(ext string) string {
@@ -317,5 +352,7 @@ func BuildImageHintsFromNode(node DocumentNode, source Source) ImageHints {
 		ParentTitle:   node.Title,
 		PageNumber:    node.Page,
 		SourceTitle:   source.Title,
+		OwnerID:       source.OwnerID,
+		TenantID:      source.TenantID,
 	}
 }

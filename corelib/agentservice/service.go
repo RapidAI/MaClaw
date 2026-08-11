@@ -19,6 +19,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -111,6 +112,42 @@ func (s *Service) Close() error {
 }
 
 func (s *Service) DataRoot() string { return s.dataRoot }
+
+// SetCodingRuntimeStore attaches a host-owned durable coding Ledger to an
+// executor that explicitly supports it. Service keeps ownership of principal,
+// tenant, user, instance and session resolution; transport code never invokes
+// a coding executor directly. Returns false for executors that do not expose
+// the optional coding-runtime capability.
+func (s *Service) SetCodingRuntimeStore(store codingruntime.Store) bool {
+	if s == nil {
+		return false
+	}
+	configurer, ok := s.executor.(interface {
+		SetCodingRuntimeStore(codingruntime.Store)
+	})
+	if !ok {
+		return false
+	}
+	configurer.SetCodingRuntimeStore(store)
+	return true
+}
+
+// CodingRuntimeRemoteRecoveryProber asks the configured executor for a
+// session-bound, read-only remote probe. It deliberately exposes no SSH
+// connection or command controls to HTTP hosts; recovery can only use an
+// existing verified session for the authenticated principal.
+func (s *Service) CodingRuntimeRemoteRecoveryProber(p Principal, cfg corelib.AppConfig, task codingruntime.Task, policy codingruntime.PolicySnapshot) (codingruntime.WorkspaceProber, error) {
+	if s == nil {
+		return nil, fmt.Errorf("coding runtime service is unavailable")
+	}
+	provider, ok := s.executor.(interface {
+		CodingRuntimeRemoteRecoveryProber(Principal, corelib.AppConfig, codingruntime.Task, codingruntime.PolicySnapshot) (codingruntime.WorkspaceProber, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("coding runtime executor does not support remote recovery")
+	}
+	return provider.CodingRuntimeRemoteRecoveryProber(p, cfg, task, policy)
+}
 
 // UserDataRoot returns the isolated persistent data directory for one
 // principal. Host-side integrations use it for per-user delivery cursors and
@@ -2438,8 +2475,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	execMsg := userMsg
 	execMsg.Content = effectiveContent
 	execCtx, cancelExec := context.WithCancel(ctx)
-	s.registerRunCancel(run.ID, cancelExec)
-	res, execErr := s.executor.Execute(execCtx, ExecuteRequest{
+	execReq := ExecuteRequest{
 		Principal:          p,
 		Tenant:             tenant,
 		User:               user,
@@ -2461,7 +2497,20 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		),
 		OnToken:   in.OnToken,
 		MoAPreset: moaPresetFromMetadata(userMsg.Metadata, sess.Metadata),
+	}
+	// One cancel registration owns both boundaries. The normal request context
+	// stops live execution; a CoreAgentExecutor additionally closes the durable
+	// coding task subtree first. Keep the capability optional so non-coding
+	// executors retain their current service contract.
+	s.registerRunCancel(run.ID, func() {
+		if canceller, supported := s.executor.(interface {
+			CancelCodingRuntimeTask(ExecuteRequest) (bool, error)
+		}); supported {
+			_, _ = canceller.CancelCodingRuntimeTask(execReq)
+		}
+		cancelExec()
 	})
+	res, execErr := s.executor.Execute(execCtx, execReq)
 	s.clearRunCancel(run.ID)
 	cancelExec()
 	completed := s.now()

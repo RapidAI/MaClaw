@@ -5,13 +5,16 @@ import { corelib, main } from '../../../../wailsjs/go/models';
 import {
   CodingKnowledgeCapacity,
   CodingKnowledgeConfirm,
+  CodingKnowledgeCreateRevisionCandidate,
   CodingKnowledgeDelete,
   CodingKnowledgeEvict,
   CodingKnowledgeExportToFile,
   CodingKnowledgeGet,
   CodingKnowledgeGraduateToSteering,
   CodingKnowledgeImportFromFile,
+  CodingKnowledgeLifecycle,
   CodingKnowledgeList,
+  CodingKnowledgeMarkConflict,
   CodingKnowledgeResetFile,
   CodingKnowledgeSearch,
   CodingKnowledgeStats,
@@ -21,6 +24,8 @@ import {
   SelectCodingKnowledgeImportFile,
 } from "../../../../wailsjs/go/main/App";
 import { ProgrammingToolsSettingsPanel } from "../ProgrammingToolsSettingsPanel";
+
+const showPromptMock = vi.fn(async () => null as string | null);
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
   LoadConfig: vi.fn(async () => new corelib.AppConfig({} as any)),
@@ -53,6 +58,8 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
       scope: "language",
       language: "go",
       status: "active",
+      created_by: "runtime",
+      last_reviewed_at: "2026-08-11T08:00:00Z",
       recall_count: 3,
     },
     {
@@ -70,6 +77,14 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
       scope: "universal",
       status: "verified",
       recall_count: 8,
+    },
+    {
+      id: "exp-4",
+      title: "Retired database retry advice",
+      category: "pitfall",
+      scope: "universal",
+      status: "deprecated",
+      recall_count: 0,
     },
   ]),
   CodingKnowledgeSearch: vi.fn(async () => [
@@ -101,9 +116,17 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
   CodingKnowledgeUpdate: vi.fn(async () => undefined),
   CodingKnowledgeDelete: vi.fn(async () => undefined),
   CodingKnowledgeConfirm: vi.fn(async () => undefined),
+  CodingKnowledgeCreateRevisionCandidate: vi.fn(async () => ({ id: "exp-5", title: "Revised retry advice" })),
   CodingKnowledgeResetFile: vi.fn(async () => undefined),
   CodingKnowledgeExportToFile: vi.fn(async () => undefined),
   CodingKnowledgeImportFromFile: vi.fn(async () => 2),
+  CodingKnowledgeLifecycle: vi.fn(async () => [{
+    action: "conflict_marked",
+    reason: "Conflicts with new database guidance",
+    related_id: "exp-new",
+    occurred_at: "2026-08-11T08:00:00Z",
+  }]),
+  CodingKnowledgeMarkConflict: vi.fn(async () => undefined),
   CodingKnowledgeGraduateToSteering: vi.fn(async () => "C:/Users/test/.maclaw/steering/exp.md"),
   CodingKnowledgeEvict: vi.fn(async () => 3),
   SelectCodingKnowledgeExportPath: vi.fn(async () => "D:/tmp/coding-pack.json"),
@@ -114,12 +137,13 @@ vi.mock("../../CustomDialog", () => ({
   useDialog: () => ({
     showAlert: vi.fn(),
     showConfirm: vi.fn(async () => true),
-    showPrompt: vi.fn(async () => null),
+    showPrompt: showPromptMock,
   }),
 }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  showPromptMock.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -253,6 +277,62 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
     await waitFor(() => {
       expect(CodingKnowledgeConfirm).toHaveBeenCalledWith("exp-2");
     });
+  });
+
+  it("shows bounded lifecycle audit events", async () => {
+    render(
+      <ProgrammingToolsSettingsPanel
+        config={new corelib.AppConfig({} as any)}
+        setConfig={vi.fn()}
+        lang="en"
+      />
+    );
+
+    const auditButtons = await screen.findAllByText("Audit");
+    fireEvent.click(auditButtons[0]);
+
+    await waitFor(() => expect(CodingKnowledgeLifecycle).toHaveBeenCalledWith("exp-1"));
+    expect(await screen.findByText("Experience audit")).toBeTruthy();
+    expect(screen.getByText(/Conflicts with new database guidance/)).toBeTruthy();
+    expect(screen.getByText(/Origin: runtime/)).toBeTruthy();
+    expect(screen.getByText(/Last reviewed:/)).toBeTruthy();
+  });
+
+  it("retires an experience with an explicit conflict reason", async () => {
+    showPromptMock.mockResolvedValueOnce("New guidance supersedes this pattern");
+    render(
+      <ProgrammingToolsSettingsPanel
+        config={new corelib.AppConfig({} as any)}
+        setConfig={vi.fn()}
+        lang="en"
+      />
+    );
+
+    const conflictButtons = await screen.findAllByText("Mark conflict");
+    fireEvent.click(conflictButtons[0]);
+
+    await waitFor(() => {
+      expect(CodingKnowledgeMarkConflict).toHaveBeenCalledWith("exp-1", "", "New guidance supersedes this pattern");
+    });
+    expect(await screen.findByText("Experience retired as conflicted.")).toBeTruthy();
+  });
+
+  it("creates a review-gated revision only for a deprecated experience", async () => {
+    showPromptMock.mockResolvedValueOnce("The previous advice is too broad");
+    render(
+      <ProgrammingToolsSettingsPanel
+        config={new corelib.AppConfig({} as any)}
+        setConfig={vi.fn()}
+        lang="en"
+      />
+    );
+
+    fireEvent.click(await screen.findByText("Create revision"));
+
+    await waitFor(() => {
+      expect(CodingKnowledgeCreateRevisionCandidate).toHaveBeenCalledWith("exp-4", "The previous advice is too broad");
+    });
+    expect(await screen.findByText("Created revision candidate: Revised retry advice.")).toBeTruthy();
   });
 
   it("deletes an experience after confirm", async () => {

@@ -1,0 +1,29 @@
+{
+  "name": "codegraph_callers",
+  "description": "List functions that call <symbol>. For the full flow, use codegraph_explore.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol": {
+        "type": "string",
+        "description": "Name of the function, method, or class to find callers for"
+      },
+      "file": {
+        "type": "string",
+        "description": "Narrow to the definition in this file (path or suffix) when several same-named symbols exist (e.g. one UserService per app in a monorepo)"
+      },
+      "limit": {
+        "type": "number",
+        "description": "Maximum number of callers to return (default: 20)",
+        "default": 20
+      },
+      "projectPath": {
+        "type": "string",
+        "description": "Path to a different project with .codegraph/ initialized. If omitted, uses current project. Use this to query other codebases."
+      }
+    },
+    "required": [
+      "symbol"
+    ]
+  }
+}

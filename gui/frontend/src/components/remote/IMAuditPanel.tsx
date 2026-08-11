@@ -1,15 +1,20 @@
+import { createPortal } from "react-dom";
 import { memo, useState, useEffect, useCallback, useRef } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
     DeleteIMAuditMessagesBefore,
     ExportIMAuditCSV,
+    ExportIMAuditCSVForBot,
     GetIMAuditUsers,
+    GetIMAuditUsersForBot,
     OpenFileOrShowInFolder,
     QueryIMAuditMessages,
+    QueryIMAuditMessagesForBot,
     RevealIMAuditAttachment,
 } from "../../../wailsjs/go/main/App";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
+import { usePortalThemeAttributes } from "../../hooks/usePortalThemeAttributes";
 import { useDialog } from "../CustomDialog";
 
 interface IMAuditMessage {
@@ -39,6 +44,7 @@ type InitialAuditResult = {
 
 interface IMAuditPanelProps {
     platform: string;
+    botProfileID?: string;
     onClose: () => void;
     lang: string;
 }
@@ -133,6 +139,7 @@ const auditMarkdownComponents: Components = {
     ),
 };
 const auditMarkdownPlugins = [remarkGfm];
+const modalFocusableSelector = 'button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [href]:not([tabindex="-1"])';
 
 function formatFileSize(bytes?: number) {
     const value = Number(bytes) || 0;
@@ -186,7 +193,7 @@ const AuditMessageCard = memo(function AuditMessageCard({ message, isZh, onRevea
     );
 });
 
-export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
+export function IMAuditPanel({ platform, botProfileID = "", onClose, lang }: IMAuditPanelProps) {
     const { showConfirm } = useDialog();
     const [messages, setMessages] = useState<IMAuditMessage[]>([]);
     const [total, setTotal] = useState(0);
@@ -205,12 +212,18 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
     const [refreshKey, setRefreshKey] = useState(0);
     const [initDone, setInitDone] = useState(false);
     const listRef = useRef<HTMLDivElement>(null);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+    const previousFocusRef = useRef<HTMLElement | null>(null);
     const scrollFrameRef = useRef<number | null>(null);
     const querySequenceRef = useRef(0);
     const initialResultRef = useRef<InitialAuditResult | null>(null);
     const cleanupPendingRef = useRef(false);
     const platformRef = useRef(platform);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
+    const portalThemeAttributes = usePortalThemeAttributes();
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
 
     // Keep async completions scoped to the platform rendered in this commit.
     platformRef.current = platform;
@@ -221,13 +234,57 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
 
     useEffect(() => { isZhRef.current = isZh; }, [isZh]);
 
+    // This panel is a true modal even though it is rendered through a portal:
+    // keep keyboard dismissal, focus entry, and background scroll behavior
+    // consistent with the other IM dialogs.
+    useEffect(() => {
+        previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        const focusFrame = requestAnimationFrame(() => closeButtonRef.current?.focus());
+        const onKeyDown = (event: KeyboardEvent) => {
+            // Nested confirmations belong to CustomDialog, not this history
+            // panel. Their focused controls are outside our dialog subtree.
+            if (event.target instanceof Node && !dialogRef.current?.contains(event.target)) return;
+            if (event.key === "Tab") {
+                const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(modalFocusableSelector);
+                if (!focusable?.length) return;
+                const items = Array.from(focusable);
+                const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+                const nextIndex = event.shiftKey
+                    ? (currentIndex <= 0 ? items.length - 1 : currentIndex - 1)
+                    : (currentIndex === items.length - 1 ? 0 : currentIndex + 1);
+                event.preventDefault();
+                event.stopPropagation();
+                items[nextIndex].focus();
+                return;
+            }
+            if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            void onCloseRef.current();
+        };
+        window.addEventListener("keydown", onKeyDown, true);
+        return () => {
+            cancelAnimationFrame(focusFrame);
+            window.removeEventListener("keydown", onKeyDown, true);
+            document.body.style.overflow = previousOverflow;
+            const previousFocus = previousFocusRef.current;
+            previousFocusRef.current = null;
+            if (previousFocus?.isConnected) previousFocus.focus();
+        };
+    }, []);
+
     useEffect(() => {
         let active = true;
-        GetIMAuditUsers(platform)
+        const loadUsers = platform === "lansenger" && botProfileID
+            ? GetIMAuditUsersForBot(botProfileID)
+            : GetIMAuditUsers(platform);
+        loadUsers
             .then((nextUsers) => { if (active) setUsers(nextUsers); })
             .catch(() => { if (active) setUsers([]); });
         return () => { active = false; };
-    }, [platform]);
+    }, [platform, botProfileID]);
 
     useEffect(() => {
         setInitDone(false);
@@ -240,14 +297,16 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
         setSearchInput("");
         setUserID("");
         setMessage("");
-    }, [platform]);
+    }, [platform, botProfileID]);
 
     useEffect(() => {
         if (initDone) return;
         let active = true;
         (async () => {
             try {
-                const result = normalizeAuditResult(await QueryIMAuditMessages(platform, "", "", 1));
+                const result = normalizeAuditResult(await (platform === "lansenger" && botProfileID
+                    ? QueryIMAuditMessagesForBot(botProfileID, "", "", 1)
+                    : QueryIMAuditMessages(platform, "", "", 1)));
                 if (!active || platformRef.current !== platform) return;
                 const lastPage = Math.max(1, Math.ceil(result.total / (result.page_size || 50)));
                 // The startup result is page one. Reuse it only when page one is
@@ -264,7 +323,7 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
             }
         })();
         return () => { active = false; };
-    }, [platform, initDone]);
+    }, [platform, botProfileID, initDone]);
 
     const loadMessages = useCallback(async () => {
         if (!initDone) return;
@@ -275,7 +334,9 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
             const canUseInitialResult = !userID && !keyword && page === 1 && initial?.platform === platform;
             const result = canUseInitialResult
                 ? initial.result
-                : normalizeAuditResult(await QueryIMAuditMessages(platform, userID, keyword, page));
+                : normalizeAuditResult(await (platform === "lansenger" && botProfileID
+                    ? QueryIMAuditMessagesForBot(botProfileID, userID, keyword, page)
+                    : QueryIMAuditMessages(platform, userID, keyword, page)));
             if (canUseInitialResult) initialResultRef.current = null;
             if (querySequence !== querySequenceRef.current || platformRef.current !== platform) return;
             setMessages(result.messages || []);
@@ -289,7 +350,7 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
         } finally {
             if (querySequence === querySequenceRef.current && platformRef.current === platform) setLoading(false);
         }
-    }, [platform, userID, keyword, page, refreshKey, initDone]);
+    }, [platform, botProfileID, userID, keyword, page, refreshKey, initDone]);
 
     useEffect(() => { loadMessages(); }, [loadMessages]);
 
@@ -354,7 +415,10 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
             setSearchInput("");
             setUserID("");
             setRefreshKey(k => k + 1);
-            GetIMAuditUsers(cleanupPlatform)
+            const reloadUsers = cleanupPlatform === "lansenger" && botProfileID
+                ? GetIMAuditUsersForBot(botProfileID)
+                : GetIMAuditUsers(cleanupPlatform);
+            reloadUsers
                 .then((nextUsers) => { if (platformRef.current === cleanupPlatform) setUsers(nextUsers); })
                 .catch(() => {});
         } catch (err) {
@@ -372,7 +436,9 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
     const handleExport = async () => {
         setExporting(true);
         try {
-            const filePath = await ExportIMAuditCSV(platform, userID, keyword);
+            const filePath = await (platform === "lansenger" && botProfileID
+                ? ExportIMAuditCSVForBot(botProfileID, userID, keyword)
+                : ExportIMAuditCSV(platform, userID, keyword));
             if (!filePath) throw new Error("empty export path");
             await OpenFileOrShowInFolder(filePath);
             setMessage(isZh ? "\u5df2\u5bfc\u51fa CSV" : "CSV exported");
@@ -384,9 +450,10 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
         }
     };
 
-    return (
-        <div className="im-audit-overlay" {...backdropProps}>
+    return createPortal(
+        <div className="im-audit-overlay" {...portalThemeAttributes} {...backdropProps}>
             <div
+                ref={dialogRef}
                 className="im-audit-panel"
                 {...dialogProps}
             >
@@ -395,7 +462,7 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
                         <span className="im-audit-title">{title}</span>
                         <span className="im-audit-total">{isZh ? "\u5171 " + total + " \u6761" : total + " total"}</span>
                     </div>
-                    <button type="button" onClick={onClose} aria-label={isZh ? "\u5173\u95ed" : "Close"} className="im-audit-close">{"\u00d7"}</button>
+                    <button ref={closeButtonRef} type="button" onClick={onClose} aria-label={isZh ? "\u5173\u95ed" : "Close"} className="im-audit-close">{"\u00d7"}</button>
                 </div>
 
                 <div className="im-audit-toolbar">
@@ -459,6 +526,7 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
                     </div>
                 )}
             </div>
-        </div>
+        </div>,
+        document.body,
     );
 }

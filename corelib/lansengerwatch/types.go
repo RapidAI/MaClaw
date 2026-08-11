@@ -36,11 +36,14 @@ type Config struct {
 
 // Job is one watch configuration (usually bound to one group).
 type Job struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Enabled   bool   `json:"enabled"`
-	GroupID   string `json:"group_id"`
-	GroupName string `json:"group_name,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	// BotProfileID scopes this job to one Lansenger bot. Empty values belong to
+	// the migrated default bot for backward compatibility with existing jobs.
+	BotProfileID string `json:"bot_profile_id,omitempty"`
+	GroupID      string `json:"group_id"`
+	GroupName    string `json:"group_name,omitempty"`
 
 	// TargetStaffIDs are Lansenger staffIds to watch (multi-select). Empty means
 	// "no one" — never match all members by accident.

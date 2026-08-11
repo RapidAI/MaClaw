@@ -217,6 +217,215 @@ describe('ExpertEditorDialog', () => {
         expect(payload.tools).toEqual(['fs_read']);
     });
 
+    it('highlights prompt and capability changes while reviewing an optimization draft', async () => {
+        const draft = {
+            name: '论文精修',
+            description: '保留原有风格并遵从新增约束',
+            icon: '📝',
+            system_prompt: '角色定位\n保留原有要求\n新增：使用正式语气',
+            tools: ['fs_read', 'web_search'],
+            skills: ['pdf-word'],
+            optimized_from_id: 'source-expert',
+            source_name: '论文润色',
+            source_system_prompt: '角色定位\n保留原有要求\n旧规则：简洁回答',
+            source_tools: ['fs_read', 'ssh'],
+            source_skills: ['pptx-gen'],
+        };
+        render(<ExpertEditorDialog lang="zh-Hans" optimizeDraft={draft} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+        // The optimization already has an AI-produced draft. Keep the review
+        // dialog focused and compact instead of offering create-only AI aids.
+        expect(screen.getByRole('dialog', { name: '审核优化专家' })).toBeTruthy();
+        expect(screen.queryByTestId('expert-starters')).toBeNull();
+        expect(screen.queryByTestId('expert-idea-input')).toBeNull();
+        expect(screen.queryByTestId('expert-generate-button')).toBeNull();
+        expect(screen.queryByTestId('expert-suggested-capabilities')).toBeNull();
+        expect(screen.queryByTestId('expert-ignored-suggestions')).toBeNull();
+
+        const promptDiff = screen.getByTestId('expert-prompt-diff');
+        expect(promptDiff.textContent).toContain('新增：使用正式语气');
+        expect(promptDiff.textContent).toContain('旧规则：简洁回答');
+        expect(promptDiff.querySelector('.expert-editor__prompt-diff-line--added')).toBeTruthy();
+        expect(promptDiff.querySelector('.expert-editor__prompt-diff-line--removed')).toBeTruthy();
+        expect(screen.getByText('新增 1 行 · 移除 1 行')).toBeTruthy();
+
+        const capabilityDiff = screen.getByTestId('expert-capability-diff');
+        expect(capabilityDiff.textContent).toContain('工具: SSH 远程');
+        expect(capabilityDiff.textContent).toContain('工具: 网页搜索');
+        expect(capabilityDiff.textContent).toContain('技能: PPT 生成');
+        expect(capabilityDiff.textContent).toContain('技能: PDF/Word');
+        expect(capabilityDiff.querySelector('.expert-editor__diff-chip--added')).toBeTruthy();
+        expect(capabilityDiff.querySelector('.expert-editor__diff-chip--removed')).toBeTruthy();
+
+        await expandAdvanced();
+        await waitFor(() => expect(screen.getByTestId('expert-tools-list').textContent).toContain('SSH 远程'));
+        const tools = screen.getByTestId('expert-tools-list');
+        const sshRow = Array.from(tools.querySelectorAll('label')).find((node) => node.textContent?.includes('SSH 远程'));
+        const searchRow = Array.from(tools.querySelectorAll('label')).find((node) => node.textContent?.includes('网页搜索'));
+        expect(sshRow?.className).toContain('expert-editor__check--removed');
+        expect(searchRow?.className).toContain('expert-editor__check--added');
+    });
+
+    it('keeps optimization review data out of the saved expert payload', async () => {
+        const draft = {
+            name: '论文精修',
+            system_prompt: '只保留给专家的正式提示词',
+            tools: ['fs_read'],
+            skills: ['pdf-word'],
+            optimized_from_id: 'source-expert',
+            source_name: '论文润色',
+            source_system_prompt: '原始提示词：请勿保存到优化专家',
+            source_tools: ['ssh'],
+            source_skills: ['pptx-gen'],
+        };
+        spies.SaveExpert.mockImplementation(async (json: string) => json);
+        render(<ExpertEditorDialog lang="zh-Hans" optimizeDraft={draft} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+        fireEvent.click(screen.getByTestId('expert-save-button'));
+        await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
+
+        const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
+        expect(payload.system_prompt).toBe('只保留给专家的正式提示词');
+        expect(payload).not.toHaveProperty('source_name');
+        expect(payload).not.toHaveProperty('source_system_prompt');
+        expect(payload).not.toHaveProperty('source_tools');
+        expect(payload).not.toHaveProperty('source_skills');
+    });
+
+    it('keeps long expert-edit content in its own vertical scroll region', () => {
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        const dialog = screen.getByRole('dialog');
+        const body = screen.getByTestId('expert-editor-scroll-body');
+        expect(dialog.className).toContain('expert-editor');
+        expect(body.className).toContain('expert-editor__body');
+        expect(screen.getByTestId('expert-save-button').parentElement?.className).toContain('expert-editor__actions');
+    });
+
+    it('mounts above the scaled app layer, closes on backdrop click, and restores focus', () => {
+        const viewport = document.createElement('div');
+        viewport.className = 'app-viewport';
+        const scaleLayer = document.createElement('div');
+        scaleLayer.className = 'app-scale-layer';
+        const launchButton = document.createElement('button');
+        launchButton.textContent = 'open editor';
+        scaleLayer.appendChild(launchButton);
+        viewport.appendChild(scaleLayer);
+        document.body.appendChild(viewport);
+        launchButton.focus();
+        const onClose = vi.fn();
+
+        const { unmount } = render(<ExpertEditorDialog lang="zh-Hans" onClose={onClose} onSaved={vi.fn()} />);
+        const overlay = screen.getByTestId('expert-editor-overlay');
+        expect(overlay.parentElement).toBe(viewport);
+        expect(overlay.parentElement).not.toBe(scaleLayer);
+        expect(document.activeElement).toBe(screen.getByRole('dialog'));
+
+        fireEvent.mouseDown(overlay);
+        expect(onClose).toHaveBeenCalledTimes(1);
+        unmount();
+        expect(document.activeElement).toBe(launchButton);
+        viewport.remove();
+    });
+
+    it('traps Tab navigation in the modal and locks form controls while saving', async () => {
+        let resolveSave: ((value: string) => void) | undefined;
+        spies.SaveExpert.mockImplementation(() => new Promise<string>((resolve) => { resolveSave = resolve; }));
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        const dialog = screen.getByRole('dialog');
+        const nameInput = screen.getByTestId('expert-name-input') as HTMLInputElement;
+        const saveButton = screen.getByTestId('expert-save-button') as HTMLButtonElement;
+        const cancelButton = screen.getByText('取消') as HTMLButtonElement;
+
+        dialog.focus();
+        fireEvent.keyDown(window, { key: 'Tab', shiftKey: true });
+        expect(document.activeElement).toBe(saveButton);
+
+        fireEvent.change(nameInput, { target: { value: '锁定检查专家' } });
+        fireEvent.click(saveButton);
+        await waitFor(() => expect(saveButton.disabled).toBe(true));
+        expect(nameInput.disabled).toBe(true);
+        expect(cancelButton.disabled).toBe(true);
+
+        resolveSave?.('{}');
+    });
+
+    it('does not let Escape close the dialog while saving', async () => {
+        let resolveSave: ((value: string) => void) | undefined;
+        spies.SaveExpert.mockImplementation(() => new Promise<string>((resolve) => { resolveSave = resolve; }));
+        const onClose = vi.fn();
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={onClose} onSaved={vi.fn()} />);
+
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '保存中的专家' } });
+        fireEvent.click(screen.getByTestId('expert-save-button'));
+        await waitFor(() => expect((screen.getByTestId('expert-save-button') as HTMLButtonElement).disabled).toBe(true));
+        fireEvent.keyDown(window, { key: 'Escape' });
+
+        expect(onClose).not.toHaveBeenCalled();
+        resolveSave?.('{}');
+    });
+
+    it('prevents the browser default when Escape closes the dialog', () => {
+        const onClose = vi.fn();
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={onClose} onSaved={vi.fn()} />);
+
+        const event = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+        window.dispatchEvent(event);
+
+        expect(onClose).toHaveBeenCalledTimes(1);
+        expect(event.defaultPrevented).toBe(true);
+    });
+
+    it('asks before discarding edits, but closes unchanged dialogs immediately', () => {
+        const onClose = vi.fn();
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={onClose} onSaved={vi.fn()} />);
+        fireEvent.click(screen.getByText('取消'));
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('protects unsaved expert edits until the user explicitly discards them', () => {
+        const onClose = vi.fn();
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={onClose} onSaved={vi.fn()} />);
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '未保存专家' } });
+        fireEvent.click(screen.getByText('取消'));
+
+        expect(onClose).not.toHaveBeenCalled();
+        expect(screen.getByRole('alertdialog').textContent).toContain('有未保存的修改');
+        fireEvent.click(screen.getByText('放弃修改并关闭'));
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('states explicitly when an optimization leaves prompt and capabilities unchanged', () => {
+        const draft = {
+            name: '论文精修',
+            system_prompt: '保持原有要求',
+            tools: ['fs_read'],
+            skills: ['pdf-word'],
+            source_system_prompt: '保持原有要求',
+            source_tools: ['fs_read'],
+            source_skills: ['pdf-word'],
+        };
+        render(<ExpertEditorDialog lang="zh-Hans" optimizeDraft={draft} onClose={vi.fn()} onSaved={vi.fn()} />);
+        expect(screen.getByTestId('expert-prompt-diff-empty').textContent).toContain('提示词没有变更');
+        expect(screen.getByTestId('expert-capability-diff').textContent).toContain('工具与技能没有变更');
+    });
+
+    it('explains whitelist mode changes instead of treating an empty list as a removed tool', () => {
+        const draft = {
+            name: '论文精修',
+            system_prompt: '保持原有要求',
+            tools: [],
+            skills: ['pdf-word'],
+            source_system_prompt: '保持原有要求',
+            source_tools: ['fs_read'],
+            source_skills: [],
+        };
+        render(<ExpertEditorDialog lang="zh-Hans" optimizeDraft={draft} onClose={vi.fn()} onSaved={vi.fn()} />);
+        const capabilityDiff = screen.getByTestId('expert-capability-diff');
+        expect(capabilityDiff.textContent).toContain('工具访问改为不限制');
+        expect(capabilityDiff.textContent).toContain('技能访问改为白名单（1 项）');
+        expect(capabilityDiff.querySelectorAll('.expert-editor__diff-chip--access')).toHaveLength(2);
+    });
+
     it('does not auto-apply AI suggestions as whitelist; adopt toggle applies them', async () => {
         spies.GenerateExpertProfile.mockResolvedValue(JSON.stringify({
             name: '翻译专家',

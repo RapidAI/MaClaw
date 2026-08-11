@@ -19,7 +19,7 @@ import {
     messageIsLocalSession,
     projectPathFromSessionKey,
 } from "../aiAssistantPanelSessionUtils";
-import { CloseProjectTabSession, CreateProjectTabSession, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
+import { ClearAIAssistantHistoryForSession, CloseAssistantTabSession, CreateProjectTabSession, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
 
 vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOn: vi.fn(() => vi.fn()),
@@ -28,10 +28,11 @@ vi.mock("../../../../wailsjs/runtime", () => ({
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     LoadProjectTabIndex: vi.fn().mockResolvedValue([]),
-    CloseProjectTabSession: vi.fn().mockResolvedValue(undefined),
+    CloseAssistantTabSession: vi.fn().mockResolvedValue(undefined),
     CreateProjectTabSession: vi.fn().mockResolvedValue(undefined),
     SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
     LoadProjectTabConversation: vi.fn().mockResolvedValue([]),
+    ClearAIAssistantHistoryForSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 const expertA: ExpertDefinition = {
@@ -86,7 +87,7 @@ describe("useAITabManager.createExpertTab", () => {
         localStorage.clear();
         vi.clearAllMocks();
         vi.mocked(LoadProjectTabIndex).mockResolvedValue([]);
-        vi.mocked(CloseProjectTabSession).mockResolvedValue(undefined as any);
+        vi.mocked(CloseAssistantTabSession).mockResolvedValue(undefined as any);
         vi.mocked(CreateProjectTabSession).mockResolvedValue("" as any);
         vi.mocked(LoadProjectTabConversation).mockResolvedValue([]);
         vi.mocked(SaveProjectTabConversation).mockResolvedValue(undefined as any);
@@ -106,6 +107,18 @@ describe("useAITabManager.createExpertTab", () => {
         expect(tab!.expertIcon).toBe("📝");
         expect(tab!.closable).toBe(true);
         expect(result.current.tabState.activeTabId).toBe(tab!.id);
+    });
+
+    it("releases an expert tab's private runtime directory when closed", async () => {
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createExpertTab(expertA);
+        });
+        act(() => {
+            result.current.closeTab(expertTabId(expertA.id));
+        });
+        await Promise.resolve();
+        expect(CloseAssistantTabSession).toHaveBeenCalledWith(expertTabId(expertA.id));
     });
 
     it("dedupes by expertId: second call activates the same tab instead of creating a new one", () => {
@@ -276,7 +289,7 @@ describe("expert tab backend session-file persistence", () => {
         localStorage.clear();
         vi.clearAllMocks();
         vi.mocked(LoadProjectTabIndex).mockResolvedValue([]);
-        vi.mocked(CloseProjectTabSession).mockResolvedValue(undefined as any);
+        vi.mocked(CloseAssistantTabSession).mockResolvedValue(undefined as any);
         vi.mocked(CreateProjectTabSession).mockResolvedValue("" as any);
         vi.mocked(LoadProjectTabConversation).mockResolvedValue([]);
         vi.mocked(SaveProjectTabConversation).mockResolvedValue(undefined as any);
@@ -337,23 +350,30 @@ describe("expert tab sync with utilities-page expert changes", () => {
         localStorage.clear();
         vi.clearAllMocks();
         vi.mocked(LoadProjectTabIndex).mockResolvedValue([]);
-        vi.mocked(CloseProjectTabSession).mockResolvedValue(undefined as any);
+        vi.mocked(CloseAssistantTabSession).mockResolvedValue(undefined as any);
         vi.mocked(CreateProjectTabSession).mockResolvedValue("" as any);
         vi.mocked(LoadProjectTabConversation).mockResolvedValue([]);
         vi.mocked(SaveProjectTabConversation).mockResolvedValue(undefined as any);
     });
 
-    it("maclaw:expert-deleted closes the open expert tab (falls back to local)", () => {
+    it("maclaw:expert-deleted discards the open expert tab and its history", () => {
         const { result } = renderHook(() => useAITabManager());
+        const tabId = expertTabId(expertA.id);
         act(() => {
             result.current.createExpertTab(expertA);
+            result.current.saveTabState(tabId, {
+                history: [{ id: "m1", role: "user", content: "should be wiped", timestamp: 1 }],
+            });
         });
-        expect(result.current.tabState.activeTabId).toBe(expertTabId(expertA.id));
+        expect(result.current.tabState.activeTabId).toBe(tabId);
         act(() => {
             window.dispatchEvent(new CustomEvent("maclaw:expert-deleted", { detail: { expertId: expertA.id } }));
         });
         expect(result.current.tabState.tabs.some(t => t.type === "expert")).toBe(false);
         expect(result.current.tabState.activeTabId).toBe("local");
+        expect(result.current.getTabState(tabId)).toBeUndefined();
+        expect(SaveProjectTabConversation).toHaveBeenCalledWith(tabId, []);
+        expect(ClearAIAssistantHistoryForSession).toHaveBeenCalledWith(expertSessionKey(expertA.id));
     });
 
     it("maclaw:expert-updated patches title/icon in place without switching tabs", () => {

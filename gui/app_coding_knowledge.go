@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -86,7 +87,8 @@ func (a *App) CodingKnowledgeUpdate(exp knowledge.CodingExperience) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return store.UpdateExperience(ctx, exp)
+	cfg, _ := a.LoadConfig()
+	return store.UpdateExperienceWithBudget(ctx, exp, codingKnowledgeReviewedProjectBudget(cfg))
 }
 
 // CodingKnowledgeConfirm promotes a candidate experience to active.
@@ -97,7 +99,81 @@ func (a *App) CodingKnowledgeConfirm(id string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return store.ConfirmCandidate(ctx, id)
+	cfg, _ := a.LoadConfig()
+	return store.ConfirmCandidateWithBudget(ctx, id, codingKnowledgeReviewedProjectBudget(cfg), a.verifyRuntimeCodingExperience)
+}
+
+// CodingKnowledgeRecordRecallOutcome records a locally verified Runtime task
+// outcome for an already reviewed experience. It is intentionally separate
+// from editing and confirmation: every confidence change must be traceable to
+// one unique durable Runtime attempt.
+func (a *App) CodingKnowledgeRecordRecallOutcome(id string, outcome knowledge.RecallOutcome) error {
+	store := a.ensureCodingKnowledgeStore()
+	if store == nil {
+		return fmt.Errorf("coding knowledge store not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return store.RecordRecallOutcome(ctx, id, outcome, a.verifyCodingKnowledgeRecallOutcome)
+}
+
+// CodingKnowledgeMarkConflict retires an experience from automatic recall
+// while retaining a bounded audit record for human reconciliation.
+func (a *App) CodingKnowledgeMarkConflict(id, relatedID, reason string) error {
+	store := a.ensureCodingKnowledgeStore()
+	if store == nil {
+		return fmt.Errorf("coding knowledge store not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return store.MarkConflict(ctx, id, relatedID, reason)
+}
+
+// CodingKnowledgeLifecycle returns the bounded lifecycle audit for review.
+func (a *App) CodingKnowledgeLifecycle(id string) ([]knowledge.CodingExperienceLifecycleEvent, error) {
+	store := a.ensureCodingKnowledgeStore()
+	if store == nil {
+		return nil, fmt.Errorf("coding knowledge store not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return store.ListLifecycleEvents(ctx, id)
+}
+
+// CodingKnowledgeCreateRevisionCandidate creates a review-gated replacement
+// for a deprecated experience; it never reactivates the retired record.
+func (a *App) CodingKnowledgeCreateRevisionCandidate(id, reason string) (knowledge.CodingExperience, error) {
+	store := a.ensureCodingKnowledgeStore()
+	if store == nil {
+		return knowledge.CodingExperience{}, fmt.Errorf("coding knowledge store not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return store.CreateRevisionCandidate(ctx, id, reason)
+}
+
+// verifyRuntimeCodingExperience recomputes provenance from the live durable
+// Ledger before an automatically extracted candidate becomes active. It is
+// deliberately invoked only at confirmation time: manual knowledge has no
+// Runtime reference and remains eligible for the ordinary review flow.
+func (a *App) verifyRuntimeCodingExperience(_ context.Context, exp knowledge.CodingExperience) error {
+	if a == nil {
+		return fmt.Errorf("coding runtime application is unavailable")
+	}
+	if err := codingruntime.VerifyExperienceProvenance(a.ensureCodingRuntimeStore(), exp.SourceRuntimeTaskID, exp.SourceRuntimeAttemptID, exp.EvidenceDigest); err != nil {
+		return fmt.Errorf("runtime provenance no longer matches the candidate evidence: %w", err)
+	}
+	return nil
+}
+
+func (a *App) verifyCodingKnowledgeRecallOutcome(_ context.Context, outcome knowledge.RecallOutcome) error {
+	if a == nil {
+		return fmt.Errorf("coding runtime application is unavailable")
+	}
+	if err := codingruntime.VerifyExperienceProvenance(a.ensureCodingRuntimeStore(), outcome.RuntimeTaskID, outcome.RuntimeAttemptID, outcome.EvidenceDigest); err != nil {
+		return fmt.Errorf("runtime recall outcome no longer matches durable evidence: %w", err)
+	}
+	return nil
 }
 
 // CodingKnowledgeDelete removes a single experience.
@@ -157,18 +233,26 @@ func (a *App) CodingKnowledgeResetFile() error {
 }
 
 // CodingKnowledgeSave manually saves a new experience (from UI or main Agent).
+// New records are staged as candidates; verified remains an evidence-derived
+// state enforced by the Store.
 func (a *App) CodingKnowledgeSave(exp knowledge.CodingExperience) (knowledge.CodingExperience, error) {
 	store := a.ensureCodingKnowledgeStore()
 	if store == nil {
 		return knowledge.CodingExperience{}, fmt.Errorf("coding knowledge store not available")
 	}
-	// Manual saves go directly to active status
+	// A missing status means this is a newly proposed rule, so keep it out of
+	// automatic prompt injection until an explicit review confirms it.
 	if exp.Status == "" {
-		exp.Status = knowledge.CodingStatusActive
+		exp.Status = knowledge.CodingStatusCandidate
 	}
+	if exp.CreatedBy != "" && exp.CreatedBy != "manual" {
+		return knowledge.CodingExperience{}, fmt.Errorf("coding knowledge: manual save cannot set creator origin")
+	}
+	exp.CreatedBy = "manual"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return store.SaveExperience(ctx, exp)
+	cfg, _ := a.LoadConfig()
+	return store.SaveExperienceWithBudget(ctx, exp, codingKnowledgeReviewedProjectBudget(cfg))
 }
 
 // CodingKnowledgeSearch searches experiences (for the search box in the panel).

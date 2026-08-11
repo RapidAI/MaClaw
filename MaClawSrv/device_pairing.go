@@ -251,6 +251,11 @@ func (s *HTTPServer) pairHardwareDevice(ctx context.Context, clientID, code stri
 		}
 		return nil, bindingErr
 	}
+	if s.hardwareBindings != nil {
+		if _, err := s.hardwareBindings.activate(rec.Principal, clientID); err != nil {
+			return nil, fmt.Errorf("could not create hardware assistant binding: %w", err)
+		}
+	}
 	s.syncThirdPartyIMConfigTransition(rec.Principal, before, cfg.AppConfig)
 	return map[string]any{"ok": true, "clientId": clientID, "gatewayToken": cfg.AppConfig.ThirdPartyGatewayToken, "protocolVersion": srvThirdPartyProtocolVersion}, nil
 }

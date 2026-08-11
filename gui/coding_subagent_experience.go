@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
@@ -103,12 +104,11 @@ func (r *SubAgentTaskRunner) extractAndSaveExperience(
 		return
 	}
 
-	initialStatus := knowledge.CodingStatusCandidate
-	if mode == ExperienceSaveModeAuto {
-		initialStatus = knowledge.CodingStatusActive
-	}
-
-	go r.doExtractAndSave(task, result, initialStatus)
+	// Extraction output is always a candidate. `auto` retains its historical
+	// meaning of automatically extracting, not automatically injecting a new
+	// LLM-derived rule into later coding prompts.
+	_ = mode
+	go r.doExtractAndSave(task, result, knowledge.CodingStatusCandidate)
 }
 
 func (r *SubAgentTaskRunner) doExtractAndSave(
@@ -121,6 +121,10 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 			log.Printf("[coding-experience] extraction panic: %v", p)
 		}
 	}()
+	if task == nil || result == nil {
+		log.Printf("[coding-experience] skip extraction without task result")
+		return
+	}
 
 	codingKB := r.codingKnowledgeStore()
 	if codingKB == nil {
@@ -147,10 +151,19 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 
 	projectPath := r.orchestrator.ProjectPath
 	language := inferLanguageFromTaskFiles(task.Files)
+	provenance, provenanceErr := r.runtimeExperienceProvenance(result.RuntimeTaskID)
+	if provenanceErr != nil {
+		log.Printf("[coding-experience] skip runtime-derived extraction without provenance: %v", provenanceErr)
+		return
+	}
 
 	for _, exp := range extracted {
 		exp.SourceTaskTitle = task.Title
+		exp.CreatedBy = "runtime"
 		exp.Status = initialStatus
+		exp.SourceRuntimeTaskID = provenance.TaskID
+		exp.SourceRuntimeAttemptID = provenance.AttemptID
+		exp.EvidenceDigest = provenance.EvidenceDigest
 		if exp.ProjectPath == "" && exp.Scope == knowledge.CodingScopeProject {
 			exp.ProjectPath = projectPath
 		}
@@ -171,7 +184,7 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 			continue
 		}
 
-		saved, saveErr := codingKB.SaveExperience(saveCtx, exp)
+		saved, saveErr := codingKB.SaveRuntimeExperience(saveCtx, exp)
 		if saveErr != nil {
 			log.Printf("[coding-experience] save failed for %q: %v", exp.Title, saveErr)
 			continue
@@ -185,6 +198,61 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 			log.Printf("[coding-experience] evicted %d experiences after save", evicted)
 		}
 	}
+}
+
+type codingExperienceProvenance struct {
+	TaskID         string
+	AttemptID      string
+	EvidenceDigest string
+}
+
+func (r *SubAgentTaskRunner) runtimeExperienceProvenance(runtimeTaskID string) (codingExperienceProvenance, error) {
+	if r == nil || r.handler == nil {
+		return codingExperienceProvenance{}, fmt.Errorf("coding runtime application is unavailable")
+	}
+	return codingExperienceRuntimeProvenance(r.handler.app, runtimeTaskID)
+}
+
+// codingExperienceRuntimeProvenance resolves the durable evidence binding
+// shared by every GUI-managed automatic knowledge writer. It intentionally
+// accepts an App rather than a SubAgent implementation so local, remote and
+// experiment flows cannot bypass the Runtime ledger when persisting knowledge.
+func codingExperienceRuntimeProvenance(app *App, runtimeTaskID string) (codingExperienceProvenance, error) {
+	if app == nil {
+		return codingExperienceProvenance{}, fmt.Errorf("coding runtime application is unavailable")
+	}
+	store := app.ensureCodingRuntimeStore()
+	if store == nil {
+		return codingExperienceProvenance{}, fmt.Errorf("coding runtime store is unavailable")
+	}
+	provenance, err := codingruntime.ResolveExperienceProvenance(store, runtimeTaskID)
+	if err != nil {
+		return codingExperienceProvenance{}, err
+	}
+	return codingExperienceProvenance{TaskID: provenance.TaskID, AttemptID: provenance.AttemptID, EvidenceDigest: provenance.EvidenceDigest}, nil
+}
+
+// codingExperienceKnowledgeTerminalStatus remains a package-local shim for
+// existing GUI tests; the actual cross-host policy lives in corelib.
+func codingExperienceKnowledgeTerminalStatus(status codingruntime.TaskStatus) bool {
+	return codingruntime.KnowledgeEligibleTerminalStatus(status)
+}
+
+// codingExperienceEvidenceDigest binds an extracted experience to the compact,
+// durable facts from the exact completed Attempt. It intentionally hashes event
+// digests instead of copying their payloads: the knowledge DB gets a stable
+// provenance pointer without inheriting command output, model transcripts, or
+// any host-private diagnostic text.
+//
+// A completed Attempt with only lifecycle events is not enough for automatic
+// knowledge extraction. It would let a model turn an unsubstantiated success
+// into reusable guidance, contrary to M3's evidence-driven contract.
+func codingExperienceEvidenceDigest(store codingruntime.Store, task *codingruntime.Task, attempt *codingruntime.Attempt) (string, error) {
+	return codingruntime.ExperienceEvidenceDigest(store, task, attempt)
+}
+
+func codingExperienceMaterialEvidenceEvent(eventType string) bool {
+	return codingruntime.MaterialExperienceEvidenceEvent(eventType)
 }
 
 func (r *SubAgentTaskRunner) codingKnowledgeStore() *knowledge.CodingKnowledgeStore {

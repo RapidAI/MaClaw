@@ -7,7 +7,7 @@ import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
 import { ProjectSearchIcon } from "./ProjectSearchIcon";
 import { ProjectSceneDetailPanel, type ProjectSceneDetail, type ProjectSearchArtifact } from "./ProjectSceneDetailPanel";
 import { agentModeFromTaskTags, isCodingWorkflowSourceTags, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
-import { purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
+import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { useDialog } from "../CustomDialog";
 
 interface ProjectSearchItem {
@@ -289,6 +289,8 @@ function ProjectSearchContextMenu({ ctxMenu, lang, theme: t, refreshResults, set
         try {
             await DeleteTask(ctxMenu.item.project_path);
             purgeDeletedProjectTabLocalCache(ctxMenu.item.project_path);
+            const expertID = expertIDFromTaskTags(ctxMenu.item.tags);
+            if (expertID) purgeDeletedExpertTabLocalCache(expertID);
             // The backend emits project-task:closed after deletion. Keep this
             // direct close for hosts where runtime events are unavailable.
             onCloseProjectTab?.(ctxMenu.item.project_path);

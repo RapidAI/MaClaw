@@ -4,14 +4,6 @@ import type { ChatMessage } from "./useAIAssistant";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AssistantPinnedNewsCards } from "./AssistantPinnedNewsCards";
 
-// Ensure Monoton font is loaded for the brand "6" animation
-if (!document.querySelector('link[href*="Monoton"]')) {
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = 'https://fonts.googleapis.com/css2?family=Monoton&display=swap';
-    document.head.appendChild(link);
-}
-
 /** Synthesize a phone-boot-style startup sound: majestic arpeggio with metallic touch. */
 function playStartupChime() {
     try {
@@ -166,15 +158,10 @@ export function AssistantConversationBody({
                 </div>
             ) : !ready ? (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "18px" }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: "4px", animation: "maclaw-brand-breathe 2.4s ease-in-out infinite" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "7px", animation: "maclaw-brand-breathe 2.4s ease-in-out infinite" }}>
                         <span style={{ fontSize: "28px", fontWeight: 700, color: t.text, letterSpacing: "0" }}>码卡龙</span>
-                        <span style={{
-                            fontFamily: "'Monoton', cursive",
-                            fontSize: '38px',
-                            lineHeight: 1,
-                            color: '#2f6fbc',
-                            animation: 'maclaw-brand-shimmer 2.5s ease-in-out infinite',
-                        }}>6</span>
+                        <span className="brand-version-mark" style={{ fontSize: '30px' }}>7</span>
+                        <span style={{ fontSize: "21px", fontWeight: 650, color: '#7a2330', letterSpacing: '0.04em' }}>万变</span>
                     </div>
                     <div style={{ color: t.textMuted, fontSize: "11px", opacity: 0.7 }}>{initLabel}</div>
                 </div>
