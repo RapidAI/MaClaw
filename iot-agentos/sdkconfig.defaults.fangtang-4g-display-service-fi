@@ -1,0 +1,6 @@
+# Dedicated non-release configuration for Display Service lifecycle HIL.
+# It deliberately fails after service publication and before App UI admission,
+# so startup rollback must stop the registry-owned Display Task without
+# acquiring any profile-private renderer/panel handle.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT=y

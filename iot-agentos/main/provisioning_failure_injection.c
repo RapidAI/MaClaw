@@ -39,6 +39,9 @@
 #ifndef CONFIG_MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT
 #define CONFIG_MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT 0
 #endif
+#ifndef CONFIG_MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS
+#define CONFIG_MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS 0
+#endif
 #ifndef CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
 #define CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE 0
 #endif
@@ -102,6 +105,14 @@ bool provisioning_failure_injection_display_service_fail_after_init(void) {
     return true;
 #else
     return false;
+#endif
+}
+
+uint32_t provisioning_failure_injection_display_service_stop_delay_ms(void) {
+#if CONFIG_MACLAW_TEST_BUILD
+    return CONFIG_MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS;
+#else
+    return 0;
 #endif
 }
 

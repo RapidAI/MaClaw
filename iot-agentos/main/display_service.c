@@ -10,6 +10,7 @@
 #include "esp_log.h"
 
 #include "platform_display.h"
+#include "provisioning_failure_injection.h"
 #include "task_registry.h"
 
 /* The current board renderers are synchronous, but all calls into Platform
@@ -157,6 +158,21 @@ static void display_service_task(void *unused) {
             continue;
         }
         if (request->kind == DISPLAY_REQUEST_STOP) {
+            const uint32_t stop_delay_ms =
+                provisioning_failure_injection_display_service_stop_delay_ms();
+            if (stop_delay_ms != 0) {
+                /* The task owns the static STOP record and completion while
+                 * deliberately delayed. A bounded stopper may time out, but
+                 * it must neither enqueue a second sentinel nor tear down
+                 * this boot-lifetime storage underneath the late exit. */
+                ESP_LOGW("display_service",
+                         "test: delaying terminal STOP for %lu ms",
+                         (unsigned long)stop_delay_ms);
+                TickType_t delay_ticks = pdMS_TO_TICKS(stop_delay_ms);
+                if (delay_ticks == 0) delay_ticks = 1;
+                vTaskDelay(delay_ticks);
+                ESP_LOGW("display_service", "test: delayed terminal STOP released");
+            }
             taskENTER_CRITICAL(&s_display_service_state_lock);
             s_display_service_task = NULL;
             taskEXIT_CRITICAL(&s_display_service_state_lock);

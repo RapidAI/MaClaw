@@ -21,8 +21,9 @@ env:
   NODE_VERSION: '22'
   RELEASE_CHANNEL: stable
   MANIFEST_NAME: latest.json
-  # Temporary release switch. Keep the ESP32 build and publication pipeline
-  # below intact, but do not run it until this is changed back to 'true'.
+  # Temporary release switch. It controls step-level release publication.
+  # The firmware job uses a literal false below because job-level `if` does
+  # not support the `env` context in GitHub Actions.
   ESP32_FIRMWARE_ENABLED: 'false'
 
 jobs:
@@ -1868,7 +1869,10 @@ jobs:
   build-esp32-firmware:
     # A manual dispatch has a branch ref rather than an immutable release tag.
     # Never mint production-signed firmware from that mutable reference.
-    if: github.ref_type == 'tag' && env.ESP32_FIRMWARE_ENABLED == 'true'
+    # Temporary pause: change `false` to `true` to restore the unchanged
+    # ESP32 build pipeline. Do not reference env here: job-level `if` cannot
+    # use the env context and GitHub rejects the workflow before creating jobs.
+    if: ${{ github.ref_type == 'tag' && false }}
     needs: [verify-firmware-release-contract]
     runs-on: ubuntu-latest
     # Firmware signing material is scoped to this protected environment. The
