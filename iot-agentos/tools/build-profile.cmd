@@ -29,6 +29,14 @@ if /I "%MACLAW_PROFILE%"=="echoear-2st" (
   set "MACLAW_SDKCONFIG=build-unified-echoear\sdkconfig"
   goto :build
 )
+if /I "%MACLAW_PROFILE%"=="echoear-2st-fence-fi" (
+  set "MACLAW_PROFILE=echoear-2st"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\echoear_deps"
+  set "MACLAW_BUILD_DIR=build-test-echoear-2st-fence-fi"
+  set "MACLAW_SDKCONFIG=build-test-echoear-2st-fence-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.echoear-2st-fence-fi"
+  goto :build
+)
 if /I "%MACLAW_PROFILE%"=="bread-compact" (
   set "MACLAW_BUILD_DIR=build-unified-bread"
   set "MACLAW_SDKCONFIG=sdkconfig.bread-compact"
@@ -137,6 +145,6 @@ popd
 exit /b %MACLAW_RESULT%
 
 :usage
-echo Usage: %~nx0 ^<echoear-2st^|bread-compact^|bread-compact-renderer-fi^|bread-compact-renderer-stage3-fi^|fangtang-4g^|fangtang-4g-renderer-fi^|fangtang-4g-display-service-fi^|fangtang-4g-display-stop-timeout-fi^|fangtang-4g-display-busy-request-stop-fi^|fangtang-4g-fence-fi^|waveshare-amoled-1.75c^> [idf.py action...]
+echo Usage: %~nx0 ^<echoear-2st^|echoear-2st-fence-fi^|bread-compact^|bread-compact-renderer-fi^|bread-compact-renderer-stage3-fi^|fangtang-4g^|fangtang-4g-renderer-fi^|fangtang-4g-display-service-fi^|fangtang-4g-display-stop-timeout-fi^|fangtang-4g-display-busy-request-stop-fi^|fangtang-4g-fence-fi^|waveshare-amoled-1.75c^> [idf.py action...]
 echo Example: %~nx0 bread-compact build
 exit /b 64

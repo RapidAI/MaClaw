@@ -1,0 +1,5 @@
+# Dedicated non-release EchoEar-2ST profile: abandon exactly one real panel
+# completion-fence wait. The profile adapter retains the prior source until
+# the actual callback; no runtime fault-control path is compiled.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE=y
