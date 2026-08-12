@@ -273,8 +273,14 @@ static void display_service_task(void *unused) {
             vTaskDelete(NULL);
             return;
         }
-        const uint32_t request_delay_ms =
-            provisioning_failure_injection_display_service_request_delay_once_ms();
+        /* A normal boot publication can legitimately reach the service before
+         * the composition root arms its test request.  Delay only the private
+         * static request, not whichever ordinary scene happens to dequeue
+         * first; otherwise the fault injection validates a boot-order race
+         * instead of STOP queued behind the intended busy request. */
+        const uint32_t request_delay_ms = request == &s_display_service_test_request
+            ? provisioning_failure_injection_display_service_request_delay_once_ms()
+            : 0;
         if (request_delay_ms != 0) {
             /* Signal only after this ordinary request has been dequeued by
              * Display Task.  The composition root can then enqueue terminal
