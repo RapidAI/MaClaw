@@ -1,0 +1,6 @@
+# Dedicated non-release configuration for the compact renderer's profile
+# peripheral acquisition boundary.  It preserves the stage-1 profile for
+# regression while proving rollback after input and audio are already owned.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_STAGE=3

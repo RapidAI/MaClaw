@@ -777,7 +777,7 @@ func (j *FlashJob) logSidecar(action string, r flash.Result, err error) {
 // accepted by the writer, and later verified from ROM.
 func (j *FlashJob) logImage(severity logging.Severity, code, messageKey, detail string, image flash.WriteImage, baud int) {
 	fields := map[string]any{
-		"image":  filepath.Base(image.Path),
+		"image":  diagnosticImageName(image.Path),
 		"region": image.Region,
 		"offset": image.Offset,
 		"size":   image.Size,
@@ -787,4 +787,11 @@ func (j *FlashJob) logImage(severity logging.Severity, code, messageKey, detail 
 		fields["baud"] = baud
 	}
 	j.log.Event(severity, "flash", "engine", code, messageKey, detail, fields)
+}
+
+// diagnosticImageName removes a host path from diagnostic evidence. Firmware
+// packages may be produced on a different OS from the one running the flasher,
+// so accept both Windows and POSIX separators before taking the final component.
+func diagnosticImageName(path string) string {
+	return filepath.Base(strings.ReplaceAll(path, `\`, "/"))
 }

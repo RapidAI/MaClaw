@@ -42,6 +42,12 @@
 #ifndef CONFIG_MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS
 #define CONFIG_MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS 0
 #endif
+#ifndef CONFIG_MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_DELAY_MS
+#define CONFIG_MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_DELAY_MS 0
+#endif
+#ifndef CONFIG_MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_TIMEOUT_MS
+#define CONFIG_MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_TIMEOUT_MS 0
+#endif
 #ifndef CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
 #define CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE 0
 #endif
@@ -111,6 +117,22 @@ bool provisioning_failure_injection_display_service_fail_after_init(void) {
 uint32_t provisioning_failure_injection_display_service_stop_delay_ms(void) {
 #if CONFIG_MACLAW_TEST_BUILD
     return CONFIG_MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS;
+#else
+    return 0;
+#endif
+}
+
+uint32_t provisioning_failure_injection_display_service_secondary_stop_delay_ms(void) {
+#if CONFIG_MACLAW_TEST_BUILD
+    return CONFIG_MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_DELAY_MS;
+#else
+    return 0;
+#endif
+}
+
+uint32_t provisioning_failure_injection_display_service_secondary_stop_timeout_ms(void) {
+#if CONFIG_MACLAW_TEST_BUILD
+    return CONFIG_MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_TIMEOUT_MS;
 #else
     return 0;
 #endif

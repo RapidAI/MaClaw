@@ -362,6 +362,28 @@ config MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS
         owned by the delayed task. This is compile-time only; it creates no
         runtime setter, Hub, console, HTTP, input or release-firmware path.
 
+config MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_DELAY_MS
+    int "Delay before a test-only second Display Service stopper"
+    range 0 30000
+    default 0
+    depends on MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT
+    help
+        When nonzero, starts a test-only static worker after Display Service
+        publication. It waits this duration, verifies that the primary STOP
+        is already in progress, then joins the same terminal STOP generation.
+        It cannot create a second STOP record and is absent from release
+        builds and all runtime control paths.
+
+config MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_TIMEOUT_MS
+    int "Test-only second Display Service stopper timeout"
+    range 1 30000
+    default 9000
+    depends on MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_DELAY_MS > 0
+    help
+        Bounded join timeout for the test-only secondary stopper. Set it long
+        enough to observe a delayed late exit after the primary rollback
+        stopper has timed out; this is not a production lifecycle policy.
+
 config MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
     bool "Abandon exactly one display transfer fence wait (test only)"
     default n

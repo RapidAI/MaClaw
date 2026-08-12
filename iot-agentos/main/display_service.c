@@ -97,6 +97,13 @@ static QueueHandle_t s_display_service_queue;
 static StaticTask_t s_display_service_task_storage;
 static StackType_t s_display_service_task_stack[DISPLAY_SERVICE_TASK_STACK_WORDS];
 static TaskHandle_t s_display_service_task;
+/* Only test builds opt in to this static worker. It intentionally issues a
+ * second bounded STOP while the primary lifecycle caller is already waiting,
+ * exercising the shared STOP record without ever publishing a test hook to
+ * production callers. */
+static StaticTask_t s_display_service_test_secondary_stopper_task_storage;
+static StackType_t s_display_service_test_secondary_stopper_task_stack[3072u];
+static TaskHandle_t s_display_service_test_secondary_stopper_task;
 /* STOP can outlive a lifecycle caller that times out waiting for a renderer
  * already executing a synchronous panel transaction. Its request/completion
  * storage is therefore boot-lifetime, never a deinit caller's stack. */
@@ -118,6 +125,8 @@ static void display_service_submission_unlock(void);
 static bool display_service_take_submission_lock(TickType_t timeout);
 static bool display_service_wait_for_stop(TickType_t started, TickType_t budget);
 static esp_err_t display_service_registry_stop(void *context, uint32_t timeout_ms);
+static void display_service_test_secondary_stopper_task(void *unused);
+static bool display_service_start_test_secondary_stopper(void);
 
 static TickType_t display_service_stop_remaining_ticks(TickType_t started,
                                                         TickType_t budget) {
@@ -147,6 +156,66 @@ static bool display_service_wait_for_stop(TickType_t started, TickType_t budget)
         const TickType_t slice = remaining < poll_ticks ? remaining : poll_ticks;
         (void)xSemaphoreTake(completion, slice);
     }
+}
+
+static void display_service_test_secondary_stopper_task(void *unused) {
+    (void)unused;
+    const uint32_t delay_ms =
+        provisioning_failure_injection_display_service_secondary_stop_delay_ms();
+    const uint32_t timeout_ms =
+        provisioning_failure_injection_display_service_secondary_stop_timeout_ms();
+    TickType_t delay_ticks = pdMS_TO_TICKS(delay_ms);
+    if (delay_ticks == 0) delay_ticks = 1;
+    vTaskDelay(delay_ticks);
+    /* The worker is armed at service publication, while the composition root
+     * reaches its injected failure immediately afterwards. Poll only the
+     * private terminal state for a short bounded window instead of guessing
+     * which boot/board setup step will consume the first milliseconds. */
+    const TickType_t observe_started = xTaskGetTickCount();
+    const TickType_t observe_budget = pdMS_TO_TICKS(3000) == 0 ? 1 :
+                                        pdMS_TO_TICKS(3000);
+    bool primary_stopper_active = false;
+    bool task_alive = false;
+    do {
+        taskENTER_CRITICAL(&s_display_service_state_lock);
+        primary_stopper_active = s_stopping;
+        task_alive = s_display_service_task != NULL;
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+        if (primary_stopper_active || !task_alive) break;
+        vTaskDelay(1);
+    } while (xTaskGetTickCount() - observe_started < observe_budget);
+    if (!primary_stopper_active || !task_alive || timeout_ms == 0) {
+        ESP_LOGW("display_service",
+                 "test: secondary stopper skipped (closing=%d task_alive=%d timeout=%lu)",
+                 primary_stopper_active, task_alive, (unsigned long)timeout_ms);
+    } else {
+        ESP_LOGW("display_service", "test: secondary stopper joining terminal STOP");
+        const device_status_t status = display_service_deinit(timeout_ms);
+        ESP_LOGW("display_service", "test: secondary stopper result=%d", (int)status);
+    }
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    s_display_service_test_secondary_stopper_task = NULL;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    vTaskDelete(NULL);
+}
+
+static bool display_service_start_test_secondary_stopper(void) {
+    if (provisioning_failure_injection_display_service_secondary_stop_delay_ms() == 0) {
+        return true;
+    }
+    TaskHandle_t task = xTaskCreateStatic(
+        display_service_test_secondary_stopper_task, "display_stop_test", 3072u,
+        NULL, DISPLAY_SERVICE_TASK_PRIORITY, s_display_service_test_secondary_stopper_task_stack,
+        &s_display_service_test_secondary_stopper_task_storage);
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    s_display_service_test_secondary_stopper_task = task;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    if (!task) {
+        ESP_LOGE("display_service", "test: cannot create secondary stopper");
+        return false;
+    }
+    ESP_LOGI("display_service", "test: secondary stopper armed");
+    return true;
 }
 
 static void display_service_task(void *unused) {
@@ -266,7 +335,7 @@ bool display_service_init(void) {
     if (!task) s_initialization_failed = true;
     s_initializing = false;
     taskEXIT_CRITICAL(&s_display_service_state_lock);
-    return task != NULL;
+    return task != NULL && display_service_start_test_secondary_stopper();
 }
 
 static esp_err_t display_service_registry_stop(void *context, uint32_t timeout_ms) {

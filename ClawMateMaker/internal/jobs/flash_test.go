@@ -181,15 +181,19 @@ func TestFlashPipelineDoesNotResetBeforeReadbackVerification(t *testing.T) {
 }
 
 func TestFlashImageEvidenceUsesOnlySafeRangeMetadata(t *testing.T) {
-	image := flash.WriteImage{Offset: 0x10000, Path: `C:\private\firmware\app.bin`, Size: 4096, Region: "app", SHA256: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
-	if got := filepath.Base(image.Path); got != "app.bin" {
-		t.Fatalf("diagnostic image name = %q", got)
-	}
-	// logImage is invoked only after the signed extraction/write-plan boundary.
-	// Keep the explicit source contract so a later refactor cannot substitute
-	// an arbitrary renderer-provided path for this evidence.
-	if !strings.Contains(flashSecurityGateSource(t), "filepath.Base(image.Path)") {
-		t.Fatal("per-image diagnostics must redact the host path to its base name")
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "windows path", path: `C:\private\firmware\app.bin`},
+		{name: "posix path", path: "/private/firmware/app.bin"},
+		{name: "basename", path: "app.bin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := diagnosticImageName(test.path); got != "app.bin" {
+				t.Fatalf("diagnostic image name = %q, want app.bin", got)
+			}
+		})
 	}
 }
 

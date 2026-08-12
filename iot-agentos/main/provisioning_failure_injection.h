@@ -34,6 +34,8 @@ bool provisioning_failure_injection_display_service_fail_after_init(void);
  * task still owns the boot-lifetime request/completion storage, then lets the
  * same task exit late. It is never a runtime delay control. */
 uint32_t provisioning_failure_injection_display_service_stop_delay_ms(void);
+uint32_t provisioning_failure_injection_display_service_secondary_stop_delay_ms(void);
+uint32_t provisioning_failure_injection_display_service_secondary_stop_timeout_ms(void);
 
 /* Test-only: abandon exactly one real color-transfer fence wait. The selected
  * profile keeps the old source controller-owned until its actual callback. */
