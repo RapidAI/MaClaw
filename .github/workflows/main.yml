@@ -2113,7 +2113,9 @@ jobs:
           # Build each macOS variant natively.  Wails links native WebKit
           # dependencies, so a single runner must not cross-compile both
           # architectures and then publish an untested binary/sidecar pair.
-          - os: macos-13
+          # macos-13 was retired from GitHub-hosted runners. macos-14 is the
+          # supported Intel image and can build this amd64 target natively.
+          - os: macos-14
             platform: darwin/amd64
             executable: ClawMate Maker.app/Contents/MacOS/ClawMateMaker
             output_name: ClawMateMaker-darwin-amd64
