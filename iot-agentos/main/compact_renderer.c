@@ -228,6 +228,17 @@ static esp_err_t compact_renderer_fail_after_hardware_init(esp_err_t err,
     s_background_tasks_admission_closed = true;
     s_button_cb = NULL;
     s_button_arg = NULL;
+    /* Stage 4 can fail after allocating the scanner completion semaphore but
+     * before publishing a scanner task.  Retaining that semaphore would not
+     * preserve diagnostic hardware -- no task can signal or consume it -- and
+     * would leave an unreachable object in the failed boot generation.  Once
+     * a task is published its stop path owns the semaphore, so never reclaim
+     * it here in that case. */
+    if (!s_button_task && s_button_task_stopped) {
+        vSemaphoreDelete(s_button_task_stopped);
+        s_button_task_stopped = NULL;
+        s_button_task_stop_requested = false;
+    }
     ESP_LOGE(TAG, "compact renderer initialization stopped after hardware init at %s: %s; "
              "retaining boot-lifetime diagnostic hardware",
              step ? step : "unknown", esp_err_to_name(err));

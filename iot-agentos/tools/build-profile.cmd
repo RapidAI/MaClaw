@@ -72,6 +72,38 @@ if /I "%MACLAW_PROFILE%"=="fangtang-4g-renderer-fi" (
   set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-renderer-fi"
   goto :build
 )
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-renderer-stage2-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-renderer-stage2-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-renderer-stage2-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-renderer-stage2-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-renderer-stage3-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-renderer-stage3-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-renderer-stage3-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-renderer-stage3-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-renderer-stage4-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-renderer-stage4-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-renderer-stage4-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-renderer-stage4-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-renderer-stage5-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-renderer-stage5-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-renderer-stage5-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-renderer-stage5-fi"
+  goto :build
+)
 if /I "%MACLAW_PROFILE%"=="fangtang-4g-display-service-fi" (
   set "MACLAW_PROFILE=fangtang-4g"
   set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
@@ -111,6 +143,14 @@ if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c" (
   set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c"
   goto :build
 )
+if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c-fence-fi" (
+  set "MACLAW_PROFILE=waveshare-amoled-1.75c"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\waveshare_deps"
+  set "MACLAW_BUILD_DIR=build-test-waveshare-amoled-1.75c-fence-fi"
+  set "MACLAW_SDKCONFIG=build-test-waveshare-amoled-1.75c-fence-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c;sdkconfig.defaults.waveshare-amoled-1.75c-fence-fi"
+  goto :build
+)
 goto :usage
 
 :build
@@ -145,6 +185,6 @@ popd
 exit /b %MACLAW_RESULT%
 
 :usage
-echo Usage: %~nx0 ^<echoear-2st^|echoear-2st-fence-fi^|bread-compact^|bread-compact-renderer-fi^|bread-compact-renderer-stage3-fi^|fangtang-4g^|fangtang-4g-renderer-fi^|fangtang-4g-display-service-fi^|fangtang-4g-display-stop-timeout-fi^|fangtang-4g-display-busy-request-stop-fi^|fangtang-4g-fence-fi^|waveshare-amoled-1.75c^> [idf.py action...]
+echo Usage: %~nx0 ^<echoear-2st^|echoear-2st-fence-fi^|bread-compact^|bread-compact-renderer-fi^|bread-compact-renderer-stage3-fi^|fangtang-4g^|fangtang-4g-renderer-fi^|fangtang-4g-renderer-stage2-fi^|fangtang-4g-renderer-stage3-fi^|fangtang-4g-renderer-stage4-fi^|fangtang-4g-renderer-stage5-fi^|fangtang-4g-display-service-fi^|fangtang-4g-display-stop-timeout-fi^|fangtang-4g-display-busy-request-stop-fi^|fangtang-4g-fence-fi^|waveshare-amoled-1.75c^|waveshare-amoled-1.75c-fence-fi^> [idf.py action...]
 echo Example: %~nx0 bread-compact build
 exit /b 64

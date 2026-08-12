@@ -1,0 +1,6 @@
+# Dedicated non-release configuration for the scanner completion allocation
+# boundary. It fails after the semaphore exists but before an input task is
+# published, verifying unowned synchronization cleanup in the boot rollback.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_STAGE=4

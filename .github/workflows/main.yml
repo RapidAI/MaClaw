@@ -2517,13 +2517,8 @@ jobs:
       - name: Test four-board firmware manifest contract
         run: python3 .github/scripts/test_firmware_release_contract.py
 
-      - name: Generate latest manifest
-        if: env.ESP32_FIRMWARE_ENABLED == 'true'
+      - name: Generate release manifest
         env:
-          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
-          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
-          COS_BUCKET: ${{ secrets.COS_BUCKET }}
-          COS_REGION: ${{ secrets.COS_REGION }}
           COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
           R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
           RELEASE_TAG: ${{ github.ref_name }}
@@ -2531,11 +2526,8 @@ jobs:
           RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
           MANIFEST_OUTPUT_NAME: ${{ env.MANIFEST_NAME }}
           COS_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+          REQUIRE_FIRMWARE_MANIFEST: ${{ env.ESP32_FIRMWARE_ENABLED }}
         run: |
-          if [ -z "$COS_PUBLIC_BASE_URL" ]; then
-            echo "COS_PUBLIC_BASE_URL is not configured; manifest cannot include fallback URLs." >&2
-            exit 1
-          fi
           python3 .github/scripts/sync_cos_release.py --manifest-only --manifest-name "${MANIFEST_NAME}"
           echo "${MANIFEST_NAME} preview:"
           cat "release-assets/${MANIFEST_NAME}"
@@ -2626,6 +2618,53 @@ jobs:
           body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Verify GitHub update manifest is published
+        # MaClaw GUI reads this exact stable endpoint before falling back to
+        # R2/COS. Validate the published Release asset, rather than merely the
+        # workspace file passed to the upload action.
+        if: env.RELEASE_CHANNEL == 'stable'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+
+          tag = os.environ["RELEASE_TAG"]
+          manifest_name = os.environ["MANIFEST_NAME"]
+          url = f"https://github.com/RapidAI/MaClaw/releases/latest/download/{manifest_name}"
+          required = {"MaClaw-Setup.exe", "MaClaw-Universal.pkg"}
+          last_error = None
+          verified = False
+          for attempt in range(1, 6):
+              try:
+                  request = urllib.request.Request(url, headers={"User-Agent": "MaClaw-release-verifier"})
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      manifest = json.load(response)
+                  if manifest.get("tag") != tag or manifest.get("version") != tag:
+                      raise RuntimeError(f"manifest tag/version is not {tag!r}")
+                  assets = manifest.get("assets")
+                  if not isinstance(assets, dict):
+                      raise RuntimeError("manifest has no assets map")
+                  missing = sorted(required - assets.keys())
+                  if missing:
+                      raise RuntimeError(f"manifest is missing GUI update assets: {missing}")
+                  print(f"published GitHub manifest verified: {url} tag={tag}")
+                  verified = True
+                  break
+              except Exception as exc:
+                  last_error = exc
+                  if attempt == 5:
+                      raise
+                  print(f"manifest not ready (attempt {attempt}/5): {exc}")
+                  time.sleep(5)
+          if not verified:
+              raise RuntimeError(last_error)
+          PY
 
       - name: Verify Gitee token secret
         env:

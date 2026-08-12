@@ -1,0 +1,6 @@
+# Dedicated non-release Waveshare profile: abandon exactly one actual CO5300
+# QSPI transfer-completion fence wait. The profile-private adapter retains the
+# old source until the controller callback; no runtime fault-control path is
+# included in release firmware.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE=y

@@ -1,0 +1,6 @@
+# Dedicated non-release configuration for the final pre-scanner publication
+# boundary. The scanner completion semaphore already exists, but no scanner
+# task is allowed to become observable before this controlled rollback.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_STAGE=5

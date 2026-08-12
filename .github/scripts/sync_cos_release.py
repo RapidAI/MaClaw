@@ -135,10 +135,14 @@ def write_latest_manifest(assets, manifest_name="latest.json"):
     }
     latest_path = asset_dir / manifest_name
     latest_path.write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    required_firmware(latest, asset_dir, tag)
-    require_split_firmware_archives(asset_dir)
-    require_archive_channel(asset_dir, release_channel)
-    validate_manifest_asset_urls(latest, release_channel)
+    # Desktop-only releases still need latest.json so MaClaw GUI can discover
+    # the new installer from GitHub. Firmware-specific invariants apply only
+    # when the firmware artifacts are actually part of this release.
+    if os.environ.get("REQUIRE_FIRMWARE_MANIFEST", "").strip().lower() == "true":
+        required_firmware(latest, asset_dir, tag)
+        require_split_firmware_archives(asset_dir)
+        require_archive_channel(asset_dir, release_channel)
+        validate_manifest_asset_urls(latest, release_channel)
     log(f"wrote manifest {latest_path} assets={len(assets)}")
     return latest_path
 

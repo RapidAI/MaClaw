@@ -163,16 +163,40 @@ class FirmwareReleaseContractTest(unittest.TestCase):
             "public_base_url": sync.public_base_url,
         }
         try:
-            sync.tag = "v1.2.3"
-            sync.asset_dir = self.assets
-            sync.r2_public_base_url = contract.R2_PUBLIC_BASE_URL
-            sync.public_base_url = contract.COS_PUBLIC_BASE_URL
-            result = sync.write_latest_manifest([self.assets / name for name in contract.FIRMWARE_ASSETS])
-            manifest = json.loads(result.read_text(encoding="utf-8"))
-            _, found = contract.required_firmware(manifest, self.assets, "v1.2.3")
-            self.assertEqual(4, len(found))
-            with self.assertRaisesRegex(RuntimeError, "missing"):
-                sync.write_latest_manifest([self.assets / name for name in contract.FIRMWARE_ASSETS[:-1]])
+            with mock.patch.dict(os.environ, {"REQUIRE_FIRMWARE_MANIFEST": "true"}):
+                sync.tag = "v1.2.3"
+                sync.asset_dir = self.assets
+                sync.r2_public_base_url = contract.R2_PUBLIC_BASE_URL
+                sync.public_base_url = contract.COS_PUBLIC_BASE_URL
+                result = sync.write_latest_manifest([self.assets / name for name in contract.FIRMWARE_ASSETS])
+                manifest = json.loads(result.read_text(encoding="utf-8"))
+                _, found = contract.required_firmware(manifest, self.assets, "v1.2.3")
+                self.assertEqual(4, len(found))
+                with self.assertRaisesRegex(RuntimeError, "missing"):
+                    sync.write_latest_manifest([self.assets / name for name in contract.FIRMWARE_ASSETS[:-1]])
+        finally:
+            for key, value in previous.items():
+                setattr(sync, key, value)
+
+    def test_desktop_only_release_writes_manifest_without_firmware(self):
+        desktop_asset = self.assets / "MaClaw-Setup.exe"
+        desktop_asset.write_bytes(b"desktop installer")
+        previous = {
+            "tag": sync.tag,
+            "asset_dir": sync.asset_dir,
+            "r2_public_base_url": sync.r2_public_base_url,
+            "public_base_url": sync.public_base_url,
+        }
+        try:
+            with mock.patch.dict(os.environ, {"REQUIRE_FIRMWARE_MANIFEST": "false"}):
+                sync.tag = "V7.0.0.11852"
+                sync.asset_dir = self.assets
+                sync.r2_public_base_url = contract.R2_PUBLIC_BASE_URL
+                sync.public_base_url = contract.COS_PUBLIC_BASE_URL
+                result = sync.write_latest_manifest([desktop_asset])
+                manifest = json.loads(result.read_text(encoding="utf-8"))
+            self.assertEqual("V7.0.0.11852", manifest["tag"])
+            self.assertIn("MaClaw-Setup.exe", manifest["assets"])
         finally:
             for key, value in previous.items():
                 setattr(sync, key, value)
@@ -244,9 +268,13 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertIn(command, workflow)
         self.assertIn("  verify-firmware-release-contract:", workflow)
         self.assertIn("needs: [verify-firmware-release-contract]", workflow)
-        self.assertLess(workflow.index(command), workflow.index("- name: Generate latest manifest"))
+        self.assertLess(workflow.index(command), workflow.index("- name: Generate release manifest"))
         self.assertIn("Verify firmware publication on Cloudflare R2 and Tencent COS", workflow)
         self.assertLess(workflow.index("Verify firmware publication on Cloudflare R2 and Tencent COS"), workflow.index("- name: Create GitHub Release"))
+        self.assertIn("- name: Verify GitHub update manifest is published", workflow)
+        self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("- name: Verify GitHub update manifest is published"))
+        self.assertIn("releases/latest/download/{manifest_name}", workflow)
+        self.assertIn('required = {"MaClaw-Setup.exe", "MaClaw-Universal.pkg"}', workflow)
         self.assertNotIn("COS_PUBLIC_BASE_URL: ${{ secrets.COS_PUBLIC_BASE_URL }}", workflow)
         self.assertIn("COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com", workflow)
 
@@ -272,6 +300,9 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertNotIn("needs: [build-esp32-firmware]", desktop_job)
         self.assertNotIn("build-esp32-firmware", release_job.split("runs-on:", 1)[0])
         self.assertIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", release_job)
+        self.assertIn("- name: Generate release manifest", release_job)
+        manifest_step = release_job[release_job.index("- name: Generate release manifest") : release_job.index("- name: Set up Node.js for Cloudflare R2")]
+        self.assertNotIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", manifest_step)
 
     def test_firmware_packaging_binds_manifest_identity_to_generated_sdkconfig(self):
         workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
