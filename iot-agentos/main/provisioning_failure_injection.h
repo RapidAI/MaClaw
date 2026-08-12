@@ -27,3 +27,7 @@ bool provisioning_failure_injection_compact_renderer_initialization_should_fail_
  * that the service closes admission and joins that task without asking a
  * board renderer to expose panel or DMA details. */
 bool provisioning_failure_injection_display_service_fail_after_init(void);
+
+/* Test-only: abandon exactly one real color-transfer fence wait. The selected
+ * profile keeps the old source controller-owned until its actual callback. */
+bool provisioning_failure_injection_display_transfer_fence_timeout_once(void);

@@ -439,6 +439,10 @@ static inline esp_err_t fangtang_display_draw_bitmap_rows(
             s_fangtang_display_transfer_pending = false;
             return err;
         }
+        if (provisioning_failure_injection_display_transfer_fence_timeout_once()) {
+            ESP_LOGW("fangtang_display", "test: abandoning first transfer fence wait");
+            return ESP_ERR_TIMEOUT;
+        }
         /* This is a binary completion semaphore.  Await each bounded row
          * before submitting the next one so callbacks cannot coalesce and a
          * renderer-owned framebuffer is never reused while SPI DMA reads it. */

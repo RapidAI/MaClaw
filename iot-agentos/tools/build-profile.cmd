@@ -52,6 +52,14 @@ if /I "%MACLAW_PROFILE%"=="fangtang-4g-renderer-fi" (
   set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-renderer-fi"
   goto :build
 )
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-fence-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-fence-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-fence-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-fence-fi"
+  goto :build
+)
 if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c" (
   set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\waveshare_deps"
   set "MACLAW_BUILD_DIR=build-unified-waveshare"
@@ -93,6 +101,6 @@ popd
 exit /b %MACLAW_RESULT%
 
 :usage
-echo Usage: %~nx0 ^<echoear-2st^|bread-compact^|bread-compact-renderer-fi^|fangtang-4g^|fangtang-4g-renderer-fi^|waveshare-amoled-1.75c^> [idf.py action...]
+echo Usage: %~nx0 ^<echoear-2st^|bread-compact^|bread-compact-renderer-fi^|fangtang-4g^|fangtang-4g-renderer-fi^|fangtang-4g-fence-fi^|waveshare-amoled-1.75c^> [idf.py action...]
 echo Example: %~nx0 bread-compact build
 exit /b 64

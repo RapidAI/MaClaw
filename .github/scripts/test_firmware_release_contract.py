@@ -261,6 +261,18 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertIn("environment: firmware-release", release_job)
         self.assertIn("if: github.ref_type == 'tag'", release_job)
 
+    def test_firmware_pipeline_can_be_temporarily_paused_without_blocking_desktop_release(self):
+        workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
+        firmware_job = workflow[workflow.index("  build-esp32-firmware:") : workflow.index("  build-clawmate-maker:")]
+        desktop_job = workflow[workflow.index("  build-clawmate-maker:") : workflow.index("  # ============================================================\n  # Release:")]
+        release_job = workflow[workflow.index("  release:") :]
+
+        self.assertIn("ESP32_FIRMWARE_ENABLED: 'false'", workflow)
+        self.assertIn("env.ESP32_FIRMWARE_ENABLED == 'true'", firmware_job)
+        self.assertNotIn("needs: [build-esp32-firmware]", desktop_job)
+        self.assertNotIn("build-esp32-firmware", release_job.split("runs-on:", 1)[0])
+        self.assertIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", release_job)
+
     def test_firmware_packaging_binds_manifest_identity_to_generated_sdkconfig(self):
         workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
         firmware_job = workflow[workflow.index("  build-esp32-firmware:") : workflow.index("  build-clawmate-maker:")]

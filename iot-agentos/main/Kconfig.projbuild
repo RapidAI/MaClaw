@@ -349,6 +349,16 @@ config MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT
         provide a runtime display restart path. The condition is compile-time
         only and has no Hub, console, HTTP, input or release-firmware path.
 
+config MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
+    bool "Abandon exactly one display transfer fence wait (test only)"
+    default n
+    help
+        Queues one real panel color transaction, then deliberately returns a
+        timeout before consuming its completion. The next selected profile
+        draw must drain that old transaction before it can submit new pixels.
+        This validates late-DMA completion ownership without exposing a
+        runtime setter, console, Hub, input, HTTP, Device API or release path.
+
 endif
 
 endmenu

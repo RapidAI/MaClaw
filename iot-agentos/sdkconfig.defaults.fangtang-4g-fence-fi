@@ -1,0 +1,3 @@
+# Dedicated non-release configuration for panel DMA fence ownership HIL.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE=y

@@ -39,6 +39,11 @@
 #ifndef CONFIG_MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT
 #define CONFIG_MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT 0
 #endif
+#ifndef CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
+#define CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE 0
+#endif
+
+static bool s_display_transfer_fence_timeout_consumed;
 
 bool provisioning_failure_injection_lifecycle_primitives_unavailable(void) {
 #if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_PROVISIONING_FAILURE_LIFECYCLE_PRIMITIVES
@@ -98,4 +103,14 @@ bool provisioning_failure_injection_display_service_fail_after_init(void) {
 #else
     return false;
 #endif
+}
+
+bool provisioning_failure_injection_display_transfer_fence_timeout_once(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
+    if (!s_display_transfer_fence_timeout_consumed) {
+        s_display_transfer_fence_timeout_consumed = true;
+        return true;
+    }
+#endif
+    return false;
 }

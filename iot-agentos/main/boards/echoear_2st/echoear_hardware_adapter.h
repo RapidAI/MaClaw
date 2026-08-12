@@ -390,6 +390,10 @@ static esp_err_t round_display_adapter_draw_bitmap_sync(
         s_echoear_display_transfer_pending = false;
         return err;
     }
+    if (provisioning_failure_injection_display_transfer_fence_timeout_once()) {
+        ESP_LOGW("echoear_display", "test: abandoning first transfer fence wait");
+        return ESP_ERR_TIMEOUT;
+    }
     if (xSemaphoreTake(s_echoear_display_transfer_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
