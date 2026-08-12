@@ -109,8 +109,7 @@ static TaskHandle_t s_display_service_test_secondary_stopper_task;
  * Display Task is inside the synthetic busy-renderer delay, letting rollback
  * queue STOP behind actual request execution without a competing producer. */
 static display_service_request_t s_display_service_test_request;
-static StaticSemaphore_t s_display_service_test_request_started_storage;
-static SemaphoreHandle_t s_display_service_test_request_started;
+static bool s_display_service_test_request_executing;
 /* STOP can outlive a lifecycle caller that times out waiting for a renderer
  * already executing a synchronous panel transaction. Its request/completion
  * storage is therefore boot-lifetime, never a deinit caller's stack. */
@@ -230,10 +229,6 @@ static bool display_service_start_test_secondary_stopper(void) {
 
 static bool display_service_start_test_request(void) {
     if (!provisioning_failure_injection_display_service_request_delay_enabled()) return true;
-    SemaphoreHandle_t started = xSemaphoreCreateBinaryStatic(
-        &s_display_service_test_request_started_storage);
-    if (!started) return false;
-    s_display_service_test_request_started = started;
     s_display_service_test_request = (display_service_request_t){
         .kind = DISPLAY_REQUEST_SHOW_STARTUP,
     };
@@ -286,14 +281,18 @@ static void display_service_task(void *unused) {
              * Display Task.  The composition root can then enqueue terminal
              * STOP behind an in-flight renderer call, exercising the real
              * queue ordering without making panel/DMA state public. */
-            SemaphoreHandle_t started = s_display_service_test_request_started;
-            if (started) (void)xSemaphoreGive(started);
+            taskENTER_CRITICAL(&s_display_service_state_lock);
+            s_display_service_test_request_executing = true;
+            taskEXIT_CRITICAL(&s_display_service_state_lock);
             ESP_LOGW("display_service", "test: delaying busy scene request for %lu ms",
                      (unsigned long)request_delay_ms);
             TickType_t delay_ticks = pdMS_TO_TICKS(request_delay_ms);
             if (delay_ticks == 0) delay_ticks = 1;
             vTaskDelay(delay_ticks);
             ESP_LOGW("display_service", "test: busy scene request released");
+            taskENTER_CRITICAL(&s_display_service_state_lock);
+            s_display_service_test_request_executing = false;
+            taskEXIT_CRITICAL(&s_display_service_state_lock);
         }
         display_service_dispatch(request);
         if (request->revision != 0) {
@@ -387,11 +386,17 @@ bool display_service_init(void) {
 bool display_service_wait_for_test_request_start(uint32_t timeout_ms) {
     if (!provisioning_failure_injection_display_service_request_delay_enabled()) return true;
     if (timeout_ms == 0) return false;
-    SemaphoreHandle_t started;
-    taskENTER_CRITICAL(&s_display_service_state_lock);
-    started = s_display_service_test_request_started;
-    taskEXIT_CRITICAL(&s_display_service_state_lock);
-    return started && xSemaphoreTake(started, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = pdMS_TO_TICKS(timeout_ms) == 0 ? 1 :
+                               pdMS_TO_TICKS(timeout_ms);
+    do {
+        taskENTER_CRITICAL(&s_display_service_state_lock);
+        const bool executing = s_display_service_test_request_executing;
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+        if (executing) return true;
+        vTaskDelay(1);
+    } while (xTaskGetTickCount() - started < budget);
+    return false;
 }
 
 static esp_err_t display_service_registry_stop(void *context, uint32_t timeout_ms) {
