@@ -34,6 +34,11 @@ bool provisioning_failure_injection_display_service_fail_after_init(void);
  * task still owns the boot-lifetime request/completion storage, then lets the
  * same task exit late. It is never a runtime delay control. */
 uint32_t provisioning_failure_injection_display_service_stop_delay_ms(void);
+/* Test-only delay injected while the Display Task is already executing one
+ * ordinary scene request. It covers STOP queued behind a busy renderer, not
+ * the separate terminal-STOP late-exit seam. */
+uint32_t provisioning_failure_injection_display_service_request_delay_once_ms(void);
+bool provisioning_failure_injection_display_service_request_delay_enabled(void);
 uint32_t provisioning_failure_injection_display_service_secondary_stop_delay_ms(void);
 uint32_t provisioning_failure_injection_display_service_secondary_stop_timeout_ms(void);
 

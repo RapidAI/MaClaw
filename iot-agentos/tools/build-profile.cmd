@@ -80,6 +80,14 @@ if /I "%MACLAW_PROFILE%"=="fangtang-4g-display-stop-timeout-fi" (
   set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-display-stop-timeout-fi"
   goto :build
 )
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-display-busy-request-stop-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-display-busy-request-stop-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-display-busy-request-stop-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-display-busy-request-stop-fi"
+  goto :build
+)
 if /I "%MACLAW_PROFILE%"=="fangtang-4g-fence-fi" (
   set "MACLAW_PROFILE=fangtang-4g"
   set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
@@ -129,6 +137,6 @@ popd
 exit /b %MACLAW_RESULT%
 
 :usage
-echo Usage: %~nx0 ^<echoear-2st^|bread-compact^|bread-compact-renderer-fi^|bread-compact-renderer-stage3-fi^|fangtang-4g^|fangtang-4g-renderer-fi^|fangtang-4g-display-service-fi^|fangtang-4g-display-stop-timeout-fi^|fangtang-4g-fence-fi^|waveshare-amoled-1.75c^> [idf.py action...]
+echo Usage: %~nx0 ^<echoear-2st^|bread-compact^|bread-compact-renderer-fi^|bread-compact-renderer-stage3-fi^|fangtang-4g^|fangtang-4g-renderer-fi^|fangtang-4g-display-service-fi^|fangtang-4g-display-stop-timeout-fi^|fangtang-4g-display-busy-request-stop-fi^|fangtang-4g-fence-fi^|waveshare-amoled-1.75c^> [idf.py action...]
 echo Example: %~nx0 bread-compact build
 exit /b 64

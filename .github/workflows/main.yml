@@ -2101,32 +2101,56 @@ jobs:
             platform: windows/amd64
             executable: ClawMateMaker.exe
             output_name: ClawMateMaker.exe
+            package_name: ClawMateMaker
+            package_executable: ClawMateMaker.exe
+            package_kind: executable
+            package_requires_exec_bits: false
             sidecar_binary: esptool.exe
+            sidecar_dir: tools
             sidecar_arch: native
+            venv_python: Scripts/python.exe
             release_name: ClawMateMaker-windows-amd64.zip
           # Build each macOS variant natively.  Wails links native WebKit
           # dependencies, so a single runner must not cross-compile both
           # architectures and then publish an untested binary/sidecar pair.
           - os: macos-13
             platform: darwin/amd64
-            executable: ClawMateMaker-darwin-amd64
+            executable: ClawMate Maker.app/Contents/MacOS/ClawMateMaker
             output_name: ClawMateMaker-darwin-amd64
+            package_name: ClawMateMaker-darwin-amd64.app
+            package_executable: Contents/MacOS/ClawMateMaker
+            package_kind: app-bundle
+            package_requires_exec_bits: true
             sidecar_binary: esptool
+            sidecar_dir: ClawMate Maker.app/Contents/MacOS/tools
             sidecar_arch: x86_64
+            venv_python: bin/python
             release_name: ClawMateMaker-darwin-amd64.zip
           - os: macos-14
             platform: darwin/arm64
-            executable: ClawMateMaker-darwin-arm64
+            executable: ClawMate Maker.app/Contents/MacOS/ClawMateMaker
             output_name: ClawMateMaker-darwin-arm64
+            package_name: ClawMateMaker-darwin-arm64.app
+            package_executable: Contents/MacOS/ClawMateMaker
+            package_kind: app-bundle
+            package_requires_exec_bits: true
             sidecar_binary: esptool
+            sidecar_dir: ClawMate Maker.app/Contents/MacOS/tools
             sidecar_arch: arm64
+            venv_python: bin/python
             release_name: ClawMateMaker-darwin-arm64.zip
           - os: ubuntu-24.04
             platform: linux/amd64
             executable: ClawMateMaker
             output_name: ClawMateMaker
+            package_name: ClawMateMaker
+            package_executable: ClawMateMaker
+            package_kind: executable
+            package_requires_exec_bits: true
             sidecar_binary: esptool
+            sidecar_dir: tools
             sidecar_arch: native
+            venv_python: bin/python
             release_name: ClawMateMaker-linux-amd64.zip
     steps:
       - uses: actions/checkout@v5
@@ -2177,27 +2201,29 @@ jobs:
           # after it has created the signed desktop executable.
           test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY"
           test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
-          python3 -m venv "$RUNNER_TEMP/clawmate-esptool-venv"
-          "$RUNNER_TEMP/clawmate-esptool-venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir 'esptool==5.3.1' pyinstaller
+          python -m venv "$RUNNER_TEMP/clawmate-esptool-venv"
+          venv_python="$RUNNER_TEMP/clawmate-esptool-venv/${{ matrix.venv_python }}"
+          "$venv_python" -m pip install --disable-pip-version-check --no-cache-dir 'esptool==5.3.1' pyinstaller
           pyinstaller_args=(--clean --onefile --collect-data esptool --name esptool)
           if [ '${{ matrix.sidecar_arch }}' != 'native' ]; then
             pyinstaller_args+=(--target-architecture '${{ matrix.sidecar_arch }}')
           fi
-          "$RUNNER_TEMP/clawmate-esptool-venv/bin/python" -m PyInstaller "${pyinstaller_args[@]}" ClawMateMaker/tools/sidecar/esptool_entry.py
-          mkdir -p ClawMateMaker/build/bin/tools
-          cp "dist/${{ matrix.sidecar_binary }}" "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}"
-          chmod 0755 "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" || true
+          "$venv_python" -m PyInstaller "${pyinstaller_args[@]}" ClawMateMaker/tools/sidecar/esptool_entry.py
+          sidecar_dir="ClawMateMaker/build/bin/${{ matrix.sidecar_dir }}"
+          mkdir -p "$sidecar_dir"
+          cp "dist/${{ matrix.sidecar_binary }}" "$sidecar_dir/${{ matrix.sidecar_binary }}"
+          chmod 0755 "$sidecar_dir/${{ matrix.sidecar_binary }}" || true
           if [ "$(uname)" = "Darwin" ]; then
-            file "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" | grep -q '${{ matrix.sidecar_arch }}'
+            file "$sidecar_dir/${{ matrix.sidecar_binary }}" | grep -q '${{ matrix.sidecar_arch }}'
           fi
           go run ./ClawMateMaker/tools/sidecarsign \
-            --dir ClawMateMaker/build/bin/tools \
+            --dir "$sidecar_dir" \
             --binary '${{ matrix.sidecar_binary }}' \
             --version 'esptool 5.3.1' \
             --key-id "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
-          "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" version
-          test -s "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}"
-          test -s "ClawMateMaker/build/bin/tools/sidecar-manifest.json"
+          "$sidecar_dir/${{ matrix.sidecar_binary }}" version
+          test -s "$sidecar_dir/${{ matrix.sidecar_binary }}"
+          test -s "$sidecar_dir/sidecar-manifest.json"
       - name: Verify signed managed sidecar against desktop release trust root
         shell: bash
         env:
@@ -2213,15 +2239,36 @@ jobs:
           )
       - name: Package desktop flasher
         shell: bash
+        env:
+          CLAWMATE_FIRMWARE_PUBLIC_KEY: ${{ vars.CLAWMATE_FIRMWARE_PUBLIC_KEY }}
+          CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
         run: |
           set -euo pipefail
-          package_dir="ClawMateMaker/build/package/ClawMateMaker"
+          test -n "$CLAWMATE_FIRMWARE_PUBLIC_KEY"
+          test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
+          executable='${{ matrix.executable }}'
+          package_dir="ClawMateMaker/build/package/${{ matrix.package_name }}"
+          package_executable='${{ matrix.package_executable }}'
+          source_dir="ClawMateMaker/build/bin"
+          source_tool_dir="$source_dir/${{ matrix.sidecar_dir }}"
+          tool_dir="$package_dir/$(dirname "$package_executable")/tools"
+          if [[ "$executable" == *.app/* ]]; then
+            bundle="${executable%%/*}"
+          fi
           archive="ClawMateMaker/build/release/${{ matrix.release_name }}"
           rm -rf "$package_dir"
-          mkdir -p "$package_dir/tools" "$(dirname "$archive")"
-          cp "ClawMateMaker/build/bin/${{ matrix.executable }}" "$package_dir/${{ matrix.executable }}"
-          cp "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" "$package_dir/tools/${{ matrix.sidecar_binary }}"
-          cp "ClawMateMaker/build/bin/tools/sidecar-manifest.json" "$package_dir/tools/sidecar-manifest.json"
+          mkdir -p "$tool_dir" "$(dirname "$archive")"
+          if [[ "$executable" == *.app/* ]]; then
+            # A macOS desktop app is a bundle, not a standalone executable.
+            # Retain Info.plist and Resources alongside the Mach-O binary.
+            cp -R "$source_dir/$bundle/." "$package_dir"
+          else
+            cp "$source_dir/$executable" "$package_dir/$package_executable"
+            cp "$source_tool_dir/${{ matrix.sidecar_binary }}" "$tool_dir/${{ matrix.sidecar_binary }}"
+            cp "$source_tool_dir/sidecar-manifest.json" "$tool_dir/sidecar-manifest.json"
+          fi
+          # Verify the final runtime layout rather than only the pre-package tree.
+          go run ./ClawMateMaker/tools/sidecarverify "$package_dir/$package_executable"
           python - "$package_dir" "$archive" <<'PY'
           from pathlib import Path
           import os
@@ -2243,18 +2290,35 @@ jobs:
                   archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
           PY
           test -s "$archive"
-          python - "$archive" <<'PY'
+          python - "$archive" '${{ matrix.package_name }}' '${{ matrix.package_executable }}' '${{ matrix.sidecar_binary }}' '${{ matrix.package_kind }}' '${{ matrix.package_requires_exec_bits }}' <<'PY'
+          from pathlib import PurePosixPath
           import sys
           import zipfile
 
-          with zipfile.ZipFile(sys.argv[1]) as archive:
+          archive_path, package_name, executable, sidecar, package_kind, require_exec_bits = sys.argv[1:]
+          with zipfile.ZipFile(archive_path) as archive:
               bad = archive.testzip()
-              names = set(archive.namelist())
+              entries = {entry.filename: entry for entry in archive.infolist()}
           if bad:
               raise SystemExit(f"invalid zip member: {bad}")
-          required = {"ClawMateMaker/tools/sidecar-manifest.json"}
-          if not required.issubset(names):
-              raise SystemExit("distribution archive is missing managed sidecar metadata")
+          root = PurePosixPath(package_name)
+          executable_path = root / PurePosixPath(executable)
+          tools = executable_path.parent / "tools"
+          required = {str(executable_path), str(tools / sidecar), str(tools / "sidecar-manifest.json")}
+          if package_kind == "app-bundle":
+              if root.suffix != ".app":
+                  raise SystemExit(f"macOS package root is not an app bundle: {root}")
+              required.add(str(root / "Contents/Info.plist"))
+          missing = sorted(required - entries.keys())
+          if missing:
+              raise SystemExit(f"distribution archive is missing required payload: {missing}")
+          if require_exec_bits == "true":
+              non_executable = sorted(
+                  path for path in (str(executable_path), str(tools / sidecar))
+                  if not ((entries[path].external_attr >> 16) & 0o111)
+              )
+              if non_executable:
+                  raise SystemExit(f"distribution archive lost executable permissions: {non_executable}")
           PY
       - name: Upload desktop flasher distribution
         uses: actions/upload-artifact@v5

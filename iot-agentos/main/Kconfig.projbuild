@@ -362,6 +362,19 @@ config MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS
         owned by the delayed task. This is compile-time only; it creates no
         runtime setter, Hub, console, HTTP, input or release-firmware path.
 
+config MACLAW_DISPLAY_SERVICE_REQUEST_DELAY_ONCE_MS
+    int "Delay one executing Display Service request (test only)"
+    range 0 30000
+    default 0
+    depends on MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT
+    help
+        Starts one test-owned ordinary scene request, waits until the Display
+        Task has begun its private delay, then lets composition rollback queue
+        terminal STOP behind that in-flight request. This validates a bounded
+        STOP while the task is executing renderer work, rather than only after
+        it has consumed STOP. It is compile-time only and creates no runtime
+        setter, Hub, console, HTTP, input or release-firmware path.
+
 config MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_DELAY_MS
     int "Delay before a test-only second Display Service stopper"
     range 0 30000

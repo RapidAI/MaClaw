@@ -42,6 +42,9 @@
 #ifndef CONFIG_MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS
 #define CONFIG_MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS 0
 #endif
+#ifndef CONFIG_MACLAW_DISPLAY_SERVICE_REQUEST_DELAY_ONCE_MS
+#define CONFIG_MACLAW_DISPLAY_SERVICE_REQUEST_DELAY_ONCE_MS 0
+#endif
 #ifndef CONFIG_MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_DELAY_MS
 #define CONFIG_MACLAW_DISPLAY_SERVICE_SECONDARY_STOP_DELAY_MS 0
 #endif
@@ -53,6 +56,7 @@
 #endif
 
 static bool s_display_transfer_fence_timeout_consumed;
+static bool s_display_service_request_delay_consumed;
 
 bool provisioning_failure_injection_lifecycle_primitives_unavailable(void) {
 #if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_PROVISIONING_FAILURE_LIFECYCLE_PRIMITIVES
@@ -119,6 +123,24 @@ uint32_t provisioning_failure_injection_display_service_stop_delay_ms(void) {
     return CONFIG_MACLAW_DISPLAY_SERVICE_STOP_DELAY_MS;
 #else
     return 0;
+#endif
+}
+
+uint32_t provisioning_failure_injection_display_service_request_delay_once_ms(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_DISPLAY_SERVICE_REQUEST_DELAY_ONCE_MS > 0
+    if (!s_display_service_request_delay_consumed) {
+        s_display_service_request_delay_consumed = true;
+        return CONFIG_MACLAW_DISPLAY_SERVICE_REQUEST_DELAY_ONCE_MS;
+    }
+#endif
+    return 0;
+}
+
+bool provisioning_failure_injection_display_service_request_delay_enabled(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_DISPLAY_SERVICE_REQUEST_DELAY_ONCE_MS > 0
+    return true;
+#else
+    return false;
 #endif
 }
 

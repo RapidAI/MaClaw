@@ -104,6 +104,13 @@ static TaskHandle_t s_display_service_task;
 static StaticTask_t s_display_service_test_secondary_stopper_task_storage;
 static StackType_t s_display_service_test_secondary_stopper_task_stack[3072u];
 static TaskHandle_t s_display_service_test_secondary_stopper_task;
+/* A boot-lifetime ordinary request is injected directly into the private
+ * queue before startup publishes any normal scene. It rendezvouses only once
+ * Display Task is inside the synthetic busy-renderer delay, letting rollback
+ * queue STOP behind actual request execution without a competing producer. */
+static display_service_request_t s_display_service_test_request;
+static StaticSemaphore_t s_display_service_test_request_started_storage;
+static SemaphoreHandle_t s_display_service_test_request_started;
 /* STOP can outlive a lifecycle caller that times out waiting for a renderer
  * already executing a synchronous panel transaction. Its request/completion
  * storage is therefore boot-lifetime, never a deinit caller's stack. */
@@ -127,6 +134,9 @@ static bool display_service_wait_for_stop(TickType_t started, TickType_t budget)
 static esp_err_t display_service_registry_stop(void *context, uint32_t timeout_ms);
 static void display_service_test_secondary_stopper_task(void *unused);
 static bool display_service_start_test_secondary_stopper(void);
+static bool display_service_start_test_request(void);
+static bool display_service_submit(display_service_request_t *request,
+                                   bool mutates_scene);
 
 static TickType_t display_service_stop_remaining_ticks(TickType_t started,
                                                         TickType_t budget) {
@@ -218,6 +228,25 @@ static bool display_service_start_test_secondary_stopper(void) {
     return true;
 }
 
+static bool display_service_start_test_request(void) {
+    if (!provisioning_failure_injection_display_service_request_delay_enabled()) return true;
+    SemaphoreHandle_t started = xSemaphoreCreateBinaryStatic(
+        &s_display_service_test_request_started_storage);
+    if (!started) return false;
+    s_display_service_test_request_started = started;
+    s_display_service_test_request = (display_service_request_t){
+        .kind = DISPLAY_REQUEST_SHOW_STARTUP,
+    };
+    display_service_request_t *queued = &s_display_service_test_request;
+    if (!s_display_service_queue ||
+        xQueueSend(s_display_service_queue, &queued, 0) != pdTRUE) {
+        ESP_LOGE("display_service", "test: cannot queue busy scene request");
+        return false;
+    }
+    ESP_LOGI("display_service", "test: busy scene request armed");
+    return true;
+}
+
 static void display_service_task(void *unused) {
     (void)unused;
     for (;;) {
@@ -249,6 +278,22 @@ static void display_service_task(void *unused) {
             ESP_LOGI("display_service", "display task stopped");
             vTaskDelete(NULL);
             return;
+        }
+        const uint32_t request_delay_ms =
+            provisioning_failure_injection_display_service_request_delay_once_ms();
+        if (request_delay_ms != 0) {
+            /* Signal only after this ordinary request has been dequeued by
+             * Display Task.  The composition root can then enqueue terminal
+             * STOP behind an in-flight renderer call, exercising the real
+             * queue ordering without making panel/DMA state public. */
+            SemaphoreHandle_t started = s_display_service_test_request_started;
+            if (started) (void)xSemaphoreGive(started);
+            ESP_LOGW("display_service", "test: delaying busy scene request for %lu ms",
+                     (unsigned long)request_delay_ms);
+            TickType_t delay_ticks = pdMS_TO_TICKS(request_delay_ms);
+            if (delay_ticks == 0) delay_ticks = 1;
+            vTaskDelay(delay_ticks);
+            ESP_LOGW("display_service", "test: busy scene request released");
         }
         display_service_dispatch(request);
         if (request->revision != 0) {
@@ -335,7 +380,18 @@ bool display_service_init(void) {
     if (!task) s_initialization_failed = true;
     s_initializing = false;
     taskEXIT_CRITICAL(&s_display_service_state_lock);
-    return task != NULL && display_service_start_test_secondary_stopper();
+    return task != NULL && display_service_start_test_request() &&
+           display_service_start_test_secondary_stopper();
+}
+
+bool display_service_wait_for_test_request_start(uint32_t timeout_ms) {
+    if (!provisioning_failure_injection_display_service_request_delay_enabled()) return true;
+    if (timeout_ms == 0) return false;
+    SemaphoreHandle_t started;
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    started = s_display_service_test_request_started;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    return started && xSemaphoreTake(started, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
 }
 
 static esp_err_t display_service_registry_stop(void *context, uint32_t timeout_ms) {
@@ -497,10 +553,13 @@ static bool display_service_submit(display_service_request_t *request,
     }
     if (mutates_scene) request->revision = note_display_submission();
     display_service_request_t *queued = request;
-    /* The submission owner admits one synchronous request at a time. A depth
-     * of two leaves an entry free while Display Task renders the previous
-     * request, so this zero-wait send cannot turn UI producers into an
-     * unbounded queue backlog. */
+    /* Queue admission is serialized, but the caller must release that gate
+     * before waiting for Display Task completion.  Otherwise a lifecycle
+     * STOP could never be enqueued behind a renderer request already in
+     * execution: its bounded stopper would merely block on this mutex rather
+     * than close admission/own the terminal generation. Stack-backed request
+     * storage remains valid because every submitter still waits below. The
+     * finite queue is the sole backlog bound. */
     if (xQueueSend(s_display_service_queue, &queued, 0) != pdTRUE) {
         display_service_submission_unlock();
         return false;

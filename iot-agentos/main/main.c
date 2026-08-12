@@ -12359,6 +12359,10 @@ void app_main(void) {
      * renderer remains boot-lifetime; this only owns service-side ordering. */
     if (!display_service_init()) goto startup_core_no_memory;
     if (provisioning_failure_injection_display_service_fail_after_init()) {
+        if (!display_service_wait_for_test_request_start(3000)) {
+            ESP_LOGE(TAG, "display service test request did not start");
+            goto startup_core_no_memory;
+        }
         ESP_LOGW(TAG, "forcing startup failure after Display Service publication (test injection)");
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
                                DEVICE_STATUS_INTERNAL_ERROR, "display service test injection");
