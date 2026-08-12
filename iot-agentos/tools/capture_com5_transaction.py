@@ -35,6 +35,12 @@ def main() -> int:
         default=5.0,
         help="keep recording briefly after the last terminal marker",
     )
+    parser.add_argument(
+        "--reset-after-open",
+        action="store_true",
+        help=("reset the ESP32 only after COM5 is open, so boot-only "
+              "failure-injection logs cannot be missed"),
+    )
     args = parser.parse_args()
     if args.seconds < 1 or args.seconds > 900:
         parser.error("--seconds must be in 1..900")
@@ -52,6 +58,18 @@ def main() -> int:
 
     try:
         with serial.Serial("COM5", 115200, timeout=0.2) as port:
+            if args.reset_after_open:
+                # Match the conventional ESP32 USB-UART reset sequence after
+                # the reader owns COM5.  This is intentionally opt-in: a
+                # normal voice transaction must never be disrupted merely by
+                # opening the diagnostic capture helper.
+                port.dtr = False
+                port.rts = True
+                time.sleep(0.1)
+                port.dtr = True
+                port.rts = False
+                time.sleep(0.1)
+                port.reset_input_buffer()
             while time.monotonic() < deadline:
                 chunk = port.read(port.in_waiting or 1)
                 if chunk:

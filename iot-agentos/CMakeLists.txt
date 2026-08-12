@@ -9,6 +9,9 @@ if(DEFINED MACLAW_PROFILE AND NOT MACLAW_PROFILE STREQUAL "")
     idf_build_set_property(DEPENDENCIES_LOCK
                            "${CMAKE_CURRENT_SOURCE_DIR}/dependencies.lock.${MACLAW_PROFILE}")
 endif()
+# Profile-only managed dependencies live in source-free carrier components.
+# ESP-IDF discovers these before it can read Kconfig, so the selected build
+# entry point must pass their directory through EXTRA_COMPONENT_DIRS.
 project(maclaw_esp32s3_client)
 # The storage partition is reserved for future pet assets. Keep normal builds
 # independent of an optional source directory; when assets are present they

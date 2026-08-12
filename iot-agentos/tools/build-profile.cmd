@@ -70,6 +70,9 @@ rem Each board has a distinct managed-dependency closure.  The root CMake
 rem file maps MACLAW_PROFILE to a profile-qualified Component Manager lock;
 rem pass only the identity here so the property remains authoritative in both
 rem ESP-IDF configure passes.
+rem Component Manager reads IDF_TARGET from the environment during its
+rem preliminary manifest-resolution pass, before SDKCONFIG_DEFAULTS is applied.
+set "IDF_TARGET=esp32s3"
 set "MACLAW_IDF_ARGS=-B %MACLAW_BUILD_DIR% -D MACLAW_PROFILE=%MACLAW_PROFILE% -D SDKCONFIG=%MACLAW_SDKCONFIG% -D EXTRA_COMPONENT_DIRS=%MACLAW_EXTRA_COMPONENT_DIRS%"
 if not "%MACLAW_DEFAULTS%"=="" set "MACLAW_IDF_ARGS=%MACLAW_IDF_ARGS% -D SDKCONFIG_DEFAULTS=%MACLAW_DEFAULTS%"
 

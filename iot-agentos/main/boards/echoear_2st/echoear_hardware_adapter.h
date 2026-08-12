@@ -261,8 +261,11 @@ static bool round_display_adapter_color_transfer_done(
     (void)panel_io;
     (void)edata;
     BaseType_t task_woken = pdFALSE;
-    s_echoear_display_transfer_pending = false;
     xSemaphoreGiveFromISR((SemaphoreHandle_t)user_ctx, &task_woken);
+    /* Give the fence before publishing idle.  Because the waiter cannot run
+     * until this ISR returns, an idle observation can never strand a delayed
+     * completion token for the next QSPI transfer. */
+    s_echoear_display_transfer_pending = false;
     return task_woken == pdTRUE;
 }
 
@@ -375,6 +378,10 @@ static esp_err_t round_display_adapter_draw_bitmap_sync(
     if (!s_echoear_display_panel || !s_echoear_display_transfer_done || !pixels) {
         return ESP_ERR_INVALID_STATE;
     }
+    /* Retain a timed-out transfer fence instead of permitting a subsequent
+     * frame to consume its late callback and reuse DMA-owned scene memory. */
+    ESP_RETURN_ON_ERROR(round_display_adapter_wait_for_transfer_idle(),
+                        "echoear_display", "previous transfer still pending");
     while (xSemaphoreTake(s_echoear_display_transfer_done, 0) == pdTRUE) {}
     s_echoear_display_transfer_pending = true;
     esp_err_t err = esp_lcd_panel_draw_bitmap(s_echoear_display_panel,

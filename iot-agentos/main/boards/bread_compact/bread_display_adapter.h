@@ -185,8 +185,11 @@ static bool compact_display_adapter_color_transfer_done(
     (void)io;
     (void)event;
     BaseType_t task_woken = pdFALSE;
-    s_bread_display_transfer_pending = false;
     xSemaphoreGiveFromISR((SemaphoreHandle_t)user_ctx, &task_woken);
+    /* Publish the fence token before clearing pending.  An ISR cannot switch
+     * to a waiter until it returns, so a waiter that observes !pending cannot
+     * race ahead and leave this completion token stale for a later transfer. */
+    s_bread_display_transfer_pending = false;
     return task_woken == pdTRUE;
 }
 
@@ -331,6 +334,12 @@ static inline esp_err_t compact_display_adapter_draw_bitmap_sync(
     SemaphoreHandle_t transfer_done, int x0, int y0, int x1, int y1,
     const void *pixels) {
     if (!s_bread_display_panel || !transfer_done || !pixels) return ESP_ERR_INVALID_ARG;
+    /* A previous timeout leaves its source and completion record retained.
+     * Never queue a new transfer until that exact controller-owned source has
+     * completed: otherwise its delayed callback could satisfy the new wait
+     * and let the renderer reuse a framebuffer still read by SPI DMA. */
+    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(),
+                        "bread_display", "previous transfer still pending");
     while (xSemaphoreTake(transfer_done, 0) == pdTRUE) {}
     s_bread_display_transfer_pending = true;
     esp_err_t err = esp_lcd_panel_draw_bitmap(s_bread_display_panel,

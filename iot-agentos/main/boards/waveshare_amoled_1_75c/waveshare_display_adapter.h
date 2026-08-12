@@ -261,8 +261,11 @@ static bool round_display_adapter_color_transfer_done(
     (void)panel_io;
     (void)edata;
     BaseType_t task_woken = pdFALSE;
-    s_waveshare_display_transfer_pending = false;
     xSemaphoreGiveFromISR((SemaphoreHandle_t)user_ctx, &task_woken);
+    /* Publish the completion token while the ISR still owns execution, then
+     * mark idle.  This closes the token/pending race across a timeout and a
+     * later draw submission. */
+    s_waveshare_display_transfer_pending = false;
     return task_woken == pdTRUE;
 }
 
@@ -376,6 +379,10 @@ static esp_err_t round_display_adapter_draw_bitmap_sync(
     if (!s_waveshare_display_panel || !s_waveshare_display_transfer_done || !pixels) {
         return ESP_ERR_INVALID_STATE;
     }
+    /* A late CO5300 callback belongs to the old source buffer. Drain that
+     * exact transaction first; do not let it complete a newly queued frame. */
+    ESP_RETURN_ON_ERROR(round_display_adapter_wait_for_transfer_idle(),
+                        "waveshare_display", "previous transfer still pending");
     while (xSemaphoreTake(s_waveshare_display_transfer_done, 0) == pdTRUE) {}
     s_waveshare_display_transfer_pending = true;
     esp_err_t err = esp_lcd_panel_draw_bitmap(s_waveshare_display_panel,

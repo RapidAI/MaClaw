@@ -1883,6 +1883,7 @@ jobs:
             sdkconfig_defaults: sdkconfig.defaults
             firmware_name: MaClaw-ESP32S3-EchoEar-2ST-firmware
             profile: echoear-2st
+            extra_component_dirs: profile_components/echoear_deps
           - device: bread-compact
             firmware_board: bread-compact-wifi-lcd-v1
             layout_id: maclaw-s3-16m-factory-v2
@@ -1890,6 +1891,7 @@ jobs:
             sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.bread-compact
             firmware_name: MaClaw-ESP32S3-Bread-Compact-firmware
             profile: bread-compact
+            extra_component_dirs: ''
           - device: fangtang-4g
             firmware_board: fangtang-4g-v1
             layout_id: maclaw-s3-16m-factory-v2
@@ -1897,6 +1899,7 @@ jobs:
             sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.fangtang-4g
             firmware_name: MaClaw-ESP32S3-Fangtang-4G-firmware
             profile: fangtang-4g
+            extra_component_dirs: profile_components/fangtang_deps
           - device: waveshare-amoled-1.75c
             firmware_board: waveshare-s3-touch-amoled-1.75c-v1
             layout_id: maclaw-s3-32m-factory-v1
@@ -1904,6 +1907,7 @@ jobs:
             sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c
             firmware_name: MaClaw-ESP32S3-Waveshare-AMOLED-1.75C-firmware
             profile: waveshare-amoled-1.75c
+            extra_component_dirs: profile_components/waveshare_deps
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1921,6 +1925,8 @@ jobs:
           SDKCONFIG_DEFAULTS: ${{ matrix.sdkconfig_defaults }}
           FIRMWARE_NAME: ${{ matrix.firmware_name }}
           MACLAW_PROFILE: ${{ matrix.profile }}
+          EXTRA_COMPONENT_DIRS: ${{ matrix.extra_component_dirs }}
+          IDF_TARGET: esp32s3
           CLAWMATE_FIRMWARE_SIGNING_KEY: ${{ secrets.CLAWMATE_FIRMWARE_SIGNING_KEY }}
           CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
           CLAWMATE_FIRMWARE_PUBLIC_KEY: ${{ vars.CLAWMATE_FIRMWARE_PUBLIC_KEY }}
@@ -1943,6 +1949,8 @@ jobs:
             -e SDKCONFIG_DEFAULTS \
             -e FIRMWARE_NAME \
             -e MACLAW_PROFILE \
+            -e IDF_TARGET \
+            -e EXTRA_COMPONENT_DIRS \
             espressif/idf:v6.0.2 \
             bash -lc '
               set -euo pipefail
@@ -1951,11 +1959,24 @@ jobs:
               # ESP-IDF 6 declares it as a volatile typedef. Resolve managed
               # dependencies first, then apply the one-line IDF 6 compatibility
               # patch before compiling any board image.
-              idf.py -B "$build_dir" -D MACLAW_PROFILE="$MACLAW_PROFILE" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" reconfigure
-              header="managed_components/78__uart-uhci/include/uart_uhci.h"
-              grep -qx 'struct uhci_dev_t;' "$header" || grep -qx 'typedef volatile struct uhci_dev_s uhci_dev_t;' "$header"
-              sed -i 's/^struct uhci_dev_t;$/typedef volatile struct uhci_dev_s uhci_dev_t;/' "$header"
-              idf.py -B "$build_dir" -D MACLAW_PROFILE="$MACLAW_PROFILE" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" build
+              # Component Manager reads IDF_TARGET from the environment during
+              # its preliminary manifest-resolution pass, before SDKCONFIG_DEFAULTS
+              # is applied. Keep it exported into the container for S3-only drivers.
+              test "$IDF_TARGET" = esp32s3
+              idf.py -B "$build_dir" -D MACLAW_PROFILE="$MACLAW_PROFILE" -D EXTRA_COMPONENT_DIRS="$EXTRA_COMPONENT_DIRS" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" reconfigure
+              grep -qx "#define CONFIG_IDF_TARGET_ESP32S3 1" "$build_dir/config/sdkconfig.h"
+              if [ "$MACLAW_PROFILE" = fangtang-4g ]; then
+                test -f managed_components/78__esp_lcd_nv3023/CMakeLists.txt
+                test -f managed_components/78__esp-ml307/CMakeLists.txt
+                header="managed_components/78__uart-uhci/include/uart_uhci.h"
+                grep -qx 'struct uhci_dev_t;' "$header" || grep -qx 'typedef volatile struct uhci_dev_s uhci_dev_t;' "$header"
+                sed -i 's/^struct uhci_dev_t;$/typedef volatile struct uhci_dev_s uhci_dev_t;/' "$header"
+              fi
+              idf.py -B "$build_dir" -D MACLAW_PROFILE="$MACLAW_PROFILE" -D EXTRA_COMPONENT_DIRS="$EXTRA_COMPONENT_DIRS" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" build
+              if [ "$MACLAW_PROFILE" = fangtang-4g ]; then
+                test -f "$build_dir/esp-idf/78__esp_lcd_nv3023/lib78__esp_lcd_nv3023.a"
+                test -f "$build_dir/esp-idf/78__esp-ml307/lib78__esp-ml307.a"
+              fi
               # The desktop tool's nonce-bound IDENTIFY and BOOT_STATUS
               # protocol runs on the secondary USB Serial/JTAG console. Do
               # not publish an otherwise-valid image that cannot prove a

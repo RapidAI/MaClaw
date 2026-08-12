@@ -1,3 +1,9 @@
+# All release profiles in this project target the ESP32-S3.  In a clean CI
+# build ESP-IDF otherwise falls back to its generic ESP32 target before the
+# board-specific defaults are applied, which prevents S3-only components
+# (such as the Fangtang NV3023 display driver) from being resolved.
+CONFIG_IDF_TARGET="esp32s3"
+
 CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
 # ESP32-S3 Wi-Fi-only builds do not need the coexistence component.  Leaving
 # its implicit default enabled triggers an ESP-IDF 6.0.2 timer-ISR race after

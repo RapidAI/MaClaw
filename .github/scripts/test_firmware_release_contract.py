@@ -272,6 +272,27 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         for profile in ("echoear-2st", "bread-compact", "fangtang-4g", "waveshare-amoled-1.75c"):
             self.assertIn(f"profile: {profile}", firmware_job)
         self.assertIn('MACLAW_PROFILE: ${{ matrix.profile }}', firmware_job)
+        self.assertIn('IDF_TARGET: esp32s3', firmware_job)
+        self.assertIn('-e IDF_TARGET', firmware_job)
+        self.assertIn('test "$IDF_TARGET" = esp32s3', firmware_job)
+        for profile, directory in (
+            ("echoear-2st", "profile_components/echoear_deps"),
+            ("bread-compact", "''"),
+            ("fangtang-4g", "profile_components/fangtang_deps"),
+            ("waveshare-amoled-1.75c", "profile_components/waveshare_deps"),
+        ):
+            matrix = re.search(
+                rf"(?ms)^          - device: {re.escape(profile)}$.*?(?=^          - device:|^    steps:)",
+                firmware_job,
+            )
+            self.assertIsNotNone(matrix, f"workflow matrix lacks {profile}")
+            self.assertIn(f"extra_component_dirs: {directory}", matrix.group(0))
+        self.assertIn('EXTRA_COMPONENT_DIRS: ${{ matrix.extra_component_dirs }}', firmware_job)
+        self.assertIn('-e EXTRA_COMPONENT_DIRS', firmware_job)
+        self.assertIn('-D EXTRA_COMPONENT_DIRS="$EXTRA_COMPONENT_DIRS"', firmware_job)
+        self.assertIn('if [ "$MACLAW_PROFILE" = fangtang-4g ]; then', firmware_job)
+        self.assertIn('test -f managed_components/78__esp_lcd_nv3023/CMakeLists.txt', firmware_job)
+        self.assertIn('test -f managed_components/78__esp-ml307/CMakeLists.txt', firmware_job)
         self.assertIn('-D MACLAW_PROFILE="$MACLAW_PROFILE"', firmware_job)
 
     def test_firmware_workflow_passes_each_profile_flash_capacity_to_fwpack(self):

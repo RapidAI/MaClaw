@@ -237,8 +237,10 @@ static bool compact_display_adapter_color_transfer_done(
     (void)io;
     (void)event;
     BaseType_t task_woken = pdFALSE;
-    s_fangtang_display_transfer_pending = false;
     xSemaphoreGiveFromISR((SemaphoreHandle_t)user_ctx, &task_woken);
+    /* ISR completion token first: after a timeout, the next transfer must
+     * not mistake a delayed row completion for its own fence. */
+    s_fangtang_display_transfer_pending = false;
     return task_woken == pdTRUE;
 }
 
@@ -453,6 +455,11 @@ static inline esp_err_t compact_display_adapter_draw_bitmap_sync(
     if (!s_fangtang_display_io || !transfer_done || !pixels) {
         return ESP_ERR_INVALID_ARG;
     }
+    /* Do not overwrite the pending-row state after a timed-out fence.  The
+     * retained source remains controller-owned until this adapter observes
+     * its own completion, even though the shared renderer has moved on. */
+    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(),
+                        "fangtang_display", "previous transfer still pending");
     /* The shared renderer may reuse a framebuffer as soon as this call
      * returns.  Drain a stale completion token before the row-by-row writer
      * waits for every physical color transfer. */
