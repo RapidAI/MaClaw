@@ -34,7 +34,11 @@ static const round_display_layout_t s_echoear_round_display_layout = {
         .remote_pet_target = 220,
         .remote_pet_top = 72,
         .remote_pet_max_frames = 8,
-        .ambient_overlay_uses_psram = false,
+        /* The 90 KiB curved-text surface is submitted through the same
+         * DMA-capable PSRAM path as the two full-screen framebuffers.  Keeping
+         * it out of internal RAM leaves the boot-time DMA reserve available
+         * for audio, Wi-Fi and panel transactions. */
+        .ambient_overlay_uses_psram = true,
         .allows_optional_flash_work = true,
         .scene_reference_width = 360,
         .scene_reference_height = 360,

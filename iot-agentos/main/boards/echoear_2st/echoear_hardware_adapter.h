@@ -330,7 +330,7 @@ static uint16_t *round_display_adapter_allocate_framebuffer(size_t bytes) {
 
 static uint16_t *round_display_adapter_allocate_ambient_overlay(size_t bytes) {
     return heap_caps_malloc(bytes,
-                            MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
 }
 
 static void round_display_adapter_free_render_buffer(void *buffer) {
@@ -367,7 +367,7 @@ static BaseType_t round_display_adapter_start_pet_animation_task(
 }
 
 static const char *round_display_adapter_ambient_overlay_memory_name(void) {
-    return "internal DMA memory";
+    return "DMA PSRAM";
 }
 
 /* The adapter owns the panel completion fence because its callback lifetime,

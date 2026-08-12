@@ -44,6 +44,7 @@ device_status_t display_service_deinit(uint32_t timeout_ms);
 /* Private test-build rendezvous: when the configured busy-request seam is
  * enabled, waits until Display Task is executing that request. Production
  * configs return success immediately and expose no control surface. */
+bool display_service_start_test_request(void);
 bool display_service_wait_for_test_request_start(uint32_t timeout_ms);
 bool display_service_get_snapshot(display_service_snapshot_t *out_snapshot);
 

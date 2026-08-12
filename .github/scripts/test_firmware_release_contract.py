@@ -354,7 +354,7 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         desktop_job = workflow[workflow.index("  build-clawmate-maker:") : workflow.index("  # ============================================================\n  # Release:")]
         verify = "Verify signed managed sidecar against desktop release trust root"
         self.assertIn(verify, desktop_job)
-        self.assertIn("go run ./tools/sidecarverify", desktop_job)
+        self.assertIn("go -C ClawMateMaker run ./tools/sidecarverify", desktop_job)
         self.assertLess(desktop_job.index(verify), desktop_job.index("- name: Package desktop flasher"))
 
     def test_desktop_distribution_tests_the_embedded_trust_boundary(self):

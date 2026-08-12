@@ -133,7 +133,6 @@ static bool display_service_wait_for_stop(TickType_t started, TickType_t budget)
 static esp_err_t display_service_registry_stop(void *context, uint32_t timeout_ms);
 static void display_service_test_secondary_stopper_task(void *unused);
 static bool display_service_start_test_secondary_stopper(void);
-static bool display_service_start_test_request(void);
 static bool display_service_submit(display_service_request_t *request,
                                    bool mutates_scene);
 
@@ -227,7 +226,7 @@ static bool display_service_start_test_secondary_stopper(void) {
     return true;
 }
 
-static bool display_service_start_test_request(void) {
+bool display_service_start_test_request(void) {
     if (!provisioning_failure_injection_display_service_request_delay_enabled()) return true;
     s_display_service_test_request = (display_service_request_t){
         .kind = DISPLAY_REQUEST_SHOW_STARTUP,
@@ -379,8 +378,7 @@ bool display_service_init(void) {
     if (!task) s_initialization_failed = true;
     s_initializing = false;
     taskEXIT_CRITICAL(&s_display_service_state_lock);
-    return task != NULL && display_service_start_test_request() &&
-           display_service_start_test_secondary_stopper();
+    return task != NULL && display_service_start_test_secondary_stopper();
 }
 
 bool display_service_wait_for_test_request_start(uint32_t timeout_ms) {

@@ -12359,7 +12359,8 @@ void app_main(void) {
      * renderer remains boot-lifetime; this only owns service-side ordering. */
     if (!display_service_init()) goto startup_core_no_memory;
     if (provisioning_failure_injection_display_service_fail_after_init()) {
-        if (!display_service_wait_for_test_request_start(3000)) {
+        if (!display_service_start_test_request() ||
+            !display_service_wait_for_test_request_start(3000)) {
             ESP_LOGE(TAG, "display service test request did not start");
             goto startup_core_no_memory;
         }
