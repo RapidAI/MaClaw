@@ -256,7 +256,7 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         desktop_job = workflow[workflow.index("  build-clawmate-maker:") : workflow.index("  # ============================================================\n  # Release:")]
         release_job = workflow[workflow.index("  release:") :]
         self.assertIn("environment: firmware-release", firmware_job)
-        self.assertIn("github.ref_type == 'tag'", firmware_job)
+        self.assertIn("if: false", firmware_job)
         self.assertIn("if: github.ref_type == 'tag'", desktop_job)
         self.assertIn("environment: firmware-release", release_job)
         self.assertIn("if: github.ref_type == 'tag'", release_job)
@@ -268,7 +268,7 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         release_job = workflow[workflow.index("  release:") :]
 
         self.assertIn("ESP32_FIRMWARE_ENABLED: 'false'", workflow)
-        self.assertIn("if: ${{ github.ref_type == 'tag' && false }}", firmware_job)
+        self.assertIn("if: false", firmware_job)
         self.assertNotIn("needs: [build-esp32-firmware]", desktop_job)
         self.assertNotIn("build-esp32-firmware", release_job.split("runs-on:", 1)[0])
         self.assertIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", release_job)
