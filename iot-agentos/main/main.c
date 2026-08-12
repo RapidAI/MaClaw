@@ -112,10 +112,6 @@
 #define MEETING_RESUME_RETRY_INITIAL_MS 5000
 #define MEETING_RESUME_RETRY_MAX_MS 300000
 #define SETUP_AP_IP_ADDR "192.168.4.1"
-/* DHCP option 114 identifies a Captive Portal API (RFC 8910/RFC 8908), not
- * the human-facing login form itself.  Clients which understand the option
- * fetch this endpoint and receive the form URL below. */
-#define SETUP_CAPTIVE_PORTAL_URI "http://192.168.4.1/captive-portal/api"
 #define DNS_PORT 53
 #define DNS_PACKET_CAPACITY 512
 #define DHCPS_OFFER_DNS 0x02
@@ -147,9 +143,6 @@
 #define MEETING_RECORDING_ID_CAPACITY 96
 
 static const char *TAG = "maclaw_client";
-// ESP-IDF DHCP server retains this pointer for the duration of the AP. Keep
-// it static: a stack buffer would become invalid after portal startup returns.
-static const char s_setup_captive_portal_uri[] = SETUP_CAPTIVE_PORTAL_URI;
 static int64_t s_cursor;
 static char s_boot_session_id[33];
 static char s_gateway_token[96];
@@ -9542,27 +9535,16 @@ static esp_err_t configure_setup_ap_ip(void) {
     esp_err_t dns_err = dns_offer_err == ESP_OK
                             ? esp_netif_set_dns_info(s_setup_ap_netif, ESP_NETIF_DNS_MAIN, &dns)
                             : dns_offer_err;
-    // DHCP option 114 is the standards-based captive-portal signal used by
-    // recent Android and iOS releases. DNS interception remains necessary for
-    // older clients and for Windows.
-    esp_err_t portal_uri_err = dns_err == ESP_OK
-                                   ? esp_netif_dhcps_option(s_setup_ap_netif, ESP_NETIF_OP_SET,
-                                                            ESP_NETIF_CAPTIVEPORTAL_URI,
-                                                            (void *)s_setup_captive_portal_uri,
-                                                            sizeof(s_setup_captive_portal_uri))
-                                   : dns_err;
     esp_err_t start_err = esp_netif_dhcps_start(s_setup_ap_netif);
-    if (ip_err != ESP_OK || dns_err != ESP_OK || portal_uri_err != ESP_OK ||
+    if (ip_err != ESP_OK || dns_err != ESP_OK ||
         (start_err != ESP_OK && start_err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED)) {
-        ESP_LOGW(TAG, "cannot configure setup DHCP server: ip=%s dns=%s portal=%s start=%s",
-                 esp_err_to_name(ip_err), esp_err_to_name(dns_err),
-                 esp_err_to_name(portal_uri_err), esp_err_to_name(start_err));
+        ESP_LOGW(TAG, "cannot configure setup DHCP server: ip=%s dns=%s start=%s",
+                 esp_err_to_name(ip_err), esp_err_to_name(dns_err), esp_err_to_name(start_err));
         if (ip_err != ESP_OK) return ip_err;
         if (dns_err != ESP_OK) return dns_err;
-        if (portal_uri_err != ESP_OK) return portal_uri_err;
         return start_err;
     } else {
-        ESP_LOGI(TAG, "setup DHCP advertises gateway/DNS/portal=%s", SETUP_CAPTIVE_PORTAL_URI);
+        ESP_LOGI(TAG, "setup DHCP advertises gateway/DNS=%s", SETUP_AP_IP_ADDR);
     }
     return ESP_OK;
 }
@@ -9628,58 +9610,18 @@ static void dns_server_task(void *arg) {
             packet[4] != 0 || packet[5] != 1) {
             continue;
         }
-        // Locate the end of the first question. The answer MUST be appended
-        // immediately after the question section: modern phones attach an EDNS
-        // OPT record (ARCOUNT=1) to their queries, and replying after those
-        // trailing bytes makes resolvers parse the OPT record as the answer,
-        // so the captive-probe hostname never resolves and no portal pops up.
-        size_t question_end = 12;
-        while (question_end < (size_t)received && packet[question_end] != 0) {
-            const uint8_t label_len = packet[question_end];
-            // DNS labels are limited to 63 octets.  The two high bits encode
-            // compression/reserved forms, which this one-question responder
-            // deliberately does not accept in client queries.
-            if (label_len > 63 ||
-                question_end + 1u + label_len >= (size_t)received) {
-                question_end = 0;
-                break;
-            }
-            question_end += 1u + label_len;
-        }
-        if (question_end == 0 || question_end + 5u > (size_t)received) continue;
-        question_end += 5; // root label + QTYPE + QCLASS
-        // The A answer is appended below.  Check against the received DNS
-        // message as well as the backing array: a short datagram with a valid
-        // question must not be expanded in place to an answer beyond its
-        // original payload length.
-        if (question_end + 16u > (size_t)received ||
-            question_end + 16u > sizeof(packet)) continue;
-        // Keep the high-frequency captive probes at debug level. Logging every
-        // DNS query at INFO can starve the small serial/log path just as a
-        // phone is issuing parallel A, AAAA and HTTPS checks.
-        ESP_LOGD(TAG, "captive DNS query received");
-        // The packet always carries an IPv4 A record.  Return a syntactically
-        // valid negative reply for unsupported question types instead of
-        // claiming an A answer to an AAAA/HTTPS query; several current mobile
-        // resolvers reject that type mismatch and never send the HTTP probe.
-        const uint16_t qtype = ((uint16_t)packet[question_end - 4] << 8) |
-                               packet[question_end - 3];
-        const uint16_t qclass = ((uint16_t)packet[question_end - 2] << 8) |
-                                packet[question_end - 1];
-        // Mark the answer authoritative. This is not a recursive resolver,
-        // so clear the incoming CD/Z/RCODE bits and never advertise RA.
-        packet[2] = (packet[2] & 0x01) | 0x84;
-        packet[3] = 0;
-        packet[4] = 0; packet[5] = 1;   // the reply carries the first question only
-        packet[6] = 0; packet[7] = qtype == 1 && qclass == 1 ? 1 : 0;
-        packet[8] = 0; packet[9] = 0;
-        packet[10] = 0; packet[11] = 0; // drop any additional (EDNS) records
-        size_t cursor = question_end;
-        if (qtype != 1 || qclass != 1) {
-            (void)sendto(socket_fd, packet, cursor, 0,
-                         (struct sockaddr *)&source, source_len);
-            continue;
-        }
+        /* Keep this wire behavior identical to Waveshare's official
+         * esp-wifi-connect component: turn every one-question DNS query into
+         * a one-record response and append the SoftAP A record to the original
+         * datagram.  In particular, do not discard AAAA/HTTPS preflights: some
+         * Android/iOS captive detectors only issue their HTTP request after
+         * this deliberately permissive answer. */
+        if ((size_t)received + 16u > sizeof(packet)) continue;
+        packet[2] |= 0x80;  // response
+        packet[3] |= 0x80;  // recursion available
+        packet[6] = 0;
+        packet[7] = 1;
+        size_t cursor = (size_t)received;
         packet[cursor++] = 0xC0; packet[cursor++] = 0x0C; // answer name = question name
         packet[cursor++] = 0; packet[cursor++] = 1;        // A
         packet[cursor++] = 0; packet[cursor++] = 1;        // IN
@@ -9877,9 +9819,19 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
         return httpd_resp_send(req, pairing_page, HTTPD_RESP_USE_STRLEN);
     }
     if (!s_setup_options_mutex ||
-        xSemaphoreTake(s_setup_options_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "Wi-Fi scan is in progress; please retry.");
+        xSemaphoreTake(s_setup_options_mutex, 0) != pdTRUE) {
+        /* The first AP scan can take several seconds.  The portal must remain
+         * an HTTP success during that window: captive-network webviews often
+         * treat a 503 from the redirect target as a failed portal and do not
+         * retry it.  Serve a tiny, self-refreshing document instead; this
+         * lets the automatic pop-up stay open until the scan has populated
+         * the form. */
+        static const char scanning_page[] =
+            "<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<meta http-equiv=refresh content='2'><title>Preparing Wi-Fi setup</title></head>"
+            "<body><p>Searching for Wi-Fi networks…</p></body></html>";
+        httpd_resp_set_hdr(req, "Retry-After", "2");
+        return httpd_resp_send(req, scanning_page, HTTPD_RESP_USE_STRLEN);
     }
     char query[32] = {0};
     bool scan_failed = httpd_req_get_url_query_len(req) < sizeof(query) &&
@@ -9915,8 +9867,16 @@ static esp_err_t captive_redirect_handler(httpd_req_t *req) {
     // the portal on constrained boards; enable debug logging when diagnosing
     // a particular phone/OS instead.
     ESP_LOGD(TAG, "captive probe: %s", req->uri);
+    /* Match esp-wifi-connect's cache-busting redirect. Some captive-network
+     * assistants cache the first probe redirect; a unique root URL makes the
+     * assistant fetch the configuration document instead of reusing it. */
+    char location[64];
+    int location_len = snprintf(location, sizeof(location),
+                                "http://" SETUP_AP_IP_ADDR "/?_%lld",
+                                (long long)esp_timer_get_time());
+    if (location_len < 0 || location_len >= (int)sizeof(location)) return ESP_FAIL;
     httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "http://" SETUP_AP_IP_ADDR "/");
+    httpd_resp_set_hdr(req, "Location", location);
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     // Probe clients do not need a persistent HTTP connection. Closing it makes
@@ -9924,22 +9884,6 @@ static esp_err_t captive_redirect_handler(httpd_req_t *req) {
     // by Android, iOS and Windows.
     httpd_resp_set_hdr(req, "Connection", "close");
     return httpd_resp_send(req, NULL, 0);
-}
-
-/* RFC 8908 Captive Portal API response for the DHCP option-114 URI.  Keeping
- * this distinct from the form is important: compliant clients parse JSON here
- * and use user-portal-url to open their captive-network surface. */
-static esp_err_t captive_portal_api_handler(httpd_req_t *req) {
-    if (!setup_portal_http_admission_open()) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        httpd_resp_set_hdr(req, "Connection", "close");
-        return httpd_resp_sendstr(req, "Setup portal is stopping.");
-    }
-    httpd_resp_set_type(req, "application/captive+json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_set_hdr(req, "Connection", "close");
-    return httpd_resp_sendstr(req,
-        "{\"captive\":true,\"user-portal-url\":\"http://" SETUP_AP_IP_ADDR "/\"}");
 }
 
 static esp_err_t setup_refresh_handler(httpd_req_t *req) {
@@ -10797,22 +10741,18 @@ static void start_setup_portal_locked(bool keep_station) {
         app_ui_show_text("设置热点失败", "请重启后再试");
         return;
     }
-    // Build the choice list before serving the form.  The scan is performed
-    // only once per portal entry, keeping the SoftAP responsive while the
-    // phone completes captive-portal checks.
-    if (!cellular_pairing_ap_only) refresh_setup_ssid_options();
     httpd_config_t server_config = HTTPD_DEFAULT_CONFIG();
     // ESP-SR consumes a meaningful part of internal RAM. IDF 6 needs more than
     // the default 4 KB while serving the setup form. This task must remain in
     // internal RAM because the handler writes NVS and flash operations disable
     // the external-RAM cache while checking the current task stack.
     server_config.stack_size = 6144;
-    // Fourteen platform-specific captive-check endpoints plus the RFC 8908
-    // API, exact root, refresh, GET redirect fallback, POST /save and POST
+    // Waveshare's official esp-wifi-connect captive-check endpoints, plus the
+    // application routes for the form, refresh and save/delete actions.
     // /delete. iOS, Android, Windows and Firefox vary by OS version, carrier
     // and whether they are retrying a prior probe.
     // This capacity is checked when routes are registered at runtime.
-    server_config.max_uri_handlers = 25;
+    server_config.max_uri_handlers = 24;
     // Captive checks are usually parallel.  Keep enough connections for their
     // redirects and the portal web view to coexist; otherwise a probe can
     // occupy the tiny server while the OS decides the hotspot has no portal.
@@ -10858,7 +10798,6 @@ static void start_setup_portal_locked(bool keep_station) {
     httpd_uri_t firefox_connectivity = {.uri = "/connectivity-check.html", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t generic_success = {.uri = "/success.txt", .method = HTTP_GET, .handler = captive_redirect_handler};
     httpd_uri_t generic_portal = {.uri = "/portal.html", .method = HTTP_GET, .handler = captive_redirect_handler};
-    httpd_uri_t captive_portal_api = {.uri = "/captive-portal/api", .method = HTTP_GET, .handler = captive_portal_api_handler};
     // ESP-IDF wildcard matching treats "/*" as paths with a slash after the
     // root; register the exact root separately so a direct 192.168.4.1 request
     // and the redirect target never depend on wildcard edge-case behaviour.
@@ -10883,7 +10822,6 @@ static void start_setup_portal_locked(bool keep_station) {
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &firefox_connectivity);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &generic_success);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &generic_portal);
-    if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &captive_portal_api);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &root);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &refresh);
     if (portal_err == ESP_OK) portal_err = httpd_register_uri_handler(s_setup_server, &captive);
@@ -10897,6 +10835,12 @@ static void start_setup_portal_locked(bool keep_station) {
         return;
     }
     set_setup_portal_http_admission(true);
+    /* Do the first scan only after the HTTP routes are live. A phone can
+     * associate and issue its captive probes as soon as the AP starts; doing a
+     * blocking scan before httpd_start() makes that first probe fail and can
+     * suppress the automatic configuration pop-up. The root handler returns a
+     * self-refreshing waiting page while this scan owns the list mutex. */
+    if (!cellular_pairing_ap_only) refresh_setup_ssid_options();
     if (device_connectivity_is_pairing_recovery_provisioning()) {
         app_ui_show_text("设备配对设置", ap_ssid);
     } else {
@@ -12414,6 +12358,12 @@ void app_main(void) {
      * can restore brightness or publish its startup/ambient scene. The board
      * renderer remains boot-lifetime; this only owns service-side ordering. */
     if (!display_service_init()) goto startup_core_no_memory;
+    if (provisioning_failure_injection_display_service_fail_after_init()) {
+        ESP_LOGW(TAG, "forcing startup failure after Display Service publication (test injection)");
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               DEVICE_STATUS_INTERNAL_ERROR, "display service test injection");
+        return;
+    }
     app_ui_init();
     s_startup_ui_initialized = true;
     device_status_t input_status = app_intent_service_start(on_app_intent, NULL);

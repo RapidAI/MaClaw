@@ -210,6 +210,8 @@ type windowsFloatingWindow struct {
 	petMotionSoundRequested bool
 	petMotionSound          bool
 	lastPetSoundBucket      int
+	lastPetSoundAt          time.Time
+	soundGeneration         uint64
 	petQuietMode            bool
 	petInteractionMode      string
 	petSkin                 string
@@ -401,6 +403,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petMotionSoundRequested = petMotionSound
 	w.petMotionSound = petMotionSound && !petReducedMotion && !petQuietMode
 	w.lastPetSoundBucket = 0
+	w.lastPetSoundAt = time.Time{}
 	w.petQuietMode = petQuietMode
 	w.petReducedMotion = petReducedMotion
 	w.petInteractionMode = petInteractionMode
@@ -579,6 +582,7 @@ func (w *windowsFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset stri
 	w.petMotionSoundRequested = soundEnabled
 	w.petMotionSound = effectiveSoundEnabled
 	w.petSoundPreset = preset
+	w.soundGeneration++
 	w.renderDirty = true
 	w.motionConfigRevision++
 	revision := w.motionConfigRevision
@@ -619,6 +623,7 @@ func (w *windowsFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reduced
 		w.petVariant = variant
 	}
 	w.petMotionSound = w.petMotionSoundRequested && !reducedMotion && !quiet
+	w.soundGeneration++
 	w.renderDirty = true
 	skinForMotion := w.petSkin
 	interactionForMotion := w.petInteractionMode
@@ -1640,7 +1645,7 @@ func (w *windowsFloatingWindow) evictPetFrameCacheCycleLocked(incoming petFrameC
 	}
 }
 
-func playPetMotionSound(interactionMode, skin, preset string, packPitch float64) {
+func (w *windowsFloatingWindow) playPetMotionSound(interactionMode, skin, preset string, packPitch float64, generation uint64) {
 	go func() {
 		if interactionMode == "quiet" {
 			return
@@ -1652,26 +1657,24 @@ func playPetMotionSound(interactionMode, skin, preset string, packPitch float64)
 			hz uintptr
 			ms uintptr
 		}
-		// Preset-driven tones (user wins). Skin-specific tables removed for pack-driven pitch.
-		toneSet := []petTone{{620, 28}, {930, 34}}
+		// Keep pet feedback delicate: short, high-register tones avoid the low
+		// notes that can resonate through desktop speakers/headphones.
+		toneSet := []petTone{{1175, 18}, {1397, 24}}
 		switch preset {
 		case "bubble":
-			toneSet = []petTone{{560, 22}, {860, 28}, {1040, 18}}
+			toneSet = []petTone{{1319, 16}, {1568, 18}, {1760, 14}}
 		case "chime":
-			toneSet = []petTone{{880, 40}, {1320, 52}}
+			toneSet = []petTone{{1568, 24}, {1865, 30}}
 		case "synth":
-			toneSet = []petTone{{640, 22}, {480, 26}, {760, 18}}
+			toneSet = []petTone{{1397, 16}, {1661, 18}, {1976, 14}}
 		case "soft":
-			toneSet = []petTone{{392, 42}, {588, 48}}
+			toneSet = []petTone{{1047, 24}, {1319, 30}}
 		}
-		pitch := eff.Pitch
-		if pitch <= 0 {
-			pitch = 1
-		}
+		pitch := math.Max(0.88, math.Min(eff.Pitch, 1.12))
 		if interactionMode == "active" {
 			pitch *= 1.12
 		}
-		// Mild skin pitch hint only when pack pitch is default
+		// Mild skin pitch hint only when pack pitch is default.
 		if eff.Pitch == 1 {
 			switch skin {
 			case "mini-claw":
@@ -1682,8 +1685,18 @@ func playPetMotionSound(interactionMode, skin, preset string, packPitch float64)
 				pitch *= 0.85
 			}
 		}
-		for _, tone := range toneSet {
-			procBeep.Call(uintptr(float64(tone.hz)*pitch), tone.ms)
+		for index, tone := range toneSet {
+			w.mu.Lock()
+			stillCurrent := w.petMotionSound && !w.petQuietMode && !w.petReducedMotion && w.soundGeneration == generation
+			w.mu.Unlock()
+			if !stillCurrent {
+				return
+			}
+			frequency := math.Max(900, math.Min(float64(tone.hz)*pitch, 2200))
+			procBeep.Call(uintptr(frequency), tone.ms)
+			if index+1 < len(toneSet) {
+				time.Sleep(12 * time.Millisecond)
+			}
 		}
 	}()
 }
@@ -1709,7 +1722,11 @@ func (w *windowsFloatingWindow) renderFrame() {
 		bucket := int(math.Floor(w.haloPhase/(2*math.Pi)*4)) % 4
 		if bucket != w.lastPetSoundBucket {
 			w.lastPetSoundBucket = bucket
-			playPetSound = bucket == 0 || (w.petInteractionMode == "active" && bucket == 2)
+			candidate := bucket == 0 || (w.petInteractionMode == "active" && bucket == 2)
+			if candidate && time.Since(w.lastPetSoundAt) >= 1600*time.Millisecond {
+				w.lastPetSoundAt = time.Now()
+				playPetSound = true
+			}
 		}
 	}
 	petQuietMode := w.petQuietMode
@@ -1721,6 +1738,7 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petStateChangedAt := w.petStateChangedAt
 	petMotionAmplitude := w.petMotionAmplitude
 	petSoundPreset := w.petSoundPreset
+	soundGeneration := w.soundGeneration
 	packPitch := w.packPitch
 	if packPitch <= 0 {
 		packPitch = 1
@@ -1758,7 +1776,7 @@ func (w *windowsFloatingWindow) renderFrame() {
 		w.triggerCharacterEvent("long_idle")
 	}
 	if playPetSound && !petReducedMotion {
-		playPetMotionSound(petInteractionMode, petSkin, petSoundPreset, packPitch)
+		w.playPetMotionSound(petInteractionMode, petSkin, petSoundPreset, packPitch, soundGeneration)
 	}
 
 	if hwnd == 0 || base == nil || distMap == nil {

@@ -201,12 +201,28 @@ func binaryScalar(code binOp, out, a []float32, s float32, scalarLeft bool) {
 	if !scalarLeft {
 		switch code {
 		case bAdd:
+			if len(out) < parThreshold {
+				vek32.AddNumber_Into(out, a, s)
+				return
+			}
 			parallelChunks(len(out), func(st, e int) { vek32.AddNumber_Into(out[st:e], a[st:e], s) })
 		case bSub:
+			if len(out) < parThreshold {
+				vek32.SubNumber_Into(out, a, s)
+				return
+			}
 			parallelChunks(len(out), func(st, e int) { vek32.SubNumber_Into(out[st:e], a[st:e], s) })
 		case bMul:
+			if len(out) < parThreshold {
+				vek32.MulNumber_Into(out, a, s)
+				return
+			}
 			parallelChunks(len(out), func(st, e int) { vek32.MulNumber_Into(out[st:e], a[st:e], s) })
 		case bDiv:
+			if len(out) < parThreshold {
+				vek32.DivNumber_Into(out, a, s)
+				return
+			}
 			parallelChunks(len(out), func(st, e int) { vek32.DivNumber_Into(out[st:e], a[st:e], s) })
 		case bPow:
 			switch s {
@@ -323,7 +339,10 @@ func broadcastRows(code binOp, out, af, bf []float32, aShape, bShape, outShape [
 	rows := numElements(outShape[:last])
 	outerShape := outShape[:last]
 
-	// rowWorker processes rows [r0, r1).
+	// rowWorker processes rows [r0, r1). Keep the common single-worker path
+	// allocation-free: the former closure allocated an index slice for every
+	// broadcast op, which is especially costly across PP-OCR's many affine
+	// Mul/Add layers. Only the parallel path needs an arbitrary start index.
 	rowWorker := func(r0, r1 int) {
 		idx := make([]int, len(outerShape))
 		// initialize multi-index and offsets for row r0
@@ -337,36 +356,94 @@ func broadcastRows(code binOp, out, af, bf []float32, aShape, bShape, outShape [
 			aOff += idx[d] * sa[d]
 			bOff += idx[d] * sb[d]
 		}
-		for r := r0; r < r1; r++ {
-			dst := out[r*L : (r+1)*L]
-			switch {
-			case saL == 1 && sbL == 1:
-				binaryVec(code, dst, af[aOff:aOff+L], bf[bOff:bOff+L])
-			case sbL == 0:
-				binaryScalar(code, dst, af[aOff:aOff+L], bf[bOff], false)
-			default: // saL == 0
-				binaryScalar(code, dst, bf[bOff:bOff+L], af[aOff], true)
-			}
-			// advance multi-index
-			for d := len(outerShape) - 1; d >= 0; d-- {
-				idx[d]++
-				aOff += sa[d]
-				bOff += sb[d]
-				if idx[d] < outerShape[d] {
-					break
-				}
-				idx[d] = 0
-				aOff -= sa[d] * outerShape[d]
-				bOff -= sb[d] * outerShape[d]
-			}
-		}
+		broadcastRowsRange(code, out, af, bf, outerShape, sa, sb, L, r0, r1, idx, aOff, bOff)
 	}
 	if rows >= 4 && rows*L >= parThreshold {
 		// rowWorker calls binaryVec/parallelChunks (pool): use plain
 		// goroutines for the outer level to avoid nested pool submission.
 		parallelOuter(rows, rowWorker)
-	} else {
-		rowWorker(0, rows)
+		return
+	}
+	// With r0=0, all broadcast offsets start at zero. Avoid constructing the
+	// per-dimension index vector entirely; advance offsets via a mixed-radix
+	// counter represented by the row number instead.
+	broadcastRowsSerial(code, out, af, bf, outerShape, sa, sb, L, rows)
+}
+
+func broadcastRowsRange(code binOp, out, af, bf []float32, outerShape, sa, sb []int, L, r0, r1 int, idx []int, aOff, bOff int) {
+	for r := r0; r < r1; r++ {
+		dst := out[r*L : (r+1)*L]
+		switch {
+		case sa[len(sa)-1] == 1 && sb[len(sb)-1] == 1:
+			binaryVec(code, dst, af[aOff:aOff+L], bf[bOff:bOff+L])
+		case sb[len(sb)-1] == 0:
+			binaryScalar(code, dst, af[aOff:aOff+L], bf[bOff], false)
+		default: // saL == 0
+			binaryScalar(code, dst, bf[bOff:bOff+L], af[aOff], true)
+		}
+		// advance multi-index
+		for d := len(outerShape) - 1; d >= 0; d-- {
+			idx[d]++
+			aOff += sa[d]
+			bOff += sb[d]
+			if idx[d] < outerShape[d] {
+				break
+			}
+			idx[d] = 0
+			aOff -= sa[d] * outerShape[d]
+			bOff -= sb[d] * outerShape[d]
+		}
+	}
+}
+
+// broadcastRowsSerial is the allocation-free row walk used for normal
+// single-core inference. PP-OCR's broadcast tensors have at most four outer
+// dimensions; retain their mixed-radix index in a small stack array so each
+// row advances with adds rather than recomputing coordinates via division.
+func broadcastRowsSerial(code binOp, out, af, bf []float32, outerShape, sa, sb []int, L, rows int) {
+	saL, sbL := sa[len(sa)-1], sb[len(sb)-1]
+	if len(outerShape) > 8 {
+		// Unusual high-rank tensors retain the general allocation-free math
+		// fallback. Models in the OCR path take the fast counter route below.
+		for r := 0; r < rows; r++ {
+			aOff, bOff := 0, 0
+			rem := r
+			for d := len(outerShape) - 1; d >= 0; d-- {
+				v := rem % outerShape[d]
+				rem /= outerShape[d]
+				aOff += v * sa[d]
+				bOff += v * sb[d]
+			}
+			broadcastRow(code, out[r*L:(r+1)*L], af, bf, aOff, bOff, L, saL, sbL)
+		}
+		return
+	}
+	var idx [8]int
+	aOff, bOff := 0, 0
+	for r := 0; r < rows; r++ {
+		broadcastRow(code, out[r*L:(r+1)*L], af, bf, aOff, bOff, L, saL, sbL)
+		for d := len(outerShape) - 1; d >= 0; d-- {
+			idx[d]++
+			aOff += sa[d]
+			bOff += sb[d]
+			if idx[d] < outerShape[d] {
+				break
+			}
+			idx[d] = 0
+			aOff -= sa[d] * outerShape[d]
+			bOff -= sb[d] * outerShape[d]
+		}
+	}
+}
+
+func broadcastRow(code binOp, dst, af, bf []float32, aOff, bOff, L, saL, sbL int) {
+	switch {
+	case saL == 1 && sbL == 1:
+		binaryVec(code, dst, af[aOff:aOff+L], bf[bOff:bOff+L])
+	case sbL == 0:
+		binaryScalar(code, dst, af[aOff:aOff+L], bf[bOff], false)
+	default:
+		binaryScalar(code, dst, bf[bOff:bOff+L], af[aOff], true)
 	}
 }
 

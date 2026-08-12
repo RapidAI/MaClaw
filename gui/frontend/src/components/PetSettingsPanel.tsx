@@ -167,11 +167,26 @@ function optionAriaLabel(label: string, description: string): string {
     return `${label}: ${description}`;
 }
 
+let activeMotionSoundPresetPreview: (() => void) | undefined;
+
+function stopActiveMotionSoundPresetPreview(): void {
+    const stop = activeMotionSoundPresetPreview;
+    activeMotionSoundPresetPreview = undefined;
+    stop?.();
+}
+
 function playMotionSoundPresetPreview(preset: MotionSoundPreset): void {
+    // A new preset selection is a replacement, not a layer: overlapping Web
+    // Audio previews can add back the harshness this control is meant to avoid.
+    stopActiveMotionSoundPresetPreview();
     try {
         const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
         if (!AudioContextCtor) return;
         const ctx = new AudioContextCtor();
+        // Chromium can create a suspended context even from a settings interaction.
+        // Resume explicitly so a selected preview is audible instead of silently
+        // leaving an allocated graph behind.
+        void ctx.resume?.().catch(() => undefined);
         const now = ctx.currentTime;
         const compressor = ctx.createDynamicsCompressor();
         compressor.threshold.setValueAtTime(-26, now);
@@ -182,34 +197,51 @@ function playMotionSoundPresetPreview(preset: MotionSoundPreset): void {
         compressor.connect(ctx.destination);
 
         const filter = ctx.createBiquadFilter();
-        filter.type = preset === 'soft' ? 'lowpass' : 'bandpass';
-        filter.frequency.setValueAtTime(preset === 'chime' ? 3600 : preset === 'synth' ? 1600 : preset === 'soft' ? 1200 : 2600, now);
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(preset === 'chime' ? 2400 : preset === 'synth' ? 2200 : preset === 'soft' ? 1700 : 2000, now);
         filter.Q.setValueAtTime(preset === 'bubble' ? 0.45 : 0.72, now);
+        filter.frequency.exponentialRampToValueAtTime(preset === 'chime' ? 1700 : preset === 'soft' ? 1300 : 1500, now + 0.18);
         filter.connect(compressor);
 
         const output = ctx.createGain();
         output.gain.setValueAtTime(0.0001, now);
-        output.gain.exponentialRampToValueAtTime(preset === 'soft' ? 0.012 : preset === 'chime' ? 0.016 : 0.018, now + 0.018);
-        output.gain.exponentialRampToValueAtTime(0.0001, now + (preset === 'soft' || preset === 'chime' ? 0.28 : 0.2));
+        output.gain.exponentialRampToValueAtTime(preset === 'soft' ? 0.008 : preset === 'chime' ? 0.011 : 0.01, now + 0.018);
+        output.gain.exponentialRampToValueAtTime(0.0001, now + (preset === 'soft' || preset === 'chime' ? 0.22 : 0.16));
         output.connect(filter);
 
         const delay = ctx.createDelay(0.12);
         const delayGain = ctx.createGain();
-        delay.delayTime.setValueAtTime(preset === 'chime' ? 0.058 : preset === 'soft' ? 0.048 : 0.032, now);
-        delayGain.gain.setValueAtTime(preset === 'chime' ? 0.12 : preset === 'soft' ? 0.06 : 0.04, now);
+        delay.delayTime.setValueAtTime(preset === 'chime' ? 0.052 : preset === 'soft' ? 0.044 : 0.03, now);
+        delayGain.gain.setValueAtTime(preset === 'chime' ? 0.07 : preset === 'soft' ? 0.035 : 0.025, now);
         output.connect(delay);
         delay.connect(delayGain);
         delayGain.connect(filter);
 
+        let closed = false;
+        const close = () => {
+            if (closed) return;
+            closed = true;
+            if (activeMotionSoundPresetPreview === close) {
+                activeMotionSoundPresetPreview = undefined;
+            }
+            output.disconnect();
+            delay.disconnect();
+            delayGain.disconnect();
+            filter.disconnect();
+            compressor.disconnect();
+            void ctx.close().catch(() => undefined);
+        };
+        activeMotionSoundPresetPreview = close;
+
         const tones: Array<[number, number, OscillatorType]> = preset === 'bubble'
-            ? [[560, 0, 'sine'], [860, 0.048, 'triangle']]
+            ? [[1319, 0, 'sine'], [1568, 0.036, 'sine'], [1760, 0.072, 'sine']]
             : preset === 'chime'
-                ? [[880, 0, 'sine'], [1320, 0.07, 'sine']]
+                ? [[1568, 0, 'sine'], [1865, 0.052, 'sine']]
                 : preset === 'synth'
-                    ? [[640, 0, 'square'], [480, 0.042, 'triangle']]
+                    ? [[1397, 0, 'triangle'], [1661, 0.036, 'triangle'], [1976, 0.072, 'sine']]
                     : preset === 'soft'
-                        ? [[392, 0, 'sine'], [588, 0.082, 'triangle']]
-                        : [[620, 0, 'sine'], [930, 0.052, 'triangle']];
+                        ? [[1047, 0, 'sine'], [1319, 0.052, 'sine']]
+                        : [[1175, 0, 'sine'], [1397, 0.04, 'sine']];
 
         tones.forEach(([hz, delay, type]) => {
             const osc = ctx.createOscillator();
@@ -217,18 +249,12 @@ function playMotionSoundPresetPreview(preset: MotionSoundPreset): void {
             osc.frequency.setValueAtTime(hz, now + delay);
             osc.connect(output);
             osc.start(now + delay);
-            osc.stop(now + delay + (preset === 'chime' || preset === 'soft' ? 0.22 : 0.13));
+            osc.stop(now + delay + (preset === 'chime' || preset === 'soft' ? 0.17 : 0.11));
         });
 
-        window.setTimeout(() => {
-            output.disconnect();
-            delay.disconnect();
-            delayGain.disconnect();
-            filter.disconnect();
-            compressor.disconnect();
-            void ctx.close().catch(() => undefined);
-        }, 420);
+        window.setTimeout(close, 320);
     } catch {
+        stopActiveMotionSoundPresetPreview();
         // Preview sound is best-effort and should not block saving settings.
     }
 }
@@ -399,6 +425,10 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
     useEffect(() => {
         latestConfigRef.current = config;
     }, [config]);
+
+    useEffect(() => () => {
+        stopActiveMotionSoundPresetPreview();
+    }, []);
 
     useEffect(() => {
         if (typeof window.matchMedia !== 'function') return;
@@ -1350,6 +1380,8 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                                         updatePetConfig({ pet_motion_sound_preset: preset });
                                         if (motionSoundPreviewEnabled) {
                                             playMotionSoundPresetPreview(preset);
+                                        } else {
+                                            stopActiveMotionSoundPresetPreview();
                                         }
                                     }}
                                     aria-pressed={motionSoundPreset === preset}

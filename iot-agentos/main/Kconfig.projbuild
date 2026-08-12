@@ -338,6 +338,17 @@ config MACLAW_COMPACT_RENDERER_FAILURE_STAGE
         renderer-local lifecycle test seam; they are not Device, Platform or
         profile-adapter API.
 
+config MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT
+    bool "Fail startup after Display Service publication (test only)"
+    default n
+    help
+        After the shared Display Service task has been created and App UI has
+        initialized, forces the normal composition-root degraded path. This
+        verifies that startup rollback closes Display Service admission and
+        joins its task. It does not deinitialize a panel, wait for DMA, or
+        provide a runtime display restart path. The condition is compile-time
+        only and has no Hub, console, HTTP, input or release-firmware path.
+
 endif
 
 endmenu

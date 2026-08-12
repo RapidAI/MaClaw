@@ -2718,10 +2718,15 @@ static esp_err_t stop_background_task(TaskHandle_t *task,
 
 esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    /* Input/board initialization can fail before this renderer has published
+     * any decorative worker or even its creation mutex. A rollback then owns
+     * no background task to join; treating that inactive state as a timeout
+     * prevents later independent lifecycle owners (notably Display Service)
+     * from closing. This is an idempotent no-op, not board restart support. */
+    if (!s_background_tasks_lock) return ESP_OK;
     const TickType_t started = xTaskGetTickCount();
     const TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
-    if (!s_background_tasks_lock ||
-        xSemaphoreTake(s_background_tasks_lock, deadline) != pdTRUE) {
+    if (xSemaphoreTake(s_background_tasks_lock, deadline) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     /* This lock is also the only task-creation gate.  Closing it before the

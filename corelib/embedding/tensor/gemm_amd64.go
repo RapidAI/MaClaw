@@ -199,6 +199,9 @@ func multiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
 	if len(a) >= 4*K && len(b0) >= K && len(b1) >= K && len(b2) >= K {
 		if hasAVX512 {
 			switch K {
+			case 96, 192, 384: // PP-OCR feature widths; all are 16-wide aligned.
+				multiDot4TripleBAVX512Generic16(out, &a[0], &b0[0], &b1[0], &b2[0], K)
+				return
 			case 128:
 				multiDot4TripleBAVX512K128(out, &a[0], &b0[0], &b1[0], &b2[0])
 				return
@@ -209,6 +212,9 @@ func multiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
 		}
 		if hasAVX2andFMA {
 			switch K {
+			case 96, 120, 192, 384: // PP-OCR pointwise and CTC feature widths
+				multiDot4TripleBAVX2Generic(out, &a[0], &b0[0], &b1[0], &b2[0], K)
+				return
 			case 128:
 				multiDot4TripleBAVX2K128(out, &a[0], &b0[0], &b1[0], &b2[0])
 				return
@@ -227,6 +233,12 @@ func multiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
 	out[8], out[9], out[10], out[11] = d4[0], d4[1], d4[2], d4[3]
 }
 
+//go:noescape
+func multiDot4TripleBAVX2Generic(out *[12]float32, a, b0, b1, b2 *float32, K int)
+
+//go:noescape
+func multiDot4TripleBAVX512Generic16(out *[12]float32, a, b0, b1, b2 *float32, K int)
+
 // MultiDot4TripleB is the public API for 4 A × 3 B micro-kernel.
 func MultiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
 	multiDot4TripleB(out, a, b0, b1, b2, K)
@@ -239,6 +251,13 @@ func multiDot8TripleB(out0, out1 *[12]float32, a, b0, b1, b2 []float32, K int) {
 	if len(a) >= 8*K && len(b0) >= K && len(b1) >= K && len(b2) >= K {
 		if hasAVX512 {
 			switch K {
+			case 96, 192, 384:
+				// PP-OCR's 8-row tile is two independent 4-row projections.
+				// Use the 16-wide ZMM kernel for both halves instead of falling
+				// through to the generic dispatch on every invocation.
+				multiDot4TripleBAVX512Generic16(out0, &a[0], &b0[0], &b1[0], &b2[0], K)
+				multiDot4TripleBAVX512Generic16(out1, &a[4*K], &b0[0], &b1[0], &b2[0], K)
+				return
 			case 128:
 				multiDot8TripleBAVX512K128(out0, out1, &a[0], &b0[0], &b1[0], &b2[0])
 				return

@@ -159,6 +159,110 @@ describe('PetSettingsPanel localization', () => {
         expect(screen.getByLabelText('Size').getAttribute('aria-valuetext')).toBe('88px');
     });
 
+    it('replaces an active motion-sound preview and closes it when the panel unmounts', async () => {
+        const originalAudioContext = Object.getOwnPropertyDescriptor(window, 'AudioContext');
+        const contexts: Array<{ resume: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }> = [];
+        const audioParam = () => ({
+            setValueAtTime: vi.fn(),
+            exponentialRampToValueAtTime: vi.fn(),
+        });
+        const audioNode = () => ({ connect: vi.fn(), disconnect: vi.fn() });
+        const AudioContextCtor = vi.fn(function () {
+            const context = {
+                currentTime: 0,
+                destination: {},
+                resume: vi.fn().mockResolvedValue(undefined),
+                close: vi.fn().mockResolvedValue(undefined),
+                createDynamicsCompressor: () => ({
+                    ...audioNode(),
+                    threshold: audioParam(),
+                    knee: audioParam(),
+                    ratio: audioParam(),
+                    attack: audioParam(),
+                    release: audioParam(),
+                }),
+                createBiquadFilter: () => ({ ...audioNode(), type: 'bandpass', frequency: audioParam(), Q: audioParam() }),
+                createGain: () => ({ ...audioNode(), gain: audioParam() }),
+                createDelay: () => ({ ...audioNode(), delayTime: audioParam() }),
+                createOscillator: () => ({ ...audioNode(), type: 'sine', frequency: audioParam(), start: vi.fn(), stop: vi.fn() }),
+            };
+            contexts.push(context);
+            return context;
+        });
+        Object.defineProperty(window, 'AudioContext', { configurable: true, writable: true, value: AudioContextCtor });
+
+        try {
+            const view = renderPetSettings('en');
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: 'Bubble: Short, rounded, and good for small sizes.' }));
+            });
+            expect(contexts).toHaveLength(1);
+            expect(contexts[0].resume).toHaveBeenCalledTimes(1);
+
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: 'Chime: Clear with a light notification tail.' }));
+            });
+            expect(contexts).toHaveLength(2);
+            expect(contexts[0].close).toHaveBeenCalledTimes(1);
+
+            view.unmount();
+            expect(contexts[1].close).toHaveBeenCalledTimes(1);
+        } finally {
+            if (originalAudioContext) {
+                Object.defineProperty(window, 'AudioContext', originalAudioContext);
+            } else {
+                delete (window as { AudioContext?: unknown }).AudioContext;
+            }
+        }
+    });
+
+    it('stops an active preview when SFX has been disabled before a preset is selected', async () => {
+        const originalAudioContext = Object.getOwnPropertyDescriptor(window, 'AudioContext');
+        const context = {
+            currentTime: 0,
+            destination: {},
+            resume: vi.fn().mockResolvedValue(undefined),
+            close: vi.fn().mockResolvedValue(undefined),
+            createDynamicsCompressor: () => ({ connect: vi.fn(), disconnect: vi.fn(), threshold: { setValueAtTime: vi.fn() }, knee: { setValueAtTime: vi.fn() }, ratio: { setValueAtTime: vi.fn() }, attack: { setValueAtTime: vi.fn() }, release: { setValueAtTime: vi.fn() } }),
+            createBiquadFilter: () => ({ connect: vi.fn(), disconnect: vi.fn(), type: 'bandpass', frequency: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() }, Q: { setValueAtTime: vi.fn() } }),
+            createGain: () => ({ connect: vi.fn(), disconnect: vi.fn(), gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() } }),
+            createDelay: () => ({ connect: vi.fn(), disconnect: vi.fn(), delayTime: { setValueAtTime: vi.fn() } }),
+            createOscillator: () => ({ connect: vi.fn(), disconnect: vi.fn(), type: 'sine', frequency: { setValueAtTime: vi.fn() }, start: vi.fn(), stop: vi.fn() }),
+        };
+        const AudioContextCtor = vi.fn(function () { return context; });
+        Object.defineProperty(window, 'AudioContext', { configurable: true, writable: true, value: AudioContextCtor });
+
+        try {
+            const view = renderPetSettings('en');
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: 'Bubble: Short, rounded, and good for small sizes.' }));
+            });
+            expect(context.close).not.toHaveBeenCalled();
+
+            view.rerender(
+                <DialogProvider>
+                    <PetSettingsPanel
+                        config={new corelib.AppConfig({ pet_enabled: true, pet_skin: 'clawmate', pet_size: 88, pet_interaction_mode: 'balanced', pet_motion_enabled: true, pet_motion_sound_enabled: false })}
+                        lang="en"
+                        setConfig={vi.fn()}
+                        patchConfig={vi.fn().mockResolvedValue(undefined)}
+                    />
+                </DialogProvider>,
+            );
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: 'Chime: Clear with a light notification tail.' }));
+            });
+            expect(context.close).toHaveBeenCalledTimes(1);
+            expect(AudioContextCtor).toHaveBeenCalledTimes(1);
+        } finally {
+            if (originalAudioContext) {
+                Object.defineProperty(window, 'AudioContext', originalAudioContext);
+            } else {
+                delete (window as { AudioContext?: unknown }).AudioContext;
+            }
+        }
+    });
+
     it('shows user packs path hint from GetPetPacksDir', async () => {
         await act(async () => {
             renderPetSettings('en');

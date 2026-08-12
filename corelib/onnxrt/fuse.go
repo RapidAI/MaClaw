@@ -1,6 +1,7 @@
 package onnxrt
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/viterin/vek/vek32"
@@ -42,7 +43,10 @@ func (g *Graph) optimize() error {
 	return nil
 }
 
-// scalarValue returns the value of a 0-dim or 1-element float initializer.
+// scalarValue returns a finite value of a 0-dim or 1-element float
+// initializer. Fusions reassociate arithmetic, which is not generally
+// IEEE-equivalent for NaN or infinity, so such constants stay on the original
+// graph path.
 func (g *Graph) scalarValue(name string) (float32, bool) {
 	t, ok := g.initializers[name]
 	if !ok {
@@ -50,6 +54,9 @@ func (g *Graph) scalarValue(name string) (float32, bool) {
 	}
 	f, err := t.Floats()
 	if err != nil || len(f) != 1 {
+		return 0, false
+	}
+	if math.IsNaN(float64(f[0])) || math.IsInf(float64(f[0]), 0) {
 		return 0, false
 	}
 	return f[0], true
@@ -97,6 +104,44 @@ func (g *Graph) graphOutputNames() map[string]bool {
 		out[vi.Name] = true
 	}
 	return out
+}
+
+// freshValueName returns a value name that cannot shadow an existing graph
+// value or initializer. Fusion passes create optional Conv biases at load
+// time, so a model is free to already contain the otherwise-convenient base
+// name (for example "weight.fused_bias").
+func (g *Graph) freshValueName(base string) string {
+	used := make(map[string]bool, len(g.initializers)+len(g.proto.Nodes)*2)
+	for name := range g.initializers {
+		used[name] = true
+	}
+	for _, vi := range g.proto.Inputs {
+		used[vi.Name] = true
+	}
+	for _, vi := range g.proto.Outputs {
+		used[vi.Name] = true
+	}
+	for _, n := range g.proto.Nodes {
+		for _, name := range n.Inputs {
+			if name != "" {
+				used[name] = true
+			}
+		}
+		for _, name := range n.Outputs {
+			if name != "" {
+				used[name] = true
+			}
+		}
+	}
+	if !used[base] {
+		return base
+	}
+	for suffix := 1; ; suffix++ {
+		name := fmt.Sprintf("%s.%d", base, suffix)
+		if !used[name] {
+			return name
+		}
+	}
 }
 
 // renameValue substitutes a value name everywhere: node inputs and graph
@@ -249,7 +294,7 @@ func (g *Graph) foldBatchNorms() {
 	gout := g.graphOutputNames()
 	removed := map[*Node]bool{}
 	for _, bn := range nodes {
-		if bn.OpType != "BatchNormalization" || len(bn.Inputs) < 5 {
+		if bn.OpType != "BatchNormalization" || len(bn.Inputs) < 5 || len(bn.Outputs) == 0 || bn.Outputs[0] == "" {
 			continue
 		}
 		// Only fold the plain inference form: training mode or extra
@@ -267,7 +312,7 @@ func (g *Graph) foldBatchNorms() {
 			continue
 		}
 		conv := prod[bn.Inputs[0]]
-		if conv == nil || conv.OpType != "Conv" || len(conv.Inputs) < 2 {
+		if conv == nil || conv.OpType != "Conv" || len(conv.Inputs) < 2 || len(conv.Outputs) == 0 || conv.Outputs[0] == "" {
 			continue
 		}
 		if len(cons[conv.Outputs[0]]) != 1 {
@@ -306,24 +351,33 @@ func (g *Graph) foldBatchNorms() {
 		scale, bias, mean, varr := params[0], params[1], params[2], params[3]
 		eps := float64(attrFloat(bn, "epsilon", 1e-5))
 		M := wT.Shape[0]
-		if len(scale) != M || len(bias) != M || len(mean) != M || len(varr) != M {
+		if M <= 0 || len(scale) != M || len(bias) != M || len(mean) != M || len(varr) != M {
+			continue
+		}
+		if eps < 0 {
 			continue
 		}
 		f := make([]float32, M)
 		for m := 0; m < M; m++ {
-			f[m] = scale[m] / float32(math.Sqrt(float64(varr[m])+eps))
-		}
-		// w'[m] = w[m] * f[m]
-		perCh := wT.NumElements() / M
-		for m := 0; m < M; m++ {
-			row := wT.F32[m*perCh : (m+1)*perCh]
-			fm := f[m]
-			for i := range row {
-				row[i] *= fm
+			denom2 := float64(varr[m]) + eps
+			if denom2 < 0 || math.IsNaN(denom2) || math.IsInf(denom2, 0) {
+				ok = false
+				break
+			}
+			f[m] = scale[m] / float32(math.Sqrt(denom2))
+			if math.IsNaN(float64(f[m])) || math.IsInf(float64(f[m]), 0) {
+				ok = false
+				break
 			}
 		}
-		// bias: b' = (b - mean)*f + beta
+		if !ok {
+			continue
+		}
+		// Validate and prepare the Conv bias before mutating any initializer.
+		// A rejected rewrite must leave the model exactly unchanged.
 		var bb []float32
+		createBias := false
+		biasName := ""
 		if len(conv.Inputs) > 2 && conv.Inputs[2] != "" {
 			bT, isInit := g.initializers[conv.Inputs[2]]
 			if !isInit || bT.DType != DFloat32 || len(bT.F32) != M {
@@ -334,17 +388,60 @@ func (g *Graph) foldBatchNorms() {
 			}
 			bb = bT.F32
 		} else {
+			createBias = true
+			biasName = g.freshValueName(conv.Inputs[1] + ".fused_bias")
+		}
+		// Compute every changed bias value before scaling weights. Float32
+		// arithmetic can overflow even when the factor itself is finite.
+		newBias := make([]float32, M)
+		for m := 0; m < M; m++ {
+			base := float32(0)
+			if !createBias {
+				base = bb[m]
+			}
+			newBias[m] = (base-mean[m])*f[m] + bias[m]
+			if math.IsNaN(float64(newBias[m])) || math.IsInf(float64(newBias[m]), 0) {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		// Check the actual rewritten weights too. A finite BN factor may still
+		// overflow a large Conv coefficient; do this before changing either
+		// initializer so a rejected fold remains atomic.
+		perCh := wT.NumElements() / M
+		for m := 0; m < M && ok; m++ {
+			for _, w := range wT.F32[m*perCh : (m+1)*perCh] {
+				v := w * f[m]
+				if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+					ok = false
+					break
+				}
+			}
+		}
+		if !ok {
+			continue
+		}
+		// w'[m] = w[m] * f[m]
+		for m := 0; m < M; m++ {
+			row := wT.F32[m*perCh : (m+1)*perCh]
+			fm := f[m]
+			for i := range row {
+				row[i] *= fm
+			}
+		}
+		// bias: b' = (b - mean)*f + beta
+		if createBias {
 			bb = make([]float32, M)
-			name := conv.Inputs[1] + ".fused_bias"
-			g.initializers[name] = &Tensor{Shape: []int{M}, DType: DFloat32, F32: bb}
+			g.initializers[biasName] = &Tensor{Shape: []int{M}, DType: DFloat32, F32: bb}
 			for len(conv.Inputs) < 3 {
 				conv.Inputs = append(conv.Inputs, "")
 			}
-			conv.Inputs[2] = name
+			conv.Inputs[2] = biasName
 		}
-		for m := 0; m < M; m++ {
-			bb[m] = (bb[m]-mean[m])*f[m] + bias[m]
-		}
+		copy(bb, newBias)
 		conv.Outputs[0] = bn.Outputs[0]
 		removed[bn] = true
 	}
@@ -370,7 +467,7 @@ func (g *Graph) foldPreConvNorms() {
 	gout := g.graphOutputNames()
 	removed := map[*Node]bool{}
 	for _, conv := range nodes {
-		if removed[conv] || (conv.OpType != "Conv" && conv.OpType != "ConvTranspose") || len(conv.Inputs) < 2 {
+		if removed[conv] || (conv.OpType != "Conv" && conv.OpType != "ConvTranspose") || len(conv.Inputs) < 2 || len(conv.Outputs) == 0 || conv.Outputs[0] == "" {
 			continue
 		}
 		wT, ok := g.initializers[conv.Inputs[1]]
@@ -427,6 +524,8 @@ func (g *Graph) foldPreConvNorms() {
 			case "Div":
 				if reversed {
 					valid = false // k / (s*x+c) is not affine
+				} else if k == 0 {
+					valid = false // preserve IEEE divide-by-zero behavior
 				} else {
 					s /= k
 				}
@@ -441,6 +540,11 @@ func (g *Graph) foldPreConvNorms() {
 				}
 			}
 			if !valid {
+				break
+			}
+			if math.IsNaN(float64(s)) || math.IsInf(float64(s), 0) ||
+				math.IsNaN(float64(c)) || math.IsInf(float64(c), 0) {
+				valid = false
 				break
 			}
 			chain = append(chain, nd)
@@ -476,8 +580,13 @@ func (g *Graph) foldPreConvNorms() {
 		}
 		// apply: W *= s ; bias[m] += c * rowsum(W[m])
 		M := wT.Shape[0]
+		if M <= 0 {
+			continue
+		}
 		perCh := wT.NumElements() / M
 		var bb []float32
+		createBias := false
+		biasName := ""
 		if len(conv.Inputs) > 2 && conv.Inputs[2] != "" {
 			bT, isInit := g.initializers[conv.Inputs[2]]
 			if !isInit || bT.DType != DFloat32 || len(bT.F32) != M || len(cons[conv.Inputs[2]]) != 1 {
@@ -485,23 +594,51 @@ func (g *Graph) foldPreConvNorms() {
 			}
 			bb = bT.F32
 		} else {
+			createBias = true
+			biasName = g.freshValueName(conv.Inputs[1] + ".fused_bias")
+		}
+		// Validate every in-place result before changing a weight, bias, or
+		// node input. As with BN folding, a declined rewrite must be atomic.
+		newBias := make([]float32, M)
+		valid = true
+		for m := 0; m < M && valid; m++ {
+			row := wT.F32[m*perCh : (m+1)*perCh]
+			sum := float32(0)
+			for _, w := range row {
+				sum += w
+				v := w * s
+				if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+					valid = false
+					break
+				}
+			}
+			base := float32(0)
+			if !createBias {
+				base = bb[m]
+			}
+			newBias[m] = base + c*sum
+			if math.IsNaN(float64(newBias[m])) || math.IsInf(float64(newBias[m]), 0) {
+				valid = false
+			}
+		}
+		if !valid {
+			continue
+		}
+		if createBias {
 			bb = make([]float32, M)
-			name := conv.Inputs[1] + ".fused_bias"
-			g.initializers[name] = &Tensor{Shape: []int{M}, DType: DFloat32, F32: bb}
+			g.initializers[biasName] = &Tensor{Shape: []int{M}, DType: DFloat32, F32: bb}
 			for len(conv.Inputs) < 3 {
 				conv.Inputs = append(conv.Inputs, "")
 			}
-			conv.Inputs[2] = name
+			conv.Inputs[2] = biasName
 		}
 		for m := 0; m < M; m++ {
 			row := wT.F32[m*perCh : (m+1)*perCh]
-			var sum float64
 			for i := range row {
-				sum += float64(row[i])
 				row[i] *= s
 			}
-			bb[m] += c * float32(sum)
 		}
+		copy(bb, newBias)
 		conv.Inputs[0] = cur
 		for _, nd := range chain {
 			removed[nd] = true
@@ -520,7 +657,7 @@ func (g *Graph) foldConvBiasOps() {
 	gout := g.graphOutputNames()
 	removed := map[*Node]bool{}
 	for _, cv := range nodes {
-		if removed[cv] || (cv.OpType != "Conv" && cv.OpType != "ConvTranspose") || len(cv.Inputs) < 2 {
+		if removed[cv] || (cv.OpType != "Conv" && cv.OpType != "ConvTranspose") || len(cv.Inputs) < 2 || len(cv.Outputs) == 0 || cv.Outputs[0] == "" {
 			continue
 		}
 		out := cv.Outputs[0]
@@ -536,7 +673,7 @@ func (g *Graph) foldConvBiasOps() {
 		if e.OpType != "Add" && e.OpType != "Sub" {
 			continue
 		}
-		if len(e.Inputs) != 2 || e.Inputs[0] != out {
+		if len(e.Inputs) != 2 || len(e.Outputs) != 1 || e.Outputs[0] == "" || e.Inputs[0] != out {
 			continue // only conv_out ± const (not const - conv_out)
 		}
 		t, isInit := g.initializers[e.Inputs[1]]
@@ -544,7 +681,7 @@ func (g *Graph) foldConvBiasOps() {
 			continue
 		}
 		wT, ok := g.initializers[cv.Inputs[1]]
-		if !ok {
+		if !ok || wT.DType != DFloat32 || wT.Rank() != 4 {
 			continue
 		}
 		var M int
@@ -552,6 +689,9 @@ func (g *Graph) foldConvBiasOps() {
 			M = wT.Shape[0]
 		} else {
 			M = wT.Shape[1] * int(attrInt(cv, "group", 1))
+		}
+		if M <= 0 {
+			continue
 		}
 		var perCh []float32
 		if v, isScalar := g.scalarValue(e.Inputs[1]); isScalar {
@@ -565,6 +705,8 @@ func (g *Graph) foldConvBiasOps() {
 			continue
 		}
 		var bb []float32
+		createBias := false
+		biasName := ""
 		if len(cv.Inputs) > 2 && cv.Inputs[2] != "" {
 			bT, isInit := g.initializers[cv.Inputs[2]]
 			if !isInit || bT.DType != DFloat32 || len(bT.F32) != M || len(cons[cv.Inputs[2]]) != 1 {
@@ -572,21 +714,38 @@ func (g *Graph) foldConvBiasOps() {
 			}
 			bb = bT.F32
 		} else {
-			bb = make([]float32, M)
-			name := cv.Inputs[1] + ".fused_bias"
-			g.initializers[name] = &Tensor{Shape: []int{M}, DType: DFloat32, F32: bb}
-			for len(cv.Inputs) < 3 {
-				cv.Inputs = append(cv.Inputs, "")
-			}
-			cv.Inputs[2] = name
+			createBias = true
+			biasName = g.freshValueName(cv.Inputs[1] + ".fused_bias")
 		}
 		sign := float32(1)
 		if e.OpType == "Sub" {
 			sign = -1
 		}
+		newBias := make([]float32, M)
+		valid := true
 		for m := 0; m < M; m++ {
-			bb[m] += sign * perCh[m]
+			base := float32(0)
+			if !createBias {
+				base = bb[m]
+			}
+			newBias[m] = base + sign*perCh[m]
+			if math.IsNaN(float64(newBias[m])) || math.IsInf(float64(newBias[m]), 0) {
+				valid = false
+				break
+			}
 		}
+		if !valid {
+			continue
+		}
+		if createBias {
+			bb = make([]float32, M)
+			g.initializers[biasName] = &Tensor{Shape: []int{M}, DType: DFloat32, F32: bb}
+			for len(cv.Inputs) < 3 {
+				cv.Inputs = append(cv.Inputs, "")
+			}
+			cv.Inputs[2] = biasName
+		}
+		copy(bb, newBias)
 		cv.Outputs[0] = e.Outputs[0]
 		removed[e] = true
 	}
@@ -618,7 +777,7 @@ func (g *Graph) detectEpilogues() {
 	}
 
 	for _, cv := range nodes {
-		if removed[cv] || (cv.OpType != "Conv" && cv.OpType != "ConvTranspose") {
+		if removed[cv] || (cv.OpType != "Conv" && cv.OpType != "ConvTranspose") || len(cv.Outputs) == 0 || cv.Outputs[0] == "" {
 			continue
 		}
 		out := cv.Outputs[0]
@@ -630,6 +789,9 @@ func (g *Graph) detectEpilogues() {
 		cs := cons[out]
 		if len(cs) == 1 {
 			act := cs[0]
+			if len(act.Outputs) != 1 || act.Outputs[0] == "" {
+				continue
+			}
 			switch act.OpType {
 			case "Relu":
 				g.epilogues[cv] = &epilogue{kind: EpiRelu}
@@ -658,7 +820,7 @@ func (g *Graph) detectEpilogues() {
 				mul = c
 			}
 		}
-		if hs != nil && mul != nil && len(mul.Inputs) == 2 && len(hs.Outputs) == 1 &&
+		if hs != nil && mul != nil && len(mul.Inputs) == 2 && len(hs.Outputs) == 1 && hs.Outputs[0] != "" && len(mul.Outputs) == 1 && mul.Outputs[0] != "" &&
 			!gout[hs.Outputs[0]] && // removed by the fold; must not be a graph output
 			singleConsumer(hs.Outputs[0]) == mul &&
 			((mul.Inputs[0] == out && mul.Inputs[1] == hs.Outputs[0]) ||
@@ -681,7 +843,8 @@ func (g *Graph) detectEpilogues() {
 				mul2 = c
 			}
 		}
-		if div == nil || mul2 == nil || len(div.Inputs) != 2 || div.Inputs[0] != out {
+		if div == nil || mul2 == nil || len(div.Inputs) != 2 || len(div.Outputs) != 1 || div.Outputs[0] == "" ||
+			len(mul2.Outputs) != 1 || mul2.Outputs[0] == "" || div.Inputs[0] != out {
 			continue
 		}
 		// The constants must match exactly: the fused epilogue hard-codes
@@ -693,11 +856,11 @@ func (g *Graph) detectEpilogues() {
 			continue
 		}
 		erf := singleConsumer(div.Outputs[0])
-		if erf == nil || erf.OpType != "Erf" {
+		if erf == nil || erf.OpType != "Erf" || len(erf.Outputs) != 1 || erf.Outputs[0] == "" {
 			continue
 		}
 		add := singleConsumer(erf.Outputs[0])
-		if add == nil || add.OpType != "Add" || len(add.Inputs) != 2 {
+		if add == nil || add.OpType != "Add" || len(add.Inputs) != 2 || len(add.Outputs) != 1 || add.Outputs[0] == "" {
 			continue
 		}
 		addConstIdx := -1
@@ -722,7 +885,7 @@ func (g *Graph) detectEpilogues() {
 			continue
 		}
 		mul4 := singleConsumer(mul2.Outputs[0])
-		if mul4 == nil || mul4.OpType != "Mul" || len(mul4.Inputs) != 2 {
+		if mul4 == nil || mul4.OpType != "Mul" || len(mul4.Inputs) != 2 || len(mul4.Outputs) != 1 || mul4.Outputs[0] == "" {
 			continue
 		}
 		m4ConstIdx := -1

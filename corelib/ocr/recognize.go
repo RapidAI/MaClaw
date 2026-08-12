@@ -114,9 +114,6 @@ func recognizeBatchPadded(rec *onnxrt.Graph, src *image.RGBA, boxes []DetBox, wi
 	}
 	per := 3 * recHeight * rw
 	buf := f32Scratch(&sc.recBatch, len(idxs)*per)
-	for i := range buf {
-		buf[i] = -1
-	}
 	for bi, i := range idxs {
 		w := widths[i]
 		crop := cropBoxS(src, boxes[i].Points, sc)
@@ -124,12 +121,11 @@ func recognizeBatchPadded(rec *onnxrt.Graph, src *image.RGBA, boxes []DetBox, wi
 			return fmt.Errorf("ocr: crop width changed while batching: got %d, want %d", got, w)
 		}
 		resized := resizeRGBAS(crop, w, recHeight, &sc.recImg)
-		compact := f32Scratch(&sc.recIn, 3*recHeight*w)
-		recPreprocessInto(resized, compact, w)
 		sample := buf[bi*per : (bi+1)*per]
-		for c := 0; c < 3; c++ {
-			copy(sample[c*recHeight*rw:c*recHeight*rw+recHeight*w], compact[c*recHeight*w:(c+1)*recHeight*w])
-		}
+		// Normalize directly into its final padded tensor planes. This avoids
+		// both the batch-wide fill and the compact-then-copy pass while keeping
+		// the model's required normalized-black (-1) padding.
+		recPreprocessPaddedInto(resized, sample, w, rw)
 	}
 	input := &onnxrt.Tensor{Shape: []int{len(idxs), 3, recHeight, rw}, DType: onnxrt.DFloat32, F32: buf}
 	ids, probs, vocab, err := rec.RunCTC(map[string]*onnxrt.Tensor{"x": input})

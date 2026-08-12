@@ -36,6 +36,9 @@
 #ifndef CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_STAGE
 #define CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_STAGE 0
 #endif
+#ifndef CONFIG_MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT
+#define CONFIG_MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT 0
+#endif
 
 bool provisioning_failure_injection_lifecycle_primitives_unavailable(void) {
 #if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_PROVISIONING_FAILURE_LIFECYCLE_PRIMITIVES
@@ -85,6 +88,14 @@ bool provisioning_failure_injection_compact_renderer_initialization_should_fail_
     return CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_STAGE == completed_stage;
 #else
     (void)completed_stage;
+    return false;
+#endif
+}
+
+bool provisioning_failure_injection_display_service_fail_after_init(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT
+    return true;
+#else
     return false;
 #endif
 }

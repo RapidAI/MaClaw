@@ -119,6 +119,39 @@ func TestRecPreprocessWidthCap(t *testing.T) {
 	}
 }
 
+func TestRecPreprocessPaddedIntoMatchesCompactPath(t *testing.T) {
+	const (
+		w  = 13
+		rw = 16
+	)
+	img := image.NewRGBA(image.Rect(0, 0, w, recHeight))
+	for y := 0; y < recHeight; y++ {
+		for x := 0; x < w; x++ {
+			img.SetRGBA(x, y, color.RGBA{uint8(x * 7), uint8(y * 5), uint8(x + y), 255})
+		}
+	}
+	compact := make([]float32, 3*recHeight*w)
+	recPreprocessInto(img, compact, w)
+	padded := make([]float32, 3*recHeight*rw)
+	recPreprocessPaddedInto(img, padded, w, rw)
+	for c := 0; c < 3; c++ {
+		for y := 0; y < recHeight; y++ {
+			for x := 0; x < w; x++ {
+				got := padded[c*recHeight*rw+y*rw+x]
+				want := compact[c*recHeight*w+y*w+x]
+				if got != want {
+					t.Fatalf("c=%d y=%d x=%d: got %g want %g", c, y, x, got, want)
+				}
+			}
+			for x := w; x < rw; x++ {
+				if got := padded[c*recHeight*rw+y*rw+x]; got != -1 {
+					t.Fatalf("c=%d y=%d padded x=%d: got %g want -1", c, y, x, got)
+				}
+			}
+		}
+	}
+}
+
 func TestCropAxisAlignedIdentity(t *testing.T) {
 	// An axis-aligned box must reproduce the source region pixel-exactly.
 	src := image.NewRGBA(image.Rect(0, 0, 40, 30))

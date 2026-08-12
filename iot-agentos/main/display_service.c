@@ -7,6 +7,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "esp_log.h"
+
 #include "platform_display.h"
 #include "task_registry.h"
 
@@ -159,6 +161,7 @@ static void display_service_task(void *unused) {
             s_display_service_task = NULL;
             taskEXIT_CRITICAL(&s_display_service_state_lock);
             if (request->completion) (void)xSemaphoreGive(request->completion);
+            ESP_LOGI("display_service", "display task stopped");
             vTaskDelete(NULL);
             return;
         }

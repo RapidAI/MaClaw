@@ -437,33 +437,69 @@ func im2rowFast(B, x []float32, xG, pix0, rows, oW, H, W, Cg int, p *convParams)
 		if s1 < s0 {
 			s1 = s0
 		}
-		for oc := s0; oc < s1; oc++ {
-			dst := B[(pi+oc-ow)*K:]
-			iw0 := oc*sW - pL
-			i := 0
-			xC := xG
-			for c := 0; c < Cg; c++ {
-				for kh := 0; kh < kH; kh++ {
-					off := rowOff[kh]
-					if off < 0 {
-						for z := 0; z < kW; z++ {
-							dst[i+z] = 0
+		// The overwhelmingly common detector path is a 3x3 kernel.  Copy all
+		// three kernel rows for a channel in one straight-line block so the
+		// compiler can eliminate repeated slice-bound setup in the pixel loop.
+		if kH == 3 && kW == 3 {
+			for oc := s0; oc < s1; oc++ {
+				dst := B[(pi+oc-ow)*K:]
+				iw0 := oc*sW - pL
+				i := 0
+				xC := xG
+				for c := 0; c < Cg; c++ {
+					if off := rowOff[0]; off >= 0 {
+						j := xC + off + iw0
+						dst[i], dst[i+1], dst[i+2] = x[j], x[j+1], x[j+2]
+					} else {
+						dst[i], dst[i+1], dst[i+2] = 0, 0, 0
+					}
+					i += 3
+					if off := rowOff[1]; off >= 0 {
+						j := xC + off + iw0
+						dst[i], dst[i+1], dst[i+2] = x[j], x[j+1], x[j+2]
+					} else {
+						dst[i], dst[i+1], dst[i+2] = 0, 0, 0
+					}
+					i += 3
+					if off := rowOff[2]; off >= 0 {
+						j := xC + off + iw0
+						dst[i], dst[i+1], dst[i+2] = x[j], x[j+1], x[j+2]
+					} else {
+						dst[i], dst[i+1], dst[i+2] = 0, 0, 0
+					}
+					i += 3
+					xC += H * W
+				}
+			}
+		} else {
+			for oc := s0; oc < s1; oc++ {
+				dst := B[(pi+oc-ow)*K:]
+				iw0 := oc*sW - pL
+				i := 0
+				xC := xG
+				for c := 0; c < Cg; c++ {
+					for kh := 0; kh < kH; kh++ {
+						off := rowOff[kh]
+						if off < 0 {
+							for z := 0; z < kW; z++ {
+								dst[i+z] = 0
+							}
+							i += kW
+							continue
+						}
+						j := xC + off + iw0
+						switch kW {
+						case 3:
+							dst[i], dst[i+1], dst[i+2] = x[j], x[j+1], x[j+2]
+						case 2:
+							dst[i], dst[i+1] = x[j], x[j+1]
+						default:
+							copy(dst[i:i+kW], x[j:j+kW])
 						}
 						i += kW
-						continue
 					}
-					j := xC + off + iw0
-					switch kW {
-					case 3:
-						dst[i], dst[i+1], dst[i+2] = x[j], x[j+1], x[j+2]
-					case 2:
-						dst[i], dst[i+1] = x[j], x[j+1]
-					default:
-						copy(dst[i:i+kW], x[j:j+kW])
-					}
-					i += kW
+					xC += H * W
 				}
-				xC += H * W
 			}
 		}
 

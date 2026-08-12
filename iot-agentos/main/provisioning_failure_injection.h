@@ -21,3 +21,9 @@ bool provisioning_failure_injection_display_initialization_should_fail_after(
  * public HAL contract. */
 bool provisioning_failure_injection_compact_renderer_initialization_should_fail_after(
     unsigned completed_stage);
+
+/* Test-only composition-root seam. It is reached only after the shared
+ * Display Service has published its task, so startup rollback can validate
+ * that the service closes admission and joins that task without asking a
+ * board renderer to expose panel or DMA details. */
+bool provisioning_failure_injection_display_service_fail_after_init(void);

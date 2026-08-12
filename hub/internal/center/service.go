@@ -203,6 +203,13 @@ type TenantLister interface {
 	List(ctx context.Context) ([]*store.Tenant, error)
 }
 
+// TenantAdminLister contributes tenant administrator identities to the Hub
+// capability inventory. HubCenter uses that inventory to reconcile routes, so
+// administrators must be advertised even when they do not have a user row.
+type TenantAdminLister interface {
+	ListAllTenantAdmins(ctx context.Context) ([]*store.AdminUser, error)
+}
+
 type UserDurationSummarizer interface {
 	SummarizeUserDurations(ctx context.Context, tenantID string, start, end, now time.Time) ([]store.UserDurationSummary, error)
 }
@@ -223,6 +230,7 @@ type Service struct {
 	users    UserCounter
 	machines MachineCounter
 	tenants  TenantLister
+	admins   TenantAdminLister
 	sessions UserUsageSummarizer
 
 	mu                 sync.Mutex
@@ -335,6 +343,10 @@ func (s *Service) SetStatsProviders(users UserCounter, machines MachineCounter, 
 
 func (s *Service) SetTenantRepository(tenants TenantLister) {
 	s.tenants = tenants
+}
+
+func (s *Service) SetTenantAdminProvider(admins TenantAdminLister) {
+	s.admins = admins
 }
 
 func (s *Service) recordFailure(ctx context.Context, category, eventCode, message, entityID, email string, details map[string]any) {
@@ -2022,6 +2034,42 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 			caps["tenant_user_emails"] = tenantEmails
 		}
 	}
+	if s != nil && s.admins != nil {
+		if admins, err := s.admins.ListAllTenantAdmins(ctx); err == nil {
+			tenantEmails, _ := caps["tenant_user_emails"].(map[string][]string)
+			if tenantEmails == nil {
+				tenantEmails = map[string][]string{}
+			}
+			tenantCounts, _ := caps["tenant_user_counts"].(map[string]int)
+			if tenantCounts == nil {
+				tenantCounts = map[string]int{}
+			}
+			userEmails, _ := caps["user_emails"].([]string)
+			for _, admin := range admins {
+				if admin == nil || !strings.EqualFold(strings.TrimSpace(admin.Scope), "tenant") || !strings.EqualFold(strings.TrimSpace(admin.Status), "active") {
+					continue
+				}
+				tenantID := strings.TrimSpace(admin.TenantID)
+				email := normalizeEmail(admin.Email)
+				if tenantID == "" || email == "" {
+					continue
+				}
+				before := len(tenantEmails[tenantID])
+				tenantEmails[tenantID] = appendUniqueSortedEmail(tenantEmails[tenantID], email)
+				userEmails = appendUniqueSortedEmail(userEmails, email)
+				if len(tenantEmails[tenantID]) != before {
+					tenantCounts[tenantID] = len(tenantEmails[tenantID])
+				}
+			}
+			// Keep the aggregate inventory consistent with the tenant inventory.
+			// HubCenter uses tenant_user_emails for exact routes, while user_emails
+			// is also surfaced by legacy and aggregate consumers.
+			caps["user_emails"] = userEmails
+			caps["user_count"] = len(userEmails)
+			caps["tenant_user_emails"] = tenantEmails
+			caps["tenant_user_counts"] = tenantCounts
+		}
+	}
 	if s != nil && s.tenants != nil {
 		if tenants, err := s.tenants.List(ctx); err == nil {
 			tenantDomains := tenantDomainsCapability(caps)
@@ -2630,6 +2678,21 @@ func appendUniqueSorted(values []string, value string) []string {
 	}
 	for _, existing := range values {
 		if existing == value {
+			return values
+		}
+	}
+	values = append(values, value)
+	sort.Strings(values)
+	return values
+}
+
+func appendUniqueSortedEmail(values []string, value string) []string {
+	value = normalizeEmail(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if normalizeEmail(existing) == value {
 			return values
 		}
 	}

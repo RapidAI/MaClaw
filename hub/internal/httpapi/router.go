@@ -293,16 +293,16 @@ func NewRouter(
 		mux.HandleFunc("GET /api/admin/login/tenants", AdminLoginTenantsHandler(tenantRepo))
 	}
 	mux.HandleFunc("POST /api/admin/password", requireAdmin(AdminChangePasswordHandler(admins)))
-	mux.HandleFunc("POST /api/admin/profile", requireAdmin(AdminUpdateProfileHandler(admins)))
+	mux.HandleFunc("POST /api/admin/profile", requireAdmin(AdminUpdateProfileHandler(admins, centerSvc)))
 	if tenantRepo != nil {
 		mux.HandleFunc("GET /api/admin/tenants", requireGlobalAdmin(AdminTenantsListWithAuthHandler(tenantRepo, centerSvc, nil, hubDB)))
-		mux.HandleFunc("POST /api/admin/tenants", requireGlobalAdmin(AdminTenantCreateWithPlatformCallbackHandler(system, tenantRepo, admins, adminAudit)))
+		mux.HandleFunc("POST /api/admin/tenants", requireGlobalAdmin(AdminTenantCreateWithPlatformCallbackHandler(system, tenantRepo, admins, adminAudit, centerSvc)))
 		mux.HandleFunc("GET /api/admin/tenants/{tenantId}", requireAdmin(AdminTenantDetailHandler(tenantRepo)))
 		mux.HandleFunc("PATCH /api/admin/tenants/{tenantId}/domains", requireAdmin(AdminTenantDomainsUpdateWithPlatformCallbackHandler(system, tenantRepo, adminAudit)))
 		mux.HandleFunc("PATCH /api/admin/tenants/{tenantId}/status", requireGlobalAdmin(AdminTenantStatusUpdateWithPlatformCallbackHandler(system, adminAudit, tenantRepo, tenantIMRuntimeStopper)))
 		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/merge", requireGlobalAdmin(AdminTenantMergeHandler(hubDB, tenantRepo, adminAudit, tenantIMRuntimeStopper)))
 		mux.HandleFunc("DELETE /api/admin/tenants/{tenantId}", requireGlobalAdmin(AdminTenantDeleteWithPlatformCallbackHandler(system, adminAudit, admins, hubDB, centerSvc, tenantRepo, tenantIMRuntimeStopper)))
-		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/admins", requireAdmin(AdminTenantAdminCreateHandler(tenantRepo, admins, adminAudit)))
+		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/admins", requireAdmin(AdminTenantAdminCreateHandler(tenantRepo, admins, adminAudit, centerSvc)))
 	}
 	mux.HandleFunc("GET /api/admin/debug/machines", requireAdmin(DebugListMachinesHandler(deviceSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/debug/machine-events", requireAdmin(DebugListMachineEventsHandler(deviceSvc)))

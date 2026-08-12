@@ -45,6 +45,14 @@ func (f fakeCenterTenants) List(context.Context) ([]*store.Tenant, error) {
 	return f.items, nil
 }
 
+type fakeCenterTenantAdmins struct {
+	items []*store.AdminUser
+}
+
+func (f fakeCenterTenantAdmins) ListAllTenantAdmins(context.Context) ([]*store.AdminUser, error) {
+	return f.items, nil
+}
+
 type fakeCenterUsage struct {
 	tokenRows    []store.UserTokenSummary
 	durationRows []store.UserDurationSummary
@@ -138,6 +146,37 @@ func TestSyncUserRouteReportsMissingCenterRegistration(t *testing.T) {
 	err := svc.SyncUserRouteReplaceAll(context.Background(), "phone:19900001111", store.DefaultTenantID)
 	if err == nil || !strings.Contains(err.Error(), "hub center registration is missing or incomplete") {
 		t.Fatalf("SyncUserRouteReplaceAll() error = %v, want missing registration", err)
+	}
+}
+
+func TestRegistrationCapabilitiesIncludeActiveTenantAdmins(t *testing.T) {
+	svc := NewService(config.Default(), newFakeSettingsRepo())
+	svc.SetStatsProviders(fakeCenterUsers{items: []*store.User{
+		{TenantID: "tenant_acme", Email: "member@acme.example"},
+	}}, nil)
+	svc.SetTenantAdminProvider(fakeCenterTenantAdmins{items: []*store.AdminUser{
+		{Scope: "tenant", TenantID: "tenant_acme", Email: "Admin@Acme.Example", Status: "active"},
+		{Scope: "tenant", TenantID: "tenant_acme", Email: "disabled@acme.example", Status: "disabled"},
+		{Scope: "global", Email: "global@example.com", Status: "active"},
+	}})
+
+	caps := svc.registrationCapabilities(context.Background())
+	byTenant, ok := caps["tenant_user_emails"].(map[string][]string)
+	if !ok {
+		t.Fatalf("tenant_user_emails type=%T", caps["tenant_user_emails"])
+	}
+	if got := byTenant["tenant_acme"]; len(got) != 2 || got[0] != "admin@acme.example" || got[1] != "member@acme.example" {
+		t.Fatalf("tenant admin inventory=%#v", byTenant)
+	}
+	counts, ok := caps["tenant_user_counts"].(map[string]int)
+	if !ok || counts["tenant_acme"] != 2 {
+		t.Fatalf("tenant user counts=%#v", caps["tenant_user_counts"])
+	}
+	if got, ok := caps["user_emails"].([]string); !ok || len(got) != 2 || got[0] != "admin@acme.example" || got[1] != "member@acme.example" {
+		t.Fatalf("aggregate user inventory=%#v", caps["user_emails"])
+	}
+	if got, ok := caps["user_count"].(int); !ok || got != 2 {
+		t.Fatalf("aggregate user count=%#v", caps["user_count"])
 	}
 }
 

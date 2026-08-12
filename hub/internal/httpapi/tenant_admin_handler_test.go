@@ -102,6 +102,25 @@ type tenantAdminHandlerTestStopper struct {
 	calls    int
 }
 
+type tenantAdminHandlerRouteSyncer struct {
+	calls []tenantAdminHandlerRouteSyncCall
+	err   error
+}
+
+type tenantAdminHandlerRouteSyncCall struct {
+	email    string
+	tenantID string
+}
+
+func (s *tenantAdminHandlerRouteSyncer) SyncUserRoute(_ context.Context, email string, tenantIDOpt ...string) error {
+	tenantID := ""
+	if len(tenantIDOpt) > 0 {
+		tenantID = tenantIDOpt[0]
+	}
+	s.calls = append(s.calls, tenantAdminHandlerRouteSyncCall{email: email, tenantID: tenantID})
+	return s.err
+}
+
 func (s *tenantAdminHandlerTestStopper) StopTenantIMs(_ context.Context, tenantID string) {
 	s.tenantID = tenantID
 	s.calls++
@@ -362,6 +381,67 @@ func TestTenantAdminCreateAllowsDefaultTenant(t *testing.T) {
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte(`"tenant_id":"`+store.DefaultTenantID+`"`)) {
 		t.Fatalf("response missing default tenant admin: %s", rec.Body.String())
+	}
+}
+
+func TestTenantCreateSyncsInitialAdminRoute(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{}}
+	ctx := newAdminRouterTestContext(t)
+	syncer := &tenantAdminHandlerRouteSyncer{}
+	rec := httptest.NewRecorder()
+
+	AdminTenantCreateHandler(repo, ctx.admins, nil, syncer)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "route-sync",
+		"name":                   "Route Sync Corp",
+		"initial_admin_username": "route-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "Owner@Example.com",
+	}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("tenant create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(syncer.calls) != 1 || syncer.calls[0].email != "owner@example.com" || syncer.calls[0].tenantID != "tenant_route-sync" {
+		t.Fatalf("route sync calls=%#v", syncer.calls)
+	}
+}
+
+func TestTenantAdminCreateSyncsRoute(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "a", Name: "Tenant A", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	ctx := newAdminRouterTestContext(t)
+	syncer := &tenantAdminHandlerRouteSyncer{}
+	globalAdmin := &store.AdminUser{Scope: "global", ID: "admin"}
+	rec := httptest.NewRecorder()
+
+	AdminTenantAdminCreateHandler(repo, ctx.admins, nil, syncer)(rec, tenantAdminHandlerReqWithScope(http.MethodPost, "/api/admin/tenants/tenant_a/admins", map[string]any{
+		"username": "tenant-admin",
+		"password": "StrongPassword123!",
+		"email":    "Admin@Example.com",
+	}, globalAdmin, "tenant_a"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("tenant admin create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(syncer.calls) != 1 || syncer.calls[0].email != "admin@example.com" || syncer.calls[0].tenantID != "tenant_a" {
+		t.Fatalf("route sync calls=%#v", syncer.calls)
+	}
+}
+
+func TestTenantAdminProfileEmailUpdateSyncsRoute(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	created, err := ctx.admins.CreateTenantAdmin(context.Background(), "tenant_profile", "profile-admin", "StrongPassword123!", "old@example.com", "", "tenant_owner")
+	if err != nil {
+		t.Fatalf("create tenant admin: %v", err)
+	}
+	syncer := &tenantAdminHandlerRouteSyncer{}
+	rec := httptest.NewRecorder()
+
+	AdminUpdateProfileHandler(ctx.admins, syncer)(rec, tenantAdminHandlerReqWithScope(http.MethodPost, "/api/admin/profile", map[string]any{
+		"email": "New@Example.com",
+	}, created, "tenant_profile"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("profile update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(syncer.calls) != 1 || syncer.calls[0].email != "new@example.com" || syncer.calls[0].tenantID != "tenant_profile" {
+		t.Fatalf("route sync calls=%#v", syncer.calls)
 	}
 }
 

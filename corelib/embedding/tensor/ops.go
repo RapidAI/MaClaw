@@ -122,7 +122,6 @@ type f32RangeTask struct {
 	out, a, b, bias []float32
 	M, N, K         int
 	add             bool
-	wg              sync.WaitGroup
 }
 
 func (t *f32RangeTask) runRange(ns, ne int) {
@@ -151,7 +150,11 @@ func matMulF32ParallelN(out, a, b, bias []float32, M, N, K int, add bool) {
 	// and fields must remain intact until all queued ranges finish.
 	t.out, t.a, t.b, t.bias = out, a, b, bias
 	t.M, t.N, t.K, t.add = M, N, K, add
-	t.wg.Add(nw)
+	// Keep the completion counter local to this invocation. The task itself is
+	// pooled, so embedding the WaitGroup makes a stale queued job capable of
+	// observing fields after a later caller has checked the task out again.
+	var wg sync.WaitGroup
+	wg.Add(nw)
 	chunk := (N + nw - 1) / nw
 	ensureMatmulPool()
 	for w := 0; w < nw; w++ {
@@ -159,9 +162,9 @@ func matMulF32ParallelN(out, a, b, bias []float32, M, N, K int, add bool) {
 		if e > N {
 			e = N
 		}
-		jobQueue <- matmulRangeJob{start: s, end: e, task: t, wg: &t.wg}
+		jobQueue <- matmulRangeJob{start: s, end: e, task: t, wg: &wg}
 	}
-	t.wg.Wait()
+	wg.Wait()
 	t.out, t.a, t.b, t.bias = nil, nil, nil, nil
 	f32RangeTaskPool.Put(t)
 }
@@ -191,10 +194,28 @@ func matMulRangeDual(out, a, b, bias []float32, M, N, K, ns, ne int) {
 	var d2 [4]float32
 	var d8 [8]float32
 	var dDual0, dDual1 [8]float32
+	var dTri0, dTri1 [12]float32
+	// PP-OCR pointwise projections repeatedly use these feature widths. The
+	// AVX2 triple-B kernel amortizes each A-panel load over three output
+	// channels; for the 8-row main tile this avoids the extra A pass that a
+	// dual-B pair plus singleton column requires.
+	useTriple := K == 96 || K == 120 || K == 192 || K == 384
 	m := 0
 	for ; m+7 < M; m += 8 {
 		aPanel := a[m*K : (m+8)*K]
 		n := ns
+		if useTriple {
+			for ; n+2 < ne; n += 3 {
+				bn0, bn1, bn2 := float32(0), float32(0), float32(0)
+				if bias != nil {
+					bn0, bn1, bn2 = bias[n], bias[n+1], bias[n+2]
+				}
+				multiDot8TripleB(&dTri0, &dTri1, aPanel,
+					b[n*K:n*K+K], b[(n+1)*K:(n+1)*K+K], b[(n+2)*K:(n+2)*K+K], K)
+				storeF32Triple4(out, m, n, N, &dTri0, bn0, bn1, bn2)
+				storeF32Triple4(out, m+4, n, N, &dTri1, bn0, bn1, bn2)
+			}
+		}
 		for ; n+1 < ne; n += 2 {
 			bn0, bn1 := float32(0), float32(0)
 			if bias != nil {
@@ -292,6 +313,20 @@ func storeF32Dual4(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32) 
 	out[base+n+1] = d[7] + bn1
 }
 
+func storeF32Triple4(out []float32, m, n, N int, d *[12]float32, bn0, bn1, bn2 float32) {
+	base := m * N
+	out[base+n], out[base+n+1], out[base+n+2] = d[0]+bn0, d[4]+bn1, d[8]+bn2
+	base += N
+	out[base+n], out[base+n+1], out[base+n+2] = d[1]+bn0, d[5]+bn1, d[9]+bn2
+	base += N
+	out[base+n], out[base+n+1], out[base+n+2] = d[2]+bn0, d[6]+bn1, d[10]+bn2
+	base += N
+	out[base+n], out[base+n+1], out[base+n+2] = d[3]+bn0, d[7]+bn1, d[11]+bn2
+}
+
+// storeF32Dual4Rows stores a two-column result with one bias per output row.
+// This is the bias orientation used by convolution: each matrix row is an
+// output channel and each matrix column is a spatial location.
 func storeF32Dual4Add(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32) {
 	base := m * N
 	out[base+n] += d[0] + bn0

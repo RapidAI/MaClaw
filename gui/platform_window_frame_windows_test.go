@@ -219,6 +219,17 @@ func TestSoundUpdateKeepsPetFrameCaches(t *testing.T) {
 	}
 }
 
+func TestSoundConfigInvalidatesQueuedPetTone(t *testing.T) {
+	w := &windowsFloatingWindow{
+		petMotionSound:  true,
+		soundGeneration: 4,
+	}
+	w.UpdateSoundConfig(false, "soft")
+	if w.soundGeneration != 5 {
+		t.Fatalf("sound update generation = %d, want 5", w.soundGeneration)
+	}
+}
+
 func TestMotionUpdateKeepsPetFrameCaches(t *testing.T) {
 	key := petFrameCacheKey{State: "idle"}
 	frame := image.NewNRGBA(image.Rect(0, 0, 1, 1))

@@ -140,6 +140,470 @@ func TestBatchNormFoldSkipsGraphOutput(t *testing.T) {
 	}
 }
 
+// TestBatchNormFoldSharedBiasIsAtomic verifies that a rejected BN fold does
+// not partially scale the Conv weights before discovering that the Conv bias
+// is shared by another node.
+func TestBatchNormFoldSharedBiasIsAtomic(t *testing.T) {
+	m := &Model{Opset: 13, Graph: &GraphProto{
+		Nodes: []*Node{
+			{Name: "conv", OpType: "Conv", Inputs: []string{"x", "w", "b"}, Outputs: []string{"c"}, Attrs: map[string]Attr{}},
+			{Name: "bn", OpType: "BatchNormalization",
+				Inputs:  []string{"c", "scale", "beta", "mean", "var"},
+				Outputs: []string{"y"},
+				Attrs:   map[string]Attr{"epsilon": {Type: attrTypeFloat, F: 0}}},
+			// Keeping this Identity output makes b have a second consumer after
+			// load-time identity elimination.
+			{Name: "bias_tap", OpType: "Identity", Inputs: []string{"b"}, Outputs: []string{"b_tap"}, Attrs: map[string]Attr{}},
+		},
+		Initializers: map[string]*TensorProto{
+			"w":     f32Init("w", []int64{1, 1, 1, 1}, []float32{3}),
+			"b":     f32Init("b", []int64{1}, []float32{1}),
+			"scale": f32Init("scale", []int64{1}, []float32{4}),
+			"beta":  f32Init("beta", []int64{1}, []float32{0}),
+			"mean":  f32Init("mean", []int64{1}, []float32{0.5}),
+			"var":   f32Init("var", []int64{1}, []float32{4}),
+		},
+		Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+		Outputs: []ValueInfo{{Name: "y"}, {Name: "b_tap"}},
+	}}
+
+	outs := runModel(t, m, FloatFrom([]float32{2}, 1, 1, 1, 1))
+	// The unfused result is BN(3*2 + 1) = (7 - 0.5) * 4 / sqrt(4) = 13.
+	// Before the fix, W was scaled to 6 even though the fold was rejected,
+	// yielding 25 after the still-present BN.
+	wantF32(t, outs["y"], []float32{13})
+	wantF32(t, outs["b_tap"], []float32{1})
+}
+
+// TestBatchNormFoldInvalidVarianceIsAtomic checks that an invalid BN
+// denominator leaves the Conv untouched. The fallback BatchNorm kernel still
+// produces NaN, but fusion must never turn that into permanently corrupted
+// weights or biases.
+func TestBatchNormFoldInvalidVarianceIsAtomic(t *testing.T) {
+	m := &Model{Opset: 13, Graph: &GraphProto{
+		Nodes: []*Node{
+			{Name: "conv", OpType: "Conv", Inputs: []string{"x", "w", "b"}, Outputs: []string{"c"}, Attrs: map[string]Attr{}},
+			{Name: "bn", OpType: "BatchNormalization", Inputs: []string{"c", "scale", "beta", "mean", "var"}, Outputs: []string{"y"}, Attrs: map[string]Attr{}},
+		},
+		Initializers: map[string]*TensorProto{
+			"w":     f32Init("w", []int64{1, 1, 1, 1}, []float32{3}),
+			"b":     f32Init("b", []int64{1}, []float32{1}),
+			"scale": f32Init("scale", []int64{1}, []float32{4}),
+			"beta":  f32Init("beta", []int64{1}, []float32{0}),
+			"mean":  f32Init("mean", []int64{1}, []float32{0}),
+			"var":   f32Init("var", []int64{1}, []float32{-2}),
+		},
+		Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+		Outputs: []ValueInfo{{Name: "y"}},
+	}}
+
+	g, err := NewGraph(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantF32(t, g.initializers["w"], []float32{3})
+	wantF32(t, g.initializers["b"], []float32{1})
+}
+
+// TestBatchNormFoldBiasOverflowIsAtomic checks the final fused bias before
+// weights are scaled. A finite BN factor can still overflow when applied to a
+// large existing Conv bias.
+func TestBatchNormFoldBiasOverflowIsAtomic(t *testing.T) {
+	m := &Model{Opset: 13, Graph: &GraphProto{
+		Nodes: []*Node{
+			{Name: "conv", OpType: "Conv", Inputs: []string{"x", "w", "b"}, Outputs: []string{"c"}, Attrs: map[string]Attr{}},
+			{Name: "bn", OpType: "BatchNormalization", Inputs: []string{"c", "scale", "beta", "mean", "var"}, Outputs: []string{"y"}, Attrs: map[string]Attr{}},
+		},
+		Initializers: map[string]*TensorProto{
+			"w":     f32Init("w", []int64{1, 1, 1, 1}, []float32{3}),
+			"b":     f32Init("b", []int64{1}, []float32{math.MaxFloat32}),
+			"scale": f32Init("scale", []int64{1}, []float32{2}),
+			"beta":  f32Init("beta", []int64{1}, []float32{0}),
+			"mean":  f32Init("mean", []int64{1}, []float32{0}),
+			"var":   f32Init("var", []int64{1}, []float32{1}),
+		},
+		Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+		Outputs: []ValueInfo{{Name: "y"}},
+	}}
+
+	g, err := NewGraph(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.proto.Nodes) != 2 {
+		t.Fatalf("overflowing BN fold should be skipped, got %d nodes", len(g.proto.Nodes))
+	}
+	wantF32(t, g.initializers["w"], []float32{3})
+	wantF32(t, g.initializers["b"], []float32{math.MaxFloat32})
+}
+
+// TestBatchNormFoldWeightOverflowIsAtomic covers overflow in a rewritten
+// weight rather than the bias path.
+func TestBatchNormFoldWeightOverflowIsAtomic(t *testing.T) {
+	m := &Model{Opset: 13, Graph: &GraphProto{
+		Nodes: []*Node{
+			{Name: "conv", OpType: "Conv", Inputs: []string{"x", "w"}, Outputs: []string{"c"}, Attrs: map[string]Attr{}},
+			{Name: "bn", OpType: "BatchNormalization", Inputs: []string{"c", "scale", "beta", "mean", "var"}, Outputs: []string{"y"}, Attrs: map[string]Attr{}},
+		},
+		Initializers: map[string]*TensorProto{
+			"w":     f32Init("w", []int64{1, 1, 1, 1}, []float32{math.MaxFloat32}),
+			"scale": f32Init("scale", []int64{1}, []float32{2}),
+			"beta":  f32Init("beta", []int64{1}, []float32{0}),
+			"mean":  f32Init("mean", []int64{1}, []float32{0}),
+			"var":   f32Init("var", []int64{1}, []float32{1}),
+		},
+		Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+		Outputs: []ValueInfo{{Name: "y"}},
+	}}
+
+	g, err := NewGraph(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.proto.Nodes) != 2 {
+		t.Fatalf("overflowing BN fold should be skipped, got %d nodes", len(g.proto.Nodes))
+	}
+	wantF32(t, g.initializers["w"], []float32{math.MaxFloat32})
+}
+
+// TestBatchNormFoldAvoidsExistingFusedBiasName ensures auto-created Conv
+// biases never overwrite an unrelated initializer that happens to use the
+// conventional generated name.
+func TestBatchNormFoldAvoidsExistingFusedBiasName(t *testing.T) {
+	m := &Model{Opset: 13, Graph: &GraphProto{
+		Nodes: []*Node{
+			conv1x1Node("conv", "x", "c"),
+			{Name: "bn", OpType: "BatchNormalization",
+				Inputs:  []string{"c", "scale", "beta", "mean", "var"},
+				Outputs: []string{"y"},
+				Attrs:   map[string]Attr{"epsilon": {Type: attrTypeFloat, F: 0}}},
+			{Name: "name_tap", OpType: "Identity", Inputs: []string{"w.fused_bias"}, Outputs: []string{"name_tap"}, Attrs: map[string]Attr{}},
+		},
+		Initializers: map[string]*TensorProto{
+			"w":            f32Init("w", []int64{1, 1, 1, 1}, []float32{3}),
+			"w.fused_bias": f32Init("w.fused_bias", []int64{1}, []float32{99}),
+			"scale":        f32Init("scale", []int64{1}, []float32{4}),
+			"beta":         f32Init("beta", []int64{1}, []float32{0}),
+			"mean":         f32Init("mean", []int64{1}, []float32{0.5}),
+			"var":          f32Init("var", []int64{1}, []float32{4}),
+		},
+		Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+		Outputs: []ValueInfo{{Name: "y"}, {Name: "name_tap"}},
+	}}
+
+	outs := runModel(t, m, FloatFrom([]float32{2}, 1, 1, 1, 1))
+	wantF32(t, outs["y"], []float32{11})
+	wantF32(t, outs["name_tap"], []float32{99})
+}
+
+// TestFusionSkipsMissingPrimaryOutputs verifies load-time fusion treats
+// malformed/incomplete nodes as non-matches instead of indexing Outputs[0]
+// and panicking. Validation or execution can still report the malformed graph
+// through the normal error paths.
+func TestFusionSkipsMissingPrimaryOutputs(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		nodes []*Node
+	}{
+		{
+			name: "batch_norm",
+			nodes: []*Node{
+				conv1x1Node("conv", "x", "c"),
+				{Name: "bn", OpType: "BatchNormalization", Inputs: []string{"c", "scale", "beta", "mean", "var"}, Attrs: map[string]Attr{}},
+			},
+		},
+		{
+			name: "conv",
+			nodes: []*Node{
+				{Name: "conv", OpType: "Conv", Inputs: []string{"x", "w"}, Attrs: map[string]Attr{}},
+			},
+		},
+		{
+			name: "pre_conv_norm",
+			nodes: []*Node{
+				{Name: "mul", OpType: "Mul", Inputs: []string{"x", "k"}, Outputs: []string{"m"}, Attrs: map[string]Attr{}},
+				{Name: "conv", OpType: "Conv", Inputs: []string{"m", "w"}, Attrs: map[string]Attr{}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &Model{Opset: 13, Graph: &GraphProto{
+				Nodes: tc.nodes,
+				Initializers: map[string]*TensorProto{
+					"w":     f32Init("w", []int64{1, 1, 1, 1}, []float32{1}),
+					"k":     f32Init("k", []int64{1}, []float32{1}),
+					"scale": f32Init("scale", []int64{1}, []float32{1}),
+					"beta":  f32Init("beta", []int64{1}, []float32{0}),
+					"mean":  f32Init("mean", []int64{1}, []float32{0}),
+					"var":   f32Init("var", []int64{1}, []float32{1}),
+				},
+				Inputs: []ValueInfo{in4D("x", 1, 1, 1, 1)},
+			}}
+			if _, err := NewGraph(m); err != nil {
+				t.Fatalf("NewGraph returned an error instead of safely skipping fusion: %v", err)
+			}
+		})
+	}
+}
+
+// TestConvBiasFoldSkipsMalformedWeights checks that fusion leaves malformed
+// Conv weights to the Conv kernel's normal validation instead of indexing an
+// absent weight dimension while trying to infer the output channel count.
+func TestConvBiasFoldSkipsMalformedWeights(t *testing.T) {
+	m := &Model{Opset: 13, Graph: &GraphProto{
+		Nodes: []*Node{
+			{Name: "conv", OpType: "Conv", Inputs: []string{"x", "w"}, Outputs: []string{"c"}, Attrs: map[string]Attr{}},
+			{Name: "add", OpType: "Add", Inputs: []string{"c", "k"}, Outputs: []string{"y"}, Attrs: map[string]Attr{}},
+		},
+		Initializers: map[string]*TensorProto{
+			"w": f32Init("w", []int64{1}, []float32{3}),
+			"k": f32Init("k", []int64{1}, []float32{1}),
+		},
+		Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+		Outputs: []ValueInfo{{Name: "y"}},
+	}}
+	if _, err := NewGraph(m); err != nil {
+		t.Fatalf("NewGraph returned an error instead of safely skipping fusion: %v", err)
+	}
+}
+
+// TestConvBiasFoldOverflowIsAtomic makes sure Conv + Add/Sub does not scale
+// down to a partially rewritten graph when its folded bias becomes non-finite.
+func TestConvBiasFoldOverflowIsAtomic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   string
+		k    float32
+	}{
+		{name: "add", op: "Add", k: math.MaxFloat32},
+		{name: "sub", op: "Sub", k: -math.MaxFloat32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &Model{Opset: 13, Graph: &GraphProto{
+				Nodes: []*Node{
+					{Name: "conv", OpType: "Conv", Inputs: []string{"x", "w", "b"}, Outputs: []string{"c"}, Attrs: map[string]Attr{}},
+					{Name: "bias", OpType: tc.op, Inputs: []string{"c", "k"}, Outputs: []string{"y"}, Attrs: map[string]Attr{}},
+				},
+				Initializers: map[string]*TensorProto{
+					"w": f32Init("w", []int64{1, 1, 1, 1}, []float32{2}),
+					"b": f32Init("b", []int64{1}, []float32{math.MaxFloat32}),
+					"k": f32Init("k", []int64{1}, []float32{tc.k}),
+				},
+				Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+				Outputs: []ValueInfo{{Name: "y"}},
+			}}
+			g, err := NewGraph(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(g.proto.Nodes) != 2 {
+				t.Fatalf("overflowing bias fold should be skipped, got %d nodes", len(g.proto.Nodes))
+			}
+			wantF32(t, g.initializers["b"], []float32{math.MaxFloat32})
+		})
+	}
+}
+
+// TestFusionSkipsZeroOutputChannelWeights makes zero-sized weight tensors a
+// non-match for fusions that divide by or allocate per output channel. Model
+// validation/execution owns the remaining semantics; the optimizer must not
+// panic while inspecting an incomplete graph.
+func TestFusionSkipsZeroOutputChannelWeights(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		nodes []*Node
+	}{
+		{
+			name: "batch_norm",
+			nodes: []*Node{
+				{Name: "conv", OpType: "Conv", Inputs: []string{"x", "w"}, Outputs: []string{"c"}, Attrs: map[string]Attr{}},
+				{Name: "bn", OpType: "BatchNormalization", Inputs: []string{"c", "scale", "beta", "mean", "var"}, Outputs: []string{"y"}, Attrs: map[string]Attr{}},
+			},
+		},
+		{
+			name: "pre_conv_norm",
+			nodes: []*Node{
+				{Name: "mul", OpType: "Mul", Inputs: []string{"x", "k"}, Outputs: []string{"m"}, Attrs: map[string]Attr{}},
+				{Name: "conv", OpType: "Conv", Inputs: []string{"m", "w"}, Outputs: []string{"y"}, Attrs: map[string]Attr{}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &Model{Opset: 13, Graph: &GraphProto{
+				Nodes: tc.nodes,
+				Initializers: map[string]*TensorProto{
+					"w":     f32Init("w", []int64{0, 1, 1, 1}, nil),
+					"k":     f32Init("k", []int64{1}, []float32{1}),
+					"scale": f32Init("scale", []int64{0}, nil),
+					"beta":  f32Init("beta", []int64{0}, nil),
+					"mean":  f32Init("mean", []int64{0}, nil),
+					"var":   f32Init("var", []int64{0}, nil),
+				},
+				Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+				Outputs: []ValueInfo{{Name: "y"}},
+			}}
+			if _, err := NewGraph(m); err != nil {
+				t.Fatalf("NewGraph panicked or rejected a safe fusion skip: %v", err)
+			}
+		})
+	}
+}
+
+// TestAffineFoldsPreserveNonFiniteAndDivideByZeroPaths keeps constants whose
+// IEEE behavior is sensitive to reassociation on the original graph. In
+// particular, folding x/0 into weights can change where NaNs arise.
+func TestAffineFoldsPreserveNonFiniteAndDivideByZeroPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   string
+		k    float32
+	}{
+		{name: "divide_by_zero", op: "Div", k: 0},
+		{name: "nan_bias", op: "Add", k: float32(math.NaN())},
+		{name: "infinite_bias", op: "Add", k: float32(math.Inf(1))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &Model{Opset: 13, Graph: &GraphProto{
+				Nodes: []*Node{
+					{Name: "affine", OpType: tc.op, Inputs: []string{"x", "k"}, Outputs: []string{"a"}, Attrs: map[string]Attr{}},
+					conv1x1Node("conv", "a", "y"),
+				},
+				Initializers: map[string]*TensorProto{
+					"w": f32Init("w", []int64{1, 1, 1, 1}, []float32{2}),
+					"k": f32Init("k", []int64{1}, []float32{tc.k}),
+				},
+				Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+				Outputs: []ValueInfo{{Name: "y"}},
+			}}
+			g, err := NewGraph(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(g.proto.Nodes) != 2 {
+				t.Fatalf("unexpected affine fusion: got %d nodes, want 2", len(g.proto.Nodes))
+			}
+			wantF32(t, g.initializers["w"], []float32{2})
+		})
+	}
+}
+
+// TestPreConvNormFoldOverflowIsAtomic checks both mutable outputs of the
+// affine fold. A large finite scale or bias correction must not leave a Conv
+// partially rewritten when its float32 result becomes infinite.
+func TestPreConvNormFoldOverflowIsAtomic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   string
+		k    float32
+		w    float32
+	}{
+		{name: "weight", op: "Mul", k: 2, w: math.MaxFloat32},
+		{name: "bias", op: "Add", k: math.MaxFloat32, w: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &Model{Opset: 13, Graph: &GraphProto{
+				Nodes: []*Node{
+					{Name: "affine", OpType: tc.op, Inputs: []string{"x", "k"}, Outputs: []string{"a"}, Attrs: map[string]Attr{}},
+					{Name: "conv", OpType: "Conv", Inputs: []string{"a", "w", "b"}, Outputs: []string{"y"}, Attrs: map[string]Attr{}},
+				},
+				Initializers: map[string]*TensorProto{
+					"w": f32Init("w", []int64{1, 1, 1, 1}, []float32{tc.w}),
+					"b": f32Init("b", []int64{1}, []float32{math.MaxFloat32}),
+					"k": f32Init("k", []int64{1}, []float32{tc.k}),
+				},
+				Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+				Outputs: []ValueInfo{{Name: "y"}},
+			}}
+			g, err := NewGraph(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(g.proto.Nodes) != 2 {
+				t.Fatalf("overflowing pre-conv fold should be skipped, got %d nodes", len(g.proto.Nodes))
+			}
+			wantF32(t, g.initializers["w"], []float32{tc.w})
+			wantF32(t, g.initializers["b"], []float32{math.MaxFloat32})
+		})
+	}
+}
+
+// TestPreConvNormFoldBiasUsesFloat32Order locks the fold to the Conv kernel's
+// float32 accumulation order. Summing in float64 and rounding only once can
+// produce a different folded bias from the actual scalar Conv computation.
+func TestPreConvNormFoldBiasUsesFloat32Order(t *testing.T) {
+	m := &Model{Opset: 13, Graph: &GraphProto{
+		Nodes: []*Node{
+			{Name: "add", OpType: "Add", Inputs: []string{"x", "k"}, Outputs: []string{"a"}, Attrs: map[string]Attr{}},
+			{Name: "conv", OpType: "Conv", Inputs: []string{"a", "w"}, Outputs: []string{"y"}, Attrs: map[string]Attr{}},
+		},
+		Initializers: map[string]*TensorProto{
+			// float32 summation: 1e8 + 1 + -1e8 == 0, while summing the same
+			// values in float64 before one final cast would produce 1.
+			"w": f32Init("w", []int64{1, 3, 1, 1}, []float32{1e8, 1, -1e8}),
+			"k": f32Init("k", []int64{1}, []float32{1}),
+		},
+		Inputs:  []ValueInfo{in4D("x", 1, 3, 1, 1)},
+		Outputs: []ValueInfo{{Name: "y"}},
+	}}
+	g, err := NewGraph(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantF32(t, g.initializers["w.fused_bias"], []float32{0})
+}
+
+// TestFusionRequiresOnePrimaryOutput ensures fusions do not discard or
+// replace malformed nodes whose output arity differs from the ONNX operator
+// contract. They must remain available to the normal executor/validator.
+func TestFusionRequiresOnePrimaryOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		nodes     []*Node
+		wantNodes int
+	}{
+		{
+			name: "conv_bias_add_without_output",
+			nodes: []*Node{
+				conv1x1Node("conv", "x", "c"),
+				{Name: "add", OpType: "Add", Inputs: []string{"c", "k"}, Attrs: map[string]Attr{}},
+			},
+			// DCE removes the malformed, unused Add afterwards; reaching this
+			// point without a fusion-time Outputs[0] panic is the assertion.
+			wantNodes: 0,
+		},
+		{
+			name: "relu_with_extra_output",
+			nodes: []*Node{
+				conv1x1Node("conv", "x", "c"),
+				{Name: "relu", OpType: "Relu", Inputs: []string{"c"}, Outputs: []string{"y", "extra"}, Attrs: map[string]Attr{}},
+			},
+			wantNodes: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &Model{Opset: 13, Graph: &GraphProto{
+				Nodes: tc.nodes,
+				Initializers: map[string]*TensorProto{
+					"w": f32Init("w", []int64{1, 1, 1, 1}, []float32{2}),
+					"k": f32Init("k", []int64{1}, []float32{1}),
+				},
+				Inputs:  []ValueInfo{in4D("x", 1, 1, 1, 1)},
+				Outputs: []ValueInfo{{Name: "y"}, {Name: "extra"}},
+			}}
+			g, err := NewGraph(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(g.proto.Nodes) != tc.wantNodes {
+				t.Fatalf("fused malformed node: got %d nodes, want %d", len(g.proto.Nodes), tc.wantNodes)
+			}
+			if len(g.epilogues) != 0 {
+				t.Fatalf("recorded epilogue for malformed node: %v", g.epilogues)
+			}
+		})
+	}
+}
+
 // TestPreConvNormFoldSkipsGraphOutput: Mul(x, k) feeds a Conv but the Mul
 // output is a graph output; the chain fold must not remove it.
 func TestPreConvNormFoldSkipsGraphOutput(t *testing.T) {

@@ -658,6 +658,60 @@ func TestGlobalAdminCanDeactivateReactivateAndDeleteTenant(t *testing.T) {
 	}
 }
 
+func TestTenantDeleteCleansRouteForAdminWithoutUserRecord(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, ctx.handler)
+	if err := ctx.store.Tenants.Create(context.Background(), &store.Tenant{ID: "tenant_route_cleanup", Slug: "route-cleanup", Name: "Route Cleanup", Status: "active", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if _, err := ctx.admins.CreateTenantAdmin(context.Background(), "tenant_route_cleanup", "route-admin", "TenantPass123!", "route-admin@example.com", "", "tenant_owner"); err != nil {
+		t.Fatalf("create tenant admin: %v", err)
+	}
+
+	deleted := make(chan struct {
+		email    string
+		tenantID string
+	}, 1)
+	centerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/hubs/hub_route_cleanup/user-links/sync" {
+			http.NotFound(w, r)
+			return
+		}
+		var payload struct {
+			Email    string `json:"email"`
+			TenantID string `json:"tenant_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode route deletion: %v", err)
+		}
+		deleted <- struct {
+			email    string
+			tenantID string
+		}{payload.Email, payload.TenantID}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer centerServer.Close()
+	if err := ctx.store.System.Set(context.Background(), "center_base_url", `{"value":"`+centerServer.URL+`"}`); err != nil {
+		t.Fatalf("set center url: %v", err)
+	}
+	if err := ctx.store.System.Set(context.Background(), "center_registration", `{"registered":true,"hub_id":"hub_route_cleanup","hub_secret":"secret"}`); err != nil {
+		t.Fatalf("set center registration: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, ctx.handler, http.MethodDelete, "/api/admin/tenants/tenant_route_cleanup", map[string]any{"password": "StrongPassword123!"}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("delete tenant status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	select {
+	case route := <-deleted:
+		if route.email != "route-admin@example.com" || route.tenantID != "tenant_route_cleanup" {
+			t.Fatalf("deleted route=%+v", route)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("tenant admin route deletion was not sent")
+	}
+}
+
 func waitTenantCallbackStatus(t *testing.T, callbackBodies <-chan map[string]any, want string) {
 	t.Helper()
 	select {

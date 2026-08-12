@@ -219,7 +219,7 @@ describe('AboutPanel', () => {
         expect(screen.getByRole('heading', { name: '虎爪 7 万变' })).toBeTruthy();
     });
 
-    it('renders the MetaStaff product name', () => {
+    it('renders the MetaStaff product name with the version 7 display treatment', () => {
         render(
             <AboutPanel
                 {...baseProps}
@@ -237,7 +237,9 @@ describe('AboutPanel', () => {
             />,
         );
 
-        expect(screen.getByRole('heading', { name: '智员 6 破茧' })).toBeTruthy();
+        const versionMark = screen.getByLabelText('7');
+        expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
+        expect(screen.getByRole('heading', { name: '智员 7 万变' })).toBeTruthy();
     });
 
     it('renders current tenant and registered hub instance name', () => {

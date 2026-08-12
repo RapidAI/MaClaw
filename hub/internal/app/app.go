@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -50,12 +51,17 @@ type App struct {
 
 	// Chat module
 	ChatNotifier *chat.Notifier
+
+	tenantAdminRouteReconciliationOnce sync.Once
 }
 
 func (a *App) StartBackgroundTasks() {
 	if a.CenterService != nil {
 		a.CenterService.StartBackgroundSync()
 	}
+	a.tenantAdminRouteReconciliationOnce.Do(func() {
+		startTenantAdminRouteReconciliationLoop(a.AdminService, a.CenterService)
+	})
 	if a.KnowledgeShares != nil {
 		go a.runKnowledgeShareExpiryCleanup()
 	}

@@ -170,6 +170,36 @@ func recPreprocessInto(resized *image.RGBA, dst []float32, rw int) {
 	}
 }
 
+// recPreprocessPaddedInto normalizes a width-w crop into a wider CHW sample
+// of width rw, writing normalized black (-1) in the unused right edge. It is
+// used by CTC-frame-width batching so preprocessing can write directly into
+// the model input instead of materializing and copying a compact sample.
+func recPreprocessPaddedInto(resized *image.RGBA, dst []float32, w, rw int) {
+	need := 3 * recHeight * rw
+	if w < 0 || w > rw || len(dst) < need {
+		panic("ocr: recPreprocessPaddedInto invalid destination or width")
+	}
+	pix := resized.Pix
+	stride := resized.Stride
+	plane := recHeight * rw
+	for y := 0; y < recHeight; y++ {
+		row := y * stride
+		for x := 0; x < w; x++ {
+			o := row + x*4
+			// Keep the operation order of recPreprocessInto for bit-for-bit
+			// parity with the non-batched path.
+			dst[y*rw+x] = (float32(pix[o+2])/255.0 - 0.5) / 0.5
+			dst[plane+y*rw+x] = (float32(pix[o+1])/255.0 - 0.5) / 0.5
+			dst[2*plane+y*rw+x] = (float32(pix[o])/255.0 - 0.5) / 0.5
+		}
+		for x := w; x < rw; x++ {
+			dst[y*rw+x] = -1
+			dst[plane+y*rw+x] = -1
+			dst[2*plane+y*rw+x] = -1
+		}
+	}
+}
+
 // toRGBA converts any image.Image to a zero-based RGBA image.
 func toRGBA(img image.Image) *image.RGBA {
 	return toRGBAS(img, nil)

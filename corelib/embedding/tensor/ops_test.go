@@ -22,6 +22,45 @@ func TestMatMulWorkersForSmallWideMatrix(t *testing.T) {
 		t.Fatalf("larger batch workers = %d, want %d", got, base)
 	}
 }
+
+func TestMatMulBiasParallelStable(t *testing.T) {
+	// This shape forces the N-partitioned worker-pool path. Repeating it
+	// catches task-reuse races that only appear when a new call checks a task
+	// out immediately after the preceding one completes.
+	const M, N, K = 16, 384, 96
+	a := make([]float32, M*K)
+	b := make([]float32, N*K)
+	bias := make([]float32, N)
+	for i := range a {
+		a[i] = float32((i%17)-8) * 0.125
+	}
+	for i := range b {
+		b[i] = float32((i%23)-11) * 0.0625
+	}
+	for i := range bias {
+		bias[i] = float32((i%7)-3) * 0.25
+	}
+	want := make([]float32, M*N)
+	for m := 0; m < M; m++ {
+		for n := 0; n < N; n++ {
+			var s float32
+			for k := 0; k < K; k++ {
+				s += a[m*K+k] * b[n*K+k]
+			}
+			want[m*N+n] = s + bias[n]
+		}
+	}
+	for iter := 0; iter < 32; iter++ {
+		got := make([]float32, M*N)
+		MatMulBias(got, a, b, bias, M, N, K)
+		for i := range got {
+			if diff := math.Abs(float64(got[i] - want[i])); diff > 1e-4 {
+				t.Fatalf("iter %d index %d: got %g want %g", iter, i, got[i], want[i])
+			}
+		}
+	}
+}
+
 func TestElemMul_AllowsOutAliasA(t *testing.T) {
 	a := []float32{2, 3, 4}
 	b := []float32{10, 20, 30}

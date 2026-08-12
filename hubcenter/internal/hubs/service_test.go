@@ -1109,6 +1109,40 @@ func TestHeartbeatTenantInventoryAdminRouteOnlySuppressesSameTenant(t *testing.T
 	}
 }
 
+func TestHeartbeatTenantInventoryMakesTenantAdminEmailVerifiable(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_tenant_admin_inventory", OwnerEmail: "owner@example.com", Name: "Tenant Admin Inventory", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	if err := svc.HeartbeatHubWithSecret(ctx, hub.ID, "secret", nil, &HeartbeatHubUpdate{
+		BaseURL:        hub.BaseURL,
+		Visibility:     "private",
+		EnrollmentMode: "open",
+		Capabilities: map[string]any{
+			"tenant_user_emails": map[string]any{
+				"tenant_acme": []any{"Admin@Acme.Example"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+
+	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	ok, err := entrySvc.EmailHasHubTenantLink(ctx, "admin@acme.example", hub.ID, "tenant_acme")
+	if err != nil {
+		t.Fatalf("EmailHasHubTenantLink: %v", err)
+	}
+	if !ok {
+		t.Fatal("tenant admin email advertised only in tenant_user_emails should be verifiable after heartbeat")
+	}
+}
+
 func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)

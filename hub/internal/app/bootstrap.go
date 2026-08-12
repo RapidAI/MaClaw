@@ -86,6 +86,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	deviceService := device.NewService(st.Machines, deviceRuntime)
 	centerService.SetStatsProviders(identityService, deviceService)
 	centerService.SetTenantRepository(st.Tenants)
+	centerService.SetTenantAdminProvider(adminService)
 	deviceService.ResetStaleOnlineStatus(context.Background())
 	sessionCache := session.NewCache()
 	sessionService := session.NewService(sessionCache, st.Sessions)
@@ -1113,6 +1114,128 @@ func startVerifiedPhoneRouteBackfillLoop(identity *auth.IdentityService) {
 			}
 		}
 	}()
+}
+
+// startTenantAdminRouteReconciliationLoop repairs routes from tenant
+// administrators created before their email routes were synced to HubCenter.
+// SyncUserRoute is idempotent, so periodically replaying all active tenant
+// admin routes also closes any gap caused by temporary HubCenter outages.
+func startTenantAdminRouteReconciliationLoop(admins *auth.AdminService, centerSvc *center.Service) {
+	if admins == nil || centerSvc == nil {
+		return
+	}
+	go func() {
+		// HubCenter registration can still be in progress when background tasks
+		// start. Retry promptly until a route sync succeeds, then fall back to a
+		// low-frequency repair sweep to avoid needlessly replaying every admin.
+		reconcile := func() (retrySoon bool) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if !tenantAdminRouteSyncReady(ctx, centerSvc) {
+				return true
+			}
+			synced, failed, err := reconcileTenantAdminRoutes(ctx, admins, centerSvc)
+			if err != nil {
+				log.Printf("[bootstrap] tenant admin HubCenter route reconciliation failed: %v", err)
+				return true
+			}
+			if failed > 0 {
+				log.Printf("[bootstrap] tenant admin HubCenter route reconciliation synced %d route(s), %d failed", synced, failed)
+				return true
+			}
+			if synced > 0 {
+				log.Printf("[bootstrap] reconciled %d tenant admin HubCenter route(s)", synced)
+			}
+			return false
+		}
+
+		const repairInterval = 30 * time.Minute
+		// Startup registration normally settles within a few heartbeat attempts.
+		// Keep the recovery path responsive without making sustained failures
+		// generate a high-rate request stream.
+		retryInterval := 15 * time.Second
+		retrySoon := reconcile()
+		for {
+			interval := repairInterval
+			if retrySoon {
+				interval = retryInterval
+			}
+			time.Sleep(interval)
+			retrySoon = reconcile()
+			if retrySoon && retryInterval < time.Minute {
+				retryInterval *= 2
+				if retryInterval > time.Minute {
+					retryInterval = time.Minute
+				}
+			} else if !retrySoon {
+				retryInterval = 15 * time.Second
+			}
+		}
+	}()
+}
+
+func tenantAdminRouteSyncReady(ctx context.Context, centerSvc *center.Service) bool {
+	if centerSvc == nil {
+		return false
+	}
+	status, err := centerSvc.Status(ctx)
+	if err != nil || status == nil || strings.TrimSpace(status.HubID) == "" {
+		return false
+	}
+	// Pending and disabled registrations reject user-link writes in HubCenter.
+	// Treating them as ready only creates predictable failed requests and noisy
+	// logs; a confirmed registration will be picked up by the retry loop.
+	return status.Registered && !status.Disabled
+}
+
+func reconcileTenantAdminRoutes(ctx context.Context, admins *auth.AdminService, centerSvc interface {
+	SyncUserRoute(context.Context, string, ...string) error
+}) (synced, failed int, err error) {
+	if admins == nil || centerSvc == nil {
+		return 0, 0, nil
+	}
+	items, err := admins.ListAllTenantAdmins(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	const maxConcurrentRouteSyncs = 8
+	sem := make(chan struct{}, maxConcurrentRouteSyncs)
+	var wg sync.WaitGroup
+	var resultMu sync.Mutex
+	seen := make(map[string]struct{})
+	for _, admin := range items {
+		if admin == nil || !strings.EqualFold(strings.TrimSpace(admin.Status), "active") {
+			continue
+		}
+		tenantID := strings.TrimSpace(admin.TenantID)
+		email := strings.TrimSpace(strings.ToLower(admin.Email))
+		if tenantID == "" || email == "" {
+			continue
+		}
+		key := tenantID + "\x00" + email
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(tenantID, email string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if syncErr := centerSvc.SyncUserRoute(ctx, email, tenantID); syncErr != nil {
+				resultMu.Lock()
+				failed++
+				resultMu.Unlock()
+				log.Printf("[bootstrap] tenant admin HubCenter route reconciliation failed for tenant=%s email=%s: %v", tenantID, email, syncErr)
+				return
+			}
+			resultMu.Lock()
+			synced++
+			resultMu.Unlock()
+		}(tenantID, email)
+	}
+	wg.Wait()
+	return synced, failed, nil
 }
 
 func firstNonEmpty(values ...string) string {

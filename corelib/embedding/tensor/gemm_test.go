@@ -1,6 +1,7 @@
 package tensor
 
 import (
+	"fmt"
 	"math"
 	"testing"
 )
@@ -159,6 +160,36 @@ func TestMultiDot4DualB(t *testing.T) {
 		if math.Abs(float64(got2[4+r]-r1[r])) > 1e-3 {
 			t.Fatalf("tail b1 row %d: got %v want %v", r, got2[4+r], r1[r])
 		}
+	}
+}
+
+func TestMultiDot4TripleBPPOCRWidths(t *testing.T) {
+	for _, K := range []int{96, 120, 192, 384} {
+		t.Run(fmt.Sprintf("K%d", K), func(t *testing.T) {
+			a := make([]float32, 4*K)
+			b0, b1, b2 := make([]float32, K), make([]float32, K), make([]float32, K)
+			for i := range a {
+				a[i] = float32((i%17)-8) * 0.125
+			}
+			for i := range b0 {
+				b0[i] = float32((i%19)-9) * 0.0625
+				b1[i] = float32((i%13)-6) * 0.09375
+				b2[i] = float32((i%11)-5) * 0.03125
+			}
+			var got [12]float32
+			multiDot4TripleB(&got, a, b0, b1, b2, K)
+			for r := 0; r < 4; r++ {
+				for j, b := range [][]float32{b0, b1, b2} {
+					var want float32
+					for k := 0; k < K; k++ {
+						want += a[r*K+k] * b[k]
+					}
+					if diff := math.Abs(float64(got[j*4+r] - want)); diff > 1e-4 {
+						t.Fatalf("B%d row %d: got %v want %v", j, r, got[j*4+r], want)
+					}
+				}
+			}
+		})
 	}
 }
 

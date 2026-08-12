@@ -378,7 +378,7 @@ export function AboutPanel({
             return '\u864e\u722a 7 \u4e07\u53d8';
         }
         if (brandInfo.id === 'metastaff') {
-            return '\u667a\u5458 6 \u7834\u8327';
+            return '\u667a\u5458 7 \u4e07\u53d8';
         }
         const cnName = String(brandInfo.displayNameCN || '').trim();
         const displayName = String(brandInfo.displayName || '').trim();

@@ -34,6 +34,10 @@ type tenantAdminLister interface {
 	ListByScopeTenant(ctx context.Context, scope, tenantID string) ([]*store.AdminUser, error)
 }
 
+type allTenantAdminLister interface {
+	ListAllTenantAdmins(ctx context.Context) ([]*store.AdminUser, error)
+}
+
 func NewAdminService(
 	admins store.AdminUserRepository,
 	settings store.SystemSettingsRepository,
@@ -180,6 +184,14 @@ func (s *AdminService) ListTenantAdmins(ctx context.Context, tenantID string) ([
 		return nil, fmt.Errorf("tenant admin listing is not supported")
 	}
 	return lister.ListByScopeTenant(ctx, "tenant", normalizeTenantIDValue(tenantID))
+}
+
+func (s *AdminService) ListAllTenantAdmins(ctx context.Context) ([]*store.AdminUser, error) {
+	lister, ok := s.admins.(allTenantAdminLister)
+	if !ok {
+		return nil, fmt.Errorf("tenant admin listing is not supported")
+	}
+	return lister.ListAllTenantAdmins(ctx)
 }
 
 func (s *AdminService) ResetAdminCredentials(ctx context.Context, username, password string) error {

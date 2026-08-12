@@ -261,6 +261,29 @@ func (r *adminRepo) ListByScopeTenant(ctx context.Context, scope, tenantID strin
 	return out, rows.Err()
 }
 
+func (r *adminRepo) ListAllTenantAdmins(ctx context.Context) ([]*store.AdminUser, error) {
+	rows, err := r.readDB.QueryContext(ctx, `SELECT a.id, a.username, a.password_hash, a.email, a.scope, a.role, a.tenant_id, a.display_name, a.status, a.created_at, a.updated_at
+		 FROM admin_users a JOIN tenants t ON t.id = a.tenant_id
+		 WHERE a.scope = 'tenant' AND a.status = 'active' AND t.status = 'active' AND t.deleted_at IS NULL
+		 ORDER BY a.tenant_id, a.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*store.AdminUser
+	for rows.Next() {
+		var admin store.AdminUser
+		var createdAt, updatedAt string
+		if err := rows.Scan(&admin.ID, &admin.Username, &admin.PasswordHash, &admin.Email, &admin.Scope, &admin.Role, &admin.TenantID, &admin.DisplayName, &admin.Status, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		admin.CreatedAt = mustParseTime(createdAt)
+		admin.UpdatedAt = mustParseTime(updatedAt)
+		out = append(out, &admin)
+	}
+	return out, rows.Err()
+}
+
 func (r *adminRepo) Count(ctx context.Context) (int, error) {
 	row := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM admin_users`)
 	var count int

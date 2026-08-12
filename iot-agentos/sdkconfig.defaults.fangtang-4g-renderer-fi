@@ -1,5 +1,4 @@
-# Dedicated non-release configuration for compact-renderer lifecycle HIL.
-# It deliberately injects after panel acquisition, before regular input starts.
+# Dedicated non-release configuration for Display Service lifecycle HIL.
+# It deliberately fails after service publication but before App UI admission.
 CONFIG_MACLAW_TEST_BUILD=y
-CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION=y
-CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_STAGE=1
+CONFIG_MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT=y

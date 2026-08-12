@@ -32,6 +32,14 @@ type tenantListComputeStatusProvider interface {
 	GetAuthorizationStatus(ctx context.Context, tenantID string) *llmservice.TenantAuthorizationStatus
 }
 
+// tenantAdminRouteSyncer records a tenant administrator's email route in
+// HubCenter. It is intentionally small so tenant administration remains
+// available if HubCenter is temporarily unreachable; startup reconciliation
+// retries any route that could not be synced immediately.
+type tenantAdminRouteSyncer interface {
+	SyncUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error
+}
+
 type tenantCreateRequest struct {
 	ID                    string   `json:"id"`
 	Slug                  string   `json:"slug"`
@@ -163,15 +171,16 @@ func AdminTenantsListWithAuthHandler(tenants store.TenantRepository, centerSvc t
 	}
 }
 
-func AdminTenantCreateHandler(tenants store.TenantRepository, admins *auth.AdminService, audit store.AdminAuditRepository) http.HandlerFunc {
-	return adminTenantCreateHandler(nil, tenants, admins, audit)
+func AdminTenantCreateHandler(tenants store.TenantRepository, admins *auth.AdminService, audit store.AdminAuditRepository, routeSyncers ...tenantAdminRouteSyncer) http.HandlerFunc {
+	return adminTenantCreateHandler(nil, tenants, admins, audit, routeSyncers...)
 }
 
-func AdminTenantCreateWithPlatformCallbackHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, admins *auth.AdminService, audit store.AdminAuditRepository) http.HandlerFunc {
-	return adminTenantCreateHandler(system, tenants, admins, audit)
+func AdminTenantCreateWithPlatformCallbackHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, admins *auth.AdminService, audit store.AdminAuditRepository, routeSyncers ...tenantAdminRouteSyncer) http.HandlerFunc {
+	return adminTenantCreateHandler(system, tenants, admins, audit, routeSyncers...)
 }
 
-func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, admins *auth.AdminService, audit store.AdminAuditRepository) http.HandlerFunc {
+func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, admins *auth.AdminService, audit store.AdminAuditRepository, routeSyncers ...tenantAdminRouteSyncer) http.HandlerFunc {
+	routeSyncer := firstTenantAdminRouteSyncer(routeSyncers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor := AdminFromContext(r.Context())
 		if actor == nil || !IsGlobalAdmin(r.Context()) {
@@ -245,6 +254,7 @@ func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants sto
 				writeError(w, status, code, err.Error())
 				return
 			}
+			syncTenantAdminRoute(r.Context(), routeSyncer, tenant.ID, admin.Email)
 		}
 		auditPayload := map[string]any{"tenant_id": tenant.ID, "tenant_slug": tenant.Slug}
 		if admin != nil {
@@ -257,6 +267,25 @@ func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants sto
 			resp["admin"] = adminDTO(admin)
 		}
 		writeJSON(w, http.StatusCreated, resp)
+	}
+}
+
+func firstTenantAdminRouteSyncer(syncers []tenantAdminRouteSyncer) tenantAdminRouteSyncer {
+	if len(syncers) > 0 {
+		return syncers[0]
+	}
+	return nil
+}
+
+func syncTenantAdminRoute(ctx context.Context, syncer tenantAdminRouteSyncer, tenantID, email string) {
+	if syncer == nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(email) == "" {
+		return
+	}
+	if err := syncer.SyncUserRoute(ctx, email, tenantID); err != nil {
+		// A tenant admin has already been committed locally. Do not fail or roll
+		// it back because HubCenter may be transiently unavailable; the startup
+		// reconciler will retry until the route is present.
+		log.Printf("[tenant-admin] HubCenter route sync failed for tenant=%s email=%s: %v", tenantID, strings.TrimSpace(strings.ToLower(email)), err)
 	}
 }
 
@@ -493,7 +522,9 @@ func adminTenantDeleteHandler(system store.SystemSettingsRepository, audit store
 			runtimeStopper.StopTenantIMs(r.Context(), tenantID)
 		}
 
-		// Delete HubCenter routes for all tenant users (best-effort, errors logged but not blocking).
+		// Delete HubCenter routes for all tenant identities (best-effort, errors
+		// logged but not blocking). Tenant administrators do not necessarily have
+		// a users row, so include them before their admin records are purged.
 		if db != nil && routeDeleter != nil {
 			purgeTenantUserRoutes(r.Context(), db, tenantID, routeDeleter)
 		}
@@ -568,7 +599,12 @@ func purgeTenantData(ctx context.Context, db *sql.DB, tenantID string) error {
 // This is best-effort: failures are logged but do not block the deletion.
 // Uses bounded concurrency to avoid timeout on tenants with many users.
 func purgeTenantUserRoutes(ctx context.Context, db *sql.DB, tenantID string, routeDeleter BoundUserRouteDeleter) {
-	rows, err := db.QueryContext(ctx, `SELECT DISTINCT lower(email) FROM users WHERE tenant_id = ? AND email != ''`, tenantID)
+	rows, err := db.QueryContext(ctx, `
+		SELECT DISTINCT lower(email) FROM (
+			SELECT email FROM users WHERE tenant_id = ?
+			UNION
+			SELECT email FROM admin_users WHERE tenant_id = ? AND scope = 'tenant'
+		) WHERE trim(email) != ''`, tenantID, tenantID)
 	if err != nil {
 		log.Printf("[tenant-purge] list tenant users for route cleanup: %v", err)
 		return
@@ -722,7 +758,8 @@ func platformTenantCallbackStatus(status string) string {
 	}
 }
 
-func AdminTenantAdminCreateHandler(tenants store.TenantRepository, admins *auth.AdminService, audit store.AdminAuditRepository) http.HandlerFunc {
+func AdminTenantAdminCreateHandler(tenants store.TenantRepository, admins *auth.AdminService, audit store.AdminAuditRepository, routeSyncers ...tenantAdminRouteSyncer) http.HandlerFunc {
+	routeSyncer := firstTenantAdminRouteSyncer(routeSyncers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor := AdminFromContext(r.Context())
 		tenantID := strings.TrimSpace(r.PathValue("tenantId"))
@@ -781,6 +818,7 @@ func AdminTenantAdminCreateHandler(tenants store.TenantRepository, admins *auth.
 			writeError(w, status, code, err.Error())
 			return
 		}
+		syncTenantAdminRoute(r.Context(), routeSyncer, tenantID, admin.Email)
 		writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant_admin.created", map[string]any{"tenant_id": tenantID, "admin_id": admin.ID, "role": admin.Role})
 		writeJSON(w, http.StatusCreated, map[string]any{"admin": adminDTO(admin)})
 	}

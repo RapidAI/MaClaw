@@ -161,7 +161,8 @@ func AdminChangePasswordHandler(admins *auth.AdminService) http.HandlerFunc {
 	}
 }
 
-func AdminUpdateProfileHandler(admins *auth.AdminService) http.HandlerFunc {
+func AdminUpdateProfileHandler(admins *auth.AdminService, routeSyncers ...tenantAdminRouteSyncer) http.HandlerFunc {
+	routeSyncer := firstTenantAdminRouteSyncer(routeSyncers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		admin := AdminFromContext(r.Context())
 		if admin == nil {
@@ -187,6 +188,9 @@ func AdminUpdateProfileHandler(admins *auth.AdminService) http.HandlerFunc {
 			}
 			writeError(w, http.StatusInternalServerError, "UPDATE_PROFILE_FAILED", err.Error())
 			return
+		}
+		if strings.EqualFold(strings.TrimSpace(updatedAdmin.Scope), "tenant") {
+			syncTenantAdminRoute(r.Context(), routeSyncer, updatedAdmin.TenantID, updatedAdmin.Email)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
