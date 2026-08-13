@@ -530,7 +530,9 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderNo, reviewer string) er
 		order.Status = corecardstore.StatusActivated
 		order.PaymentID = authID
 		order.UpdatedAt = time.Now().UTC()
-		_ = s.orders.Update(ctx, order)
+		if err := s.orders.Update(ctx, order); err != nil {
+			return fmt.Errorf("save reactivated order %s: %w", orderNo, err)
+		}
 		if s.auditLog != nil {
 			s.auditLog(ctx, "cardstore.order.reactivated", fmt.Sprintf("order=%s hub=%s tenant=%s", orderNo, order.HubID, order.TenantID))
 		}
@@ -552,7 +554,9 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderNo, reviewer string) er
 	authID, err := s.activateOrder(ctx, order)
 	if err != nil {
 		order.PaymentMsg = fmt.Sprintf("activation failed: %v", err)
-		_ = s.orders.Update(ctx, order)
+		if updateErr := s.orders.Update(ctx, order); updateErr != nil {
+			return fmt.Errorf("activate: %w; save paid order %s: %v", err, orderNo, updateErr)
+		}
 		return fmt.Errorf("activate: %w", err)
 	}
 
@@ -987,11 +991,23 @@ func isUnprocessedOrderStatus(status string) bool {
 // ---------------------------------------------------------------------------
 
 func (s *Service) activateOrder(ctx context.Context, order *PurchaseOrder) (string, error) {
+	if order == nil {
+		return "", fmt.Errorf("order is required")
+	}
+	if existing, err := s.authorizationForOrder(ctx, order.OrderNo); err != nil {
+		return "", err
+	} else if existing != nil {
+		return existing.ID, nil
+	}
 	durationDays := PeriodToDays(order.Period)
 	now := time.Now().UTC()
 
 	auth := &llmservice.TenantAuthorization{
-		ID:             fmt.Sprintf("auth_%s_%d", order.OrderNo, now.UnixMilli()),
+		// Derive the ID from the globally replicated order number. Two nodes can
+		// observe the same paid order before their HA streams converge; a stable
+		// ID turns that race into an idempotent create instead of divergent auth
+		// records that later conflict during replication.
+		ID:             "auth_" + strings.TrimSpace(order.OrderNo),
 		HubID:          order.HubID,
 		TenantID:       order.TenantID,
 		AdminEmail:     order.Email,
@@ -1011,7 +1027,25 @@ func (s *Service) activateOrder(ctx context.Context, order *PurchaseOrder) (stri
 	}
 
 	if err := s.authRepo.Create(ctx, auth); err != nil {
+		// A second HubCenter may have confirmed the replicated order at the same
+		// time. The database uniqueness guard is the final arbiter; read the
+		// winner so the caller completes idempotently instead of creating credits
+		// twice or leaving a paid order unactivated.
+		if existing, lookupErr := s.authorizationForOrder(ctx, order.OrderNo); lookupErr == nil && existing != nil {
+			return existing.ID, nil
+		}
 		return "", fmt.Errorf("create authorization: %w", err)
 	}
 	return auth.ID, nil
+}
+
+func (s *Service) authorizationForOrder(ctx context.Context, orderNo string) (*llmservice.TenantAuthorization, error) {
+	if s == nil || s.authRepo == nil {
+		return nil, nil
+	}
+	auth, err := llmservice.GetAuthorizationByCardOrderID(ctx, s.authRepo, orderNo)
+	if err != nil {
+		return nil, fmt.Errorf("get authorization for order: %w", err)
+	}
+	return auth, nil
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -995,12 +996,14 @@ func TestRouter_UICActivatableToolNamesAreAllowlisted(t *testing.T) {
 	}
 }
 
-func TestRouter_UICDegradedSSHRouteKeepsBuiltinAndSuppressesFallbacks(t *testing.T) {
+func TestRouter_UICEmbeddingSSHRouteKeepsBuiltinAndSuppressesFallbacks(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
+	var llmCalls atomic.Int32
 	uic := uicintent.New(uicintent.Config{
 		Embedder: sshBiasedEmbedder{},
 		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			llmCalls.Add(1)
 			return "not json", nil
 		},
 	})
@@ -1013,9 +1016,12 @@ func TestRouter_UICDegradedSSHRouteKeepsBuiltinAndSuppressesFallbacks(t *testing
 	router.SetUnifiedClassifier(uic)
 	message := "SSH into the GPU server and check usage."
 	classification := uic.Classify(uicintent.MessageContext{Text: message})
-	if classification.Primary != uicintent.LabelSSH || !classification.Degraded {
-		t.Fatalf("test UIC should produce degraded SSH classification, got primary=%s degraded=%v confidence=%.2f reason=%q",
-			classification.Primary, classification.Degraded, classification.Confidence, classification.Reason)
+	if classification.Primary != uicintent.LabelSSH || classification.Degraded || classification.Layer != 2 {
+		t.Fatalf("test UIC should produce confident embedding SSH classification, got primary=%s degraded=%v layer=%d confidence=%.2f reason=%q",
+			classification.Primary, classification.Degraded, classification.Layer, classification.Confidence, classification.Reason)
+	}
+	if got := llmCalls.Load(); got != 0 {
+		t.Fatalf("confident embedding classification should skip LLM, got %d calls", got)
 	}
 
 	tools := makeCoreSSHRouteTools(20)
@@ -1024,15 +1030,39 @@ func TestRouter_UICDegradedSSHRouteKeepsBuiltinAndSuppressesFallbacks(t *testing
 	names := routedToolNames(result)
 
 	if !names["ssh"] {
-		t.Fatalf("builtin ssh should be included for degraded-but-concrete UIC SSH intent; got %#v", names)
+		t.Fatalf("builtin ssh should be included for concrete UIC SSH intent; got %#v", names)
 	}
 	for _, fallback := range []string{"call_mcp_tool", "manage_skill", "discover_tool", "search_and_install_skill"} {
 		if names[fallback] {
-			t.Fatalf("%s should be suppressed for degraded-but-concrete UIC SSH intent; got %#v", fallback, names)
+			t.Fatalf("%s should be suppressed for concrete UIC SSH intent; got %#v", fallback, names)
 		}
 	}
 	if router.IsSessionPinned("ssh") {
-		t.Fatalf("degraded UIC SSH intent should not eager-pin ssh to the session")
+		t.Fatalf("UIC SSH intent should not eager-pin ssh to the session")
+	}
+}
+
+func TestRouter_PreferEmbeddingOnlySkipsTreeLLM(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	var llmCalls atomic.Int32
+	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			llmCalls.Add(1)
+			return `[{"label":"browser","score":0.95}]`, nil
+		},
+	}))
+
+	tools := append(makeCoreSSHRouteTools(20), makeToolDef("browser", "browser automation"))
+	router.Route("open a browser and visit the site", tools)
+	if got := llmCalls.Load(); got != 1 {
+		t.Fatalf("default route should preserve full UIC behavior, got %d LLM calls", got)
+	}
+
+	router.RouteWithOptions("open a browser and visit another site", tools, RouteOptions{PreferEmbeddingOnly: true})
+	if got := llmCalls.Load(); got != 1 {
+		t.Fatalf("embedding-only route must not call tree LLM, got %d calls", got)
 	}
 }
 

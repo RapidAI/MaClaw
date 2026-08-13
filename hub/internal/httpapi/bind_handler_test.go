@@ -134,6 +134,25 @@ func TestBindSendCodeAndUnbindUseResolvedTenant(t *testing.T) {
 	}
 }
 
+func TestBindSendCodeDoesNotReserveUndeliveredCode(t *testing.T) {
+	identity, cleanup := newBindHandlerIdentity(t)
+	defer cleanup()
+	seedBindUser(t, identity, "tenant_a", "undelivered@example.com")
+
+	resetVerifyCodesForTest()
+	defer resetVerifyCodesForTest()
+	rec := postBindJSON(t, BindSendCodeHandler(identity, nil, nil), "/api/bind/send-code", map[string]string{
+		"email":   "undelivered@example.com",
+		"channel": "email",
+	})
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "SEND_FAILED") {
+		t.Fatalf("send status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if entry := snapshotVerifyCode("tenant_a", "undelivered@example.com"); entry != nil {
+		t.Fatalf("undelivered code must be rolled back, found %#v", entry)
+	}
+}
+
 func resetVerifyCodesForTest() {
 	verifyMu.Lock()
 	defer verifyMu.Unlock()

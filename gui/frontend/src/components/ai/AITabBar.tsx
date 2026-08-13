@@ -17,6 +17,10 @@ export interface AITabBarProps {
     onAddLocalMaclawToTab?: (tab: AITab) => void;
     /** Called when user wants to rename a group tab */
     onRenameGroupTab?: (tab: AITab) => void;
+    /** Called when user renames the fixed local AI assistant tab. */
+    onRenameLocalTab?: (title: string) => void;
+    /** Called when user renames a task-backed project tab. */
+    onRenameProjectTab?: (tab: AITab, title: string) => void;
     lang?: string;
     /** Tab ID that is currently recording a skill (if any) */
     recordingTabId?: string | null;
@@ -33,7 +37,7 @@ const OVERFLOW_BUTTON_WIDTH = 50;
  * Shows as many tabs as fit in the available width; overflow tabs are
  * accessible via a more-tabs dropdown.
  */
-export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, onRenameGroupTab, lang, recordingTabId }: AITabBarProps) {
+export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, onRenameGroupTab, onRenameLocalTab, onRenameProjectTab, lang, recordingTabId }: AITabBarProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [visibleCount, setVisibleCount] = useState(tabs.length);
     const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -95,8 +99,9 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
 
     const isZh = !lang || lang?.startsWith("zh");
 
-    // Only the local tab: no need to show the tab bar.
-    if (tabs.length <= 1) {
+    // Keep the bar available when the local tab can be renamed. Without this,
+    // a fresh assistant session has no visible way to use the feature.
+    if (tabs.length <= 1 && !onRenameLocalTab) {
         return null;
     }
 
@@ -135,6 +140,11 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                     onActivate={onActivate}
                     onClose={tab.closable ? onClose : undefined}
                     onContextMenu={handleTabContextMenu}
+                    onRename={tab.type === "local" && onRenameLocalTab
+                        ? (_tabId, title) => onRenameLocalTab(title)
+                        : tab.type === "project" && onRenameProjectTab
+                            ? (_tabId, title) => onRenameProjectTab(tab, title)
+                            : undefined}
                     lang={lang}
                     recording={recordingTabId === tab.id}
                 />

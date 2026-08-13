@@ -401,6 +401,72 @@ func TestClassifyConfirmationIntent_UsesContextForTypedApproval(t *testing.T) {
 	}
 }
 
+func TestClassifyConfirmationIntentUsesFastLLMWithBoundedDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"confirm"}}]}`)
+	}))
+	defer server.Close()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "Custom1", URL: server.URL, Model: "test-model", Protocol: "openai", IsCustom: true, AuthType: "none", ContextLength: 16000}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	startedAt := time.Now()
+	if got := h.classifyConfirmationIntent("u1", "go ahead", &pendingConfirmation{ID: "c1", UserID: "u1", Summary: "summary", TaskType: "coding"}); got != confirmationIntentConfirm {
+		t.Fatalf("confirmation intent = %q, want confirm", got)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 1750*time.Millisecond {
+		t.Fatalf("fast confirmation classification took %s", elapsed)
+	}
+}
+
+func TestUnderstandTaskWithLLMFallsThroughAfterFastDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"task_type\":\"code repair\",\"summary\":\"Fix the login flow.\"}"}}]}`)
+	}))
+	defer server.Close()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "Custom1", URL: server.URL, Model: "test-model", Protocol: "openai", IsCustom: true, AuthType: "none", ContextLength: 16000}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	startedAt := time.Now()
+	got := h.understandTaskWithLLM("u1", "fix the login defect", taskIntentResult{Intent: intentCoding})
+	if got != nil {
+		t.Fatalf("slow task understanding = %+v, want nil", got)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 1750*time.Millisecond {
+		t.Fatalf("task understanding blocked for %s, want fast fallthrough", elapsed)
+	}
+}
+
 func TestHandleIMMessageWithProgressAndStream_RevisionKeepsPendingConfirmation(t *testing.T) {
 	tempHome := t.TempDir()
 	app := &App{testHomeDir: tempHome}

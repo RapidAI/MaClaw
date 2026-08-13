@@ -126,6 +126,25 @@ func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
 	if body := assetRec.Body.String(); body != "console.log('admin');" {
 		t.Fatalf("asset body = %q", body)
 	}
+	if got := assetRec.Header().Get("Cache-Control"); got != "no-cache, no-store, must-revalidate" {
+		t.Fatalf("asset cache-control = %q", got)
+	}
+
+	// Some browsers and intermediaries preflight a script with HEAD. It must
+	// carry the same no-store policy as GET so an authorization UI update cannot
+	// be paired with a cached, stale script bundle.
+	headReq := httptest.NewRequest(http.MethodHead, "/admin/admin.js", nil)
+	headRec := httptest.NewRecorder()
+	mux.ServeHTTP(headRec, headReq)
+	if headRec.Code != http.StatusOK {
+		t.Fatalf("HEAD asset status = %d", headRec.Code)
+	}
+	if got := headRec.Header().Get("Cache-Control"); got != "no-cache, no-store, must-revalidate" {
+		t.Fatalf("HEAD asset cache-control = %q", got)
+	}
+	if headRec.Body.Len() != 0 {
+		t.Fatalf("HEAD asset body length = %d, want 0", headRec.Body.Len())
+	}
 
 	spaReq := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
 	spaRec := httptest.NewRecorder()

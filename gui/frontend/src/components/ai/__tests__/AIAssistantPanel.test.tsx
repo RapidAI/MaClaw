@@ -8,7 +8,7 @@ import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistan
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, renameTaskMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, startWorkflowTemplateInTabMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
     openProjectDirectoryMock: vi.fn().mockResolvedValue(undefined),
@@ -19,6 +19,7 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMo
     clearAIAssistantHistoryForSessionMock: vi.fn().mockResolvedValue(undefined),
     saveCurrentChatAsTaskMock: vi.fn().mockResolvedValue({ project_path: 'D:/tasks/saved', name: 'Saved task' }),
     suggestCurrentTaskNameMock: vi.fn().mockResolvedValue('Suggested task'),
+    renameTaskMock: vi.fn().mockResolvedValue(''),
     listVirtualEmployeesMock: vi.fn().mockResolvedValue([
         { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
         { id: 've-b', machine_id: 've-b', name: 'Contract Bot', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
@@ -35,6 +36,7 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMo
     getTabWorkingDirMock: vi.fn().mockResolvedValue({ path: '' }),
     setTabWorkingDirMock: vi.fn().mockResolvedValue(undefined),
     selectWorkingDirMock: vi.fn().mockResolvedValue(''),
+    startWorkflowTemplateInTabMock: vi.fn().mockResolvedValue('workflow-request'),
     runtimeEventsOnMock: vi.fn(),
     runtimeEventsOffMock: vi.fn(),
 }));
@@ -162,7 +164,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     CreateProjectTabSession: createProjectTabSessionMock,
     CancelAIAssistantSessionForSession: cancelSessionForSessionMock,
     ClearAIAssistantHistoryForSession: clearAIAssistantHistoryForSessionMock,
-    RenameTask: vi.fn(),
+    RenameTask: renameTaskMock,
     PinTask: vi.fn(),
     HideTask: vi.fn(),
     SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
@@ -182,6 +184,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetTabWorkingDir: getTabWorkingDirMock,
     SetTabWorkingDir: setTabWorkingDirMock,
     SelectWorkingDir: selectWorkingDirMock,
+    StartWorkflowTemplateInTab: startWorkflowTemplateInTabMock,
     OpenProjectDirectory: openProjectDirectoryMock,
     GetTTSEnabled: vi.fn().mockResolvedValue(false),
     SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
@@ -334,10 +337,14 @@ describe('AIAssistantPanel property tests', () => {
         setTabWorkingDirMock.mockResolvedValue(undefined);
         selectWorkingDirMock.mockReset();
         selectWorkingDirMock.mockResolvedValue('');
+        startWorkflowTemplateInTabMock.mockReset();
+        startWorkflowTemplateInTabMock.mockResolvedValue('workflow-request');
         saveCurrentChatAsTaskMock.mockReset();
         saveCurrentChatAsTaskMock.mockResolvedValue({ project_path: 'D:/tasks/saved', name: 'Saved task' });
         suggestCurrentTaskNameMock.mockReset();
         suggestCurrentTaskNameMock.mockResolvedValue('Suggested task');
+        renameTaskMock.mockReset();
+        renameTaskMock.mockResolvedValue('');
         listVirtualEmployeesMock.mockReset();
         listVirtualEmployeesMock.mockResolvedValue([
             { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
@@ -1024,6 +1031,72 @@ describe('AIAssistantPanel property tests', () => {
         expect(document.body.textContent || '').not.toContain('polluted_project_preview');
     });
 
+    it('starts a workflow only after opening its dedicated project tab', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/dedicated-workflow-tab',
+                taskTitle: 'Dedicated workflow',
+                autoSend: true,
+                initialMessage: 'must not be sent as ordinary chat',
+                workflowType: 'coding',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'opened' })));
+        const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
+        expect(projectTab).toBeTruthy();
+        const projectTabId = projectTab!.getAttribute('data-testid')!.replace('ai-tab-', '');
+        await waitFor(() => expect(startWorkflowTemplateInTabMock).toHaveBeenCalledWith(
+            'coding',
+            'D:/tasks/dedicated-workflow-tab',
+            projectTabId,
+        ));
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not restart a workflow when a stale launch focuses its existing tab', async () => {
+        const projectPath = 'D:/tasks/existing-workflow-tab';
+        const { rerender } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Existing workflow',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+        });
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        startWorkflowTemplateInTabMock.mockClear();
+
+        const base = defaultPanelProps();
+        rerender(<AIAssistantPanel
+            {...base}
+            pendingProjectTabOpen={{ projectPath, taskTitle: 'Existing workflow', autoSend: false, workflowType: 'coding' }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+        />);
+
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        expect(startWorkflowTemplateInTabMock).not.toHaveBeenCalled();
+    });
+
+    it('shows a visible error in the workflow tab when startup fails', async () => {
+        startWorkflowTemplateInTabMock.mockRejectedValueOnce(new Error('backend unavailable'));
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/failed-workflow-tab',
+                taskTitle: 'Failed workflow',
+                autoSend: false,
+                workflowType: 'coding',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+        });
+
+        await waitFor(() => expect(document.body.textContent || '').toContain('This workflow could not be started. Please try again.'));
+    });
+
     it('keeps ordinary-chat source previews closed after a project tab closes', async () => {
         const props = defaultPanelProps();
         props.window = { inline: true };
@@ -1081,6 +1154,58 @@ describe('AIAssistantPanel property tests', () => {
         }));
         await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
         expect(document.body.textContent || '').not.toContain('local_after_project_close');
+    });
+
+    it('renames a project tab through the linked task and applies the confirmed display name', async () => {
+        const projectPath = 'D:/tasks/rename-project-tab';
+        renameTaskMock.mockResolvedValueOnce('Task name from backend');
+        const { getByRole, getByTestId } = renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Original task name', autoSend: false },
+            onPendingProjectTabOpenHandled: vi.fn(),
+        });
+
+        const projectTab = await waitFor(() => getByRole('tab', { name: 'Original task name' }));
+        const tabId = projectTab.getAttribute('data-testid')!.replace('ai-tab-', '');
+        fireEvent.doubleClick(projectTab);
+
+        const input = getByTestId(`ai-tab-rename-input-${tabId}`) as HTMLInputElement;
+        fireEvent.change(input, { target: { value: 'Requested task name' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(renameTaskMock).toHaveBeenCalledWith(projectPath, 'Requested task name'));
+        await waitFor(() => expect(getByRole('tab', { name: 'Task name from backend' })).toBeTruthy());
+    });
+
+    it('keeps the latest project-tab rename when backend requests resolve out of order', async () => {
+        const projectPath = 'D:/tasks/project-tab-rename-race';
+        let resolveFirst!: (title: string) => void;
+        let resolveSecond!: (title: string) => void;
+        renameTaskMock
+            .mockImplementationOnce(() => new Promise<string>(resolve => { resolveFirst = resolve; }))
+            .mockImplementationOnce(() => new Promise<string>(resolve => { resolveSecond = resolve; }));
+        const { getByRole, getByTestId } = renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Original task name', autoSend: false },
+            onPendingProjectTabOpenHandled: vi.fn(),
+        });
+
+        const projectTab = await waitFor(() => getByRole('tab', { name: 'Original task name' }));
+        const tabId = projectTab.getAttribute('data-testid')!.replace('ai-tab-', '');
+        fireEvent.doubleClick(projectTab);
+        let input = getByTestId(`ai-tab-rename-input-${tabId}`) as HTMLInputElement;
+        fireEvent.change(input, { target: { value: 'First requested name' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(renameTaskMock).toHaveBeenCalledTimes(1));
+
+        fireEvent.doubleClick(getByTestId(`ai-tab-${tabId}`));
+        input = getByTestId(`ai-tab-rename-input-${tabId}`) as HTMLInputElement;
+        fireEvent.change(input, { target: { value: 'Second requested name' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(renameTaskMock).toHaveBeenCalledTimes(2));
+
+        await act(async () => { resolveSecond('Confirmed second name'); });
+        await waitFor(() => expect(getByRole('tab', { name: 'Confirmed second name' })).toBeTruthy());
+        await act(async () => { resolveFirst('Stale first name'); });
+        await waitFor(() => expect(getByRole('tab', { name: 'Confirmed second name' })).toBeTruthy());
     });
 
     it('keeps inline root as a flex item with clipped overflow', () => {
@@ -3997,6 +4122,29 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('unfinished-slot-status').textContent).toBeTruthy();
         expect(getByText('Resume previous task')).toBeTruthy();
         expect(getByText('Start new task')).toBeTruthy();
+    });
+
+    it('explains workspace and external-effect review for risky recovery slots', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Recovery needs review.',
+                unfinishedSlot: {
+                    slotID: 'slot-risky',
+                    title: 'Review changes',
+                    recoveryMode: 'requires_review',
+                    sideEffectState: 'local_committed',
+                },
+            }),
+        ];
+
+        const { getByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-review-required').textContent).toContain('changed the workspace or caused an external side effect');
+        expect(getByTestId('unfinished-slot-workspace-review').textContent).toContain('Local changes may already exist');
     });
 
     it('localizes unfinished slot status in Chinese', () => {

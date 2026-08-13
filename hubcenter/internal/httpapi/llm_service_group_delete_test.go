@@ -56,6 +56,15 @@ func (r *llmDeleteAuthRepo) GetByID(_ context.Context, id string) (*llmservice.T
 	return nil, nil
 }
 
+func (r *llmDeleteAuthRepo) GetByCardOrderID(_ context.Context, orderNo string) (*llmservice.TenantAuthorization, error) {
+	for _, auth := range r.auths {
+		if auth.CardOrderID == orderNo {
+			return auth, nil
+		}
+	}
+	return nil, nil
+}
+
 func (r *llmDeleteAuthRepo) ListByHubTenant(_ context.Context, hubID, tenantID string) ([]*llmservice.TenantAuthorization, error) {
 	var matches []*llmservice.TenantAuthorization
 	for _, auth := range r.auths {

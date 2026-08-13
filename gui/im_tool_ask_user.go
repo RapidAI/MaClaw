@@ -134,7 +134,7 @@ type agentLoopAskUserToolResult struct {
 	ToolResults  []string
 }
 
-func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, msgContent, result string, gateActive bool, tcID string, conversation []interface{}, history []agent.ConversationEntry, toolResults []string, recordToolResult func(string, interface{}, string, string)) agentLoopAskUserToolResult {
+func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, msgContent, result string, gateActive bool, tcID string, conversation []interface{}, history []agent.ConversationEntry, toolResults []string, recordToolResult func(string, interface{}, string, string), persistHistory ...bool) agentLoopAskUserToolResult {
 	out := agentLoopAskUserToolResult{
 		Result:       result,
 		Conversation: conversation,
@@ -178,15 +178,38 @@ func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, ms
 		ToolName:    "ask_user",
 		ToolOutcome: "paused",
 	})
-	h.saveConversationHistoryTimed(userID, out.History, nil)
+	shouldPersistHistory := len(persistHistory) == 0 || persistHistory[0]
+	if shouldPersistHistory {
+		h.saveConversationHistoryTimed(userID, out.History, nil)
+		h.commitPendingAskUser(userID, askReq, out.History)
+	}
+	resp := buildAskUserResponse(displayText, askReq)
+	out.Response = resp
+	return out
+}
+
+// commitPendingAskUser publishes the question only after its paired tool result
+// has reached durable conversation history. Shared-loop callers defer this
+// until their history-and-checkpoint transition succeeds, so a failed atomic
+// write cannot strand an interactive answer in process-local state.
+func (h *IMMessageHandler) commitPendingAskUser(userID string, askReq *AskUserRequest, history []agent.ConversationEntry) {
+	if h == nil || askReq == nil {
+		return
+	}
 	h.pendingAskUser.Store(userID, &pendingAskUserState{
 		Question:  askReq.Question,
 		Options:   askReq.Options,
 		InputType: askReq.InputType,
-		History:   cloneConversationEntries(out.History),
+		History:   cloneConversationEntries(history),
 		Timestamp: time.Now(),
 	})
+}
+
+func buildAskUserResponse(displayText string, askReq *AskUserRequest) *IMAgentResponse {
 	resp := &IMAgentResponse{Text: displayText, ResponseSource: imResponseSourceAskUser.String()}
+	if askReq == nil {
+		return resp
+	}
 	askInputKind := normalizeAskUserInputKind(askReq.InputType)
 	if askInputKind.IsChoice() && len(askReq.Options) > 0 {
 		actions := make([]IMResponseAction, len(askReq.Options))
@@ -200,6 +223,5 @@ func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, ms
 			{Label: "Cancel", Command: "cancel"},
 		}
 	}
-	out.Response = resp
-	return out
+	return resp
 }

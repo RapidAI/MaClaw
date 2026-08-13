@@ -444,6 +444,9 @@ func TestFilterLegacyKeepsImageHint(t *testing.T) {
 	if !strings.Contains(got, "For image files") {
 		t.Fatalf("image hint should be kept: %q", got)
 	}
+	if strings.Contains(got, "vision / read_file") || !strings.Contains(got, "Analyze attached images first") {
+		t.Fatalf("legacy hint should normalize to attachment-first guidance: %q", got)
+	}
 }
 
 func TestRemainingAutoInjectBudget(t *testing.T) {

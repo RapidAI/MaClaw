@@ -33,6 +33,7 @@
     name: { zh: '\u79df\u6237\u540d\u79f0', en: 'Tenant Name' },
     tenantID: { zh: 'Tenant ID', en: 'Tenant ID' },
     domain: { zh: '\u90ae\u7bb1\u57df\u540d\uff08\u53ef\u9009\uff0c\u591a\u4e2a\uff09', en: 'Email Domains (optional, multiple)' },
+    logoURL: { zh: '\u54c1\u724c Logo URL\uff08\u53ef\u9009\uff0cHTTPS\uff09', en: 'Brand logo URL (optional, HTTPS)' },
     saveSettings: { zh: '\u4fdd\u5b58\u8bbe\u7f6e', en: 'Save Settings' },
     domainsSaved: { zh: '\u79df\u6237\u8bbe\u7f6e\u5df2\u66f4\u65b0\u3002', en: 'Tenant settings updated.' },
     domainsSaveFailed: { zh: '\u66f4\u65b0\u79df\u6237\u8bbe\u7f6e\u5931\u8d25: {error}', en: 'Update tenant settings failed: {error}' },
@@ -40,6 +41,7 @@
     registrationOpen: { zh: '\u5141\u8bb8', en: 'Open' },
     registrationClosed: { zh: '\u5173\u95ed', en: 'Closed' },
     acceptRegistration: { zh: '\u63a5\u53d7\u65b0\u7528\u6237\u6ce8\u518c', en: 'Accept new user registration' },
+    restrictEmailDomains: { zh: '\u4ec5\u5141\u8bb8\u4e0a\u8ff0\u90ae\u7bb1\u57df\u540d\u6ce8\u518c', en: 'Restrict registration to the email domains above' },
     adminUser: { zh: '\u7ba1\u7406\u5458\u7528\u6237\u540d', en: 'Admin Username' },
     adminEmail: { zh: '\u7ba1\u7406\u5458\u90ae\u7bb1', en: 'Admin Email' },
     adminName: { zh: '\u663e\u793a\u540d\u79f0', en: 'Display Name' },
@@ -342,7 +344,7 @@
     setText('tenantsReloadBtn', 'reload'); setText('tenantCreateTitle', 'createTitle'); setText('tenantCreateDesc', 'createDesc');
     setText('tenantAdminCreateTitle', 'adminCreateTitle'); setText('tenantAdminCreateDesc', 'adminCreateDesc'); setText('tenantListTitle', 'listTitle'); setText('tenantListDesc', tenantScoped() ? 'listDescTenant' : 'listDesc');
     setText('tenantCreateBtn', 'create'); setText('tenantAdminCreateBtn', 'addAdmin'); setText('tenantNameLabel', 'name'); setText('tenantIDLabel', 'tenantID'); setText('tenantDomainLabel', 'domain');
-    setText('tenantCreateAcceptRegistrationLabel', 'acceptRegistration');
+    setText('tenantCreateAcceptRegistrationLabel', 'acceptRegistration'); setText('tenantCreateRestrictEmailDomainsLabel', 'restrictEmailDomains');
     setText('tenantAdminUsernameLabel', 'adminUser'); setText('tenantAdminEmailLabel', 'adminEmail'); setText('tenantAdminNameLabel', 'adminName'); setText('tenantAdminPasswordLabel', 'adminPassword');
     setText('tenantAdminTenantLabel', 'tenant'); setText('tenantAdminRoleLabel', 'role'); setText('tenantExtraAdminUsernameLabel', 'adminUser'); setText('tenantExtraAdminEmailLabel', 'adminEmail'); setText('tenantExtraAdminNameLabel', 'adminName'); setText('tenantExtraAdminPasswordLabel', 'adminPassword');
     var empty = byID('tenantListEmpty'); if (empty) empty.textContent = tt('empty');
@@ -430,7 +432,7 @@
         + tenantAdminActions(item)
         + '</div>'
         + (authzHTML ? '<div class="tenant-authorization-row" style="display:flex;gap:12px;flex-wrap:wrap;padding:10px 16px;border-top:1px solid #e2e8f0;background:#f8fafc">' + authzHTML + '</div>' : '')
-        + (canEditDomains ? '<div class="tenant-settings"><div><label>' + esc(tt('name')) + '</label><input id="tenantNameEdit_' + index + '" value="' + esc(item.name || '') + '"></div><div><label>' + esc(tt('domain')) + '</label><textarea id="tenantDomainsEdit_' + index + '" placeholder="acme.example.com\nsubsidiary.example.com">' + esc(domains.join('\n')) + '</textarea></div><label class="tenant-check"><input id="tenantRegistrationEdit_' + index + '" type="checkbox" ' + (registrationOpen ? 'checked ' : '') + '>' + esc(tt('acceptRegistration')) + '</label><button class="btn-secondary tenant-save" id="tenantDomainsSave_' + index + '" type="button" onclick="saveTenantDomains(' + index + ')">' + esc(tt('saveSettings')) + '</button></div>' : '')
+        + (canEditDomains ? '<div class="tenant-settings"><div><label>' + esc(tt('name')) + '</label><input id="tenantNameEdit_' + index + '" value="' + esc(item.name || '') + '"></div><div><label>' + esc(tt('domain')) + '</label><textarea id="tenantDomainsEdit_' + index + '" placeholder="acme.example.com\nsubsidiary.example.com">' + esc(domains.join('\n')) + '</textarea></div><div><label>' + esc(tt('logoURL')) + '</label><input id="tenantLogoURLEdit_' + index + '" type="url" inputmode="url" placeholder="https://cdn.example.com/logo.svg" value="' + esc(item.logo_url || '') + '"></div><label class="tenant-check"><input id="tenantRegistrationEdit_' + index + '" type="checkbox" ' + (registrationOpen ? 'checked ' : '') + '>' + esc(tt('acceptRegistration')) + '</label><label class="tenant-check"><input id="tenantRestrictDomainsEdit_' + index + '" type="checkbox" ' + (item.restrict_email_domains ? 'checked ' : '') + '>' + esc(tt('restrictEmailDomains')) + '</label><button class="btn-secondary tenant-save" id="tenantDomainsSave_' + index + '" type="button" onclick="saveTenantDomains(' + index + ')">' + esc(tt('saveSettings')) + '</button></div>' : '')
         + '</div>';
     }).join('') + '</div>' + renderTenantPager(tenantListPage, pages, total);
   }
@@ -549,7 +551,7 @@
     if (tenantCreateBusy) return;
     var createDomains = splitDomains(val('tenantDomain'));
     var payload = {
-      id: val('tenantID'), name: val('tenantName'), primary_domain: createDomains[0] || '', domains: createDomains, allow_user_registration: (byID('tenantCreateAcceptRegistration') ? !!byID('tenantCreateAcceptRegistration').checked : true),
+      id: val('tenantID'), name: val('tenantName'), primary_domain: createDomains[0] || '', domains: createDomains, allow_user_registration: (byID('tenantCreateAcceptRegistration') ? !!byID('tenantCreateAcceptRegistration').checked : true), restrict_email_domains: (byID('tenantCreateRestrictEmailDomains') ? !!byID('tenantCreateRestrictEmailDomains').checked : false),
       initial_admin_username: val('tenantAdminUsername'), initial_admin_password: val('tenantAdminPassword'), initial_admin_email: val('tenantAdminEmail'), initial_admin_name: val('tenantAdminName')
     };
     if (!payload.name) {
@@ -583,6 +585,8 @@
       ['tenantID','tenantName','tenantDomain','tenantAdminUsername','tenantAdminPassword','tenantAdminEmail','tenantAdminName'].forEach(function(id) { var el = byID(id); if (el) el.value = ''; });
       var acceptEl = byID('tenantCreateAcceptRegistration');
       if (acceptEl) acceptEl.checked = true;
+      var restrictEl = byID('tenantCreateRestrictEmailDomains');
+      if (restrictEl) restrictEl.checked = false;
       await loadTenants();
       await loadLoginTenants();
       setTenantOutput(tt('createDone', { tenant: tenantLabel(data.tenant || payload) }), 'success');
@@ -614,7 +618,8 @@
     if (btn) btn.disabled = true;
     try {
       var regEl = byID('tenantRegistrationEdit_' + index);
-      var data = await global.api('/api/admin/tenants/' + encodeURIComponent(item.id) + '/domains', { method: 'PATCH', body: JSON.stringify({ name: val('tenantNameEdit_' + index) || item.name || item.id, primary_domain: domains[0] || '', domains: domains, allow_user_registration: regEl ? !!regEl.checked : tenantAllowsRegistration(item) }) });
+      var restrictEl = byID('tenantRestrictDomainsEdit_' + index);
+      var data = await global.api('/api/admin/tenants/' + encodeURIComponent(item.id) + '/domains', { method: 'PATCH', body: JSON.stringify({ name: val('tenantNameEdit_' + index) || item.name || item.id, primary_domain: domains[0] || '', domains: domains, logo_url: val('tenantLogoURLEdit_' + index), allow_user_registration: regEl ? !!regEl.checked : tenantAllowsRegistration(item), restrict_email_domains: restrictEl ? !!restrictEl.checked : !!item.restrict_email_domains }) });
       if (data && data.tenant) tenantCache[index] = data.tenant;
       await loadTenants();
       await loadLoginTenants();
@@ -885,6 +890,16 @@
     toggleNearest('machineCountHero', '.metric', globalAdmin);
     toggleNearest('blockedCountHero', '.metric', globalAdmin);
     toggleNearest('inviteCountHero', '.metric', globalAdmin);
+    var configAgent = byID('overviewConfigAgent');
+    if (configAgent) configAgent.classList.toggle('hidden', !(hasProfile && tenantAdmin));
+    var systemFreePanel = byID('overviewSystemFreePanel');
+    if (systemFreePanel) systemFreePanel.classList.toggle('hidden', !(hasProfile && tenantAdmin));
+    if (!(hasProfile && tenantAdmin) && typeof global.clearTenantSystemFreeState === 'function') {
+      global.clearTenantSystemFreeState();
+    }
+    if (!(hasProfile && tenantAdmin) && typeof global.hideSystemFreeGate === 'function') {
+      global.hideSystemFreeGate();
+    }
   }
 
   function applySystemScopeCopy(tenantAdmin) {
@@ -913,7 +928,7 @@
     var hasProfile = !!profile;
     updateTenantAdminRoleOptions(profile);
     var globalOnly = global.adminGlobalOnlyTabs || { center: true, console: true };
-    var tenantOnly = global.adminTenantOnlyTabs || { governance: true, marketplace: true, im: true, machines: true, virtualemployees: true, invitationcodes: true, pwarequests: true, security: true, llmproviders: true, usagestats: true, modelservices: true, servicecards: true, failurelogs: true };
+    var tenantOnly = global.adminTenantOnlyTabs || { governance: true, userreferrals: true, marketplace: true, knowledge: true, 'digital-assets': true, im: true, machines: true, virtualemployees: true, invitationcodes: true, pwarequests: true, security: true, llmproviders: true, usagestats: true, modelservices: true, servicecards: true, failurelogs: true };
     global.document.querySelectorAll('.nav button[data-tab]').forEach(function(button) {
       var tab = button.dataset.tab || '';
       var hidden = false;
@@ -933,6 +948,12 @@
     } catch (_) {}
     var createPanel = byID('tenantCreatePanel');
     if (createPanel) createPanel.classList.toggle('hidden', !!(hasProfile && tenantAdmin));
+    // Registration policies belong to tenants. Hub-level routing remains a
+    // global setting, while each tenant controls its verification method.
+    var registrationAuthCard = byID('registrationAuthCard');
+    if (registrationAuthCard) registrationAuthCard.classList.toggle('hidden', !tenantAdmin);
+    var userReferralSystemCard = byID('userReferralSystemCard');
+    if (userReferralSystemCard) userReferralSystemCard.classList.toggle('hidden', !tenantAdmin);
     ['systemRoutingCard','mailConfigCard','tlsConfigCard'].forEach(function(id) {
       var card = byID(id);
       if (card) card.classList.toggle('hidden', !!(hasProfile && tenantAdmin));
@@ -942,8 +963,10 @@
     var tenantMigrationCard = byID('tenantMigrationSettingsCard');
     if (tenantMigrationCard) tenantMigrationCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
     var tenantDigitalAssetsCard = byID('tenantDigitalAssetsSettingsCard');
-    // Tenant admins always; global admins also (default-tenant / single-tenant hubs).
-    if (tenantDigitalAssetsCard) tenantDigitalAssetsCard.classList.toggle('hidden', !hasProfile);
+    if (tenantDigitalAssetsCard) tenantDigitalAssetsCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
+    if (!(hasProfile && tenantAdmin) && typeof global.stopDigitalAssetsForUnauthorizedScope === 'function') {
+      global.stopDigitalAssetsForUnauthorizedScope();
+    }
     var tenantLLMDefaultsCard = byID('tenantSystemLLMDefaultsCard');
     if (tenantLLMDefaultsCard) tenantLLMDefaultsCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
     if (typeof global.applyImScopeUI === 'function') global.applyImScopeUI();

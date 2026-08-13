@@ -27,6 +27,7 @@ const mobileHubSSHDialTimeout = 12 * time.Second
 const mobileHubSSHRunTimeout = 90 * time.Second
 const mobileHubSSHLiveIdle = 10 * time.Minute
 const mobileHubSSHInputTimeout = 45 * time.Second
+
 // Soft single-shot base64 size before switching to chunked pull (internal).
 const mobileHubFileSingleShotBytes = 2 * 1024 * 1024
 const mobileHubFileChunkRawBytes = 512 * 1024 // 512KiB per dd chunk
@@ -230,6 +231,44 @@ func mobileHubFilesGC() {
 }
 
 func mobileHubFileStore(tenantID, ownerID, filename string, content []byte) (token string, err error) {
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	if !mobileOwnerWriteAllowedLocked(tenantID, ownerID) {
+		return "", fmt.Errorf("file owner is no longer available")
+	}
+	mobileHubFiles.Lock()
+	defer mobileHubFiles.Unlock()
+	return mobileHubFileStoreLocked(tenantID, ownerID, filename, content)
+}
+
+// mobileHubFileStoreForOperation serializes final download publication with
+// user cleanup. Holding the operation lock until the blob is registered means
+// a purge either sees and removes the blob, or removes the operation first and
+// prevents publication altogether.
+func mobileHubFileStoreForOperation(op *mobileBackendSSHFileOperationRecord, filename string, content []byte) (token string, err error) {
+	if op == nil {
+		return "", fmt.Errorf("file operation missing")
+	}
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	if !mobileOwnerWriteAllowedLocked(op.TenantID, op.OwnerID) {
+		return "", fmt.Errorf("file operation owner is no longer available")
+	}
+	mobileBackendSSHFileOperations.Lock()
+	defer mobileBackendSSHFileOperations.Unlock()
+	existing, ok := mobileBackendSSHFileOperations.operations[op.OperationID]
+	if !ok || existing.OwnerID != op.OwnerID || existing.TenantID != op.TenantID {
+		return "", fmt.Errorf("file operation no longer exists")
+	}
+	mobileHubFiles.Lock()
+	defer mobileHubFiles.Unlock()
+	return mobileHubFileStoreLocked(op.TenantID, op.OwnerID, filename, content)
+}
+
+// mobileHubFileStoreLocked stores a download blob while mobileHubFiles is
+// locked. Callers that need account-deletion serialization may hold an
+// operation lock around it.
+func mobileHubFileStoreLocked(tenantID, ownerID, filename string, content []byte) (token string, err error) {
 	if len(content) == 0 {
 		return "", fmt.Errorf("empty file")
 	}
@@ -245,7 +284,6 @@ func mobileHubFileStore(tenantID, ownerID, filename string, content []byte) (tok
 	if name == "" {
 		name = "download.bin"
 	}
-	mobileHubFiles.Lock()
 	mobileHubFiles.blobs[token] = mobileHubFileBlob{
 		Token:     token,
 		TenantID:  tenantID,
@@ -254,7 +292,6 @@ func mobileHubFileStore(tenantID, ownerID, filename string, content []byte) (tok
 		Content:   append([]byte(nil), content...),
 		ExpiresAt: time.Now().Add(mobileHubFileTTL),
 	}
-	mobileHubFiles.Unlock()
 	return token, nil
 }
 
@@ -590,10 +627,12 @@ func mobileHubSSHAppendSessionOutputChunk(sessionID, chunk string) {
 	}
 	// Avoid flooding: clip each chunk for the wire payload.
 	wire := mobileClipRunes(chunk, 4000)
+	mobileKnowledgePurgeState.RLock()
 	mobileBackendSSHSessions.Lock()
 	sess, ok := mobileBackendSSHSessions.sessions[sessionID]
-	if !ok {
+	if !ok || !mobileOwnerWriteAllowedLocked(sess.TenantID, sess.OwnerID) {
 		mobileBackendSSHSessions.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 		return
 	}
 	sess.RecentOutput = mobileClipRunes(sess.RecentOutput+wire, 8000)
@@ -609,6 +648,7 @@ func mobileHubSSHAppendSessionOutputChunk(sessionID, chunk string) {
 	payload := mobileBackendSSHSessionPayload(sess)
 	tenantID, ownerID := sess.TenantID, sess.OwnerID
 	mobileBackendSSHSessions.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 	mobileRealtimeBroadcast(tenantID, ownerID, mobileRealtimeBackendSSHSessionEvent(payload))
 }
 
@@ -857,25 +897,71 @@ func mobileHubSSHTaskShouldAsync(command string, forceAsync bool) bool {
 	return false
 }
 
+// mobileUpdateHubSSHTaskIfPresent keeps a background task from recreating its
+// row after user cleanup has removed it from the in-memory queue.
+func mobileUpdateHubSSHTaskIfPresent(task *mobileBackendSSHTaskRecord) bool {
+	if task == nil {
+		return false
+	}
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	mobileBackendSSHTasks.Lock()
+	defer mobileBackendSSHTasks.Unlock()
+	if !mobileOwnerWriteAllowedLocked(task.TenantID, task.OwnerID) {
+		return false
+	}
+	existing, ok := mobileBackendSSHTasks.tasks[task.TaskID]
+	if !ok || existing.OwnerID != task.OwnerID || existing.TenantID != task.TenantID {
+		return false
+	}
+	mobileBackendSSHTasks.tasks[task.TaskID] = *task
+	return true
+}
+
+// mobileUpdateHubSSHFileOperationIfPresent has the same deletion-race guard
+// for potentially long running hub_exec file transfers.
+func mobileUpdateHubSSHFileOperationIfPresent(op *mobileBackendSSHFileOperationRecord) bool {
+	if op == nil {
+		return false
+	}
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	mobileBackendSSHFileOperations.Lock()
+	defer mobileBackendSSHFileOperations.Unlock()
+	if !mobileOwnerWriteAllowedLocked(op.TenantID, op.OwnerID) {
+		return false
+	}
+	existing, ok := mobileBackendSSHFileOperations.operations[op.OperationID]
+	if !ok || existing.OwnerID != op.OwnerID || existing.TenantID != op.TenantID {
+		return false
+	}
+	mobileBackendSSHFileOperations.operations[op.OperationID] = *op
+	return true
+}
+
 func mobileRunHubSSHTask(task *mobileBackendSSHTaskRecord, session mobileBackendSSHSessionRecord) {
 	now := time.Now().UTC()
 	task.Status = "running"
 	task.Message = "running on Hub"
 	task.UpdatedAt = now
+	mobileKnowledgePurgeState.RLock()
 	mobileBackendSSHTasks.Lock()
 	// Respect kill requested before start.
-	if existing, ok := mobileBackendSSHTasks.tasks[task.TaskID]; ok {
-		if strings.EqualFold(existing.Status, "kill_requested") || strings.EqualFold(existing.Status, "cancelled") {
-			task.Status = "cancelled"
-			task.Message = "cancelled before start"
-			task.UpdatedAt = time.Now().UTC()
-			mobileBackendSSHTasks.tasks[task.TaskID] = *task
-			mobileBackendSSHTasks.Unlock()
-			return
-		}
+	existing, ok := mobileBackendSSHTasks.tasks[task.TaskID]
+	if !ok || existing.OwnerID != task.OwnerID || existing.TenantID != task.TenantID ||
+		strings.EqualFold(existing.Status, "kill_requested") || strings.EqualFold(existing.Status, "cancelled") {
+		mobileBackendSSHTasks.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
+		return
+	}
+	if !mobileOwnerWriteAllowedLocked(task.TenantID, task.OwnerID) {
+		mobileBackendSSHTasks.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
+		return
 	}
 	mobileBackendSSHTasks.tasks[task.TaskID] = *task
 	mobileBackendSSHTasks.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	mobileHubTaskRegister(task.TaskID, cancel)
@@ -889,9 +975,7 @@ func mobileRunHubSSHTask(task *mobileBackendSSHTaskRecord, session mobileBackend
 		task.Status = "failed"
 		task.Message = "server profile not found"
 		task.UpdatedAt = time.Now().UTC()
-		mobileBackendSSHTasks.Lock()
-		mobileBackendSSHTasks.tasks[task.TaskID] = *task
-		mobileBackendSSHTasks.Unlock()
+		mobileUpdateHubSSHTaskIfPresent(task)
 		return
 	}
 	vault, ok := mobileSSHVaultLookup(session.TenantID, session.OwnerID, session.ServerProfileID)
@@ -899,9 +983,7 @@ func mobileRunHubSSHTask(task *mobileBackendSSHTaskRecord, session mobileBackend
 		task.Status = "failed"
 		task.Message = "vault secret missing"
 		task.UpdatedAt = time.Now().UTC()
-		mobileBackendSSHTasks.Lock()
-		mobileBackendSSHTasks.tasks[task.TaskID] = *task
-		mobileBackendSSHTasks.Unlock()
+		mobileUpdateHubSSHTaskIfPresent(task)
 		return
 	}
 	// Progressive stream: push chunks to session transcript + task log tail.
@@ -924,9 +1006,7 @@ func mobileRunHubSSHTask(task *mobileBackendSSHTaskRecord, session mobileBackend
 			lastTaskRT = time.Now()
 		}
 		streamMu.Unlock()
-		mobileBackendSSHTasks.Lock()
-		mobileBackendSSHTasks.tasks[task.TaskID] = taskCopy
-		mobileBackendSSHTasks.Unlock()
+		mobileUpdateHubSSHTaskIfPresent(&taskCopy)
 		// Throttled task-level realtime (session already streamed the chunk).
 		if emitTaskRT {
 			mobileRealtimeBroadcast(session.TenantID, session.OwnerID, mobileRealtimeBackendSSHTaskEvent(mobileBackendSSHTaskPayload(taskCopy)))
@@ -959,8 +1039,11 @@ func mobileRunHubSSHTask(task *mobileBackendSSHTaskRecord, session mobileBackend
 		task.ExitCode = &code
 	}
 	mobileBackendSSHTasks.Lock()
-	// Don't overwrite a terminal cancelled if kill raced after completion... prefer our result.
-	mobileBackendSSHTasks.tasks[task.TaskID] = *task
+	// A user purge removes the task from this map. Never reinsert it from an
+	// in-flight worker after its account has been unbound.
+	if existing, ok := mobileBackendSSHTasks.tasks[task.TaskID]; ok && existing.OwnerID == task.OwnerID && existing.TenantID == task.TenantID {
+		mobileBackendSSHTasks.tasks[task.TaskID] = *task
+	}
 	mobileBackendSSHTasks.Unlock()
 
 	// Final note: if progressive stream already pushed body, only append trailer.
@@ -1009,18 +1092,16 @@ func mobileHubSSHRunFileOp(session mobileBackendSSHSessionRecord, op *mobileBack
 	op.Message = "running on Hub"
 	op.ClaimedBy = "hub"
 	op.UpdatedAt = now
-	mobileBackendSSHFileOperations.Lock()
-	mobileBackendSSHFileOperations.operations[op.OperationID] = *op
-	mobileBackendSSHFileOperations.Unlock()
+	if !mobileUpdateHubSSHFileOperationIfPresent(op) {
+		return
+	}
 
 	profile, ok := mobileFindServerProfile(session.TenantID, session.OwnerID, session.ServerProfileID)
 	if !ok {
 		op.Status = "failed"
 		op.Message = "server profile not found"
 		op.UpdatedAt = time.Now().UTC()
-		mobileBackendSSHFileOperations.Lock()
-		mobileBackendSSHFileOperations.operations[op.OperationID] = *op
-		mobileBackendSSHFileOperations.Unlock()
+		mobileUpdateHubSSHFileOperationIfPresent(op)
 		return
 	}
 	vault, ok := mobileSSHVaultLookup(session.TenantID, session.OwnerID, session.ServerProfileID)
@@ -1028,9 +1109,7 @@ func mobileHubSSHRunFileOp(session mobileBackendSSHSessionRecord, op *mobileBack
 		op.Status = "failed"
 		op.Message = "vault secret missing"
 		op.UpdatedAt = time.Now().UTC()
-		mobileBackendSSHFileOperations.Lock()
-		mobileBackendSSHFileOperations.operations[op.OperationID] = *op
-		mobileBackendSSHFileOperations.Unlock()
+		mobileUpdateHubSSHFileOperationIfPresent(op)
 		return
 	}
 
@@ -1053,9 +1132,7 @@ func mobileHubSSHRunFileOp(session mobileBackendSSHSessionRecord, op *mobileBack
 		op.Status = "failed"
 		op.Message = "hub_exec supports only stat/list/read/download; use desktop_exec for upload"
 		op.UpdatedAt = time.Now().UTC()
-		mobileBackendSSHFileOperations.Lock()
-		mobileBackendSSHFileOperations.operations[op.OperationID] = *op
-		mobileBackendSSHFileOperations.Unlock()
+		mobileUpdateHubSSHFileOperationIfPresent(op)
 		return
 	}
 
@@ -1066,9 +1143,7 @@ func mobileHubSSHRunFileOp(session mobileBackendSSHSessionRecord, op *mobileBack
 			op.BytesTransferred = done
 			op.Message = mobileHubFileDownloadProgressMessage(done, total, chunkIdx, chunks)
 			op.UpdatedAt = time.Now().UTC()
-			mobileBackendSSHFileOperations.Lock()
-			mobileBackendSSHFileOperations.operations[op.OperationID] = *op
-			mobileBackendSSHFileOperations.Unlock()
+			mobileUpdateHubSSHFileOperationIfPresent(op)
 			// Throttle session spam: first, every 4th chunk, and last.
 			if chunkIdx == 0 || (chunkIdx+1)%4 == 0 || chunkIdx+1 == chunks {
 				mobileHubSSHAppendSessionOutputChunk(session.SessionID,
@@ -1084,7 +1159,7 @@ func mobileHubSSHRunFileOp(session mobileBackendSSHSessionRecord, op *mobileBack
 			op.Message = dlErr.Error()
 			transcript = dlErr.Error()
 		} else {
-			token, storeErr := mobileHubFileStore(session.TenantID, session.OwnerID, path.Base(remote), data)
+			token, storeErr := mobileHubFileStoreForOperation(op, path.Base(remote), data)
 			if storeErr != nil {
 				op.Status = "failed"
 				op.Message = storeErr.Error()
@@ -1120,9 +1195,7 @@ func mobileHubSSHRunFileOp(session mobileBackendSSHSessionRecord, op *mobileBack
 			transcript = op.Message
 		}
 	}
-	mobileBackendSSHFileOperations.Lock()
-	mobileBackendSSHFileOperations.operations[op.OperationID] = *op
-	mobileBackendSSHFileOperations.Unlock()
+	mobileUpdateHubSSHFileOperationIfPresent(op)
 
 	// Mirror a short note on the SSH session transcript.
 	mobileBackendSSHSessions.Lock()

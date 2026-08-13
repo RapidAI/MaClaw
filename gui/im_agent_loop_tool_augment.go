@@ -40,7 +40,9 @@ func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, i
 
 	// Route with the cleaned injection text to see what tools it would activate.
 	allTools := h.getTools()
-	injectionRouted := h.routeTools(routeText, allTools)
+	// Route augmentation happens while an Agent loop is active. Keep this on
+	// the same non-blocking BM25/L2-only path as the initial tool set.
+	injectionRouted := h.routeToolsForUser("", routeText, allTools, true)
 
 	// Build a set of tool names currently available.
 	currentNames := make(map[string]bool, len(currentTools))

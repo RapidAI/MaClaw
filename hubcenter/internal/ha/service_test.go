@@ -962,6 +962,39 @@ func TestApplyRemoteLLMCardOrderUpsertAndDelete(t *testing.T) {
 	}
 }
 
+func TestApplyRemoteComputeMarketOpRequiresAttachedRepository(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+	payload := `{"order_no":"HC-NOT-READY"}`
+	op := &store.HASyncOp{
+		OpID:          "op-card-order-not-ready",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityLLMCardOrder,
+		EntityID:      "HC-NOT-READY",
+		OpType:        OpUpsert,
+		EntityVersion: 1,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	err := svc.ApplyRemoteOp(context.Background(), op)
+	if !errors.Is(err, ErrReplicaNotReady) {
+		t.Fatalf("ApplyRemoteOp() error = %v, want ErrReplicaNotReady", err)
+	}
+	if version, err := versionsRepo.Get(context.Background(), op.EntityType, op.EntityID); err != nil {
+		t.Fatalf("version Get() error = %v", err)
+	} else if version != nil {
+		t.Fatalf("operation without a repository updated version: %#v", version)
+	}
+	if applied, err := opsRepo.HasApplied(context.Background(), op.OpID); err != nil {
+		t.Fatalf("HasApplied() error = %v", err)
+	} else if applied {
+		t.Fatal("operation without a repository was marked applied")
+	}
+}
+
 func TestValidateRemoteLLMCardOrderRejectsMismatchedOrderNo(t *testing.T) {
 	payload := `{"order_no":"HC-OTHER"}`
 	op := &store.HASyncOp{

@@ -26,6 +26,46 @@ export function ActivateRemoteSMS(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['ActivateRemoteSMS'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function AIAssistantAttachmentPreviewDataURL(arg1) {
+  return window['go']['main']['App']['AIAssistantAttachmentPreviewDataURL'](arg1);
+}
+
+export function ClaimReferralHandoff(arg1, arg2) {
+  return window['go']['main']['App']['ClaimReferralHandoff'](arg1, arg2);
+}
+
+export function GetReferralRegistrationStatus(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetReferralRegistrationStatus'](arg1, arg2, arg3);
+}
+
+export function SendReferralRegistrationEmail(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SendReferralRegistrationEmail'](arg1, arg2, arg3, arg4);
+}
+
+export function RegisterReferralEmail(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['RegisterReferralEmail'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ActivateReferralRemoteEmail(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ActivateReferralRemoteEmail'](arg1, arg2, arg3, arg4);
+}
+
+export function ActivateReferralRemotePhone(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ActivateReferralRemotePhone'](arg1, arg2, arg3, arg4);
+}
+
+export function SendReferralRegistrationSMS(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SendReferralRegistrationSMS'](arg1, arg2, arg3, arg4);
+}
+
+export function RegisterReferralPhone(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['RegisterReferralPhone'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ConsumeReferralHandoff() {
+  return window['go']['main']['App']['ConsumeReferralHandoff']();
+}
+
 export function AddExternalSkillDir(arg1) {
   return window['go']['main']['App']['AddExternalSkillDir'](arg1);
 }
@@ -240,10 +280,6 @@ export function CancelVirtualRepositoryOperation(arg1) {
 
 export function CancelXAIOAuth() {
   return window['go']['main']['App']['CancelXAIOAuth']();
-}
-
-export function CancelXAIOAuthURL(arg1) {
-  return window['go']['main']['App']['CancelXAIOAuthURL'](arg1);
 }
 
 export function CaptureRemoteScreenshot(arg1) {
@@ -546,6 +582,10 @@ export function CreateExpertTask(arg1, arg2) {
   return window['go']['main']['App']['CreateExpertTask'](arg1, arg2);
 }
 
+export function EnsureAssistantTabTask(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['EnsureAssistantTabTask'](arg1, arg2, arg3, arg4);
+}
+
 export function CreateMobileAuthDesktopQRSession() {
   return window['go']['main']['App']['CreateMobileAuthDesktopQRSession']();
 }
@@ -644,6 +684,10 @@ export function DeleteLansengerWatchJobForBot(arg1, arg2) {
 
 export function DeleteMemory(arg1) {
   return window['go']['main']['App']['DeleteMemory'](arg1);
+}
+
+export function DeleteMemories(arg1) {
+  return window['go']['main']['App']['DeleteMemories'](arg1);
 }
 
 export function DeleteMemoryBackup(arg1) {
@@ -1208,6 +1252,18 @@ export function GetHubSecurityPolicy() {
 
 export function GetHubUserRanking() {
   return window['go']['main']['App']['GetHubUserRanking']();
+}
+
+export function GetHubUserInvitations() {
+  return window['go']['main']['App']['GetHubUserInvitations']();
+}
+
+export function GetHubUserInvitationsPage(arg1) {
+  return window['go']['main']['App']['GetHubUserInvitationsPage'](arg1);
+}
+
+export function RotateHubUserInvitation() {
+  return window['go']['main']['App']['RotateHubUserInvitation']();
 }
 
 export function GetIMAuditStats() {
@@ -2030,6 +2086,10 @@ export function SubmitExpertMarketListing(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SubmitExpertMarketListing'](arg1, arg2, arg3, arg4);
 }
 
+export function SubmitExpertMarketListingWithDistribution(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SubmitExpertMarketListingWithDistribution'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function PublishExpertMarketListing(arg1) {
   return window['go']['main']['App']['PublishExpertMarketListing'](arg1);
 }
@@ -2700,6 +2760,14 @@ export function ListExperienceAudit() {
 
 export function ListExperts() {
   return window['go']['main']['App']['ListExperts']();
+}
+
+export function ListManagedIndustryExperts() {
+  return window['go']['main']['App']['ListManagedIndustryExperts']();
+}
+
+export function PurchaseAndInstallManagedIndustryExpert(arg1, arg2) {
+  return window['go']['main']['App']['PurchaseAndInstallManagedIndustryExpert'](arg1, arg2);
 }
 
 export function GetHardwareAgentBinding(arg1) {
@@ -4346,6 +4414,10 @@ export function StartWorkflowTemplate(arg1, arg2) {
   return window['go']['main']['App']['StartWorkflowTemplate'](arg1, arg2);
 }
 
+export function StartWorkflowTemplateInTab(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StartWorkflowTemplateInTab'](arg1, arg2, arg3);
+}
+
 export function StartXAIOAuth() {
   return window['go']['main']['App']['StartXAIOAuth']();
 }
@@ -4456,6 +4528,10 @@ export function TestMISDataConnection(arg1) {
 
 export function TestMaclawLLM(arg1) {
   return window['go']['main']['App']['TestMaclawLLM'](arg1);
+}
+
+export function TestAndSaveMaclawLLMProviders(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TestAndSaveMaclawLLMProviders'](arg1, arg2, arg3);
 }
 
 export function TestMaclawLLMProfile(arg1, arg2, arg3) {

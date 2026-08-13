@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { localAssistantTabTitle } from "../aiAssistantI18n";
 import { AITabItem, getAITabDisplayTitle } from "../AITabItem";
@@ -23,6 +23,85 @@ describe("AITabItem", () => {
         expect(getAITabDisplayTitle(tab, "en")).toBe("AI Assistant");
         expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("AI 助手");
         expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("AI 助手");
+    });
+
+    it("lets the main AI assistant tab be renamed by double-click", () => {
+        const onRename = vi.fn();
+        const tab = { id: "local", type: "local" as const, title: "AI 助手", closable: false };
+        render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onRename={onRename} lang="zh-CN" />);
+
+        fireEvent.doubleClick(screen.getByTestId("ai-tab-local"));
+        const input = screen.getByTestId("ai-tab-rename-input-local") as HTMLInputElement;
+        fireEvent.change(input, { target: { value: "研究助手" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+
+        expect(onRename).toHaveBeenCalledWith("local", "研究助手");
+    });
+
+    it("supports keyboard renaming and does not save a cancelled edit", () => {
+        const onRename = vi.fn();
+        const tab = { id: "local", type: "local" as const, title: "AI 助手", closable: false };
+        render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onRename={onRename} lang="zh-CN" />);
+
+        fireEvent.keyDown(screen.getByTestId("ai-tab-local"), { key: "F2" });
+        const input = screen.getByTestId("ai-tab-rename-input-local") as HTMLInputElement;
+        fireEvent.change(input, { target: { value: "不应保存" } });
+        fireEvent.keyDown(input, { key: "Escape" });
+
+        expect(onRename).not.toHaveBeenCalled();
+        expect(screen.queryByTestId("ai-tab-rename-input-local")).toBeNull();
+    });
+
+    it("does not submit while an IME composition is still active", () => {
+        const onRename = vi.fn();
+        const tab = { id: "local", type: "local" as const, title: "AI 助手", closable: false };
+        render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onRename={onRename} lang="zh-CN" />);
+
+        fireEvent.doubleClick(screen.getByTestId("ai-tab-local"));
+        const input = screen.getByTestId("ai-tab-rename-input-local");
+        fireEvent.compositionStart(input);
+        fireEvent.keyDown(input, { key: "Enter" });
+        expect(onRename).not.toHaveBeenCalled();
+        expect(screen.getByTestId("ai-tab-rename-input-local")).toBeTruthy();
+
+        fireEvent.compositionEnd(input);
+        fireEvent.keyDown(input, { key: "Enter" });
+        expect(onRename).not.toHaveBeenCalled();
+        expect(screen.queryByTestId("ai-tab-rename-input-local")).toBeNull();
+    });
+
+    it("does not save an unchanged title and uses an empty title to reset", () => {
+        const onRename = vi.fn();
+        const tab = { id: "local", type: "local" as const, title: "AI 助手", customTitle: "研究助手", closable: false };
+        render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onRename={onRename} lang="zh-CN" />);
+
+        fireEvent.doubleClick(screen.getByTestId("ai-tab-local"));
+        fireEvent.blur(screen.getByTestId("ai-tab-rename-input-local"));
+        expect(onRename).not.toHaveBeenCalled();
+
+        fireEvent.doubleClick(screen.getByTestId("ai-tab-local"));
+        const input = screen.getByTestId("ai-tab-rename-input-local");
+        fireEvent.change(input, { target: { value: "   " } });
+        fireEvent.blur(input);
+        expect(onRename).toHaveBeenCalledWith("local", "");
+    });
+
+    it("uses a saved custom title for the main AI assistant tab", () => {
+        const tab = { id: "local", type: "local" as const, title: "AI 助手", customTitle: "研究助手", closable: false };
+        expect(getAITabDisplayTitle(tab, "en")).toBe("研究助手");
+    });
+
+    it("lets a task-backed project tab be renamed by double-click", () => {
+        const onRename = vi.fn();
+        const tab = { id: "project-1", type: "project" as const, title: "Old task", projectPath: "D:/tasks/old", closable: true };
+        render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onRename={onRename} lang="en" />);
+
+        fireEvent.doubleClick(screen.getByTestId("ai-tab-project-1"));
+        const input = screen.getByTestId("ai-tab-rename-input-project-1") as HTMLInputElement;
+        fireEvent.change(input, { target: { value: "Renamed task" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+
+        expect(onRename).toHaveBeenCalledWith("project-1", "Renamed task");
     });
 
     it("labels remote diagnosis tabs as maintenance for assistive technology", () => {

@@ -279,12 +279,15 @@ type IMResponseConfirmLabels struct {
 }
 
 type IMResponseUnfinishedTask struct {
-	SlotID      string             `json:"slot_id,omitempty"`
-	Title       string             `json:"title,omitempty"`
-	Summary     string             `json:"summary,omitempty"`
-	ProjectPath string             `json:"project_path,omitempty"`
-	Status      string             `json:"status,omitempty"`
-	Actions     []IMResponseAction `json:"actions,omitempty"`
+	SlotID          string             `json:"slot_id,omitempty"`
+	Title           string             `json:"title,omitempty"`
+	Summary         string             `json:"summary,omitempty"`
+	ProjectPath     string             `json:"project_path,omitempty"`
+	Status          string             `json:"status,omitempty"`
+	LastToolName    string             `json:"last_tool_name,omitempty"`
+	SideEffectState string             `json:"side_effect_state,omitempty"`
+	RecoveryMode    string             `json:"recovery_mode,omitempty"`
+	Actions         []IMResponseAction `json:"actions,omitempty"`
 }
 
 type IMResponseRecoverableSession struct {
@@ -363,12 +366,15 @@ func buildUnfinishedTaskPayloadWithLang(slot *agent.UnfinishedTaskSlot, lang str
 		title = localizedUnfinishedSlotSummary(title, lang)
 	}
 	return &IMResponseUnfinishedTask{
-		SlotID:      slot.SlotID,
-		Title:       title,
-		Summary:     localizedUnfinishedSlotSummary(strings.TrimSpace(slot.Summary), lang),
-		ProjectPath: strings.TrimSpace(slot.ProjectPath),
-		Status:      strings.TrimSpace(slot.Status.String()),
-		Actions:     buildResumeSlotActionsWithLang(slot, lang),
+		SlotID:          slot.SlotID,
+		Title:           title,
+		Summary:         localizedUnfinishedSlotSummary(strings.TrimSpace(slot.Summary), lang),
+		ProjectPath:     strings.TrimSpace(slot.ProjectPath),
+		Status:          strings.TrimSpace(slot.Status.String()),
+		LastToolName:    strings.TrimSpace(slot.LastToolName),
+		SideEffectState: strings.TrimSpace(slot.SideEffectState),
+		RecoveryMode:    strings.TrimSpace(slot.RecoveryMode),
+		Actions:         buildResumeSlotActionsWithLang(slot, lang),
 	}
 }
 

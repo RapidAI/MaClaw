@@ -14,11 +14,11 @@
 
 static bool s_fangtang_network_transport_cellular;
 
-bool compact_profile_network_transport_is_cellular(void) {
+bool fangtang_visual_profile_network_transport_is_cellular(void) {
     return s_fangtang_network_transport_cellular;
 }
 
-bool compact_profile_publish_network_transport(bool cellular) {
+bool fangtang_visual_profile_publish_network_transport(bool cellular) {
     const bool changed = s_fangtang_network_transport_cellular != cellular;
     s_fangtang_network_transport_cellular = cellular;
     return changed;

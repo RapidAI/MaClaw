@@ -55,6 +55,8 @@ func (a *App) CompleteAnthropicOAuth(code string) (string, error) {
 	for i, p := range data.Providers {
 		if p.Name == "Anthropic" && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 			data.Providers[i] = oauth.ApplyTokenResult(p, result)
+			// A new OAuth token is not eligible until the post-login probe passes.
+			data.Providers[i].ConnectionTestPassed = false
 			if err := a.SaveMaclawLLMProviders(data.Providers, "Anthropic"); err != nil {
 				return "", fmt.Errorf("保存 Anthropic OAuth 配置失败: %w", err)
 			}
@@ -146,6 +148,8 @@ func (a *App) WaitGitHubCopilotOAuth() (string, error) {
 			data.Providers[i].OAuthAccessToken = githubToken // Long-lived GitHub token for refresh
 			data.Providers[i].TokenExpiresAt = copilotResp.ExpiresAt
 			data.Providers[i].RefreshToken = githubToken // GitHub token serves as refresh mechanism
+			// The exchanged API credential must pass the post-login probe again.
+			data.Providers[i].ConnectionTestPassed = false
 			if err := a.SaveMaclawLLMProviders(data.Providers, "GitHub Copilot"); err != nil {
 				return "", fmt.Errorf("保存 GitHub Copilot 配置失败: %w", err)
 			}

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -11,29 +10,19 @@ import (
 // user message should NOT create a coding session. Returns "" only for
 // explicit coding tasks.
 func (h *IMMessageHandler) checkSessionTaskGuard() string {
-	userText, ownerID := h.currentRuntimeTaskTextOrLegacy()
+	userText, _ := h.currentRuntimeTaskTextOrLegacy()
 	result := h.classifyTaskIntentForSessionGuard(userText)
 
-	if result.Intent == intentCoding {
+	if result.Intent == intentCoding && !result.Degraded {
 		return ""
+	}
+	// A degraded embedding result is useful context but not adequate evidence
+	// to open an execution-capable coding session by itself.
+	if result.Intent == intentCoding && result.Degraded {
+		result.Intent = intentAmbiguous
 	}
 
 	if result.Intent == intentAmbiguous || result.Intent == intentUnknown {
-		if uic := h.getUnifiedClassifier(); uic != nil {
-			uicResult := uic.Classify(intent.MessageContext{Text: userText, UserID: ownerID})
-			if uicResult.IsCodingLike() {
-				return ""
-			}
-			// Continuation phrases ("开工"/"继续"/"let's go") should allow session
-			// creation — they indicate the user wants to continue a prior coding task.
-			if uicResult.Primary == intent.LabelContinuation {
-				return ""
-			}
-			if uicResult.IsNonCodingLike() {
-				return "Task intent: semantic classification indicates a non-coding task. Do not create a coding session; use direct tools instead."
-			}
-		}
-
 		if h.app != nil && h.getAppToolRouter() != nil {
 			if ic := h.getAppToolRouter().IntentClassifier(); ic != nil {
 				icResult := ic.Classify(userText)

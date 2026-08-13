@@ -268,8 +268,6 @@ func (a *App) loadConfigSnapshot() (corelib.AppConfig, error) {
 		a.runConfigPostUnlock(corelib.AppConfig{})
 		return corelib.AppConfig{}, err
 	}
-	// loadConfigLocked already calls publishConfigLocked.
-	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
 	a.configMu.Unlock()
 	a.runConfigPostUnlock(config)
 	return config, nil

@@ -126,19 +126,22 @@ func (c RechargeCard) PlainCode() string {
 }
 
 type Grant struct {
-	ID             string             `json:"id"`
-	UserID         string             `json:"user_id,omitempty"`
-	Email          string             `json:"email"`
-	ServiceGroupID string             `json:"service_group_id"`
-	Source         string             `json:"source"`
-	CardID         string             `json:"card_id,omitempty"`
-	StartsAt       time.Time          `json:"starts_at"`
-	ExpiresAt      time.Time          `json:"expires_at"`
-	CreatedAt      time.Time          `json:"created_at"`
-	CreditsTotal   float64            `json:"credits_total,omitempty"`
-	CreditsUsed    float64            `json:"credits_used,omitempty"`
-	PeriodLimits   CreditPeriodLimits `json:"period_limits,omitempty"`
-	PeriodUsage    CreditPeriodUsage  `json:"period_usage,omitempty"`
+	ID             string    `json:"id"`
+	UserID         string    `json:"user_id,omitempty"`
+	Email          string    `json:"email"`
+	ServiceGroupID string    `json:"service_group_id"`
+	Source         string    `json:"source"`
+	CardID         string    `json:"card_id,omitempty"`
+	StartsAt       time.Time `json:"starts_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	CreatedAt      time.Time `json:"created_at"`
+	CreditsTotal   float64   `json:"credits_total,omitempty"`
+	CreditsUsed    float64   `json:"credits_used,omitempty"`
+	// Frozen grants are retained for audit but never participate in billing.
+	// Referral revocation uses this rather than deleting already-issued grants.
+	Frozen       bool               `json:"frozen,omitempty"`
+	PeriodLimits CreditPeriodLimits `json:"period_limits,omitempty"`
+	PeriodUsage  CreditPeriodUsage  `json:"period_usage,omitempty"`
 }
 
 type AuthorizedModel struct {
@@ -334,6 +337,19 @@ func PurgeUserFromRegistry(ctx context.Context, system SystemSettingsRepository,
 // PurgeUserFromRegistryForUser removes all user-specific data for the canonical
 // user ID, while still matching legacy email/phone account values.
 func PurgeUserFromRegistryForUser(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
+	return purgeUserFromRegistryForUser(ctx, system, userID, email, false)
+}
+
+// PurgeUserFromRegistryExceptReferralBenefitsForUser removes ordinary
+// user-owned service state while retaining referral grants. Account-deletion
+// flows use this after freezing the referral grants so the immutable referral
+// ledger remains auditable and its unused balance cannot be spent. General
+// callers should normally use PurgeUserFromRegistryForUser instead.
+func PurgeUserFromRegistryExceptReferralBenefitsForUser(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
+	return purgeUserFromRegistryForUser(ctx, system, userID, email, true)
+}
+
+func purgeUserFromRegistryForUser(ctx context.Context, system SystemSettingsRepository, userID, email string, retainReferralBenefits bool) error {
 	owner := newUserAccountRef(userID, email)
 	if owner.empty() || system == nil {
 		return nil
@@ -358,7 +374,7 @@ func PurgeUserFromRegistryForUser(ctx context.Context, system SystemSettingsRepo
 	// Remove grants.
 	filteredGrants := reg.Grants[:0]
 	for _, g := range reg.Grants {
-		if grantMatchesUser(g, owner) {
+		if grantMatchesUser(g, owner) && !(retainReferralBenefits && strings.EqualFold(strings.TrimSpace(g.Source), "user_referral")) {
 			changed = true
 		} else {
 			filteredGrants = append(filteredGrants, g)

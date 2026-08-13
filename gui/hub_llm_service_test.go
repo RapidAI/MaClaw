@@ -312,6 +312,25 @@ func TestApplyHubLLMServiceStatusRemovalRestoresAssistantCompatibilityProjection
 	}
 }
 
+func TestApplyHubLLMServiceStatusToConfigMarksActiveHubProviderTested(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "hub", Name: hubServiceProviderName, URL: "https://old.example/v1", Model: "hub-model", IsHubService: true,
+		}},
+	}
+
+	if !app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{
+		Active: true, HubLLMBaseURL: "https://hub.example.com/v1",
+	}) {
+		t.Fatal("expected active Hub status to update provider")
+	}
+	if !cfg.MaclawLLMProviders[0].ConnectionTestPassed {
+		t.Fatalf("active Hub provider = %#v, want ConnectionTestPassed", cfg.MaclawLLMProviders[0])
+	}
+}
+
 func TestSyncHubLLMServiceStatusPatchesWithoutStaleOverwrite(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

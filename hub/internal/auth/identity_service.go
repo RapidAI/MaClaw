@@ -29,6 +29,9 @@ var (
 	ErrInvitationExpired          = errors.New("invitation code has expired")
 	ErrRegistrationDisabled       = errors.New("new user registration is disabled for this tenant")
 	ErrEmailDomainNotAllowed      = errors.New("email domain is not allowed for this tenant")
+	ErrTenantNotFound             = errors.New("tenant not found")
+	ErrTenantInactive             = errors.New("tenant is inactive")
+	ErrUserAlreadyRegistered      = errors.New("user is already registered")
 	ErrRoutedToAnotherHub         = errors.New("email is routed to another hub")
 	identitySNCounter             atomic.Uint64
 	tenantEmailDomainPattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -72,6 +75,14 @@ type userIdentityReassigner interface {
 	ReassignIdentity(ctx context.Context, tenantID, identityType, value, userID string, verified bool, verifiedAt time.Time) error
 }
 
+// referralUserRegistrationCreator is implemented by the SQLite user
+// repository. Keeping it as an optional capability preserves the general
+// UserRepository abstraction while allowing browser referral registration to
+// make user creation and attribution one database transaction.
+type referralUserRegistrationCreator interface {
+	CreateReferralUserWithAttribution(ctx context.Context, user *store.User, extraIdentity *store.UserIdentity, referral *store.UserReferral) error
+}
+
 const (
 	systemKeyEnrollmentMode      = "identity_enrollment_mode"
 	systemKeyPublicBaseURL       = "server_public_base_url"
@@ -100,9 +111,10 @@ type EnrollmentResult struct {
 type EnrollOption func(*enrollOptions)
 
 type enrollOptions struct {
-	Language      string
-	PhoneVerified bool
-	EmailVerified bool
+	Language              string
+	PhoneVerified         bool
+	EmailVerified         bool
+	SkipEmailVerification bool
 }
 
 // WithLanguage sets the UI language for registration emails.
@@ -118,6 +130,13 @@ func WithEmailVerifiedRegistration() EnrollOption {
 	return func(o *enrollOptions) { o.EmailVerified = true }
 }
 
+// WithEmailVerificationSkipped records that a separate enrollment policy has
+// authorized registration without an email proof. It must not mark the email
+// address verified or grant email-verification benefits.
+func WithEmailVerificationSkipped() EnrollOption {
+	return func(o *enrollOptions) { o.SkipEmailVerification = true }
+}
+
 // ValidateEmailEnrollment applies the same routing and tenant policy checks used
 // by enrollment before an unauthenticated verification email is sent.
 func (s *IdentityService) ValidateEmailEnrollment(ctx context.Context, email string) error {
@@ -125,10 +144,13 @@ func (s *IdentityService) ValidateEmailEnrollment(ctx context.Context, email str
 	if email == "" {
 		return ErrInvalidEmail
 	}
+	tenantID := tenantIDFromContext(ctx)
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return err
+	}
 	if err := s.ensureEmailAllowed(ctx, email); err != nil {
 		return err
 	}
-	tenantID := tenantIDFromContext(ctx)
 	user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, tenantID, email)
 	if err != nil {
 		return err
@@ -140,6 +162,14 @@ func (s *IdentityService) ValidateEmailEnrollment(ctx context.Context, email str
 		return s.ensureUserRouteAllowed(ctx, email)
 	}
 	return nil
+}
+
+// TenantAllowsNewUserRegistration exposes the tenant policy for public flows
+// that need to decide whether showing a registration form is appropriate.
+// Creation methods still enforce the same check, so this is not an authority
+// boundary on its own.
+func (s *IdentityService) TenantAllowsNewUserRegistration(ctx context.Context) (bool, error) {
+	return s.tenantAllowsNewUserRegistration(ctx, tenantIDFromContext(ctx))
 }
 
 func (s *IdentityService) TenantDisplayName(ctx context.Context, tenantID string) string {
@@ -410,6 +440,9 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return nil, err
+	}
 	if err := s.ensureEmailAllowed(ctx, email); err != nil {
 		return nil, err
 	}
@@ -521,9 +554,11 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 			} else if eopts.EmailVerified {
 				_ = s.grantEmailConfirmedBenefitForUser(ctx, user.ID, email)
 				_ = s.users.MarkEmailVerified(ctx, tenantID, email)
-			} else if _, notifyErr := s.sendRegistrationVerification(ctx, email, eopts.Language); notifyErr != nil {
-				_ = s.grantEmailConfirmedBenefitForUser(ctx, user.ID, email)
-				_ = s.users.MarkEmailVerified(ctx, tenantID, email)
+			} else if !eopts.SkipEmailVerification {
+				if _, notifyErr := s.sendRegistrationVerification(ctx, email, eopts.Language); notifyErr != nil {
+					_ = s.grantEmailConfirmedBenefitForUser(ctx, user.ID, email)
+					_ = s.users.MarkEmailVerified(ctx, tenantID, email)
+				}
 			}
 		}
 	}
@@ -565,6 +600,9 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 	tenantID := tenantIDFromContext(ctx)
 	if email == "" {
 		return nil, ErrInvalidEmail
+	}
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return nil, err
 	}
 	if err := s.ensureEmailAllowed(ctx, email); err != nil {
 		return nil, err
@@ -1172,6 +1210,33 @@ func (s *IdentityService) tenantAllowsNewUserRegistration(ctx context.Context, t
 	return tenantAllowsNewUserRegistration(tenant), nil
 }
 
+// ensureTenantActive rejects arbitrary tenant IDs supplied to public enrollment
+// endpoints.  The default tenant is self-healed through EnsureDefault so older
+// installations that have not materialized it yet keep their existing behavior.
+func (s *IdentityService) ensureTenantActive(ctx context.Context, tenantID string) error {
+	if s == nil || s.tenants == nil {
+		return nil
+	}
+	tenantID = normalizeTenantIDValue(tenantID)
+	tenant, err := s.tenants.GetByID(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if tenant == nil && tenantID == store.DefaultTenantID {
+		tenant, err = s.tenants.EnsureDefault(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	if tenant == nil {
+		return ErrTenantNotFound
+	}
+	if tenant.DeletedAt != nil || !strings.EqualFold(strings.TrimSpace(tenant.Status), "active") {
+		return ErrTenantInactive
+	}
+	return nil
+}
+
 func tenantAllowsNewUserRegistration(tenant *store.Tenant) bool {
 	if tenant == nil || strings.TrimSpace(tenant.SettingsJSON) == "" {
 		return true
@@ -1202,6 +1267,15 @@ func (s *IdentityService) ensureTenantEmailDomainAllowed(ctx context.Context, te
 	if tenant == nil {
 		return nil
 	}
+	// A tenant's email domains are used for tenant routing and branding by
+	// default.  They are not an implicit registration allow-list: a tenant can
+	// legitimately support public email addresses while also having a corporate
+	// domain.  Restricting registration to those domains must be an explicit
+	// tenant policy, otherwise enabling email (or mixed) registration would
+	// unexpectedly lock out normal users on a new device.
+	if !tenantRestrictsEmailDomains(tenant) {
+		return nil
+	}
 	allowedDomains := tenantConfiguredEmailDomains(tenant)
 	if len(allowedDomains) == 0 {
 		return nil
@@ -1216,6 +1290,18 @@ func (s *IdentityService) ensureTenantEmailDomainAllowed(ctx context.Context, te
 		}
 	}
 	return ErrEmailDomainNotAllowed
+}
+
+func tenantRestrictsEmailDomains(tenant *store.Tenant) bool {
+	if tenant == nil || strings.TrimSpace(tenant.SettingsJSON) == "" {
+		return false
+	}
+	settings := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(tenant.SettingsJSON)), &settings); err != nil {
+		return false
+	}
+	value, _ := settings["restrict_email_domains"].(bool)
+	return value
 }
 
 func (s *IdentityService) ManualBindForTenant(ctx context.Context, tenantID, email string) (*store.User, error) {
@@ -1408,9 +1494,11 @@ func (s *IdentityService) CanBindVerifiedEmailToUser(ctx context.Context, user *
 			return fmt.Errorf("user identity email:%s already belongs to another user", email)
 		}
 	}
-	if err := s.ensureTenantEmailDomainAllowed(ctx, user.TenantID, email); err != nil {
-		return err
-	}
+	// Tenant email-domain rules govern creating a new account. A user that is
+	// already authenticated in this tenant (for example through a verified
+	// phone number) must be able to add a verified email login method even if
+	// that address is outside the tenant's corporate domain. The verification,
+	// uniqueness, and Hub route checks below still protect the new identity.
 	if err := s.ensureUserRouteAllowed(WithTenant(ctx, user.TenantID), email); err != nil {
 		return err
 	}
@@ -2032,6 +2120,180 @@ func (s *IdentityService) grantInvitationCodeLLMServiceForUser(ctx context.Conte
 		return err
 	}
 	return llmservice.GrantInvitationCodeBenefitForUserID(ctx, s.settings, userID, email, code.ID, code.LLMServiceGroupID, code.LLMGrantDurationDays, code.LLMGrantCredits)
+}
+
+// RegisterReferralUser completes a browser referral registration without
+// pretending that the browser is a machine. It reuses the same tenant checks
+// and identity creation path as onboarding, while intentionally issuing no
+// machine or viewer token.
+func (s *IdentityService) RegisterReferralUser(ctx context.Context, email string, phoneNumber string, phoneVerified bool) (*store.User, error) {
+	tenantID := tenantIDFromContext(ctx)
+	email = normalizeEmail(email)
+	phoneNumber = normalizePhoneIdentityValue(phoneNumber)
+	if email == "" && phoneNumber == "" {
+		return nil, ErrInvalidEmail
+	}
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	account := email
+	if account == "" {
+		account = "phone:" + phoneNumber
+	}
+	if user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, tenantID, account); err != nil {
+		return nil, err
+	} else if user != nil {
+		return user, ErrUserAlreadyRegistered
+	}
+	if phoneNumber != "" {
+		if user, err := s.LookupUserByPhone(WithTenant(ctx, tenantID), phoneNumber); err != nil {
+			return nil, err
+		} else if user != nil {
+			return user, ErrUserAlreadyRegistered
+		}
+	}
+	allowed, err := s.tenantAllowsNewUserRegistration(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return nil, ErrRegistrationDisabled
+	}
+	if err := s.ensureUserRouteAllowed(ctx, account); err != nil {
+		return nil, err
+	}
+	if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, account); err != nil {
+		return nil, err
+	}
+	if !s.allowSelfEnroll {
+		return nil, ErrRegistrationDisabled
+	}
+	user, err := s.createApprovedUserForTenant(ctx, tenantID, account)
+	if err != nil || user == nil {
+		return user, err
+	}
+	if phoneNumber != "" && phoneVerified {
+		if err := s.BindVerifiedPhoneToUser(WithTenant(ctx, tenantID), user, phoneNumber); err != nil {
+			return nil, err
+		}
+		_ = s.grantPhoneVerifiedBenefitForUser(WithTenant(ctx, tenantID), user.ID, user.Email)
+	} else if email != "" {
+		_ = s.users.MarkEmailVerified(ctx, tenantID, email)
+		_ = s.grantEmailConfirmedBenefitForUser(WithTenant(ctx, tenantID), user.ID, user.Email)
+	}
+	return user, nil
+}
+
+// RegisterReferralUserWithAttribution is the referral-specific counterpart to
+// RegisterReferralUser. It guarantees that a newly created user and the
+// referral row are committed together; reward grants are intentionally handled
+// afterward by the durable reward recovery state machine.
+func (s *IdentityService) RegisterReferralUserWithAttribution(ctx context.Context, email string, phoneNumber string, phoneVerified bool, referral *store.UserReferral) (*store.User, error) {
+	if referral == nil {
+		return nil, errors.New("referral attribution is required")
+	}
+	tenantID := tenantIDFromContext(ctx)
+	email = normalizeEmail(email)
+	phoneNumber = normalizePhoneIdentityValue(phoneNumber)
+	if email == "" && phoneNumber == "" {
+		return nil, ErrInvalidEmail
+	}
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	account := email
+	if account == "" {
+		account = "phone:" + phoneNumber
+	}
+	if user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, tenantID, account); err != nil {
+		return nil, err
+	} else if user != nil {
+		return user, ErrUserAlreadyRegistered
+	}
+	if phoneNumber != "" {
+		if user, err := s.LookupUserByPhone(WithTenant(ctx, tenantID), phoneNumber); err != nil {
+			return nil, err
+		} else if user != nil {
+			return user, ErrUserAlreadyRegistered
+		}
+	}
+	allowed, err := s.tenantAllowsNewUserRegistration(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed || !s.allowSelfEnroll {
+		return nil, ErrRegistrationDisabled
+	}
+	if err := s.ensureUserRouteAllowed(ctx, account); err != nil {
+		return nil, err
+	}
+	if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, account); err != nil {
+		return nil, err
+	}
+	creator, ok := s.users.(referralUserRegistrationCreator)
+	if !ok {
+		return nil, errors.New("atomic referral registration is unavailable")
+	}
+	now := time.Now().UTC()
+	user := &store.User{ID: newID("u"), TenantID: tenantID, Email: account, SN: generateSN(), Status: "active", EnrollmentStatus: "approved", EmailVerified: email != "", CreatedAt: now, UpdatedAt: now}
+	referral.TenantID = tenantID
+	referral.InviteeUserID = user.ID
+	var extraIdentity *store.UserIdentity
+	if phoneNumber != "" && phoneVerified && email != "" {
+		extraIdentity = &store.UserIdentity{ID: user.ID + "_phone", TenantID: tenantID, UserID: user.ID, Type: "phone", Value: phoneNumber, Verified: true, VerifiedAt: &now, CreatedAt: now, UpdatedAt: now}
+	}
+	if err := creator.CreateReferralUserWithAttribution(ctx, user, extraIdentity, referral); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "already belongs") || strings.Contains(strings.ToLower(err.Error()), "attribution already exists") {
+			if existing, _, lookupErr := s.lookupUserByTenantEmailOrIdentity(ctx, tenantID, account); lookupErr == nil && existing != nil {
+				return existing, ErrUserAlreadyRegistered
+			}
+		}
+		return nil, err
+	}
+	ctx = WithTenant(ctx, tenantID)
+	// The account and referral attribution have already committed atomically.
+	// These legacy, additive benefits must not turn that durable registration
+	// into a client-visible failure that encourages a duplicate retry.
+	if err := s.ensureDefaultLLMServiceForUser(ctx, user.ID, user.Email); err != nil {
+		log.Printf("[identity] referral registration default benefit for %s: %v", user.ID, err)
+	}
+	if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, user.ID, user.Email); err != nil {
+		log.Printf("[identity] referral registration invitation-code benefit for %s: %v", user.ID, err)
+	}
+	if phoneNumber != "" && phoneVerified {
+		_ = s.grantPhoneVerifiedBenefitForUser(ctx, user.ID, user.Email)
+	} else if email != "" {
+		_ = s.grantEmailConfirmedBenefitForUser(ctx, user.ID, user.Email)
+	}
+	s.syncUserRoute(ctx, account)
+	return user, nil
+}
+
+// StartReferralPhoneEnrollment issues a machine only for a phone identity
+// that has already been created by the invitation registration flow. It does
+// not re-run new-user or SMS checks, which keeps the one-time referral proof
+// and machine enrollment as two distinct operations.
+func (s *IdentityService) StartReferralPhoneEnrollment(ctx context.Context, phoneNumber, machineName, platform, clientID string) (*EnrollmentResult, error) {
+	tenantID := tenantIDFromContext(ctx)
+	phoneNumber = normalizePhoneIdentityValue(phoneNumber)
+	if phoneNumber == "" {
+		return nil, ErrInvalidEmail
+	}
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	user, err := s.LookupUserByPhone(WithTenant(ctx, tenantID), phoneNumber)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, ErrUserAlreadyRegistered
+	}
+	result, err := s.issueMachineForUser(ctx, user, machineName, platform, clientID)
+	if result != nil {
+		result.PhoneNumber = phoneNumber
+	}
+	return result, err
 }
 
 // ListPendingEnrollments returns all enrollment requests with status "pending".

@@ -436,6 +436,12 @@ func classifyLLMRequestPriority(trace llm.RequestTrace) llmRequestPriority {
 	if caller == "" {
 		caller = "unknown"
 	}
+	// A pending-reply answer is synchronously needed to decide how to bind the
+	// current user turn. Keep this exact fast classifier in the foreground lane;
+	// other pending-reply work remains asynchronous background work.
+	if caller == "pending-reply-answer-fast" || caller == "confirmation-intent-fast" {
+		return llmPriorityForeground
+	}
 	if strings.Contains(caller, "background") || strings.Contains(caller, "memory") || strings.Contains(caller, "session-start") || strings.Contains(caller, "post-conversation") || strings.Contains(caller, "pending-reply") || strings.Contains(caller, "experience") || strings.Contains(caller, "probe") || strings.Contains(caller, "provider-test") || caller == "knowledge-card" || caller == "gossip-auto" {
 		return llmPriorityBackground
 	}

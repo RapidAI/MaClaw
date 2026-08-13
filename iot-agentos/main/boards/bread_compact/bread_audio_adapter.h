@@ -12,12 +12,14 @@
 #error "Bread audio adapter may only be included by the Bread Compact profile"
 #endif
 
+#ifndef MACLAW_COMPACT_AUDIO_ADAPTER_IMPLEMENTATION
+#error "Bread audio adapter is owned exclusively by compact_audio_service.c"
+#endif
+
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/idf_additions.h"
 #include "boards/compact_audio_calibration.h"
 
 #define BREAD_AUDIO_SAMPLE_RATE 16000
@@ -163,13 +165,4 @@ static inline esp_err_t compact_audio_adapter_playback_begin(void) {
 static inline esp_err_t compact_audio_adapter_playback_end(void) {
     if (!s_bread_audio_tx) return ESP_ERR_INVALID_STATE;
     return i2s_channel_disable(s_bread_audio_tx);
-}
-
-/* The shared wake state machine owns model lifecycle, pause/stop semantics
- * and callbacks. This board profile owns the worker scheduling footprint. */
-static inline BaseType_t compact_audio_adapter_start_wake_recognizer_task(
-    TaskFunction_t entry, TaskHandle_t *out_task) {
-    if (!entry || !out_task) return pdFAIL;
-    return xTaskCreatePinnedToCore(entry, "maclaw_bread_wake", 10240,
-                                   NULL, 4, out_task, 1);
 }

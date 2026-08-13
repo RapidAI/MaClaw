@@ -6,6 +6,8 @@ import { IconEdit, IconFolder, IconFolderOpen } from "./WorkbenchIcons";
 export interface ProjectDirBarProps {
     /** Current active tab ID. Empty string = local tab. */
     tabId: string;
+    /** Changes after the backend has initialized this tab's session. */
+    sessionReadyRevision?: number;
     theme: Theme;
     lang?: string;
 }
@@ -21,10 +23,11 @@ interface DirState {
  * - Click the "Change" button → opens the directory picker
  * - Shows "(默认)" badge when using system default directory
  */
-export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
+export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang }: ProjectDirBarProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
     const [selectingDirectory, setSelectingDirectory] = useState(false);
     const mountedRef = useRef(true);
+    const refreshGenerationRef = useRef(0);
     // State updates are asynchronous, so use a ref as the immediate guard
     // against a rapid double-click opening two native directory pickers.
     const directorySelectionInFlightRef = useRef(false);
@@ -37,15 +40,21 @@ export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
     // Fetch working directory whenever tab changes.
     useEffect(() => {
         let cancelled = false;
+        const refresh = () => {
+            const generation = ++refreshGenerationRef.current;
+            return GetTabWorkingDir(tabId).then((result: any) => {
+                if (cancelled || !mountedRef.current || generation !== refreshGenerationRef.current) return;
+                if (result && typeof result.path === "string") {
+                    setDirState({ path: result.path, isDefault: !!result.is_default });
+                }
+            }).catch(() => {});
+        };
         setDirState(null); // Clear stale value during tab switch.
-        GetTabWorkingDir(tabId).then((result: any) => {
-            if (cancelled || !mountedRef.current) return;
-            if (result && typeof result.path === "string") {
-                setDirState({ path: result.path, isDefault: !!result.is_default });
-            }
-        }).catch(() => {});
-        return () => { cancelled = true; };
-    }, [tabId]);
+        refresh();
+        return () => {
+            cancelled = true;
+        };
+    }, [tabId, sessionReadyRevision]);
 
     const handleOpenDir = useCallback(() => {
         if (dirState?.path) {

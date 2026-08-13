@@ -26,7 +26,6 @@ device_status_t platform_connectivity_cellular_http_stream_request(
     const device_connectivity_stream_request_t *request);
 bool platform_connectivity_cancel_cellular_foreground_request(void);
 bool platform_connectivity_cancel_cellular_requests_for_owner(const void *owner);
-bool platform_connectivity_take_startup_transport_toggle(uint32_t window_ms);
 bool platform_connectivity_load_transport_selection(bool *out_cellular);
 bool platform_connectivity_apply_startup_transport_toggle(uint32_t window_ms,
                                                           bool current_cellular,

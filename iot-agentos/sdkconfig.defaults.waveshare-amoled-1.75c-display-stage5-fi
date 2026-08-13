@@ -1,0 +1,6 @@
+# Dedicated non-release Waveshare 1.75C display acquisition boundary.
+# The CO5300/QSPI adapter fails only after panel initialization, display-on
+# and initial brightness have succeeded, exercising private reverse cleanup.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_DISPLAY_FAILURE_INITIALIZATION=y
+CONFIG_MACLAW_DISPLAY_FAILURE_STAGE=5

@@ -201,6 +201,35 @@ func TestPurgeUserFromRegistryForUserRemovesCanonicalAndLegacyRecords(t *testing
 	}
 }
 
+func TestPurgeUserFromRegistryExceptReferralBenefitsForUserRetainsFrozenReferralGrant(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	if err := SaveRegistry(ctx, system, &Registry{
+		UserBindings: []UserBinding{{UserID: "deleted-user", Email: "deleted@example.com", ServiceGroupIDs: []string{"coding-basic"}}},
+		Grants: []Grant{
+			{ID: "ordinary-grant", UserID: "deleted-user", Email: "deleted@example.com", ServiceGroupID: "coding-basic"},
+			{ID: "referral-grant", UserID: "deleted-user", Email: "deleted@example.com", ServiceGroupID: "coding-basic", Source: "user_referral", CardID: "referral-1", Frozen: true, CreditsTotal: 10},
+		},
+		Cards: []RechargeCard{{ID: "redeemed-card", RedeemedByUserID: "deleted-user", RedeemedByEmail: "deleted@example.com"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry() error = %v", err)
+	}
+
+	if err := PurgeUserFromRegistryExceptReferralBenefitsForUser(ctx, system, "deleted-user", "deleted@example.com"); err != nil {
+		t.Fatalf("PurgeUserFromRegistryExceptReferralBenefitsForUser() error = %v", err)
+	}
+	got, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry() error = %v", err)
+	}
+	if len(got.UserBindings) != 0 || len(got.Cards) != 0 {
+		t.Fatalf("ordinary user state must be removed: %#v", got)
+	}
+	if len(got.Grants) != 1 || got.Grants[0].ID != "referral-grant" || !got.Grants[0].Frozen {
+		t.Fatalf("frozen referral grant must remain as audit evidence: %#v", got.Grants)
+	}
+}
+
 func TestRedeemCardForUserIDPersistsCanonicalUserID(t *testing.T) {
 	ctx := context.Background()
 	system := newTestSystemSettings()
@@ -284,6 +313,117 @@ func TestApplyCreditUsageToRegistryForUserIDIgnoresStaleEmail(t *testing.T) {
 	}
 	if reg.Grants[0].CreditsUsed != 3 {
 		t.Fatalf("CreditsUsed = %.3f, want 3", reg.Grants[0].CreditsUsed)
+	}
+}
+
+func TestApplyCreditUsageSkipsFrozenReferralGrant(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{Grants: []Grant{
+		{ID: "frozen-referral", UserID: "user-1", Email: "user@example.com", ServiceGroupID: "coding", Source: "user_referral", CardID: "referral-1", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 10, Frozen: true},
+		{ID: "active-card", UserID: "user-1", Email: "user@example.com", ServiceGroupID: "coding", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 10},
+	}}
+	used := ApplyCreditUsageToRegistryForUserID(reg, "user-1", "user@example.com", []string{"coding"}, 4, now)
+	if used != 4 || reg.Grants[0].CreditsUsed != 0 || reg.Grants[1].CreditsUsed != 4 {
+		t.Fatalf("frozen grant must remain unused: used=%v grants=%#v", used, reg.Grants)
+	}
+}
+
+func TestApplyCreditUsageConsumesReferralRewardsFIFOByIssueTime(t *testing.T) {
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	reg := &Registry{Grants: []Grant{
+		// The older reward intentionally has the later expiry. It must still be
+		// charged first, because every referral reward owns its own expiry window.
+		{ID: "referral-old", UserID: "user-1", Email: "user@example.com", ServiceGroupID: "coding", Source: "user_referral", CardID: "referral-1", StartsAt: now.Add(-48 * time.Hour), CreatedAt: now.Add(-48 * time.Hour), ExpiresAt: now.Add(30 * 24 * time.Hour), CreditsTotal: 5},
+		{ID: "referral-new", UserID: "user-1", Email: "user@example.com", ServiceGroupID: "coding", Source: "user_referral", CardID: "referral-2", StartsAt: now.Add(-24 * time.Hour), CreatedAt: now.Add(-24 * time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 5},
+	}}
+	if got := ApplyCreditUsageToRegistryForUserID(reg, "user-1", "user@example.com", []string{"coding"}, 6, now); got != 6 {
+		t.Fatalf("used = %v, want 6", got)
+	}
+	if reg.Grants[0].CreditsUsed != 5 || reg.Grants[1].CreditsUsed != 1 {
+		t.Fatalf("referral FIFO was not preserved: %#v", reg.Grants)
+	}
+}
+
+func TestApplyCreditUsageKeepsExistingNonReferralExpiryOrder(t *testing.T) {
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	reg := &Registry{Grants: []Grant{
+		{ID: "card-older", Email: "user@example.com", ServiceGroupID: "coding", Source: "card", StartsAt: now.Add(-48 * time.Hour), CreatedAt: now.Add(-48 * time.Hour), ExpiresAt: now.Add(30 * 24 * time.Hour), CreditsTotal: 5},
+		{ID: "card-expiring-first", Email: "user@example.com", ServiceGroupID: "coding", Source: "card", StartsAt: now.Add(-24 * time.Hour), CreatedAt: now.Add(-24 * time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 5},
+	}}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"coding"}, 2, now); got != 2 {
+		t.Fatalf("used = %v, want 2", got)
+	}
+	if reg.Grants[0].CreditsUsed != 0 || reg.Grants[1].CreditsUsed != 2 {
+		t.Fatalf("non-referral ordering changed: %#v", reg.Grants)
+	}
+}
+
+func TestFrozenReferralGrantIsExcludedFromAllBillingEligibility(t *testing.T) {
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding", AccessPolicy: AccessPolicyGrantRequired}},
+		Grants: []Grant{{
+			ID:             "revoked-referral",
+			UserID:         "user-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding",
+			Source:         "user_referral",
+			CardID:         "referral-1",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(30 * 24 * time.Hour),
+			CreditsTotal:   10,
+			Frozen:         true,
+		}},
+	}
+	reg.Normalize()
+
+	if got := AvailableCreditsForServiceGroupsForUserID(reg, "user-1", "user@example.com", []string{"coding"}, now); got != 0 {
+		t.Fatalf("available frozen referral credits = %v, want 0", got)
+	}
+	if HasAnyGrantForServiceGroups(reg, "user@example.com", []string{"coding"}) {
+		t.Fatal("frozen referral grant must not count as any grant")
+	}
+	if HasActiveGrantForServiceGroups(reg, "user@example.com", []string{"coding"}, now) {
+		t.Fatal("frozen referral grant must not count as active grant")
+	}
+	if got := GrantStartAtForServiceGroupsForUserID(reg, "user-1", "user@example.com", []string{"coding"}, now); got != nil {
+		t.Fatalf("frozen referral grant start = %v, want nil", got)
+	}
+	allowed, policy, code, _, credits, active, any := BillingEligibilityForServiceGroupsForUserID(reg, "user-1", "user@example.com", []string{"coding"}, now)
+	if allowed || policy != AccessPolicyGrantRequired || code != "LLM_SERVICE_CREDITS_REQUIRED" || credits != 0 || active || any {
+		t.Fatalf("frozen referral eligibility leaked: allowed=%v policy=%q code=%q credits=%v active=%v any=%v", allowed, policy, code, credits, active, any)
+	}
+}
+
+func TestFrozenReferralGrantDoesNotDelayNewGrant(t *testing.T) {
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	reg := &Registry{Grants: []Grant{{
+		ID:             "revoked-referral",
+		Email:          "user@example.com",
+		ServiceGroupID: "coding",
+		Source:         "user_referral",
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(30 * 24 * time.Hour),
+		CreditsTotal:   10,
+		Frozen:         true,
+	}}}
+	if got := nextGrantStart(reg, newUserAccountRef("", "user@example.com"), "coding", now); !got.Equal(now) {
+		t.Fatalf("next grant after frozen referral = %v, want %v", got, now)
+	}
+}
+
+func TestFreezeUserReferralBenefits(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	if err := SaveRegistry(ctx, system, &Registry{Grants: []Grant{{ID: "referral-grant", Email: "user@example.com", ServiceGroupID: "coding", Source: "user_referral", CardID: "referral-1"}, {ID: "card-grant", Email: "user@example.com", ServiceGroupID: "coding", Source: "card", CardID: "referral-1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := FreezeUserReferralBenefits(ctx, system, "referral-1"); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil || !reg.Grants[0].Frozen || reg.Grants[1].Frozen {
+		t.Fatalf("unexpected frozen grants: reg=%#v err=%v", reg, err)
 	}
 }
 
@@ -1513,8 +1653,6 @@ func TestRedeemCardCreatesGrantsAndRejectsReuse(t *testing.T) {
 		t.Fatal("expected reused card to be rejected")
 	}
 }
-
-
 
 func TestPromoteQueuedMeteredGrantsStartsHistoricalPointCards(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)

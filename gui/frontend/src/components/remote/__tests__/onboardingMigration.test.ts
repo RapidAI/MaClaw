@@ -3,7 +3,9 @@ import { vi } from "vitest";
 import {
     completeOnboardingAfterMigration,
     findOnboardingMigrationPackage,
+    isMigrationCredentialError,
     isMigrationJobRunning,
+    isMigrationTransferError,
     isTerminalMigrationJob,
     migrationErrorMessage,
     migrationJobId,
@@ -63,6 +65,12 @@ describe("onboarding migration helpers", () => {
         expect(migrationProgressPercent(0.456)).toBe(46);
         expect(migrationErrorMessage(new Error("password is incorrect"))).toBe("password is incorrect");
         expect(migrationErrorMessage({ message: "hub down" })).toBe("hub down");
+        expect(isMigrationCredentialError(new Error("migration password is incorrect"))).toBe(true);
+        expect(isMigrationCredentialError(new Error("unexpected EOF"), "decrypting and verifying package")).toBe(true);
+        expect(isMigrationCredentialError(new Error("unexpected EOF"), "downloading encrypted chunks")).toBe(false);
+        expect(isMigrationTransferError(new Error("unexpected EOF"))).toBe(true);
+        expect(isMigrationTransferError(new Error("Hub migration API GET /chunk response ended unexpectedly"))).toBe(true);
+        expect(isMigrationTransferError(new Error("migration password is incorrect"))).toBe(false);
         expect(optimisticMigrationRunningJob({ id: "old-job", status: "failed", progress: 0.55, progress_text: "downloading" })).toEqual({
             status: "running",
             error: "",

@@ -284,9 +284,17 @@ func mobileMeetingRecordingCreateWithHardware(w http.ResponseWriter, r *http.Req
 	if rec.TenantID == "" {
 		rec.TenantID = "default"
 	}
+	mobileKnowledgePurgeState.RLock()
+	if !mobileOwnerWriteAllowedLocked(rec.TenantID, rec.OwnerID) {
+		mobileKnowledgePurgeState.RUnlock()
+		_ = os.RemoveAll(dir)
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+		return
+	}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 	mobilePersistState()
 	writeJSON(w, http.StatusCreated, mobileMeetingRecordingPayload(rec))
 }
@@ -539,10 +547,15 @@ func mobileValidateMeetingAudio(path, contentType string) error {
 // reconstructing the final file. This prevents a late/retried PUT from racing
 // with assembly, and makes repeated complete calls deterministic.
 func mobileMeetingRecordingClaimFinalize(ownerID, tenantID, id string) (mobileMeetingRecording, string) {
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
 	mobileMeetingRecordings.Lock()
 	defer mobileMeetingRecordings.Unlock()
 	rec, ok := mobileMeetingRecordings.items[id]
 	if !ok || rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
+		return mobileMeetingRecording{}, "missing"
+	}
+	if !mobileOwnerWriteAllowedLocked(rec.TenantID, rec.OwnerID) {
 		return mobileMeetingRecording{}, "missing"
 	}
 	switch rec.Status {
@@ -632,9 +645,15 @@ func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, princ
 // result stays immutable, while an archive-only recording may be promoted later
 // when the user explicitly asks for transcription or meeting minutes.
 func mobileMeetingRecordingClaimProcess(ownerID, tenantID, id, mode string, documentQuotaBytes int64) (mobileMeetingRecording, string) {
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
 	mobileMeetingRecordings.Lock()
 	rec, ok := mobileMeetingRecordings.items[id]
 	if !ok || rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
+		mobileMeetingRecordings.Unlock()
+		return mobileMeetingRecording{}, "missing"
+	}
+	if !mobileOwnerWriteAllowedLocked(rec.TenantID, rec.OwnerID) {
 		mobileMeetingRecordings.Unlock()
 		return mobileMeetingRecording{}, "missing"
 	}
@@ -738,7 +757,14 @@ func mobileRunMeetingRecording(id string) {
 		}
 	}
 	if rec.ProcessMode == "transcript" {
-		rec, _ = mobileMeetingRecordingOwned(rec.OwnerID, id)
+		// Account deletion removes the recording from the state map while a
+		// worker may still be transcribing. Do not recreate derived documents
+		// from the worker's stale local copy after that removal.
+		var stillOwned bool
+		rec, stillOwned = mobileMeetingRecordingOwnedForTenant(rec.OwnerID, rec.TenantID, id)
+		if !stillOwned {
+			return
+		}
 		if err := mobileStoreMeetingResultDocuments(rec, transcript, ""); err != nil {
 			mobileMeetingRecordingUpdate(id, func(m *mobileMeetingRecording) {
 				m.Status = "failed"
@@ -766,7 +792,11 @@ func mobileRunMeetingRecording(id string) {
 		})
 		return
 	}
-	rec, _ = mobileMeetingRecordingOwned(rec.OwnerID, id)
+	var stillOwned bool
+	rec, stillOwned = mobileMeetingRecordingOwnedForTenant(rec.OwnerID, rec.TenantID, id)
+	if !stillOwned {
+		return
+	}
 	if err := mobileStoreMeetingResultDocuments(rec, transcript, minutes); err != nil {
 		mobileMeetingRecordingUpdate(id, func(m *mobileMeetingRecording) {
 			m.Status = "failed"
@@ -1068,14 +1098,21 @@ func mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id string) (mobileM
 	return rec, ok && rec.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID)
 }
 func mobileMeetingRecordingUpdate(id string, mutate func(*mobileMeetingRecording)) {
+	// Keep the lifecycle read lock through the map mutation. An in-flight
+	// meeting worker may otherwise update a record just after its owner is
+	// unbound and recreate it after the purger removed it.
+	mobileKnowledgePurgeState.RLock()
 	mobileMeetingRecordings.Lock()
 	rec, ok := mobileMeetingRecordings.items[id]
-	if ok {
+	if ok && mobileOwnerWriteAllowedLocked(rec.TenantID, rec.OwnerID) {
 		mutate(&rec)
 		rec.UpdatedAt = time.Now().UTC()
 		mobileMeetingRecordings.items[id] = rec
+	} else {
+		ok = false
 	}
 	mobileMeetingRecordings.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 	mobilePersistState()
 	if ok {
 		mobileRealtimeBroadcast(rec.TenantID, rec.OwnerID, map[string]any{
@@ -1167,6 +1204,9 @@ func mobileMeetingRecordingDirectory() (string, error) {
 // API as the canonical source for processing state. It is idempotent for a
 // recording that has already received its result draft IDs.
 func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, minutes string) error {
+	if !mobileOwnerWriteAllowed(rec.TenantID, rec.OwnerID) {
+		return nil
+	}
 	transcript = strings.TrimSpace(transcript)
 	minutes = strings.TrimSpace(minutes)
 	if transcript == "" && minutes == "" {
@@ -1184,6 +1224,11 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 	var transcriptDraft, minutesDraft *mobileDocumentDraftRecord
 	mobileDocumentQuotaAdmissionMu.Lock()
 	defer mobileDocumentQuotaAdmissionMu.Unlock()
+	mobileKnowledgePurgeState.RLock()
+	if !mobileOwnerWriteAllowedLocked(rec.TenantID, rec.OwnerID) {
+		mobileKnowledgePurgeState.RUnlock()
+		return nil
+	}
 	mobileDocuments.Lock()
 	transcriptDraftID := strings.TrimSpace(rec.TranscriptDraftID)
 	if transcript != "" && transcriptDraftID == "" {
@@ -1224,6 +1269,7 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 		}
 	}
 	mobileDocuments.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 
 	if transcriptDraftID == "" && minutesDraftID == "" {
 		return nil
@@ -1243,6 +1289,11 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 		if err := mobileCheckDocumentQuota(rec.OwnerID, rec.TenantID, additionalBytes, limit); err != nil {
 			return errMobileDocumentQuotaExceeded
 		}
+		mobileKnowledgePurgeState.RLock()
+		if !mobileOwnerWriteAllowedLocked(rec.TenantID, rec.OwnerID) {
+			mobileKnowledgePurgeState.RUnlock()
+			return nil
+		}
 		mobileDocuments.Lock()
 		if transcriptDraft != nil {
 			if _, exists := mobileDocuments.drafts[transcriptDraft.ID]; !exists {
@@ -1259,6 +1310,7 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 			}
 		}
 		mobileDocuments.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 	}
 	mobileMeetingRecordingUpdate(rec.ID, func(current *mobileMeetingRecording) {
 		if transcriptDraftID != "" && current.TranscriptDraftID == "" {

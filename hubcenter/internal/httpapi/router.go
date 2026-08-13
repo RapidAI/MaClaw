@@ -1094,6 +1094,23 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/unlist", RequireAdmin(adminService, smHandlers.AdminUnlistExpertMarketListing))
 		mux.HandleFunc("DELETE /api/v1/admin/expert-market/experts/{id}", RequireAdmin(adminService, smHandlers.AdminDeleteExpertMarketListing))
 		mux.HandleFunc("DELETE /api/v1/admin/expert-market/experts/{id}/purge", RequireAdmin(adminService, smHandlers.AdminPurgeExpertMarketListing))
+		// Industry management shares the Capability Market administration
+		// boundary, but owns a separate immutable-asset and tenant-distribution
+		// control plane. It never changes individual market entitlements.
+		industryHandlers := NewIndustryManagementHandlers(smHandlers, hubService)
+		mux.HandleFunc("GET /api/admin/industry-management/industries", RequireAdmin(adminService, industryHandlers.listIndustries))
+		mux.HandleFunc("GET /api/admin/industry-management/audit-events", RequireAdmin(adminService, industryHandlers.listAuditEvents))
+		mux.HandleFunc("POST /api/admin/industry-management/industries", RequireAdmin(adminService, industryHandlers.createIndustry))
+		mux.HandleFunc("PATCH /api/admin/industry-management/industries/{id}", RequireAdmin(adminService, industryHandlers.patchIndustry))
+		mux.HandleFunc("GET /api/admin/industry-management/assets", RequireAdmin(adminService, industryHandlers.listEligibleAssets))
+		mux.HandleFunc("POST /api/admin/industry-management/assets/acquire", RequireAdmin(adminService, industryHandlers.acquireAsset))
+		mux.HandleFunc("POST /api/admin/industry-management/assets/{id}/revoke", RequireAdmin(adminService, industryHandlers.revokeAsset))
+		mux.HandleFunc("PUT /api/admin/industry-management/industries/{id}/bindings", RequireAdmin(adminService, industryHandlers.replaceBindings))
+		mux.HandleFunc("GET /api/admin/industry-management/industries/{id}/bindings", RequireAdmin(adminService, industryHandlers.listBindings))
+		mux.HandleFunc("GET /api/admin/hubs/{hubId}/tenants/{tenantId}/industries", RequireAdmin(adminService, industryHandlers.listTenantIndustries))
+		mux.HandleFunc("PUT /api/admin/hubs/{hubId}/tenants/{tenantId}/industries", RequireAdmin(adminService, industryHandlers.replaceTenantIndustries))
+		mux.HandleFunc("GET /api/admin/hubs/{hubId}/tenants/{tenantId}/industry-expert-status", RequireAdmin(adminService, industryHandlers.tenantIndustryStatus))
+		mux.HandleFunc("GET /api/hubs/{hubId}/tenants/{tenantId}/industry-expert-catalog", industryHandlers.getHubCatalogue)
 		mux.HandleFunc("GET /api/v1/account/{email}/tier", smHandlers.GetAccountTier)
 		// Admin refund & purchases
 		mux.HandleFunc("POST /api/v1/admin/refund", RequireAdmin(adminService, smHandlers.AdminRefund))

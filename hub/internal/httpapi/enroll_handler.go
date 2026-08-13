@@ -34,6 +34,7 @@ type EnrollStartRequest struct {
 }
 
 type emailVerifiedEnrollmentContextKey struct{}
+type emailVerificationSkippedEnrollmentContextKey struct{}
 type verifiedEnrollmentTenantContextKey struct{}
 
 type tenantResolver interface {
@@ -90,6 +91,9 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 		if verified, _ := r.Context().Value(emailVerifiedEnrollmentContextKey{}).(bool); verified {
 			enrollOpts = append(enrollOpts, auth.WithEmailVerifiedRegistration())
 		}
+		if skipped, _ := r.Context().Value(emailVerificationSkippedEnrollmentContextKey{}).(bool); skipped {
+			enrollOpts = append(enrollOpts, auth.WithEmailVerificationSkipped())
+		}
 		if lang := strings.TrimSpace(req.Language); lang != "" {
 			enrollOpts = append(enrollOpts, auth.WithLanguage(lang))
 		} else if acceptLang := r.Header.Get("Accept-Language"); acceptLang != "" {
@@ -109,6 +113,10 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 		}(), err)
 		if err != nil {
 			switch {
+			case errors.Is(err, auth.ErrTenantNotFound):
+				writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", err.Error())
+			case errors.Is(err, auth.ErrTenantInactive):
+				writeError(w, http.StatusForbidden, "TENANT_INACTIVE", err.Error())
 			case errors.Is(err, auth.ErrRoutedToAnotherHub):
 				writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
 			case errors.Is(err, auth.ErrRegistrationDisabled):
@@ -293,6 +301,10 @@ func EmailRequestLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 		resp, err := identity.RequestEmailLogin(ctx, req.Email)
 		if err != nil {
 			switch {
+			case errors.Is(err, auth.ErrTenantNotFound):
+				writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", err.Error())
+			case errors.Is(err, auth.ErrTenantInactive):
+				writeError(w, http.StatusForbidden, "TENANT_INACTIVE", err.Error())
 			case errors.Is(err, auth.ErrRoutedToAnotherHub):
 				writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
 			case errors.Is(err, auth.ErrRegistrationDisabled):

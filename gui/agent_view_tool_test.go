@@ -731,6 +731,58 @@ func TestHandleRegisteredToolApprovalSubmitHonorsWorkflowPolicyBeforeApprovingSe
 	}
 }
 
+func TestArchiveExternalApprovalTokenIsOneTimeAndRejectRevokesIt(t *testing.T) {
+	registry := NewToolRegistry()
+	h := &IMMessageHandler{app: &App{}, registry: registry}
+	args := map[string]interface{}{"action": "extract_external", "archive_path": "input.7z", "destination": "out"}
+	_ = h.emitArchiveExternalApprovalIfNeeded(args, nil, "")
+	approvalID := latestArchiveExternalApprovalID(t)
+	pending, ok := getRegisteredToolPendingApproval(approvalID)
+	if !ok {
+		t.Fatal("missing pending external archive approval")
+	}
+	token, _ := pending.Args[archiveExternalApprovalTokenField].(string)
+	if token == "" || !hasArchiveExternalApproval(pending.Args) {
+		t.Fatal("pending approval lacks active external token")
+	}
+	resp := h.handleRegisteredToolApprovalAgentViewSubmit(map[string]interface{}{
+		"approved":   false,
+		"parameters": map[string]interface{}{registeredToolApprovalIDField: approvalID},
+	})
+	if resp == nil || resp.Error != "" || hasArchiveExternalApproval(pending.Args) {
+		t.Fatalf("rejection did not revoke token: response=%#v active=%v", resp, hasArchiveExternalApproval(pending.Args))
+	}
+
+	_ = h.emitArchiveExternalApprovalIfNeeded(args, nil, "")
+	approvalID = latestArchiveExternalApprovalID(t)
+	pending, ok = getRegisteredToolPendingApproval(approvalID)
+	if !ok {
+		t.Fatal("missing approved external archive request")
+	}
+	token, _ = pending.Args[archiveExternalApprovalTokenField].(string)
+	if !consumeArchiveExternalApproval(pending.Args) || consumeArchiveExternalApproval(pending.Args) {
+		t.Fatal("external archive token must be consumed exactly once")
+	}
+	deleteRegisteredToolPendingApproval(approvalID)
+	_ = token
+}
+
+func latestArchiveExternalApprovalID(t *testing.T) string {
+	t.Helper()
+	registeredToolApprovalStore.Lock()
+	defer registeredToolApprovalStore.Unlock()
+	var latest registeredToolPendingApproval
+	for _, item := range registeredToolApprovalStore.items {
+		if item.Args[archiveExternalApprovalTokenField] != nil && item.CreatedAt.After(latest.CreatedAt) {
+			latest = item
+		}
+	}
+	if latest.ID == "" {
+		t.Fatal("external archive approval was not stored")
+	}
+	return latest.ID
+}
+
 func TestBuildRegisteredToolApprovalAgentViewCarriesApprovalID(t *testing.T) {
 	view := buildRegisteredToolApprovalAgentView(registeredToolPendingApproval{
 		ID:       "approval-1",

@@ -2203,6 +2203,10 @@ func (s defaultTenantAwareSystemSettings) TenantID() string {
 	return store.DefaultTenantID
 }
 
+func (s defaultTenantAwareSystemSettings) GlobalSystemSettings() store.SystemSettingsRepository {
+	return s.base
+}
+
 func requireVEDigitalEmployeeAuthorization(w http.ResponseWriter, r *http.Request, system store.SystemSettingsRepository) bool {
 	if veAuthorizationActive(loadVEDigitalEmployeeAuthorization(r.Context(), system)) {
 		return true

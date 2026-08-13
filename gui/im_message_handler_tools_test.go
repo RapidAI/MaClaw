@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1748,6 +1749,52 @@ func TestRouteTools_WithRouterFilters(t *testing.T) {
 	}
 	if len(routed) == 0 {
 		t.Fatal("expected non-empty routed tools")
+	}
+}
+
+func TestRouteToolsForUserSkipsRouteRewriteAndTreeLLM(t *testing.T) {
+	var llmCalls atomic.Int32
+	handler := &IMMessageHandler{app: &App{}}
+	tools := []map[string]interface{}{
+		toolDef("read_file", "read a local file", nil, nil),
+		toolDef("browser", "browser automation", nil, nil),
+	}
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
+	handler.unifiedClassifier = intent.New(intent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(_, _ string) (string, error) {
+			llmCalls.Add(1)
+			return `{"top":[{"skill":"browser","score":0.95}]}`, nil
+		},
+	})
+	handler.SetToolRouter(router)
+
+	handler.routeToolsForUser("desktop-user:D:/project", "open the browser", tools, false)
+	if got := llmCalls.Load(); got != 0 {
+		t.Fatalf("owner-scoped agent routing must not call route rewrite or tree LLM, got %d calls", got)
+	}
+}
+
+func TestRouteToolsCompatibilityPathSkipsTreeLLM(t *testing.T) {
+	var llmCalls atomic.Int32
+	handler := &IMMessageHandler{app: &App{}}
+	tools := []map[string]interface{}{
+		toolDef("read_file", "read a local file", nil, nil),
+		toolDef("browser", "browser automation", nil, nil),
+	}
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
+	handler.unifiedClassifier = intent.New(intent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(_, _ string) (string, error) {
+			llmCalls.Add(1)
+			return `{"top":[{"skill":"browser","score":0.95}]}`, nil
+		},
+	})
+	handler.SetToolRouter(router)
+
+	handler.routeTools("open the browser", tools)
+	if got := llmCalls.Load(); got != 0 {
+		t.Fatalf("compatibility routing must not call tree LLM, got %d calls", got)
 	}
 }
 

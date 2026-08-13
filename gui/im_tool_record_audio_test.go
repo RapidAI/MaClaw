@@ -357,6 +357,45 @@ func TestFinalizeSharedLoopRecordAudio_NameFallbackWhenPauseIDEmpty(t *testing.T
 	}
 }
 
+func TestFinalizeSharedLoopRecordAudioClearsEphemeralPendingWhenCheckpointConflicts(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	const userID = "desktop-user:recording-checkpoint-conflict"
+	memory.SetInFlightTaskForRun(userID, "newer task", "/project", "run-new")
+	h := &IMMessageHandler{memory: memory}
+	previousPost := &pendingPostRecordingState{Title: "previous recording", Path: `C:\\tmp\\previous.wav`, CreatedAt: time.Now()}
+	h.pendingPostRecording.Store(userID, previousPost)
+	callback := &sharedAgentLoopCallbacks{checkpointRunID: "run-old"}
+	req := &agent.RecordAudioRequest{Title: "design review"}
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "record the review"},
+		{Role: "assistant", ToolCalls: []map[string]string{{"id": "call-record"}}},
+	}
+	loopResult := agent.LoopResult{
+		Text:            agent.FormatRecordAudioForDisplay(req),
+		RecordAudio:     req,
+		PauseToolCallID: "call-record",
+		HistoryDelta:    history,
+	}
+
+	resp := h.finalizeSharedLoopRecordAudio(userID, "desktop", "record the review", history, loopResult, "req-conflict", nil, nil, callback, nil)
+	if resp == nil || resp.ResponseSource == imResponseSourceRecordAudio.String() || resp.Error != "recovery_checkpoint_failed" {
+		t.Fatalf("response = %#v, want non-interactive persistence failure", resp)
+	}
+	if len(resp.Actions) != 0 || len(resp.Fields) != 0 {
+		t.Fatalf("persistence failure must not expose an interactive card: %#v", resp)
+	}
+	if _, pending := h.pendingRecordAudio.Load(userID); pending {
+		t.Fatal("pending recording survived a failed durable checkpoint")
+	}
+	if got, ok := h.pendingPostRecording.Load(userID); !ok || got != previousPost {
+		t.Fatalf("failed recording finalization discarded prior post-recording state: %#v", got)
+	}
+	if task, _ := memory.ConsumeInFlightTask(userID); task != "newer task" {
+		t.Fatalf("failed recording finalization changed newer marker: %q", task)
+	}
+}
+
 func TestHandleAgentLoopRecordAudioRejectedOnIM(t *testing.T) {
 	mem := agent.NewConversationMemory()
 	defer mem.Stop()

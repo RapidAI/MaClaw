@@ -92,6 +92,16 @@
     font-size: 0.84rem;
 }
 
+.workflows-page__start-error {
+    padding: 9px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-error, #c43d3d) 46%, var(--theme-border));
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--theme-error, #c43d3d) 8%, var(--theme-surface));
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+    line-height: 1.4;
+}
+
 .workflows-page__section {
     display: flex;
     flex-direction: column;

@@ -304,6 +304,39 @@
     contentJobsPollDelayMs: 1500
   };
 
+  function canManageDigitalAssets() {
+    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
+    return !!profile && String(profile.scope || '').toLowerCase() === 'tenant';
+  }
+
+  function stopDigitalAssetsForUnauthorizedScope() {
+    if (canManageDigitalAssets()) return;
+    if (state.contentSearchTimer) {
+      global.clearTimeout(state.contentSearchTimer);
+      state.contentSearchTimer = null;
+    }
+    stopContentJobsPoll();
+    state.contentJobsPollToken = (state.contentJobsPollToken || 0) + 1;
+    state.progressToken = (state.progressToken || 0) + 1;
+    state.progress = null;
+    state.contentOpen = false;
+    state.contentBusy = false;
+    state.contentLoading = false;
+    state.contentLoadingMore = false;
+    state.contentLibraryId = '';
+    state.contentSelected = {};
+    state.items = [];
+    state.selectedId = '';
+    state.mergeOpen = false;
+    clearAclDraft();
+    var list = byID('digitalAssetsList');
+    if (list) list.innerHTML = '';
+    var detail = byID('digitalAssetsDetail');
+    if (detail) detail.innerHTML = '';
+    var overlayRoot = byID('digitalAssetsOverlayRoot');
+    if (overlayRoot) overlayRoot.innerHTML = '';
+  }
+
   var PHASE_I18N = {
     queued: 'digitalAssetsPhaseQueued',
     uploading: 'digitalAssetsPhaseUploading',
@@ -2205,13 +2238,42 @@
       const res = await api('/api/admin/digital-assets/export', {
         method: 'POST', body: JSON.stringify({ library_ids: [libraryId] })
       });
-      if (res && res.download_path && typeof global.window !== 'undefined') {
-        global.window.open(res.download_path, '_blank');
+      if (res && res.download_path) {
+        await downloadBackup(res.download_path);
       }
       showToast(tr('digitalAssetsImportDone', { status: (res && res.status) || 'ok' }), 'success');
     } catch (err) {
       showToast(String(err.message || err), 'error');
     }
+  }
+
+  async function downloadBackup(path) {
+    var accessToken = typeof global.token === 'function' ? global.token() : '';
+    var res = await fetch(path, { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (res.status === 401) {
+      if (typeof global.token !== 'function' || global.token() === accessToken) {
+        if (typeof global.logoutAdmin === 'function') global.logoutAdmin();
+      }
+      throw new Error(tr('sessionExpired'));
+    }
+    if (!res.ok) throw new Error('backup download failed');
+    var blob = await res.blob();
+    var url = global.URL.createObjectURL(blob);
+    var link = global.document.createElement('a');
+    try {
+      link.href = url;
+      link.download = backupFilename(res.headers.get('Content-Disposition'));
+      global.document.body.appendChild(link);
+      link.click();
+    } finally {
+      link.remove();
+      global.URL.revokeObjectURL(url);
+    }
+  }
+
+  function backupFilename(contentDisposition) {
+    var match = /filename="?([^";]+)"?/i.exec(String(contentDisposition || ''));
+    return match && match[1] ? match[1] : 'digital-assets-backup.zip';
   }
 
   async function importBackup(file) {
@@ -2272,6 +2334,10 @@
   }
 
   global.loadDigitalAssetLibraries = async function loadDigitalAssetLibraries(opts) {
+    if (!canManageDigitalAssets()) {
+      stopDigitalAssetsForUnauthorizedScope();
+      return null;
+    }
     opts = opts || {};
     try {
       // Capture unsaved ACL form before list refresh (import complete / manual reload).
@@ -2310,6 +2376,10 @@
 
   var createLibraryBusy = false;
   global.createDigitalAssetLibrary = async function createDigitalAssetLibrary() {
+    if (!canManageDigitalAssets()) {
+      stopDigitalAssetsForUnauthorizedScope();
+      return null;
+    }
     if (createLibraryBusy || isAdminDialogOpen()) return;
     createLibraryBusy = true;
     try {
@@ -2345,4 +2415,5 @@
       onOpen: function() { global.loadDigitalAssetLibraries({ refreshGroups: true }); }
     });
   }
+  global.stopDigitalAssetsForUnauthorizedScope = stopDigitalAssetsForUnauthorizedScope;
 })(window);

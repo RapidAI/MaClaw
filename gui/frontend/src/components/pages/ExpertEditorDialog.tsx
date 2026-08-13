@@ -382,6 +382,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
     const saveSeq = useRef(0);
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+    const discardConfirmRef = useRef<HTMLDivElement | null>(null);
     const toolsRef = useRef(tools);
     const skillsRef = useRef(skills);
     const capabilityTierRef = useRef(capabilityTier);
@@ -493,6 +494,15 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         return () => previouslyFocusedRef.current?.focus();
     }, []);
 
+    // Treat the discard prompt as the active dialog while it is present. Its
+    // controls receive focus rather than leaving keyboard users on actions
+    // hidden beneath the confirmation layer.
+    useEffect(() => {
+        if (!confirmDiscard) return;
+        const firstAction = discardConfirmRef.current?.querySelector<HTMLElement>('button:not([disabled])');
+        firstAction?.focus();
+    }, [confirmDiscard]);
+
     const requestClose = () => {
         if (generating || saving) return;
         if (isDirty) {
@@ -519,7 +529,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
             // active text editor. This is especially important for Chinese
             // prompt authoring in the desktop WebView.
             if ((e as KeyboardEvent & { isComposing?: boolean }).isComposing) return;
-            const dialog = dialogRef.current;
+            const dialog = confirmDiscard ? discardConfirmRef.current : dialogRef.current;
             if (!dialog) return;
             const focusable = dialogFocusableElements(dialog);
             if (focusable.length === 0) {
@@ -540,7 +550,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
         };
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
-    }, [generating, isDirty, onClose, saving]);
+    }, [confirmDiscard, generating, isDirty, onClose, saving]);
 
     useEffect(() => () => {
         generateSeq.current += 1;
@@ -1393,7 +1403,7 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                     </button>
                 </div>
                 {confirmDiscard ? (
-                    <div className="expert-editor__discard-confirm" role="alertdialog" aria-modal="true" aria-label={t.unsavedChanges}>
+                    <div ref={discardConfirmRef} className="expert-editor__discard-confirm" role="alertdialog" aria-modal="true" aria-label={t.unsavedChanges}>
                         <p>{t.unsavedChanges}</p>
                         <div className="expert-editor__discard-actions">
                             <button type="button" className="expert-editor__button expert-editor__button--secondary" onClick={() => setConfirmDiscard(false)}>

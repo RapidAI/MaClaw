@@ -14,10 +14,11 @@
 #include "task_registry.h"
 
 /* The current board renderers are synchronous, but all calls into Platform
- * Display now originate from this one task. Requests retain synchronous
- * result semantics so response pagination, brightness failures and pet
- * admission keep their established caller contracts while the full immutable
- * UI-snapshot/coalescing migration is still pending. */
+ * Display now originate from this one task. Result-bearing/scene-transition
+ * requests retain synchronous semantics; microphone meter updates are an
+ * owned latest-value snapshot so an I2S producer never waits behind a slow
+ * panel transfer. The display task presents at most one pending meter state
+ * per turn and folds newer levels into the next turn. */
 #define DISPLAY_SERVICE_QUEUE_DEPTH 2u
 #define DISPLAY_SERVICE_TASK_STACK_WORDS 4096u
 #define DISPLAY_SERVICE_TASK_PRIORITY (tskIDLE_PRIORITY + 5u)
@@ -32,7 +33,6 @@ typedef enum {
     DISPLAY_REQUEST_SHOW_STARTUP,
     DISPLAY_REQUEST_SET_PET_STATE,
     DISPLAY_REQUEST_SET_COMMAND_STAGE,
-    DISPLAY_REQUEST_SET_COMMAND_CANCEL_ENABLED,
     DISPLAY_REQUEST_SET_PET_PROFILE,
     DISPLAY_REQUEST_SET_PET_ASSET,
     DISPLAY_REQUEST_SET_PET_ASSET_CONSUMING,
@@ -110,6 +110,16 @@ static TaskHandle_t s_display_service_test_secondary_stopper_task;
  * queue STOP behind actual request execution without a competing producer. */
 static display_service_request_t s_display_service_test_request;
 static bool s_display_service_test_request_executing;
+/* Audio meter state is updated at capture cadence while an LCD/QSPI/SPI
+ * present can take much longer. This boot-lifetime request owns its payload
+ * and is queued at most once; the Display Task reschedules only if a newer
+ * generation arrived while it was presenting. */
+static display_service_request_t s_display_service_audio_level_request = {
+    .kind = DISPLAY_REQUEST_SET_AUDIO_LEVEL,
+};
+static uint32_t s_display_service_audio_level_generation;
+static bool s_display_service_audio_level_pending;
+static bool s_display_service_audio_level_enqueued;
 /* STOP can outlive a lifecycle caller that times out waiting for a renderer
  * already executing a synchronous panel transaction. Its request/completion
  * storage is therefore boot-lifetime, never a deinit caller's stack. */
@@ -135,6 +145,9 @@ static void display_service_test_secondary_stopper_task(void *unused);
 static bool display_service_start_test_secondary_stopper(void);
 static bool display_service_submit(display_service_request_t *request,
                                    bool mutates_scene);
+static void display_service_schedule_audio_level(void);
+static bool display_service_dispatch_audio_level_snapshot(
+    display_service_request_t *request);
 
 static TickType_t display_service_stop_remaining_ticks(TickType_t started,
                                                         TickType_t budget) {
@@ -299,6 +312,11 @@ static void display_service_task(void *unused) {
             s_display_service_test_request_executing = false;
             taskEXIT_CRITICAL(&s_display_service_state_lock);
         }
+        if (request == &s_display_service_audio_level_request) {
+            const bool rendered = display_service_dispatch_audio_level_snapshot(request);
+            if (rendered) display_service_schedule_audio_level();
+            continue;
+        }
         display_service_dispatch(request);
         if (request->revision != 0) {
             taskENTER_CRITICAL(&s_display_service_state_lock);
@@ -306,6 +324,10 @@ static void display_service_task(void *unused) {
             taskEXIT_CRITICAL(&s_display_service_state_lock);
         }
         if (request->completion) (void)xSemaphoreGive(request->completion);
+        /* A meter publish can race while the bounded request queue is full.
+         * Every normal completion retries its one retained snapshot, so a
+         * producer never needs to spin or wait merely to obtain queue space. */
+        display_service_schedule_audio_level();
     }
 }
 
@@ -521,6 +543,67 @@ static uint32_t note_display_submission(void) {
     return revision;
 }
 
+/* Publish the latest meter value without blocking its audio producer. A full
+ * queue is harmless: the Display Task retries after completing its current
+ * request, and the state remains owned by this service. */
+static void display_service_schedule_audio_level(void) {
+    /* Display Task is already running and must not re-enter `display_service_init`
+     * while it holds the active request slot. Other producers initialize the
+     * service before their first update. */
+    if (xTaskGetCurrentTaskHandle() != s_display_service_task &&
+        !display_service_init()) return;
+    display_service_submission_lock();
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    const bool should_enqueue = s_display_service_audio_level_pending &&
+                                !s_display_service_audio_level_enqueued &&
+                                !s_stopping && s_display_service_queue &&
+                                s_display_service_task;
+    if (should_enqueue) s_display_service_audio_level_enqueued = true;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    if (!should_enqueue) {
+        display_service_submission_unlock();
+        return;
+    }
+    s_display_service_audio_level_request.revision = note_display_submission();
+    display_service_request_t *queued = &s_display_service_audio_level_request;
+    if (xQueueSend(s_display_service_queue, &queued, 0) != pdTRUE) {
+        taskENTER_CRITICAL(&s_display_service_state_lock);
+        s_display_service_audio_level_enqueued = false;
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+    }
+    display_service_submission_unlock();
+}
+
+/* Called only by Display Task. A concurrent PCM block is rendered in this
+ * snapshot or retained as exactly one later pending update; fields cannot be
+ * observed half-written. */
+static bool display_service_dispatch_audio_level_snapshot(
+    display_service_request_t *request) {
+    if (!request) return false;
+    display_service_request_t snapshot = { .kind = DISPLAY_REQUEST_SET_AUDIO_LEVEL };
+    uint32_t generation = 0;
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    snapshot.u16_a = request->u16_a;
+    snapshot.u32_a = request->u32_a;
+    snapshot.revision = request->revision;
+    generation = s_display_service_audio_level_generation;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+
+    display_service_dispatch(&snapshot);
+    if (snapshot.revision != 0) {
+        taskENTER_CRITICAL(&s_display_service_state_lock);
+        s_completed_revision = snapshot.revision;
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+    }
+
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    s_display_service_audio_level_enqueued = false;
+    s_display_service_audio_level_pending =
+        s_display_service_audio_level_generation != generation;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    return true;
+}
+
 /* Request objects live on the submitting task's stack, but the caller waits
  * for Display Task completion before returning.  Thus these borrowed fields
  * are valid for the current handoff. This is intentionally not a future
@@ -601,8 +684,6 @@ static void display_service_dispatch(display_service_request_t *request) {
         case DISPLAY_REQUEST_SHOW_STARTUP: platform_display_show_startup(); break;
         case DISPLAY_REQUEST_SET_PET_STATE: platform_display_set_pet_state(request->text_a); break;
         case DISPLAY_REQUEST_SET_COMMAND_STAGE: platform_display_set_command_stage(request->text_a); break;
-        case DISPLAY_REQUEST_SET_COMMAND_CANCEL_ENABLED:
-            platform_display_set_command_cancel_enabled(request->bool_a); break;
         case DISPLAY_REQUEST_SET_PET_PROFILE:
             platform_display_set_pet_profile(request->text_a, request->bool_a); break;
         case DISPLAY_REQUEST_SET_PET_ASSET:
@@ -744,10 +825,6 @@ void display_service_set_pet_state(const char *state) {
 void display_service_set_command_stage(const char *stage) {
     DISPLAY_SERVICE_SUBMIT_REQUEST(DISPLAY_REQUEST_SET_COMMAND_STAGE, .text_a = stage);
 }
-void display_service_set_command_cancel_enabled(bool enabled) {
-    DISPLAY_SERVICE_SUBMIT_REQUEST(DISPLAY_REQUEST_SET_COMMAND_CANCEL_ENABLED,
-                                   .bool_a = enabled);
-}
 void display_service_set_pet_profile(const char *skin, bool motion_enabled) {
     DISPLAY_SERVICE_SUBMIT_REQUEST(DISPLAY_REQUEST_SET_PET_PROFILE,
                                    .text_a = skin, .bool_a = motion_enabled);
@@ -787,8 +864,17 @@ void display_service_set_recording_visual(bool active, bool paused,
                                    .u32_a = elapsed_seconds);
 }
 void display_service_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
-    DISPLAY_SERVICE_SUBMIT_REQUEST(DISPLAY_REQUEST_SET_AUDIO_LEVEL,
-                                   .u16_a = level, .u32_a = elapsed_seconds);
+    if (!display_service_init()) return;
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    s_display_service_audio_level_request.u16_a = level;
+    s_display_service_audio_level_request.u32_a = elapsed_seconds;
+    ++s_display_service_audio_level_generation;
+    if (s_display_service_audio_level_generation == 0) {
+        ++s_display_service_audio_level_generation;
+    }
+    s_display_service_audio_level_pending = true;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    display_service_schedule_audio_level();
 }
 void display_service_show_text(const char *title, const char *text) {
     DISPLAY_SERVICE_SUBMIT_REQUEST(DISPLAY_REQUEST_SHOW_TEXT, .text_a = title, .text_b = text);

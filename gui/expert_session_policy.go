@@ -193,6 +193,9 @@ func invalidateExpertDefCache(expertID string) {
 
 // loadExpertDefByID reads the store, falling back to the builtin definition.
 func loadExpertDefByID(id string) *ExpertDefinition {
+	if isManagedIndustryExpert(id) && !isActiveManagedIndustryExpert(id) {
+		return nil
+	}
 	if def, ok, err := defaultExpertStore.Get(id); err == nil && ok {
 		cp := def
 		return &cp

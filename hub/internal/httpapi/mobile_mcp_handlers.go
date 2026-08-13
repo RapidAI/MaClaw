@@ -22,6 +22,15 @@ func MobileAgentMCPHandler(identity *auth.IdentityService) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		// EnsurePrincipal and MCP config updates write the full-agent runtime.
+		// Hold the lifecycle lock through them so unbind cannot delete the user
+		// halfway through and have this request recreate it afterwards.
+		mobileKnowledgePurgeState.RLock()
+		defer mobileKnowledgePurgeState.RUnlock()
+		if !mobileOwnerWriteAllowedLocked(principal.TenantID, mobilePrincipalOwnerID(principal)) {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
 		_, svc, err := mobileEnsureCoreAgent()
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "AGENT_UNAVAILABLE", "mobile agent runtime is unavailable")
@@ -149,10 +158,10 @@ func mobileMCPServersPublic(servers []corelib.MCPServerEntry) []map[string]any {
 	for _, s := range servers {
 		secret := strings.TrimSpace(s.AuthSecret)
 		item := map[string]any{
-			"id":              s.ID,
-			"name":            s.Name,
-			"endpoint_url":    s.EndpointURL,
-			"auth_type":       s.AuthType,
+			"id":           s.ID,
+			"name":         s.Name,
+			"endpoint_url": s.EndpointURL,
+			"auth_type":    s.AuthType,
 			// Never echo secrets; only whether configured (masked or present).
 			"has_auth_secret": secret != "",
 		}

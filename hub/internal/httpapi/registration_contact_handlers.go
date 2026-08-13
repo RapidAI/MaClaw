@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	stdmail "net/mail"
 	"strings"
@@ -78,7 +79,7 @@ func RegistrationContactSendCodeHandler(identity *auth.IdentityService, mailer *
 				}
 			}
 			if mailer == nil {
-				writeError(w, http.StatusInternalServerError, "MAIL_NOT_CONFIGURED", "Mail delivery is not configured")
+				writeError(w, http.StatusServiceUnavailable, "MAIL_NOT_CONFIGURED", "Mail delivery is not configured")
 				return
 			}
 			code, err := generateVerifyCode()
@@ -86,14 +87,19 @@ func RegistrationContactSendCodeHandler(identity *auth.IdentityService, mailer *
 				writeError(w, http.StatusInternalServerError, "CODE_GEN_FAILED", "Failed to generate verification code")
 				return
 			}
-			if !storeVerifyCode(principal.TenantID, registrationContactEmailKey(user.ID, email), code) {
+			key := registrationContactEmailKey(user.ID, email)
+			previousCode := snapshotVerifyCode(principal.TenantID, key)
+			if !storeVerifyCode(principal.TenantID, key, code) {
 				writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "Please wait 60 seconds before requesting a new code")
 				return
 			}
 			body := fmt.Sprintf("您的注册资料验证码是: %s\r\n\r\n验证码 %d 分钟内有效。如非本人操作，请忽略此消息。", code, int(verifyCodeTTL.Minutes()))
 			if err := mailer.Send(auth.WithTenant(r.Context(), principal.TenantID), []string{email}, "MaClaw 注册资料验证码", body); err != nil {
-				deleteVerifyCode(principal.TenantID, registrationContactEmailKey(user.ID, email))
-				writeError(w, http.StatusBadGateway, "MAIL_SEND_FAILED", err.Error())
+				if !rollbackVerifyCode(principal.TenantID, key, code, previousCode) {
+					log.Printf("[registration-contact] send code rollback skipped tenant_id=%s user_id=%s email=%s reason=code_replaced", principal.TenantID, user.ID, registrationEmailLogIdentity(email))
+				}
+				status, deliveryCode := registrationEmailDeliveryError(err)
+				writeError(w, status, deliveryCode, err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": "email", "expires_min": int(verifyCodeTTL.Minutes()), "code_length": 6})
@@ -136,7 +142,15 @@ func RegistrationContactVerifyHandler(identity *auth.IdentityService, system sto
 				writeError(w, http.StatusConflict, "EMAIL_ALREADY_REGISTERED", "Email is already registered")
 				return
 			}
-			valid, locked := consumeVerifyCode(principal.TenantID, registrationContactEmailKey(user.ID, email), strings.TrimSpace(req.VerifyCode))
+			key := registrationContactEmailKey(user.ID, email)
+			// Bind policy and Hub routing can change after the code was delivered.
+			// Check them before consuming the one-time code so a recoverable policy
+			// correction does not force the user to request a new email.
+			if err := identity.CanBindVerifiedEmailToUser(auth.WithTenant(r.Context(), principal.TenantID), user, email); err != nil {
+				writeRegistrationContactEmailBindError(w, err)
+				return
+			}
+			valid, locked := consumeVerifyCode(principal.TenantID, key, strings.TrimSpace(req.VerifyCode))
 			if !valid {
 				if locked {
 					writeError(w, http.StatusTooManyRequests, "VERIFY_LOCKED", "Too many attempts. Please request a new code")
@@ -146,19 +160,7 @@ func RegistrationContactVerifyHandler(identity *auth.IdentityService, system sto
 				return
 			}
 			if err := identity.BindVerifiedEmailToUser(auth.WithTenant(r.Context(), principal.TenantID), user, email); err != nil {
-				if isRegistrationContactIdentityConflict(err) {
-					writeError(w, http.StatusConflict, "EMAIL_ALREADY_REGISTERED", "Email is already registered")
-					return
-				}
-				if errors.Is(err, auth.ErrEmailDomainNotAllowed) {
-					writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
-					return
-				}
-				if errors.Is(err, auth.ErrRoutedToAnotherHub) {
-					writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
-					return
-				}
-				writeError(w, http.StatusInternalServerError, "EMAIL_BIND_FAILED", err.Error())
+				writeRegistrationContactEmailBindError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": "email", "email": email})
@@ -174,6 +176,22 @@ func RegistrationContactVerifyHandler(identity *auth.IdentityService, system sto
 			writeError(w, http.StatusBadRequest, "INVALID_CONTACT_KIND", "contact kind must be email or phone")
 		}
 	}
+}
+
+func writeRegistrationContactEmailBindError(w http.ResponseWriter, err error) {
+	if isRegistrationContactIdentityConflict(err) {
+		writeError(w, http.StatusConflict, "EMAIL_ALREADY_REGISTERED", "Email is already registered")
+		return
+	}
+	if errors.Is(err, auth.ErrEmailDomainNotAllowed) {
+		writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
+		return
+	}
+	if errors.Is(err, auth.ErrRoutedToAnotherHub) {
+		writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
+		return
+	}
+	writeError(w, http.StatusInternalServerError, "EMAIL_BIND_FAILED", err.Error())
 }
 
 func RegistrationCurrentProfileHandler(identity *auth.IdentityService) http.HandlerFunc {

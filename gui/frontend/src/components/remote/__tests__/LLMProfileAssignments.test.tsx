@@ -23,8 +23,8 @@ import { LLMProfileAssignments } from "../LLMProfileAssignments";
 
 const state = {
     providers: [
-        { id: "assistant", name: "OpenAI", model: "gpt-5", models: ["gpt-5", "gpt-5-mini"], supports_vision: true },
-        { id: "coding", name: "DeepSeek", model: "deepseek-coder", models: ["deepseek-coder"], supports_vision: false },
+        { id: "assistant", name: "OpenAI", model: "gpt-5", models: ["gpt-5", "gpt-5-mini"], supports_vision: true, connection_test_passed: true },
+        { id: "coding", name: "DeepSeek", model: "deepseek-coder", models: ["deepseek-coder"], supports_vision: false, connection_test_passed: true },
     ],
     profiles: {
         version: 1,
@@ -60,6 +60,26 @@ describe("LLMProfileAssignments", () => {
 
         await screen.findByRole("heading", { name: "Model assignments" });
         expect(screen.queryByRole("button", { name: "Manage providers" })).toBeNull();
+    });
+
+    it("renders only the connection-tested providers returned by the assignment API", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [state.providers[0]],
+        });
+        render(<LLMProfileAssignments lang="en" />);
+
+        await screen.findByRole("heading", { name: "Model assignments" });
+        const options = Array.from((screen.getByLabelText("Assistant provider") as HTMLSelectElement).options).map(option => option.text);
+        expect(options).toEqual(["Select provider", "OpenAI"]);
+        expect(screen.getByText("Only providers with a passed connection test are available here. Connections and credentials are managed separately.")).toBeTruthy();
+    });
+
+    it("explains how to make providers available when none have passed a test", async () => {
+        getState.mockResolvedValue({ ...state, providers: [] });
+        render(<LLMProfileAssignments lang="en" />);
+
+        expect((await screen.findByRole("status")).textContent).toContain("No tested providers yet. Test and save a provider in Provider management first.");
     });
 
     it("keeps coding independent and sends the profile revision on save", async () => {

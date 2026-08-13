@@ -31,6 +31,7 @@ import (
 	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/gui/petpack"
@@ -1645,6 +1646,10 @@ func (a *App) replaceUserDataMigrationMemoryEntries(entries []memory.Entry) erro
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store is not initialized")
 	}
+	// A migration can replace, add, or delete prompt-relevant entries. Refresh
+	// even if a later stage reports an error: preceding durable mutations may
+	// already have committed and must not remain in an Agent's frozen prompt.
+	defer a.refreshActiveAgentMemorySnapshots()
 	incoming := map[string]struct{}{}
 	for _, entry := range entries {
 		incoming[entry.ID] = struct{}{}
@@ -2338,7 +2343,7 @@ func userDataMigrationRetryableTransferError(err error) bool {
 	message := strings.ToLower(err.Error())
 	for _, marker := range []string{
 		"context deadline exceeded", "connection reset", "connection refused", "broken pipe",
-		"unexpected eof", "transport is closing", "temporarily unavailable", "returned 429",
+		"unexpected eof", "response ended unexpectedly", "transport is closing", "temporarily unavailable", "returned 429",
 		"returned 500", "returned 502", "returned 503", "returned 504",
 	} {
 		if strings.Contains(message, marker) {
@@ -2652,7 +2657,7 @@ func (a *App) userDataMigrationHubBytesLimited(ctx context.Context, cfg userData
 	defer resp.Body.Close()
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if readErr != nil {
-		return nil, fmt.Errorf("read Hub migration response: %w", readErr)
+		return nil, userDataMigrationHubReadError(method, path, readErr)
 	}
 	if int64(len(data)) > maxResponseBytes {
 		return nil, fmt.Errorf("Hub migration API %s %s response exceeds %s", method, path, userDataMigrationFormatBytes(maxResponseBytes))
@@ -2661,6 +2666,15 @@ func (a *App) userDataMigrationHubBytesLimited(ctx context.Context, cfg userData
 		return nil, fmt.Errorf("Hub migration API %s %s returned %d: %s", method, path, resp.StatusCode, userDataMigrationHubErrorMessage(data))
 	}
 	return data, nil
+}
+
+// userDataMigrationHubReadError keeps truncated Hub-response failures
+// actionable without exposing the transport implementation detail to users.
+func userDataMigrationHubReadError(method, path string, err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("Hub migration API %s %s response ended unexpectedly", method, path)
+	}
+	return fmt.Errorf("read Hub migration response: %w", err)
 }
 
 func userDataMigrationHubErrorMessage(data []byte) string {
@@ -2980,87 +2994,20 @@ func userDataMigrationZipDir(root, zipPath string) error {
 }
 
 func userDataMigrationUnzipToDir(zipPath, dest string, maxExpandedBytes int64) error {
-	zr, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer zr.Close()
-	if len(zr.File) > userDataMigrationMaxZipFiles {
-		return fmt.Errorf("migration package contains too many files")
-	}
-	expandedBytes := uint64(0)
-	seenFiles := make(map[string]struct{}, len(zr.File))
-	seenDirs := make(map[string]struct{})
-	declaredDirs := make(map[string]struct{})
-	for _, f := range zr.File {
-		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
+	result := archiveutil.ExtractToDirectoryWithPolicy(zipPath, dest, archiveutil.Limits{
+		MaxInputBytes: userDataMigrationMaxDownload,
+		MaxFiles:      userDataMigrationMaxZipFiles,
+		MaxFileBytes:  maxExpandedBytes,
+		MaxTotalBytes: maxExpandedBytes,
+	}, archiveutil.ExtractionPolicy{Filter: func(entry archiveutil.Entry) (bool, error) {
+		original := strings.TrimSuffix(entry.OriginalPath, "/")
+		if _, _, err := userDataMigrationCanonicalRelativePath(original); err != nil {
+			return false, fmt.Errorf("invalid migration entry path %q: %w", entry.OriginalPath, err)
 		}
-		entryName := strings.TrimSuffix(f.Name, "/")
-		cleanName, key, err := userDataMigrationCanonicalRelativePath(entryName)
-		if err != nil {
-			return fmt.Errorf("zip contains invalid entry path %q: %w", f.Name, err)
-		}
-		if f.FileInfo().IsDir() {
-			if _, fileExists := seenFiles[key]; fileExists {
-				return fmt.Errorf("zip entry path collides with a file: %s", f.Name)
-			}
-			if _, exists := declaredDirs[key]; exists {
-				return fmt.Errorf("zip contains duplicate directory entry: %s", f.Name)
-			}
-			declaredDirs[key] = struct{}{}
-			seenDirs[key] = struct{}{}
-			continue
-		}
-		if _, exists := seenFiles[key]; exists {
-			return fmt.Errorf("zip contains duplicate file entry: %s", f.Name)
-		}
-		if _, exists := seenDirs[key]; exists {
-			return fmt.Errorf("zip entry path collides with a directory: %s", f.Name)
-		}
-		for parent := pathpkg.Dir(key); parent != "."; parent = pathpkg.Dir(parent) {
-			if _, exists := seenFiles[parent]; exists {
-				return fmt.Errorf("zip entry path has file parent: %s", f.Name)
-			}
-			seenDirs[parent] = struct{}{}
-		}
-		seenFiles[key] = struct{}{}
-		if maxExpandedBytes > 0 && f.UncompressedSize64 > uint64(maxExpandedBytes)-expandedBytes {
-			return fmt.Errorf("migration package expands beyond %s", userDataMigrationFormatBytes(maxExpandedBytes))
-		}
-		outPath, err := userDataMigrationSafeJoin(dest, cleanName)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(outPath), 0o700); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		limited := &io.LimitedReader{R: rc, N: int64(f.UncompressedSize64) + 1}
-		n, copyErr := io.Copy(out, limited)
-		closeErr := out.Close()
-		rcErr := rc.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if uint64(n) != f.UncompressedSize64 {
-			return fmt.Errorf("zip entry size mismatch: %s", f.Name)
-		}
-		expandedBytes += uint64(n)
-		if closeErr != nil {
-			return closeErr
-		}
-		if rcErr != nil {
-			return rcErr
-		}
+		return true, nil
+	}})
+	if !result.OK {
+		return fmt.Errorf("extract migration package: %s: %s", result.Code, result.Message)
 	}
 	return nil
 }

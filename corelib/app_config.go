@@ -521,12 +521,6 @@ type AppConfig struct {
 	// to ~/.maclaw. config.json always stays at ~/.maclaw/config.json regardless
 	// of this setting. Changes take effect after restart.
 	DataDir string `json:"data_dir,omitempty"`
-	// WorkflowEnabled controls whether the workflow engine (multi-phase
-	// guided workflows like coding, PPT design, etc.) is active. When false,
-	// all messages bypass workflow interception and go directly to the normal
-	// agent loop. Default: false (disabled).
-	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
-
 	// Coding knowledge base settings (experience accumulation by CodingSubAgent)
 	CodingKnowledgeAutoSaveMode  string `json:"coding_knowledge_auto_save_mode,omitempty"`  // observe/auto/off
 	CodingKnowledgeSaveStrategy  string `json:"coding_knowledge_save_strategy,omitempty"`   // always/on_success/on_retry_success/off
@@ -1414,7 +1408,6 @@ func AppConfigDefaults() AppConfig {
 		ComputerUseEnabled:         boolPtrValue(true),
 		IMProgressNudgeEnabled:     boolPtrValue(true),
 		KnowledgeAutoRecallEnabled: boolPtrValue(true),
-		WorkflowEnabled:            boolPtrValue(false),
 		// Shared agent loop: new installs divert eligible chat/background turns
 		// to corelib/agent.RunLoop. Existing installs are migrated once via
 		// ApplySharedAgentLoopMigration (sets SharedAgentLoopMigrated).
@@ -1961,20 +1954,6 @@ func (c *AppConfig) PreferredAcpHostPort() int {
 		return 0
 	}
 	return c.AcpHostPort
-}
-
-// IsWorkflowEnabled returns the effective workflow enabled setting.
-// Default is false (disabled) when the field has never been explicitly set (nil).
-func (c *AppConfig) IsWorkflowEnabled() bool {
-	if c.WorkflowEnabled == nil {
-		return false
-	}
-	return *c.WorkflowEnabled
-}
-
-// SetWorkflowEnabled sets the WorkflowEnabled pointer field.
-func (c *AppConfig) SetWorkflowEnabled(v bool) {
-	c.WorkflowEnabled = &v
 }
 
 // HubCenterBaseURLs returns HubCenter seed URLs using the unique enrollment

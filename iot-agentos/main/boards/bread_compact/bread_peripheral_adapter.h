@@ -5,6 +5,16 @@
  * hardware profile is compiled. */
 #pragma once
 
+#include "sdkconfig.h"
+
+#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
+#error "Bread peripheral adapter may only be included by the Bread Compact profile"
+#endif
+
+#ifndef MACLAW_COMPACT_PERIPHERAL_ADAPTER_IMPLEMENTATION
+#error "Bread peripheral adapter is owned exclusively by compact_peripheral_service.c"
+#endif
+
 #include "device_api.h"
 #include "esp_err.h"
 

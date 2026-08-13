@@ -77,7 +77,13 @@ func (h *IMMessageHandler) classifyConfirmationIntent(userID, text string, pendi
 	}
 
 	userMessage := fmt.Sprintf("[Context]\n%s\n\n[User reply]\n%s", ctx, text)
-	llmCtx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "confirmation-intent", OwnerID: userID})
+	// A free-form reply arrives on the foreground interaction path. Use the
+	// fast model and a bounded deadline so a slow semantic convenience check
+	// cannot make the confirmation UI feel unresponsive. Button commands remain
+	// fully deterministic and bypass this call.
+	llmCtx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	llmCtx = llm.WithRequestTrace(llmCtx, llm.RequestTrace{Caller: "confirmation-intent-fast", OwnerID: userID})
 	result, err := h.LLMClassify(llmCtx, LLMClassifyRequest{
 		SystemPrompt: `You are a user intent classifier for a task execution confirmation dialog.
 
@@ -94,9 +100,10 @@ Classify the user's response into exactly one category. Reply with ONLY the cate
 - "modify" - user provides specific changes, corrections, or additional requirements for the plan.
 
 When in doubt between "confirm" and "modify", prefer "confirm" if the response is short and doesn't contain specific change requests.`,
-		UserMessage: userMessage,
-		TimeoutSec:  30,
-		Tag:         "confirmation-intent",
+		UserMessage:       userMessage,
+		TimeoutSec:        2,
+		Tag:               "confirmation-intent",
+		PreferLightweight: true,
 	})
 
 	if err != nil {

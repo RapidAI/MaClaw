@@ -26,7 +26,7 @@ func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userT
 		conversation = append(conversation, stripHistoryAttachments(entry.ToMessage()))
 	}
 
-	userContent := buildUserContentWithLocalStaging(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, onProgress, allowLocalAttachmentStaging)
+	userContent := buildUserContentWithPreparedLocalAttachments(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, onProgress, allowLocalAttachmentStaging, true)
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 	history = append(history, agent.ConversationEntry{Role: "user", Content: userContent})
 

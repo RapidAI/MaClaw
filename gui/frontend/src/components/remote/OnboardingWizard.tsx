@@ -2,8 +2,7 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom';
 import { colors, radius } from './styles';
 import { QRCodeSVG } from 'qrcode.react';
-import { BrowserOpenURL, ClipboardSetText, EventsOff, EventsOn } from '../../../wailsjs/runtime';
-import { ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelOpenAIOAuth, CancelXAIOAuthURL, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartXAIOAuth, TestMaclawLLM, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
+import { ActivateReferralRemoteEmail, ActivateReferralRemotePhone, ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelOpenAIOAuth, CancelXAIOAuth, ClaimReferralHandoff, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetReferralRegistrationStatus, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, RegisterReferralEmail, RegisterReferralPhone, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendReferralRegistrationEmail, SendReferralRegistrationSMS, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartXAIOAuth, TestAndSaveMaclawLLMProviders, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
@@ -37,6 +36,7 @@ import {
 } from "./OnboardingWizardShared";
 import { KNOWN_USER_AGENTS, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, nextCustomAgentValue } from "./userAgent";
 import { canSubmitEmailVerification, emailVerificationCooldownSeconds, normalizeEmailVerificationTarget, sanitizeEmailVerificationCode } from "./emailVerification";
+import { resetRegistrationVerification, resetVerificationForInvitationChange, type RegistrationTarget } from "./onboardingRegistration";
 import {
     completeOnboardingAfterMigration,
     findOnboardingMigrationPackage,
@@ -58,9 +58,20 @@ function extractDailySMSLimit(message: string): number | null {
     return Number.isFinite(limit) && limit > 0 ? limit : null;
 }
 
-export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onMigrationCompleted, onOnboardingCompleted, onSaveField }: Props) {
+export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onMigrationCompleted, onOnboardingCompleted, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
     const hubT = useCallback((en: string, zhHans: string, zhHant?: string) => localizeText(lang, en, zhHans, zhHant ?? zhHans), [lang]);
+    // App.tsx recreates these callbacks whenever saving config refreshes its
+    // state. Keep the completion operation stable so that refresh cannot turn
+    // the completion effect into a repeated PatchConfigFields loop.
+    const onCloseRef = useRef(onClose);
+    const onOnboardingCompletedRef = useRef(onOnboardingCompleted);
+    const onSaveFieldRef = useRef(onSaveField);
+    onCloseRef.current = onClose;
+    onOnboardingCompletedRef.current = onOnboardingCompleted;
+    onSaveFieldRef.current = onSaveField;
+    const onboardingCompletionSavedRef = useRef(false);
+    const onboardingCompletionPromiseRef = useRef<Promise<void> | null>(null);
     const registrationIdentityInputId = useId();
     const registrationPhoneInputId = useId();
     const registrationSMSCodeInputId = useId();
@@ -90,6 +101,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [portalLightScheme, setPortalLightScheme] = useState<string | undefined>(() => {
         return (document.getElementById("App") as HTMLElement)?.dataset?.aiLightScheme || undefined;
     });
+
     useEffect(() => {
         const appEl = document.getElementById("App");
         if (!appEl) return;
@@ -111,6 +123,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [regEmail, setRegEmail] = useState(email || "");
     const [registrationStage, setRegistrationStage] = useState<"identity" | "details">("identity");
     const [registrationAuthMethod, setRegistrationAuthMethod] = useState<"email" | "phone" | "mixed" | null>(() => hubUrl ? null : "email");
+    const [emailVerificationRequired, setEmailVerificationRequired] = useState(true);
     // In mixed mode, choose the verification channel once the identity is
     // confirmed. Do not derive it from the editable field on later renders.
     const [registrationIdentityKind, setRegistrationIdentityKind] = useState<"email" | "phone" | null>(null);
@@ -118,6 +131,9 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [registrationHubUrl, setRegistrationHubUrl] = useState(hubUrl || "");
     const [registrationHubID, setRegistrationHubID] = useState("");
     const [registrationTenantID, setRegistrationTenantID] = useState("");
+    const [registrationBaseTarget, setRegistrationBaseTarget] = useState<RegistrationTarget>({ hubURL: hubUrl || "", hubID: "", tenantID: "" });
+    const [referralSession, setReferralSession] = useState("");
+    const [referralActive, setReferralActive] = useState(false);
     const [registrationTargetResolving, setRegistrationTargetResolving] = useState(false);
     const [regPhone, setRegPhone] = useState("");
     const [smsCode, setSmsCode] = useState("");
@@ -126,7 +142,13 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [smsCodeLength, setSmsCodeLength] = useState(6);
     const [smsTargetPhone, setSmsTargetPhone] = useState("");
     const [smsPurpose, setSmsPurpose] = useState<"registration" | "verify_bound_phone">("registration");
+    const [verificationInvitationCode, setVerificationInvitationCode] = useState("");
+    const smsCodeRequestRef = useRef(0);
     const registrationTargetVersionRef = useRef(0);
+    // Invitation routing is asynchronous. Keep a separate generation so an
+    // older invitation can never complete registration after the user edits
+    // the code (or starts a newer registration attempt).
+    const invitationRegistrationAttemptRef = useRef(0);
     const [invCode, setInvCode] = useState("");
     const [invRequired, setInvRequired] = useState(false);
     const [invError, setInvError] = useState("");
@@ -151,6 +173,59 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [freeTrialVerified, setFreeTrialVerified] = useState(false);
     const [regResult, setRegResult] = useState<{ ok: boolean; msg: string; tone?: "warning" } | null>(null);
 
+    useEffect(() => {
+        const handoff = String(referralHandoff || "").trim();
+        const endpoint = String(hubUrl || "").trim();
+        if (!handoff || !endpoint || referralSession) return;
+        let cancelled = false;
+        setRegistrationTargetResolving(true);
+        void ClaimReferralHandoff(endpoint, handoff).then(async (claimed: any) => {
+            if (cancelled) return;
+            const session = String(claimed?.registration_session || claimed?.RegistrationSession || "").trim();
+            const tenant = claimed?.tenant || claimed?.Tenant || {};
+            const tenantID = String(tenant?.id || tenant?.ID || "").trim();
+            const methodRaw = String(claimed?.registration_method || claimed?.RegistrationMethod || "email").toLowerCase();
+            const method = methodRaw === "phone" || methodRaw === "mixed" ? methodRaw : "email";
+            if (!session || !tenantID) throw new Error("Referral handoff is invalid or expired");
+            const recovered = await GetReferralRegistrationStatus(endpoint.replace(/\/$/, ""), tenantID, session) as any;
+            const recoveredStatus = String(recovered?.registration_status || recovered?.RegistrationStatus || "continue").trim();
+            setReferralSession(session);
+            setReferralActive(true);
+            setRegistrationHubUrl(endpoint.replace(/\/$/, ""));
+            setRegistrationTenantID(tenantID);
+            setRegistrationBaseTarget({ hubURL: endpoint.replace(/\/$/, ""), hubID: "", tenantID });
+            setRegistrationAuthMethod(method);
+            setEmailVerificationRequired(true);
+            // A referral handoff has already fixed the tenant but not the
+            // identity channel. In a mixed tenant, keep the normal choice UI
+            // instead of accidentally treating the initial empty identity as
+            // email-only.
+            setRegistrationIdentityKind(method === "phone" ? "phone" : null);
+            setRegistrationStage("details");
+            if (recoveredStatus !== "continue") {
+                const recoveryMessage = recoveredStatus === "registered_rewarded"
+                    ? "Your invitation registration is complete and the reward has been issued."
+                    : recoveredStatus === "approval_pending"
+                        ? "Your registration is complete and the invitation reward is awaiting review."
+                        : recoveredStatus === "registered_expired"
+                            ? "Your registration is complete, but the invitation review window expired before a reward could be issued."
+                            : recoveredStatus === "registered_rejected"
+                                ? "Your registration is complete, but this invitation is not eligible for a reward."
+                                : recoveredStatus === "registered_revoked"
+                                    ? "Your registration is complete, but this invitation reward has been revoked."
+                                    : "Your registration is complete and the invitation reward is being processed.";
+                setRegResult({ ok: true, msg: recoveryMessage });
+                return;
+            }
+            setRegResult({ ok: true, msg: t("邀请注册链接已确认。完成验证即可获得新人 Credits。", "Your invitation registration link is confirmed. Complete verification to receive invitation Credits.") });
+        }).catch(() => {
+            if (!cancelled) setRegResult({ ok: false, msg: t("邀请注册链接已失效，请回到邀请网页重新打开 MaClaw。", "This invitation handoff has expired. Return to the invitation page and open MaClaw again.") });
+        }).finally(() => {
+            if (!cancelled) setRegistrationTargetResolving(false);
+        });
+        return () => { cancelled = true; };
+    }, [hubUrl, referralHandoff, referralSession, t]);
+
     const [ssoBusy, setSsoBusy] = useState(false);
     const [ssoResult, setSsoResult] = useState<{ ok: boolean; msg: string } | null>(null);
     // regBusy/regDone 在两种流程中均使用：普通品牌=手动注册，tigerclaw=SSO后自动注册
@@ -171,14 +246,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [embeddedSSOError, setEmbeddedSSOError] = useState("");
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+    const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
     const [llmSaving, setLlmSaving] = useState(false);
     const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
-    const [xaiOAuthURL, setXaiOAuthURL] = useState("");
-    const xaiOAuthURLRef = useRef("");
-    const xaiOAuthActiveRef = useRef(false);
-    const xaiOAuthAttemptRef = useRef(0);
+    const oauthAttemptRef = useRef(0);
     const [codegenModels, setCodegenModels] = useState<{ id: string; name: string }[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [maclawModel, setMaclawModel] = useState("");        // MaClaw Agent 使用的模型
@@ -298,10 +371,13 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         if (regDone) return;
         if (!hubUrl) {
             setRegistrationHubUrl("");
+            setRegistrationBaseTarget({ hubURL: "", hubID: "", tenantID: "" });
             setRegistrationAuthMethod("email");
+            setEmailVerificationRequired(true);
             return;
         }
         setRegistrationHubUrl(hubUrl);
+        setRegistrationBaseTarget({ hubURL: hubUrl, hubID: "", tenantID: "" });
         let cancelled = false;
         const authProbeVersion = registrationTargetVersionRef.current;
         GetRemoteRegistrationAuth(hubUrl, '').then((cfg: any) => {
@@ -309,6 +385,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             const rawMethod = String(cfg?.method || "email").toLowerCase();
             const method = rawMethod === "phone" || rawMethod === "mixed" ? rawMethod : "email";
             setRegistrationAuthMethod(method);
+            setEmailVerificationRequired(cfg?.email_verification_required !== false);
             setRegistrationAuthError("");
             const nextLength = Number(cfg?.code_length || 6);
             setSmsCodeLength(Number.isFinite(nextLength) && nextLength >= 4 && nextLength <= 8 ? nextLength : 6);
@@ -424,23 +501,49 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         return () => { CancelCodeGenSSOPolling().catch(() => {}); };
     }, []);
 
-    const cancelActiveXaiOAuth = useCallback(() => {
-        // Cancel even while StartXAIOAuth is still resolving. Otherwise a
-        // late URL response can reopen the browser after the user cancelled.
-        xaiOAuthAttemptRef.current += 1;
-        xaiOAuthActiveRef.current = false;
-        if (xaiOAuthURLRef.current) void CancelXAIOAuthURL(xaiOAuthURLRef.current);
+    const cancelActiveOAuth = useCallback((providerName?: string) => {
+        oauthAttemptRef.current += 1;
+        if (providerName === "xAI-Grok") {
+            void CancelXAIOAuth();
+        } else if (providerName) {
+            CancelOpenAIOAuth();
+        } else {
+            // A close/unmount can happen after the provider list changes. In
+            // that case, cancel both native flows rather than leaving a
+            // loopback listener waiting for its timeout.
+            CancelOpenAIOAuth();
+            void CancelXAIOAuth();
+        }
         setOauthBusy(false);
-        xaiOAuthURLRef.current = "";
-        setXaiOAuthURL("");
     }, []);
 
     useEffect(() => () => {
-        xaiOAuthAttemptRef.current += 1;
-        xaiOAuthActiveRef.current = false;
-        const authorizationURL = xaiOAuthURLRef.current;
-        xaiOAuthURLRef.current = "";
-        if (authorizationURL) void CancelXAIOAuthURL(authorizationURL);
+        oauthAttemptRef.current += 1;
+        CancelOpenAIOAuth();
+        void CancelXAIOAuth();
+    }, []);
+
+    const persistOnboardingCompletion = useCallback((useMigrationCompletionHandler = false): Promise<void> => {
+        if (onboardingCompletionSavedRef.current) return Promise.resolve();
+        if (onboardingCompletionPromiseRef.current) return onboardingCompletionPromiseRef.current;
+
+        const markComplete = useMigrationCompletionHandler && onOnboardingCompletedRef.current
+            ? onOnboardingCompletedRef.current
+            : () => onSaveFieldRef.current({ onboarding_done: true });
+        const completion = Promise.resolve()
+            .then(markComplete)
+            .then(() => {
+                onboardingCompletionSavedRef.current = true;
+            })
+            .catch(error => {
+                console.warn("[onboarding] failed to persist onboarding completion", error);
+                throw error;
+            })
+            .finally(() => {
+                onboardingCompletionPromiseRef.current = null;
+            });
+        onboardingCompletionPromiseRef.current = completion;
+        return completion;
     }, []);
 
     useEffect(() => {
@@ -455,53 +558,31 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     if (!regBusy) setShowConfirm(false);
                     return;
                 }
-                cancelActiveXaiOAuth();
+                cancelActiveOAuth();
                 onClose();
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [cancelActiveXaiOAuth, migrationPackage, migrationPromptDismissed, onClose, regBusy, showConfirm, showOfflineModeNotice]);
+    }, [cancelActiveOAuth, migrationPackage, migrationPromptDismissed, onClose, regBusy, selectedProvider?.name, showConfirm, showOfflineModeNotice]);
 
     useEffect(() => {
         const allDone = isOnboardingComplete(onboardingFlow, { regDone: effectiveRegDone, llmDone, wxCompleted });
-        if (allDone && !migrationPackage && !migrationDecisionPending) {
-            onSaveField({ onboarding_done: true });
-            const timer = setTimeout(onClose, 1500);
-            return () => clearTimeout(timer);
-        }
-    }, [onboardingFlow, effectiveRegDone, llmDone, wxCompleted, migrationDecisionPending, migrationPackage, onClose, onSaveField]);
+        if (!allDone || migrationPackage || migrationDecisionPending) return;
+        let active = true;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        void persistOnboardingCompletion().then(() => {
+            if (active) timer = setTimeout(() => onCloseRef.current(), 1500);
+        }).catch(() => {
+            // The wizard remains open after a durable-save failure so the user
+            // can retry completion instead of silently losing its state.
+        });
+        return () => {
+            active = false;
+            if (timer) clearTimeout(timer);
+        };
+    }, [onboardingFlow, effectiveRegDone, llmDone, wxCompleted, migrationDecisionPending, migrationPackage, persistOnboardingCompletion]);
 
-    const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
-
-    const copyXaiOAuthURL = useCallback(async () => {
-        if (!xaiOAuthURL) return;
-        try {
-            if (navigator.clipboard?.writeText) {
-                await navigator.clipboard.writeText(xaiOAuthURL);
-                return;
-            }
-        } catch {
-            // Wails' clipboard bridge is the fallback for restricted WebViews.
-        }
-        ClipboardSetText(xaiOAuthURL);
-    }, [xaiOAuthURL]);
-
-    const openXaiOAuthURL = useCallback((authorizationURL: string) => {
-        try {
-            BrowserOpenURL(authorizationURL);
-        } catch {
-            // The loopback OAuth session remains active, so expose its link
-            // for a manual browser launch instead of abandoning it.
-            setLlmResult({
-                ok: false,
-                msg: t(
-                    "无法自动打开浏览器，请使用下方链接继续登录。",
-                    "Couldn't open the browser automatically. Use the link below.",
-                ),
-            });
-        }
-    }, [t]);
     const migrationStatus = migrationJobStatus(migrationJob?.status);
     const migrationImportSucceeded = migrationStatus === "succeeded";
     const migrationJobFailed = migrationStatus === "failed";
@@ -550,17 +631,17 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     const returnToRegistrationIdentity = useCallback(() => {
         registrationTargetVersionRef.current += 1;
-        emailCodeRequestRef.current += 1;
+        invitationRegistrationAttemptRef.current += 1;
+        resetRegistrationVerification({
+            invalidateSMSRequest: () => { smsCodeRequestRef.current += 1; }, invalidateEmailRequest: () => { emailCodeRequestRef.current += 1; },
+            setSMSCodeSending: setSmsSending, setEmailCodeSending, setSMSCountdown: setSmsCountdown, setEmailCountdown: setEmailCodeCountdown,
+            setSMSCode: setSmsCode, setSMSTargetPhone: setSmsTargetPhone, setEmailCode, setEmailTarget: setEmailCodeTarget, setEmailError: setEmailCodeError, setVerifiedCode: setVerificationInvitationCode,
+        });
         setRegistrationStage("identity");
         setRegistrationIdentityKind(null);
         setRegResult(null);
         setRegistrationTargetResolving(false);
-        setSmsCode("");
-        setSmsTargetPhone("");
         setSmsPurpose("registration");
-        setEmailCode("");
-        setEmailCodeTarget("");
-        setEmailCodeError("");
         setShowConfirm(false);
         setRedeemCode("");
     }, []);
@@ -584,10 +665,20 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             const rawTargetMethod = String(target?.method || target?.Method || "email").toLowerCase();
             const targetMethod = rawTargetMethod === "phone" || rawTargetMethod === "mixed" ? rawTargetMethod : "email";
             const nextIdentityKind = registrationIdentityLooksPhone ? "phone" : "email";
+            // A fresh identity route supersedes every previously issued OTP.
+            // Without this reset a delayed response from an earlier attempt
+            // could be submitted against the new Hub / tenant target.
+            resetRegistrationVerification({
+                invalidateSMSRequest: () => { smsCodeRequestRef.current += 1; }, invalidateEmailRequest: () => { emailCodeRequestRef.current += 1; },
+                setSMSCodeSending: setSmsSending, setEmailCodeSending, setSMSCountdown: setSmsCountdown, setEmailCountdown: setEmailCodeCountdown,
+                setSMSCode: setSmsCode, setSMSTargetPhone: setSmsTargetPhone, setEmailCode, setEmailTarget: setEmailCodeTarget, setEmailError: setEmailCodeError, setVerifiedCode: setVerificationInvitationCode,
+            });
             if (targetHubURL) setRegistrationHubUrl(targetHubURL);
             setRegistrationHubID(targetHubID);
             setRegistrationTenantID(targetTenantID);
+            setRegistrationBaseTarget({ hubURL: targetHubURL, hubID: targetHubID, tenantID: targetTenantID });
             setRegistrationAuthMethod(targetMethod);
+            setEmailVerificationRequired(target?.email_verification_required !== false);
             setRegistrationIdentityKind(nextIdentityKind);
             setRegistrationAuthError("");
             const nextLength = Number(target?.code_length || target?.CodeLength || 0);
@@ -625,7 +716,17 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         if (selectedIdx === null) return;
         setProviders(prev => {
             const copy = [...prev];
-            copy[selectedIdx] = { ...copy[selectedIdx], [field]: value };
+            const previous = copy[selectedIdx];
+            copy[selectedIdx] = {
+                ...previous,
+                [field]: value,
+                // A passed probe is valid only for this exact connection and
+                // request shape. Editing one of these values requires another
+                // successful Test & Save before assignments can use it.
+                ...(["url", "key", "model", "protocol", "agent_type", "wire_api"].includes(field)
+                    ? { connection_test_passed: false }
+                    : {}),
+            };
             return copy;
         });
         setLlmResult(null);
@@ -646,44 +747,24 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         setLlmSaving(true);
         setLlmResult(null);
         try {
-            // SSO providers: save directly (token already validated via SSO flow)
-            if (sp.auth_type === "sso") {
-                await SaveMaclawLLMProviders(providers as corelib.MaclawLLMProvider[], sp.name);
-                setLlmResult({ ok: true, msg: t("已保存", "Saved") });
-                setLlmDone(true);
-                onLLMConfigured();
-            } else {
-                const testResult = await TestMaclawLLM({
-                    url: sp.url,
-                    key: sp.key,
-                    model: sp.model,
-                    protocol: sp.protocol || "openai",
-                    agent_type: effectiveAgentType(sp),
-                    wire_api: sp.wire_api || "",
-                    provider_name: sp.name,
-                    auth_type: sp.auth_type || "",
-                } as corelib.MaclawLLMConfig); // Go marks supports_vision required; the probe result (not this flag) decides the persisted value.
-                const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
-                const nextProviders = providers.map((provider, index) => index === selectedIdx
-                    ? {
-                        ...provider,
-                        // Do not replace a confirmed capability with a transient
-                        // probe failure while completing first-run setup.
-                        supports_vision: visionProbeInconclusive ? provider.supports_vision : testResult.supports_vision,
-                    }
-                    : { ...provider });
-                await SaveMaclawLLMProviders(nextProviders as corelib.MaclawLLMProvider[], sp.name);
+            // All credentials, including SSO, require a real inference probe.
+            // Authentication alone must never make a provider assignable.
+            const testResult = await TestAndSaveMaclawLLMProviders(
+                providers as corelib.MaclawLLMProvider[],
+                sp.name,
+                sp.name,
+            );
+            const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
 
-                try {
-                    const freshData = await GetMaclawLLMProviders();
-                    if (freshData?.providers) {
-                        setProviders(freshData.providers.map((p: LLMProvider) => ({ ...p })));
-                    } else {
-                        setProviders(nextProviders);
-                    }
-                } catch {
-                    setProviders(nextProviders);
+            try {
+                const freshData = await GetMaclawLLMProviders();
+                if (freshData?.providers) {
+                    setProviders(freshData.providers.map((p: LLMProvider) => ({ ...p })));
                 }
+            } catch {
+                // The authoritative backend save succeeded; retain the local
+                // draft only when a refresh cannot be read.
+            }
 
                 const visionMsg = visionProbeInconclusive
                     ? t("图片理解：未确认，请稍后在设置中重试", "Vision support: not confirmed; retry later in Settings")
@@ -693,7 +774,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 setLlmResult({ ok: true, msg: `${testResult.message}\n${visionMsg}` });
                 setLlmDone(true);
                 onLLMConfigured();
-            }
         } catch (e) {
             setLlmResult({ ok: false, msg: String(e) });
         } finally {
@@ -703,54 +783,28 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     const handleOAuthLogin = async () => {
         if (!selectedProvider) return;
-        const xaiAttempt = ++xaiOAuthAttemptRef.current;
+        const oauthAttempt = ++oauthAttemptRef.current;
         setOauthBusy(true);
         setLlmResult(null);
-        xaiOAuthURLRef.current = "";
-        setXaiOAuthURL("");
         try {
-            if (selectedProvider.name === "xAI-Grok") {
-                const authorizationURL = await StartXAIOAuth();
-                if (xaiAttempt !== xaiOAuthAttemptRef.current) return;
-                xaiOAuthActiveRef.current = true;
-                // Preserve correlation before browser launch; the callback can
-                // complete before React has committed the URL state update.
-                xaiOAuthURLRef.current = authorizationURL;
-                setXaiOAuthURL(authorizationURL);
-                openXaiOAuthURL(authorizationURL);
-                return;
-            }
-            const msg = await StartOpenAIOAuth();
-            setLlmResult({ ok: true, msg: msg || "OAuth 登录成功" });
+            const msg = selectedProvider.name === "xAI-Grok"
+                ? await StartXAIOAuth()
+                : await StartOpenAIOAuth();
+            if (oauthAttempt !== oauthAttemptRef.current) return;
+
+            setLlmResult({
+                ok: true,
+                msg: msg || (selectedProvider.name === "xAI-Grok" ? "xAI-Grok OAuth 登录成功" : "OAuth 登录成功"),
+            });
             setLlmDone(true);
             onLLMConfigured();
         } catch (e) {
-            if (selectedProvider.name === "xAI-Grok" && xaiAttempt !== xaiOAuthAttemptRef.current) return;
+            if (oauthAttempt !== oauthAttemptRef.current) return;
             setLlmResult({ ok: false, msg: String(e) });
         } finally {
-            if (selectedProvider.name !== "xAI-Grok") setOauthBusy(false);
+            setOauthBusy(false);
         }
     };
-
-    useEffect(() => {
-        const cleanup = EventsOn("xai-oauth-complete", (payload: { ok?: boolean; message?: string; error?: string; authorization_url?: string } = {}) => {
-            // A loopback callback may arrive before this effect has observed
-            // the oauthBusy state update, so correlate via synchronous refs.
-            if (!xaiOAuthActiveRef.current || payload.authorization_url !== xaiOAuthURLRef.current) return;
-            xaiOAuthActiveRef.current = false;
-            setOauthBusy(false);
-            xaiOAuthURLRef.current = "";
-            setXaiOAuthURL("");
-            if (!payload.ok) {
-                setLlmResult({ ok: false, msg: payload.error || t("xAI OAuth 登录失败", "xAI OAuth login failed") });
-                return;
-            }
-            setLlmResult({ ok: true, msg: payload.message || t("xAI OAuth 登录成功", "xAI OAuth login successful") });
-            setLlmDone(true);
-            onLLMConfigured();
-        });
-        return () => { if (typeof cleanup === "function") cleanup(); else EventsOff("xai-oauth-complete"); };
-    }, [onLLMConfigured, t]);
 
     // ── TigerClaw SSO Login + 自动注册 Hub（内嵌扫码流程）──
     const handleEmbeddedSSOLogin = async () => {
@@ -874,10 +928,33 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             return;
         }
         if (smsSending || smsCountdown > 0) return;
+        const requestID = smsCodeRequestRef.current + 1;
+        smsCodeRequestRef.current = requestID;
         setSmsSending(true);
         setRegResult(null);
         try {
-            const smsResult = await SendRemoteRegistrationSMS(registrationHubUrl || hubUrl, normalizedPhone, registrationTenantID) as any;
+            let targetHubURL = registrationBaseTarget.hubURL || registrationHubUrl || hubUrl;
+            let targetTenantID = registrationBaseTarget.tenantID || registrationTenantID;
+            let targetHubID = registrationBaseTarget.hubID || registrationHubID;
+            const invitationCode = invCode.trim().toUpperCase();
+            if (invitationCode) {
+                const route = await ResolveRemoteRegistrationTargetWithInvitation(normalizedPhone, invitationCode) as any;
+                if (smsCodeRequestRef.current !== requestID) return;
+                targetHubURL = String(route?.hub_url || route?.HubURL || "").trim();
+                targetTenantID = String(route?.tenant_id || route?.TenantID || "").trim();
+                targetHubID = String(route?.hub_id || route?.HubID || "").trim();
+                const method = String(route?.method || route?.Method || "email").toLowerCase();
+                if (!targetHubURL || !targetHubID) throw new Error("INVITATION_CODE_NOT_ROUTED");
+                if (method === "email") {
+                    setRegResult({ ok: false, msg: t("邀请码对应的租户仅支持邮箱注册，请使用邮箱后重新继续", "The invitation routes to an email-only tenant. Use an email address and continue again.") });
+                    return;
+                }
+                setRegistrationHubUrl(targetHubURL); setRegistrationTenantID(targetTenantID); setRegistrationHubID(targetHubID);
+            }
+            const smsResult = referralActive
+                ? await SendReferralRegistrationSMS(targetHubURL, normalizedPhone, targetTenantID, referralSession) as any
+                : await SendRemoteRegistrationSMS(targetHubURL, normalizedPhone, targetTenantID) as any;
+            if (smsCodeRequestRef.current !== requestID) return;
             const nextCodeLength = Number(smsResult?.code_length || smsResult?.CodeLength || 0);
             const nextPurpose = String(smsResult?.purpose || smsResult?.Purpose || "registration") === "verify_bound_phone" ? "verify_bound_phone" : "registration";
             if (Number.isFinite(nextCodeLength) && nextCodeLength > 0) {
@@ -886,21 +963,25 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             }
             setSmsTargetPhone(normalizedPhone);
             setSmsPurpose(nextPurpose);
+            setVerificationInvitationCode(invitationCode);
             setSmsCountdown(60);
             setRegResult({ ok: true, msg: t("验证码已发送，请查收短信", "Verification code sent. Please check your SMS.") });
         } catch (e) {
+            if (smsCodeRequestRef.current !== requestID) return;
             const errMsg = String(e);
             if (/SMS_|PHONE_ALREADY_REGISTERED|INVALID_PHONE_NUMBER/.test(errMsg)) {
                 setRegResult({ ok: false, msg: localizeRegistrationSMSError(e) });
+            } else if (/INVITATION_CODE_NOT_ROUTED|INVALID_INVITATION_CODE/.test(errMsg)) {
+                setRegResult({ ok: false, msg: t("邀请码无效或无法找到对应 Hub", "The invitation code is invalid or cannot be routed to a Hub.") });
             } else {
                 setRegResult({ ok: false, msg: errMsg });
             }
         } finally {
-            setSmsSending(false);
+            if (smsCodeRequestRef.current === requestID) setSmsSending(false);
         }
     };
 
-    const handleRegisterClick = () => {
+    const handleRegisterClick = async () => {
         if (registrationUsesPhone) {
             const normalizedPhone = normalizeSMSPhone(regPhone);
             if (normalizedPhone.length < 6) {
@@ -922,6 +1003,44 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             setRegResult({ ok: false, msg: t("请输入邮箱", "Please enter email") });
             return;
         }
+        const invitationCode = invCode.trim().toUpperCase();
+        if (invitationCode) {
+            const attemptID = invitationRegistrationAttemptRef.current + 1;
+            invitationRegistrationAttemptRef.current = attemptID;
+            try {
+                const target = await ResolveRemoteRegistrationTargetWithInvitation(regEmail.trim(), invitationCode) as any;
+                if (attemptID !== invitationRegistrationAttemptRef.current) return;
+                const targetMethod = String(target?.method || target?.Method || "email").toLowerCase();
+                const targetRequiresEmailVerification = target?.email_verification_required !== false;
+                if (targetMethod === "phone") {
+                    setRegResult({ ok: false, msg: t("邀请码对应的租户仅支持手机号注册，请返回后使用手机号继续。", "The invitation routes to a phone-only tenant. Go back and use a phone number to continue.") });
+                    return;
+                }
+                if (targetMethod !== "phone" && !targetRequiresEmailVerification) {
+                    const targetHubURL = String(target?.hub_url || target?.HubURL || registrationHubUrl || hubUrl).trim();
+                    const targetTenantID = String(target?.tenant_id || target?.TenantID || registrationTenantID).trim();
+                    const targetHubID = String(target?.hub_id || target?.HubID || registrationHubID).trim();
+                    if (!targetHubURL) throw new Error("INVITATION_CODE_NOT_ROUTED");
+                    setRegistrationHubUrl(targetHubURL);
+                    setRegistrationTenantID(targetTenantID);
+                    setRegistrationHubID(targetHubID);
+                    setRegistrationAuthMethod(targetMethod === "mixed" ? "mixed" : "email");
+                    setEmailVerificationRequired(false);
+                    setVerificationInvitationCode(invitationCode);
+                    await doRegister({ skipEmailVerification: true, invitationCode, hubURL: targetHubURL, tenantID: targetTenantID, hubID: targetHubID });
+                    return;
+                }
+            } catch (e) {
+                if (attemptID !== invitationRegistrationAttemptRef.current) return;
+                const message = String(e || "");
+                if (/INVITATION_CODE_NOT_ROUTED|INVALID_INVITATION_CODE/i.test(message)) {
+                    setInvError(t("邀请码无效或无法找到对应 Hub", "The invitation code is invalid or cannot be routed to a Hub."));
+                    return;
+                }
+                setRegResult({ ok: false, msg: message });
+                return;
+            }
+        }
         setEmailCode("");
         setEmailCodeError("");
         setShowConfirm(true);
@@ -939,26 +1058,34 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         setEmailCodeError("");
         setRegResult(null);
         try {
-            let targetHubURL = registrationHubUrl || hubUrl;
-            let targetTenantID = registrationTenantID;
-            let targetHubID = registrationHubID;
+            let targetHubURL = registrationBaseTarget.hubURL || registrationHubUrl || hubUrl;
+            let targetTenantID = registrationBaseTarget.tenantID || registrationTenantID;
+            let targetHubID = registrationBaseTarget.hubID || registrationHubID;
             if (invCode.trim()) {
                 const route = await ResolveRemoteRegistrationTargetWithInvitation(target, invCode.trim().toUpperCase()) as any;
                 if (emailCodeRequestRef.current !== requestID) return;
-                targetHubURL = String(route?.hub_url || route?.HubURL || targetHubURL).trim();
+                targetHubURL = String(route?.hub_url || route?.HubURL || "").trim();
                 targetTenantID = String(route?.tenant_id || route?.TenantID || "").trim();
                 targetHubID = String(route?.hub_id || route?.HubID || "").trim();
+                if (!targetHubURL || !targetHubID) throw new Error("INVITATION_CODE_NOT_ROUTED");
+                if (String(route?.method || route?.Method || "email").toLowerCase() === "phone") {
+                    setEmailCodeError(t("邀请码对应的租户仅支持手机号注册，请返回后使用手机号继续", "The invitation routes to a phone-only tenant. Go back and use a phone number to continue."));
+                    return;
+                }
                 setRegistrationHubUrl(targetHubURL);
                 setRegistrationTenantID(targetTenantID);
                 setRegistrationHubID(targetHubID);
             }
-            const result = await SendRemoteRegistrationEmail(targetHubURL, target, targetTenantID) as any;
+            const result = referralActive
+                ? await SendReferralRegistrationEmail(targetHubURL, target, targetTenantID, referralSession) as any
+                : await SendRemoteRegistrationEmail(targetHubURL, target, targetTenantID) as any;
             if (emailCodeRequestRef.current !== requestID) return;
             const length = Number(result?.code_length || 6);
             setEmailCodeLength(Number.isFinite(length) && length >= 4 && length <= 8 ? length : 6);
             const confirmedTenantID = String(result?.tenant_id || result?.TenantID || targetTenantID).trim();
             if (confirmedTenantID) setRegistrationTenantID(confirmedTenantID);
             setEmailCodeTarget(target);
+			setVerificationInvitationCode(invCode.trim().toUpperCase());
 			setEmailCodeCountdown(emailVerificationCooldownSeconds(result?.resend_cooldown_seconds));
         } catch (e) {
             if (emailCodeRequestRef.current !== requestID) return;
@@ -973,7 +1100,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         if (/INVALID_VERIFY_CODE/i.test(message)) return t("验证码不正确或已过期，请重新输入", "The verification code is incorrect or expired.");
         if (/VERIFY_LOCKED/i.test(message)) return t("错误次数过多，请重新获取验证码", "Too many attempts. Request a new code.");
         if (/RATE_LIMITED/i.test(message)) return t("验证码发送过于频繁，请稍后重试", "Please wait before requesting another code.");
-        if (/MAIL_NOT_CONFIGURED|MAIL_SEND_FAILED/i.test(message)) return t("Hub 邮件服务不可用，请联系管理员", "Hub email delivery is unavailable. Contact an administrator.");
+        if (/MAIL_NOT_CONFIGURED/i.test(message)) return t("该 Hub 尚未配置邮件服务，请联系管理员", "This Hub has not configured email delivery. Contact an administrator.");
+        if (/MAIL_SEND_FAILED/i.test(message)) return t("Hub 邮件服务器未能投递验证码。请让管理员检查 SMTP 日志或发送测试邮件", "The Hub mail server could not deliver the code. Ask an administrator to check SMTP logs or send a test email.");
         if (/INVITATION_CODE_NOT_ROUTED|INVALID_INVITATION_CODE/i.test(message)) return t("邀请码无效或无法找到对应 Hub", "The invitation code is invalid or cannot be routed to a Hub.");
         return message;
     };
@@ -1007,12 +1135,19 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         return raw || t("正在准备迁入", "Preparing move-in");
     };
 
-    const localizeMigrationError = (error: unknown) => {
+    const localizeMigrationError = (error: unknown, progressText?: unknown) => {
         const message = migrationErrorMessage(error);
+        const stage = String(progressText || "").trim().toLowerCase();
         const withDetail = (zh: string, en: string) => `${t(zh, en)}\n${t(`详细原因：${message}`, `Details: ${message}`)}`;
         // Order matters: more specific backend messages first.
         if (/password is incorrect|package is corrupted/i.test(message)) {
-            return withDetail("迁移密码不正确或数据包已损坏，请重新输入密码后重试", "The migration password is incorrect or the package is corrupted. Re-enter the password and retry.");
+            // Authentication failures cannot distinguish a wrong password from
+            // tampered ciphertext. Never surface low-level crypto/stream text
+            // (for example EOF) as the primary onboarding diagnosis.
+            return t("迁移密码不正确或数据包已损坏，请重新输入密码后重试", "The migration password is incorrect or the package is corrupted. Re-enter the password and retry.");
+        }
+        if (/\b(?:unexpected )?eof\b/i.test(message) && /decrypting and verifying package|解密并校验迁移包/i.test(stage)) {
+            return t("迁移密码不正确或数据包已损坏，请重新输入密码后重试", "The migration password is incorrect or the package is corrupted. Re-enter the password and retry.");
         }
         if (/migration password must be at least|must contain letters and numbers/i.test(message)) {
             return withDetail("迁移密码不符合要求，请重新输入", "The migration password does not meet requirements. Try again.");
@@ -1085,9 +1220,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     const finishMigrationOnboarding = async () => {
         await completeOnboardingAfterMigration({
-            markComplete: () => onOnboardingCompleted
-                ? onOnboardingCompleted()
-                : onSaveField({ onboarding_done: true }),
+            markComplete: () => persistOnboardingCompletion(true),
             close: onClose,
             refresh: onMigrationCompleted,
             onRefreshError: error => console.warn("[onboarding] post-migration refresh failed", error),
@@ -1115,6 +1248,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         const pollID = migrationPollRef.current + 1;
         migrationPollRef.current = pollID;
         let importSucceeded = completingSuccessfulImport;
+        let migrationProgressText = "";
         const migrationStartedAt = performance.now();
         onboardingDiagnostic("migration.restore_started", { export_id: migrationPackage.exportId, retry_completion_only: completingSuccessfulImport });
         try {
@@ -1123,6 +1257,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 return;
             }
             let nextJob = await StartUserDataMigrationImport(migrationPackage.exportId, migrationPassword) as Record<string, any>;
+            migrationProgressText = String(nextJob?.progress_text || "");
             const jobID = migrationJobId(nextJob);
             onboardingDiagnostic("migration.job_created", { export_id: migrationPackage.exportId, job_id: jobID, status: nextJob?.status });
             if (!jobID) {
@@ -1140,9 +1275,11 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 initialJob: nextJob,
                 isCancelled: () => migrationPollRef.current !== pollID,
                 onUpdate: (job) => {
+                    migrationProgressText = String(job?.progress_text || "");
                     if (migrationPollRef.current === pollID) setMigrationJob(job);
                 },
             });
+            migrationProgressText = String(nextJob?.progress_text || migrationProgressText);
             if (migrationPollRef.current !== pollID) return;
             if (migrationJobStatus(nextJob?.status) !== "succeeded") {
                 throw new Error(migrationErrorMessage(nextJob?.error) || "migration failed");
@@ -1174,7 +1311,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         ? { ...prev, status: "succeeded", progress: 1 }
                         : { status: "succeeded", progress: 1 });
                 } else {
-                    setMigrationError(localizeMigrationError(error));
+                    setMigrationError(localizeMigrationError(error, migrationProgressText));
                     setMigrationJob(prev => prev
                         ? { ...prev, status: "failed", error: detail || String(prev.error || "") }
                         : { status: "failed", error: detail });
@@ -1188,8 +1325,16 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         }
     };
 
-    const doRegister = async () => {
-        if (!registrationUsesPhone) {
+    const doRegister = async (options?: { skipEmailVerification?: boolean; invitationCode?: string; hubURL?: string; tenantID?: string; hubID?: string }) => {
+        // Only the immediately preceding invitation-route response may
+        // authorize this bypass. Deriving it from UI state would let a stale
+        // route response survive an invitation-code edit.
+        const skipEmailVerification = !!options?.skipEmailVerification;
+        const effectiveInvitationCode = options?.invitationCode ?? verificationInvitationCode;
+        const effectiveHubURL = options?.hubURL || registrationHubUrl || hubUrl;
+        const effectiveTenantID = options?.tenantID ?? registrationTenantID;
+        const effectiveHubID = options?.hubID ?? registrationHubID;
+        if (!registrationUsesPhone && !skipEmailVerification) {
             const currentTarget = normalizeEmailVerificationTarget(regEmail);
             if (emailCodeTarget !== currentTarget || !canSubmitEmailVerification({ target: emailCodeTarget, code: emailCode, codeLength: emailCodeLength, sending: emailCodeSending, busy: regBusy })) {
                 setEmailCodeError(t("请输入邮件中的完整验证码", "Enter the complete verification code from the email."));
@@ -1206,10 +1351,27 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             onSaveField({ remote_email: regEmail.trim() });
         }
         try {
+            if (referralActive) {
+                const referralHubURL = registrationHubUrl || hubUrl;
+                const referralIdentity = registrationUsesPhone ? normalizeSMSPhone(regPhone) : regEmail.trim();
+                if (registrationUsesPhone) {
+                    await RegisterReferralPhone(referralHubURL, referralIdentity, smsCode.trim(), registrationTenantID, referralSession);
+                } else {
+                    await RegisterReferralEmail(referralHubURL, referralIdentity, emailCode.trim(), registrationTenantID, referralSession);
+                }
+                const result = registrationUsesPhone
+                    ? await ActivateReferralRemotePhone(referralHubURL, referralIdentity, registrationTenantID, referralSession)
+                    : await ActivateReferralRemoteEmail(referralHubURL, referralIdentity, registrationTenantID, referralSession);
+                onboardingDiagnostic("registration.activation_succeeded", { method: registrationAuthMethod, tenant_id: registrationTenantID, referral: true, has_email: !!result?.email });
+                setRegDone(true);
+                void Promise.resolve(onRegistered()).catch(() => {});
+                setRegResult({ ok: true, msg: t("邀请注册完成，已连接到当前租户。", "Invitation registration completed. You are connected to this tenant.") });
+                return;
+            }
             const result = registrationUsesPhone
-                ? await ActivateRemoteSMS(registrationHubUrl || hubUrl, normalizeSMSPhone(regPhone), smsCode.trim(), invCode.trim().toUpperCase(), registrationTenantID, registrationHubID)
-                : await ActivateRemoteEmail(registrationHubUrl || hubUrl, regEmail.trim(), emailCode.trim(), invCode.trim().toUpperCase(), registrationTenantID, registrationHubID);
-            onboardingDiagnostic("registration.activation_succeeded", { method: registrationAuthMethod, tenant_id: registrationTenantID, hub_id: registrationHubID, has_phone_number: !!result?.phone_number, has_email: !!result?.email, vip: !!result?.vip_flag });
+                ? await ActivateRemoteSMS(registrationHubUrl || hubUrl, normalizeSMSPhone(regPhone), smsCode.trim(), verificationInvitationCode, registrationTenantID, registrationHubID)
+                : await ActivateRemoteEmail(effectiveHubURL, regEmail.trim(), skipEmailVerification ? "" : emailCode.trim(), effectiveInvitationCode, effectiveTenantID, effectiveHubID);
+            onboardingDiagnostic("registration.activation_succeeded", { method: registrationAuthMethod, tenant_id: effectiveTenantID, hub_id: effectiveHubID, has_phone_number: !!result?.phone_number, has_email: !!result?.email, vip: !!result?.vip_flag });
             if (!registrationUsesPhone) {
                 const phoneNumber = normalizeSMSPhone(String(result?.phone_number || ""));
                 if (phoneNumber) onSaveField({ remote_mobile: phoneNumber });
@@ -1500,7 +1662,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 }}>
                     <button aria-label={t("关闭", "Close")} onClick={() => {
                         if (!migrationPackage || migrationPromptDismissed) {
-                            cancelActiveXaiOAuth();
+                            cancelActiveOAuth(selectedProvider?.name);
                             onClose();
                         }
                     }} disabled={!!migrationPackage && !migrationPromptDismissed} style={{
@@ -1814,7 +1976,19 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                                 <div style={{ flex: 1, minWidth: 0 }}>
                                                     <input style={{ ...inputStyle, width: "100%", ...(invError ? { borderColor: colors.danger } : {}) }}
                                                         value={invCode}
-                                                        onChange={e => { setInvCode(e.target.value.toUpperCase()); setInvError(""); }}
+                                                        onChange={e => {
+                                                            const nextCode = e.target.value.toUpperCase();
+                                                            invitationRegistrationAttemptRef.current += 1;
+                                                            setInvCode(nextCode);
+                                                            setInvError("");
+                                                            resetVerificationForInvitationChange({
+                                                                nextCode, verifiedCode: verificationInvitationCode, baseTarget: registrationBaseTarget, fallbackHubURL: hubUrl,
+                                                                invalidateSMSRequest: () => { smsCodeRequestRef.current += 1; }, invalidateEmailRequest: () => { emailCodeRequestRef.current += 1; },
+                                                                setSMSCodeSending: setSmsSending, setEmailCodeSending, setSMSCountdown: setSmsCountdown, setEmailCountdown: setEmailCodeCountdown,
+                                                                setSMSCode: setSmsCode, setSMSTargetPhone: setSmsTargetPhone, setEmailCode, setEmailTarget: setEmailCodeTarget, setEmailError: setEmailCodeError,
+                                                                setVerifiedCode: setVerificationInvitationCode, setHubURL: setRegistrationHubUrl, setHubID: setRegistrationHubID, setTenantID: setRegistrationTenantID,
+                                                            });
+                                                        }}
                                                         placeholder={t("请输入邀请码（可选）", "Enter invitation code (optional)", "請輸入邀請碼（可選）")}
                                                         maxLength={20} spellCheck={false} />
                                                     {invError && <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: 4 }}>{invError}</div>}
@@ -1918,26 +2092,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                             </button>
                                             {oauthBusy && (
                                                 <button onClick={() => {
-                                                    if (selectedProvider.name === "xAI-Grok") cancelActiveXaiOAuth();
-                                                    else {
-                                                        CancelOpenAIOAuth();
-                                                        setOauthBusy(false);
-                                                    }
+                                                    cancelActiveOAuth(selectedProvider.name);
                                                 }} style={{
                                                     ...wizardGhostButtonBlockStyle, color: colors.textMuted,
                                                 }}>
                                                     {t("取消", "Cancel")}
                                                 </button>
-                                            )}
-                                            {oauthBusy && selectedProvider.name === "xAI-Grok" && xaiOAuthURL && (
-                                                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                                                    <button onClick={() => openXaiOAuthURL(xaiOAuthURL)} style={{ ...wizardGhostButtonStyle, flex: 1 }}>
-                                                        {t("再次打开浏览器", "Open browser again")}
-                                                    </button>
-                                                    <button onClick={() => void copyXaiOAuthURL()} style={{ ...wizardGhostButtonStyle, flex: 1 }}>
-                                                        {t("复制登录链接", "Copy sign-in link")}
-                                                    </button>
-                                                </div>
                                             )}
                                         </>
                                     ) : (
@@ -2129,7 +2289,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 }}>
                     <button
                         onClick={() => {
-                            cancelActiveXaiOAuth();
+                            cancelActiveOAuth(selectedProvider?.name);
                             setStep(s => getPrevStep(s));
                         }}
                         disabled={!canPrev}
@@ -2164,9 +2324,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             )}
                             <button
                                 onClick={() => {
-                                    onSaveField({ onboarding_done: true });
-                                    cancelActiveXaiOAuth();
-                                    onClose();
+                                    void persistOnboardingCompletion().then(() => {
+                                        cancelActiveOAuth(selectedProvider?.name);
+                                        onCloseRef.current();
+                                    }).catch(() => {
+                                        // Keep the wizard open if durable completion fails.
+                                    });
                                 }}
                                 disabled={!lastStepCompleted}
                                 style={{
@@ -2181,7 +2344,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     ) : (
                         <button
                             onClick={() => {
-                                cancelActiveXaiOAuth();
+                                cancelActiveOAuth(selectedProvider?.name);
                                 setStep(s => getNextStep(s));
                             }}
                             disabled={!canNext}
@@ -2341,7 +2504,9 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         <p style={{ margin: "0 0 14px", fontSize: 13, color: colors.textSecondary, lineHeight: 1.5 }} aria-live="polite">
                             {emailCodeSending
 								? t(`正在向 ${regEmail.trim()} 发送验证码…`, `Sending a verification code to ${regEmail.trim()}…`)
-								: t(`验证码已发送至 ${regEmail.trim()}，请输入邮件中的 ${emailCodeLength} 位数字。`, `We sent a code to ${regEmail.trim()}. Enter the ${emailCodeLength}-digit code from the email.`)}
+								: emailCodeTarget === normalizeEmailVerificationTarget(regEmail)
+									? t(`验证码已发送至 ${regEmail.trim()}，请输入邮件中的 ${emailCodeLength} 位数字。`, `We sent a code to ${regEmail.trim()}. Enter the ${emailCodeLength}-digit code from the email.`)
+									: t(`请先获取发送至 ${regEmail.trim()} 的验证码。`, `Request a verification code for ${regEmail.trim()} first.`)}
                         </p>
                         <div style={{
                             display: "flex", gap: 8, alignItems: "stretch", marginBottom: 8,
@@ -2373,7 +2538,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             }}>
                                 {t("返回修改", "Go Back")}
                             </button>
-                            <button onClick={doRegister} disabled={emailCodeTarget !== normalizeEmailVerificationTarget(regEmail) || !canSubmitEmailVerification({ target: emailCodeTarget, code: emailCode, codeLength: emailCodeLength, sending: emailCodeSending, busy: regBusy })} style={{
+                            <button onClick={() => void doRegister()} disabled={emailCodeTarget !== normalizeEmailVerificationTarget(regEmail) || !canSubmitEmailVerification({ target: emailCodeTarget, code: emailCode, codeLength: emailCodeLength, sending: emailCodeSending, busy: regBusy })} style={{
                                 ...(emailCodeTarget !== normalizeEmailVerificationTarget(regEmail) || !canSubmitEmailVerification({ target: emailCodeTarget, code: emailCode, codeLength: emailCodeLength, sending: emailCodeSending, busy: regBusy }) ? wizardDisabledButtonStyle : wizardPrimaryButtonStyle),
                                 width: "auto", padding: "8px 18px", fontSize: "0.8rem",
                             }}>

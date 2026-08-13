@@ -8,6 +8,16 @@
  */
 #pragma once
 
+#include "sdkconfig.h"
+
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+#error "Fangtang input adapter may only be included by the Fangtang profile"
+#endif
+
+#ifndef MACLAW_COMPACT_INPUT_ADAPTER_IMPLEMENTATION
+#error "Fangtang input adapter is owned exclusively by compact_input_service.c"
+#endif
+
 #include "driver/gpio.h"
 #include "esp_err.h"
 
@@ -36,12 +46,6 @@ static inline esp_err_t fangtang_input_init(void) {
 /* Must stay source-compatible with Bread's selected compact input adapter.
  * The shared scanner sees only an active contact plus optional volume-key
  * facts, never the Fangtang GPIO0 polarity or its missing controls. */
-typedef struct {
-    bool activate_released;
-    bool volume_up_released;
-    bool volume_down_released;
-} compact_input_raw_state_t;
-
 static inline esp_err_t compact_input_adapter_init(void) {
     return fangtang_input_init();
 }
@@ -56,6 +60,10 @@ static inline void compact_input_adapter_read_raw(compact_input_raw_state_t *out
 
 static inline bool compact_input_adapter_has_volume_keys(void) {
     return false;
+}
+
+static inline bool compact_input_adapter_activate_is_released_now(void) {
+    return fangtang_input_activate_is_released(gpio_get_level(FANGTANG_INPUT_ACTIVATE_GPIO));
 }
 
 static inline int64_t compact_input_adapter_activate_debounce_us(void) {
@@ -90,11 +98,11 @@ static inline BaseType_t compact_input_adapter_start_scan_task(
 }
 
 /* The one-key Fangtang enclosure reserves GPIO0 for a bounded, pre-scanner
- * double-click transport selector.  Its electrical timing and implementation
- * remain in the Fangtang profile translation unit; shared startup only asks
- * the selected input adapter to run any such pre-scan ownership window. */
-void compact_input_adapter_run_startup_selector(void);
-bool compact_input_adapter_consume_startup_selector_result(uint32_t window_ms);
+ * double-click transport selector.  The adapter exposes only that physical
+ * capability; compact_input_service owns the generic gesture window. */
+static inline uint32_t compact_input_adapter_startup_selector_window_ms(void) {
+    return FANGTANG_INPUT_BOOT_SELECTOR_WINDOW_MS;
+}
 
 /* Response paging is an input-capability fact. Shared response policy chooses
  * the page count and return action; this profile declares its available control. */

@@ -899,10 +899,12 @@ var imProactiveRecallStaleAfter = 30 * time.Second
 type imProactiveRecallResult struct {
 	promptContext string
 	relevant      []corememory.Entry
+	generation    uint64
 }
 
 type proactiveRecallState struct {
-	startedAt time.Time
+	startedAt      time.Time
+	snapshotUserID string
 }
 
 func (h *IMMessageHandler) proactiveContextForPromptWithBudget(msg string, opts corememory.ProactivePromptOptions, userID string, projectPath string, strictProject bool) (string, []corememory.Entry, bool) {
@@ -920,15 +922,26 @@ func (h *IMMessageHandler) proactiveContextForPromptWithBudget(msg string, opts 
 	if !ok {
 		return "", nil, false
 	}
+	// Dynamic recall is deliberately outside the frozen prompt snapshot. It can
+	// still race a GUI deletion, though: the recall may have read an entry just
+	// before the store mutation and complete just after it. Reuse the per-owner
+	// snapshot generation as a lightweight cancellation fence so that stale
+	// recall output is never appended to a prompt after a memory refresh.
+	snapshotUserID := memorySnapshotUserID(userID)
+	generation := h.snapshotGeneration(snapshotUserID)
 	startedAt := time.Now()
 	resultC := make(chan imProactiveRecallResult, 1)
-	go func() {
+	go func(generation uint64) {
 		promptContext, relevant := h.memoryStore.ProactiveContextForPrompt(msg, opts)
-		resultC <- imProactiveRecallResult{promptContext: promptContext, relevant: relevant}
-	}()
+		resultC <- imProactiveRecallResult{promptContext: promptContext, relevant: relevant, generation: generation}
+	}(generation)
 	select {
 	case result := <-resultC:
 		h.endProactiveRecall(recallKey, state)
+		if !h.isCurrentMemoryPromptGeneration(snapshotUserID, result.generation) {
+			log.Printf("[proactive_recall] discarded stale result user=%q projectPath=%q strictProject=%v", userID, projectPath, strictProject)
+			return "", nil, true
+		}
 		return result.promptContext, result.relevant, true
 	case <-time.After(imProactiveRecallBudget):
 		go func() {
@@ -940,8 +953,12 @@ func (h *IMMessageHandler) proactiveContextForPromptWithBudget(msg string, opts 
 	}
 }
 
+func (h *IMMessageHandler) isCurrentMemoryPromptGeneration(userID string, generation uint64) bool {
+	return h != nil && h.snapshotGeneration(userID) == generation
+}
+
 func (h *IMMessageHandler) beginProactiveRecall(recallKey string, userID string, projectPath string, strictProject bool) (proactiveRecallState, bool) {
-	state := proactiveRecallState{startedAt: time.Now()}
+	state := proactiveRecallState{startedAt: time.Now(), snapshotUserID: memorySnapshotUserID(userID)}
 	actual, loaded := h.proactiveRecallInFlight.LoadOrStore(recallKey, state)
 	if !loaded {
 		return state, true
@@ -955,6 +972,13 @@ func (h *IMMessageHandler) beginProactiveRecall(recallKey string, userID string,
 	}
 	log.Printf("[proactive_recall] skip duplicate in-flight recall user=%q projectPath=%q strictProject=%v", userID, projectPath, strictProject)
 	return proactiveRecallState{}, false
+}
+
+func memorySnapshotUserID(userID string) string {
+	if userID = strings.TrimSpace(userID); userID != "" {
+		return userID
+	}
+	return desktopUserID
 }
 
 func (h *IMMessageHandler) endProactiveRecall(recallKey string, state proactiveRecallState) {
@@ -992,6 +1016,13 @@ func firstLifecycleEventContext(values []lifecycle.EventContext) lifecycle.Event
 // starts a new topic, or on application restart (first message of new session).
 // (Requirement 5.4, 5.5, 5.7)
 func (h *IMMessageHandler) RefreshMemorySnapshot(userID string) {
+	h.invalidateMemorySnapshot(userID, true)
+}
+
+// invalidateMemorySnapshot clears one user's frozen prompt-memory state. When
+// waitForBuild is false the generation bump still prevents a stale builder
+// from publishing, but the caller does not block on it.
+func (h *IMMessageHandler) invalidateMemorySnapshot(userID string, waitForBuild bool) {
 	if h == nil {
 		return
 	}
@@ -1003,14 +1034,16 @@ func (h *IMMessageHandler) RefreshMemorySnapshot(userID string) {
 	h.bumpSnapshotGeneration(userID)
 	h.frozenMemorySnapshots.Delete(userID)
 	h.snapshotInitialized.Delete(userID)
-	// Wait for the builder to finish (close done ch) so waiters are not orphaned
-	// and so a late publish-under-old-gen cannot race past the bump above.
-	if v, ok := h.snapshotWarmInflight.Load(userID); ok {
-		if ch, ok := v.(chan struct{}); ok {
-			select {
-			case <-ch:
-			case <-time.After(3 * time.Second):
-				log.Printf("[frozen_snapshot] refresh wait timed out for user %q (build still in flight)", userID)
+	if waitForBuild {
+		// Wait for the builder to finish (close done ch) so waiters are not orphaned
+		// and so a late publish-under-old-gen cannot race past the bump above.
+		if v, ok := h.snapshotWarmInflight.Load(userID); ok {
+			if ch, ok := v.(chan struct{}); ok {
+				select {
+				case <-ch:
+				case <-time.After(3 * time.Second):
+					log.Printf("[frozen_snapshot] refresh wait timed out for user %q (build still in flight)", userID)
+				}
 			}
 		}
 	}
@@ -1018,6 +1051,41 @@ func (h *IMMessageHandler) RefreshMemorySnapshot(userID string) {
 	h.frozenMemorySnapshots.Delete(userID)
 	h.snapshotInitialized.Delete(userID)
 	log.Printf("[frozen_snapshot] refreshed (invalidated) memory snapshot for user %q", userID)
+}
+
+// RefreshAllMemorySnapshots invalidates every cached prompt-memory view owned
+// by this handler. GUI memory edits are global to the handler's store, so
+// refreshing only desktopUserID would leave active project or expert Agents
+// with a stale frozen user-fact section.
+func (h *IMMessageHandler) RefreshAllMemorySnapshots() {
+	if h == nil {
+		return
+	}
+	userIDs := make(map[string]struct{})
+	collect := func(key, _ any) bool {
+		if userID, ok := key.(string); ok && strings.TrimSpace(userID) != "" {
+			userIDs[userID] = struct{}{}
+		}
+		return true
+	}
+	// Existing snapshots contain stale text. In-flight builders must also be
+	// invalidated, otherwise one that read before the deletion could publish it
+	// after this method returns. Do not wait here: the generation bump makes a
+	// stale publish impossible, and GUI deletion must not wait on prompt work.
+	h.frozenMemorySnapshots.Range(collect)
+	h.snapshotWarmInflight.Range(collect)
+	// Dynamic recall is not frozen, but an in-flight lookup can still have read
+	// pre-mutation content. Include those owners so its generation fence drops
+	// that old result before it can be appended to a prompt.
+	h.proactiveRecallInFlight.Range(func(_, value any) bool {
+		if state, ok := value.(proactiveRecallState); ok {
+			userIDs[memorySnapshotUserID(state.snapshotUserID)] = struct{}{}
+		}
+		return true
+	})
+	for userID := range userIDs {
+		h.invalidateMemorySnapshot(userID, false)
+	}
 }
 
 // WarmFrozenMemorySnapshot precomputes the static memory section so the first

@@ -73,9 +73,6 @@ esp_err_t board_port_stop_input(uint32_t timeout_ms);
  * surface and does not imply a restartable board-port deinit. */
 esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms);
 // Fangtang uses GPIO0's initial double click exclusively as a boot-time
-// network-transport selector. The board consumes this bounded window before
-// normal application callbacks become active. Other boards return false.
-bool board_port_wait_for_boot_network_toggle(uint32_t window_ms);
 /* Restores the profile-owned selected uplink. Persistence format, vendor-image
  * migration and the physical meaning of a cellular choice stay in the adapter.
  * Wi-Fi-only boards return false and select Wi-Fi. */
@@ -133,9 +130,10 @@ void board_port_set_command_stage(const char *stage);
 // foreground command owns the screen. The command code clears it only when a
 // later explicit interaction begins, so the answer remains stable.
 void board_port_set_command_display_lock(bool locked);
-// Enables a deliberate panel double tap while the short voice command is in
-// its thinking phase. Raw CST816 contacts closer than 180 ms are still treated
-// as one touch so the controller's duplicate contact cannot cancel a command.
+/* Selected Input HAL implementation of a transient command-cancellation
+ * policy.  This remains below Platform Input: profiles may alter local touch
+ * recognition, use a key-only no-op, or add an accessibility control without
+ * exposing controller details to business/UI code. */
 void board_port_set_command_cancel_enabled(bool enabled);
 // Applies the selected MaClaw GUI pet profile. The ESP uses a compact native
 // renderer for supported skins and falls back gracefully for custom packs.

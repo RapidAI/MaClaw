@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -135,6 +136,12 @@ func (a *App) PurchaseExpertMarketListing(id string) (map[string]interface{}, er
 // calls the existing hardened package importer. A successful install returns
 // the imported Expert definition and any dependency installation summary.
 func (a *App) InstallExpertMarketListing(id string) (*ExpertPackageImportResult, error) {
+	return a.InstallExpertMarketListingWithExpectedHash(id, "")
+}
+
+// InstallExpertMarketListingWithExpectedHash pins a platform-selected asset to
+// the exact archive HubCenter acquired. Normal market installs pass no hash.
+func (a *App) InstallExpertMarketListingWithExpectedHash(id, expectedHash string) (*ExpertPackageImportResult, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("expert market listing id is required")
@@ -162,6 +169,15 @@ func (a *App) InstallExpertMarketListing(id string) (*ExpertPackageImportResult,
 		err := fmt.Errorf("invalid expert market package size")
 		report("failed", "download", nil, err)
 		return nil, err
+	}
+	expectedHash = strings.ToLower(strings.TrimSpace(expectedHash))
+	if expectedHash != "" {
+		sum := sha256.Sum256(data)
+		if fmt.Sprintf("%x", sum[:]) != expectedHash {
+			err := fmt.Errorf("industry expert package no longer matches the platform-selected asset")
+			report("failed", "validate", nil, err)
+			return nil, err
+		}
 	}
 	dir := filepath.Join(a.GetTempDir(), "expert-market")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -212,6 +228,9 @@ func (a *App) UninstallExpertMarketListing(localExpertID string) error {
 	if !strings.HasPrefix(localExpertID, expertPackageIDPrefix) {
 		return fmt.Errorf("expert market installation id is invalid")
 	}
+	if isManagedIndustryExpert(localExpertID) {
+		return fmt.Errorf("industry-managed expert cannot be uninstalled")
+	}
 	if _, ok, err := defaultExpertStore.Get(localExpertID); err != nil {
 		return err
 	} else if !ok {
@@ -236,6 +255,18 @@ func (a *App) UninstallExpertMarketListing(localExpertID string) error {
 // caller has selected it in the native UI. Builtins are rejected by the
 // existing package exporter, and the package never crosses into the WebView.
 func (a *App) SubmitExpertMarketListing(expertID, version string, price int64, visibility string) (map[string]interface{}, error) {
+	return a.submitExpertMarketListing(expertID, version, price, visibility, false)
+}
+
+// SubmitExpertMarketListingWithDistribution is an explicit author grant for
+// HubCenter to acquire the submitted public listing as a fixed industry asset.
+// It is deliberately a separate method so older GUI builds keep the safe
+// default (no platform distribution) without changing their wire contract.
+func (a *App) SubmitExpertMarketListingWithDistribution(expertID, version string, price int64, visibility string, platformDistribution bool) (map[string]interface{}, error) {
+	return a.submitExpertMarketListing(expertID, version, price, visibility, platformDistribution)
+}
+
+func (a *App) submitExpertMarketListing(expertID, version string, price int64, visibility string, platformDistribution bool) (map[string]interface{}, error) {
 	if price < 0 || price > 999999 {
 		return nil, fmt.Errorf("price must be 0-999999 credits")
 	}
@@ -278,6 +309,9 @@ func (a *App) SubmitExpertMarketListing(expertID, version string, price int64, v
 		return nil, err
 	}
 	if err := mw.WriteField("visibility", visibility); err != nil {
+		return nil, err
+	}
+	if err := mw.WriteField("platform_distribution", strconv.FormatBool(platformDistribution)); err != nil {
 		return nil, err
 	}
 	part, err := mw.CreateFormFile("package", filepath.Base(path))

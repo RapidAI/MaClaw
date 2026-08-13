@@ -102,6 +102,25 @@ export function migrationErrorMessage(error: unknown): string {
 }
 
 /**
+ * A wrong password and tampered ciphertext deliberately share the same
+ * user-facing diagnosis: AEAD authentication cannot safely distinguish them.
+ * A transport EOF is only credential-related once downloading has completed
+ * and package decryption has begun.
+ */
+export function isMigrationCredentialError(error: unknown, progressText?: unknown): boolean {
+    const message = migrationErrorMessage(error).toLowerCase();
+    if (/password is incorrect|package is corrupted/.test(message)) return true;
+    if (!/\b(?:unexpected )?eof\b/.test(message)) return false;
+    return String(progressText || "").trim().toLowerCase() === "decrypting and verifying package";
+}
+
+/** True when the package could not be downloaded completely and can be retried. */
+export function isMigrationTransferError(error: unknown): boolean {
+    const message = migrationErrorMessage(error).toLowerCase();
+    return /\b(?:unexpected )?eof\b|response ended unexpectedly|read hub migration response/.test(message);
+}
+
+/**
  * Optimistic UI state used between clicking Restore and Start* returning a
  * real backend job id. Intentionally omits `id` so a previous failed job id
  * cannot be mistaken for an active backend job.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
@@ -40,7 +41,6 @@ func EnsureLLMTables(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_llm_auth_hub_tenant ON llm_tenant_authorizations(hub_id, tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_auth_service_group ON llm_tenant_authorizations(service_group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_auth_status ON llm_tenant_authorizations(status, expires_at)`,
-
 		`CREATE TABLE IF NOT EXISTS llm_usage_records (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			hub_id TEXT NOT NULL,
@@ -126,6 +126,91 @@ func EnsureLLMTables(db *sql.DB) error {
 	}
 	if err := ensureLLMCardOrderPaymentDetailColumns(db); err != nil {
 		return err
+	}
+	if err := ensureLLMCardOrderAuthorizationIndex(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureLLMCardOrderAuthorizationIndex(db *sql.DB) error {
+	// Early builds did not prevent duplicated rows. Consolidate them before
+	// adding the uniqueness guard so an upgrade keeps the canonical (earliest)
+	// authorization instead of making HubCenter fail to start. Keep dependent
+	// usage and order records pointing at that canonical authorization rather
+	// than leaving dangling audit/history references after the cleanup.
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin llm authorization deduplication: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`
+		UPDATE llm_usage_records
+		SET auth_id = (
+			SELECT canonical.id
+			FROM llm_tenant_authorizations AS duplicate
+			JOIN llm_tenant_authorizations AS canonical
+			  ON canonical.card_order_id = duplicate.card_order_id
+			WHERE duplicate.id = llm_usage_records.auth_id
+			  AND duplicate.card_order_id <> ''
+			ORDER BY canonical.rowid ASC
+			LIMIT 1
+		)
+		WHERE auth_id IN (
+			SELECT duplicate.id
+			FROM llm_tenant_authorizations AS duplicate
+			WHERE duplicate.card_order_id <> ''
+			  AND duplicate.rowid <> (
+				SELECT MIN(canonical.rowid)
+				FROM llm_tenant_authorizations AS canonical
+				WHERE canonical.card_order_id = duplicate.card_order_id
+			  )
+		)
+	`); err != nil {
+		return fmt.Errorf("repair llm usage authorization references: %w", err)
+	}
+	if _, err := tx.Exec(`
+		UPDATE llm_card_orders
+		SET payment_id = (
+			SELECT canonical.id
+			FROM llm_tenant_authorizations AS duplicate
+			JOIN llm_tenant_authorizations AS canonical
+			  ON canonical.card_order_id = duplicate.card_order_id
+			WHERE duplicate.id = llm_card_orders.payment_id
+			  AND duplicate.card_order_id <> ''
+			ORDER BY canonical.rowid ASC
+			LIMIT 1
+		)
+		WHERE payment_id IN (
+			SELECT duplicate.id
+			FROM llm_tenant_authorizations AS duplicate
+			WHERE duplicate.card_order_id <> ''
+			  AND duplicate.rowid <> (
+				SELECT MIN(canonical.rowid)
+				FROM llm_tenant_authorizations AS canonical
+				WHERE canonical.card_order_id = duplicate.card_order_id
+			  )
+		)
+	`); err != nil {
+		return fmt.Errorf("repair llm order authorization references: %w", err)
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM llm_tenant_authorizations
+		WHERE card_order_id <> ''
+		  AND rowid NOT IN (
+			SELECT MIN(rowid)
+			FROM llm_tenant_authorizations
+			WHERE card_order_id <> ''
+			GROUP BY card_order_id
+		  )
+	`); err != nil {
+		return fmt.Errorf("deduplicate llm_tenant_authorizations.card_order_id: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_auth_card_order ON llm_tenant_authorizations(card_order_id) WHERE card_order_id <> ''`); err != nil {
+		return fmt.Errorf("ensure llm_tenant_authorizations.card_order_id unique index: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit llm authorization deduplication: %w", err)
 	}
 	return nil
 }
@@ -260,6 +345,11 @@ func (r *llmAuthRepo) Create(ctx context.Context, auth *llmservice.TenantAuthori
 
 func (r *llmAuthRepo) GetByID(ctx context.Context, id string) (*llmservice.TenantAuthorization, error) {
 	row := r.read.QueryRowContext(ctx, `SELECT id, hub_id, tenant_id, admin_email, service_group_id, credits_total, credits_used, starts_at, expires_at, allow_external_providers, source, card_order_id, bound_node_id, bound_at, status, created_at, updated_at FROM llm_tenant_authorizations WHERE id = ?`, id)
+	return scanAuth(row)
+}
+
+func (r *llmAuthRepo) GetByCardOrderID(ctx context.Context, orderNo string) (*llmservice.TenantAuthorization, error) {
+	row := r.read.QueryRowContext(ctx, `SELECT id, hub_id, tenant_id, admin_email, service_group_id, credits_total, credits_used, starts_at, expires_at, allow_external_providers, source, card_order_id, bound_node_id, bound_at, status, created_at, updated_at FROM llm_tenant_authorizations WHERE card_order_id = ?`, strings.TrimSpace(orderNo))
 	return scanAuth(row)
 }
 

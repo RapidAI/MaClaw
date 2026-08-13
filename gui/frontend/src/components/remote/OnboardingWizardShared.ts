@@ -40,13 +40,17 @@ export interface LLMProvider {
     is_custom?: boolean;
     auth_type?: string;
     agent_type?: string;
+    vision_models?: string[];
     supports_vision?: boolean;
     wire_api?: string;
+    /** Set after this provider's current configuration passes a connection test. */
+    connection_test_passed?: boolean;
 }
 
 export type Props = {
     lang: string;
     hubUrl: string;
+    referralHandoff?: string;
     email: string;
     brandId?: string;
     brandDisplayName?: string;

@@ -40,6 +40,7 @@ type Store interface {
 	GetRunByUserMessageID(string, string, string, string) (Run, error)
 	SaveAuditEvent(AuditEvent) error
 	ListAuditEvents(string, string) ([]AuditEvent, error)
+	DeleteAuditEvents(string, string) (int, error)
 }
 
 // MemoryStore is an in-process implementation of the agentservice control-plane
@@ -582,6 +583,26 @@ func (s *MemoryStore) ListAuditEvents(tenantID, userID string) ([]AuditEvent, er
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
+}
+
+// DeleteAuditEvents removes a user's agent-runtime audit entries. This is
+// intentionally separate from the Hub approval audit trail: agent-runtime
+// events can contain user-provided prompts and resource metadata and must not
+// survive a user-data purge.
+func (s *MemoryStore) DeleteAuditEvents(tenantID, userID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.auditEvents[:0]
+	deleted := 0
+	for _, event := range s.auditEvents {
+		if event.TenantID == tenantID && event.UserID == userID {
+			deleted++
+			continue
+		}
+		kept = append(kept, event)
+	}
+	s.auditEvents = kept
+	return deleted, nil
 }
 
 func normalizeStoredCredential(v Credential, legacyLookupKey string) Credential {

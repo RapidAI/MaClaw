@@ -18,6 +18,7 @@ import {
     KnowledgeSyncVerifyPassword,
     KnowledgeStructuredCatalog,
     EnterpriseKnowledgeListLibraries,
+    EnterprisePurgeRevokedLibrary,
 	EnterpriseSyncNow,
     EnterpriseSyncStatus,
     GetHubLLMServiceStatus,
@@ -267,6 +268,63 @@ describe('KnowledgeSettingsPanel component', () => {
         expect(screen.getByText('Policies')).toBeTruthy();
         await waitFor(() => expect(EnterpriseKnowledgeListLibraries).toHaveBeenCalled());
         expect(EnterpriseSyncStatus).toHaveBeenCalled();
+    });
+
+    it('uses the custom confirmation dialog before purging an enterprise cache', async () => {
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Enterprise digital assets' }));
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Purge cache' }));
+
+        expect(await screen.findByRole('dialog', { name: 'Purge local cache' })).toBeTruthy();
+        expect(screen.getByText(/Permanently delete local cache for "Policies"/)).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+        expect(EnterprisePurgeRevokedLibrary).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Purge cache' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+
+        await waitFor(() => expect(EnterprisePurgeRevokedLibrary).toHaveBeenCalledWith('lib_policies'));
+    });
+
+    it('submits the enterprise cache purge only once when Confirm is clicked repeatedly', async () => {
+        let resolvePurge: (() => void) | undefined;
+        vi.mocked(EnterprisePurgeRevokedLibrary).mockImplementationOnce(() => new Promise<void>(resolve => {
+            resolvePurge = resolve;
+        }));
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Enterprise digital assets' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Purge cache' }));
+
+        const confirmButton = await screen.findByRole('button', { name: 'Confirm' });
+        fireEvent.click(confirmButton);
+        fireEvent.click(confirmButton);
+
+        await waitFor(() => expect(EnterprisePurgeRevokedLibrary).toHaveBeenCalledTimes(1));
+        expect(confirmButton.getAttribute('aria-busy')).toBe('true');
+        expect(confirmButton.hasAttribute('disabled')).toBe(true);
+        expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true);
+        resolvePurge?.();
+
+        await waitFor(() => expect(screen.getByText(/No enterprise libraries yet/)).toBeTruthy());
+    });
+
+    it('allows a new confirmation after an enterprise cache purge fails', async () => {
+        vi.mocked(EnterprisePurgeRevokedLibrary).mockRejectedValueOnce(new Error('Hub unavailable'));
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Enterprise digital assets' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Purge cache' }));
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+
+        await waitFor(() => expect(EnterprisePurgeRevokedLibrary).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Purge local cache' })).toBeNull());
+        expect(screen.getByText('Hub unavailable')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Purge cache' }));
+        const retryConfirm = await screen.findByRole<HTMLButtonElement>('button', { name: 'Confirm' });
+        expect(retryConfirm.hasAttribute('disabled')).toBe(false);
     });
 
     it('explains when an administrator has disabled tenant digital-asset sync', async () => {

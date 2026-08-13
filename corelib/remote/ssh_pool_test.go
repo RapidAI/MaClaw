@@ -3,6 +3,10 @@ package remote
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -54,6 +58,144 @@ func TestSSHPoolKeySeparatesHostKeyPolicies(t *testing.T) {
 	if legacy == sshPoolKey(pinnedA) || sshPoolKey(pinnedA) == sshPoolKey(pinnedB) {
 		t.Fatalf("pool keys must isolate legacy and pinned policies: %q %q %q", legacy, sshPoolKey(pinnedA), sshPoolKey(pinnedB))
 	}
+}
+
+func TestSSHPoolAcquireResolvedPinsCapturedHandshakeAndReusesIt(t *testing.T) {
+	signer := testSSHSigner(t)
+	address := startTestPasswordSSHServer(t, signer, "deploy", "correct-password")
+
+	pool := NewSSHPool()
+	var observed string
+	host, _ := testSSHHostPort(t, address)
+	requested := SSHHostConfig{
+		Host:                      host,
+		User:                      "deploy",
+		Port:                      testSSHPort(t, address),
+		Password:                  "correct-password",
+		AuthMethod:                "password",
+		ConnectTimeout:            2 * time.Second,
+		HostKeyFingerprintCapture: func(fingerprint string) { observed = fingerprint },
+	}
+	first, resolved, err := pool.AcquireResolved(requested)
+	if err != nil {
+		t.Fatalf("AcquireResolved() error = %v", err)
+	}
+	if first == nil {
+		t.Fatal("AcquireResolved() returned nil client")
+	}
+	wantFingerprint := ssh.FingerprintSHA256(signer.PublicKey())
+	if observed != wantFingerprint || resolved.HostKeyFingerprint != wantFingerprint {
+		t.Fatalf("capture = %q, resolved pin = %q, want %q", observed, resolved.HostKeyFingerprint, wantFingerprint)
+	}
+	if resolved.HostKeyFingerprintCapture != nil {
+		t.Fatal("resolved config retained runtime capture callback")
+	}
+	if _, legacyPresent := pool.conns[sshPoolKey(requested)]; legacyPresent {
+		t.Fatal("captured connection was retained under legacy-unverified pool identity")
+	}
+	if _, pinnedPresent := pool.conns[sshPoolKey(resolved)]; !pinnedPresent {
+		t.Fatal("captured connection was not retained under its pinned pool identity")
+	}
+
+	second, err := pool.Acquire(resolved)
+	if err != nil {
+		t.Fatalf("Acquire(resolved) error = %v", err)
+	}
+	if second != first {
+		t.Fatal("pinned acquire did not reuse the authenticated captured connection")
+	}
+	pool.Release(resolved)
+	pool.Release(resolved)
+	if got := pool.Stats(); len(got) != 0 {
+		t.Fatalf("pool still has entries after both releases: %#v", got)
+	}
+}
+
+func TestSSHPoolAcquireResolvedCapturesOnlyKnownHostsVerifiedKey(t *testing.T) {
+	trusted := testSSHSigner(t)
+	address := startTestPasswordSSHServer(t, trusted, "deploy", "correct-password")
+	host, port := testSSHHostPort(t, address)
+	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+	knownHostLine := fmt.Sprintf("[%s]:%d %s", host, port, ssh.MarshalAuthorizedKey(trusted.PublicKey()))
+	if err := os.WriteFile(knownHostsPath, []byte(knownHostLine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var observed string
+	_, resolved, err := NewSSHPool().AcquireResolved(SSHHostConfig{
+		Host:                      host,
+		User:                      "deploy",
+		Port:                      port,
+		Password:                  "correct-password",
+		AuthMethod:                "password",
+		KnownHostsPath:            knownHostsPath,
+		ConnectTimeout:            2 * time.Second,
+		HostKeyFingerprintCapture: func(fingerprint string) { observed = fingerprint },
+	})
+	if err != nil {
+		t.Fatalf("AcquireResolved() error = %v", err)
+	}
+	want := ssh.FingerprintSHA256(trusted.PublicKey())
+	if observed != want || resolved.HostKeyFingerprint != want {
+		t.Fatalf("capture = %q, resolved pin = %q, want %q", observed, resolved.HostKeyFingerprint, want)
+	}
+}
+
+func startTestPasswordSSHServer(t *testing.T, signer ssh.Signer, user, password string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverConfig := &ssh.ServerConfig{
+		PasswordCallback: func(conn ssh.ConnMetadata, gotPassword []byte) (*ssh.Permissions, error) {
+			if conn.User() == user && string(gotPassword) == password {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("invalid test credentials")
+		},
+	}
+	serverConfig.AddHostKey(signer)
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				serverConn, channels, requests, handshakeErr := ssh.NewServerConn(conn, serverConfig)
+				if handshakeErr != nil {
+					return
+				}
+				go ssh.DiscardRequests(requests)
+				for channel := range channels {
+					_ = channel.Reject(ssh.UnknownChannelType, "test server accepts no channels")
+				}
+				_ = serverConn.Close()
+			}()
+		}
+	}()
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener.Addr().String()
+}
+
+func testSSHPort(t *testing.T, address string) int {
+	t.Helper()
+	_, port := testSSHHostPort(t, address)
+	return port
+}
+
+func testSSHHostPort(t *testing.T, address string) (string, int) {
+	t.Helper()
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(port, "%d", &parsed); err != nil || parsed <= 0 {
+		t.Fatalf("invalid test server port %q: %v", port, err)
+	}
+	return host, parsed
 }
 
 func TestSSHPoolStatsDoNotExposeHostKeyPolicy(t *testing.T) {

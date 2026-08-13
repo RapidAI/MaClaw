@@ -161,11 +161,6 @@ func digitalAssetsFeatureGateForTenant(svc *digitalasset.Service, w http.Respons
 }
 
 func resolveDigitalAssetTenant(r *http.Request) string {
-	if IsGlobalAdmin(r.Context()) {
-		if t := strings.TrimSpace(r.URL.Query().Get("tenant_id")); t != "" {
-			return t
-		}
-	}
 	if t := AdminTenantID(r.Context()); t != "" {
 		return t
 	}

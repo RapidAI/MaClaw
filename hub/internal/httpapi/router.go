@@ -22,6 +22,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/expert"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
+	"github.com/RapidAI/CodeClaw/hub/internal/industryexpert"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
@@ -110,6 +111,11 @@ func NewRouter(
 	var userLookup machineUserLookup
 	var platformUsers store.UserRepository
 	var platformMachines platformMachineLister
+	var userReferralRepo store.UserReferralRepository
+	if hubDB != nil && identity != nil && tenantRepo != nil {
+		userReferralRepo = storesqlite.NewUserReferralRepository(hubDB, hubDB)
+		system = userReferralMetricSystemSettings{SystemSettingsRepository: system, repo: userReferralRepo}
+	}
 	if identity != nil {
 		userLookup = identity.UsersRepo()
 		platformUsers = identity.UsersRepo()
@@ -321,27 +327,27 @@ func NewRouter(
 		shareLoader := digitalasset.KnowledgeShareFileLoader{
 			Repo: knowledgeShares, PackageDir: knowledgeSharePackageDir,
 		}
-		mux.HandleFunc("GET /api/admin/digital-assets/libraries", requireAdmin(ListDigitalAssetLibrariesAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("POST /api/admin/digital-assets/libraries", requireAdmin(CreateDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("PATCH /api/admin/digital-assets/libraries/{id}", requireAdmin(PatchDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("DELETE /api/admin/digital-assets/libraries/{id}", requireAdmin(DeleteDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("GET /api/admin/digital-assets/libraries/{id}/search", requireAdmin(SearchDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("GET /api/admin/digital-assets/libraries/{id}/sources", requireAdmin(ListDigitalAssetLibrarySourcesAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("DELETE /api/admin/digital-assets/libraries/{id}/sources/{source_id}", requireAdmin(DeleteDigitalAssetLibrarySourceAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/sources/delete", requireAdmin(DeleteDigitalAssetLibrarySourcesBatchAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("GET /api/admin/digital-assets/libraries/{id}/import-jobs", requireAdmin(ListDigitalAssetLibraryImportJobsAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/upload", requireAdmin(ImportDigitalAssetUploadAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/archive", requireAdmin(ImportDigitalAssetArchiveAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/local-dir", requireAdmin(ImportDigitalAssetLocalDirAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/browser-dir", requireAdmin(ImportDigitalAssetBrowserDirAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/knowledge-share", requireAdmin(ImportDigitalAssetKnowledgeShareAdminHandler(digitalAssetSvc, shareLoader)))
-		mux.HandleFunc("POST /api/admin/digital-assets/libraries/merge", requireAdmin(MergeDigitalAssetLibrariesAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("POST /api/admin/digital-assets/export", requireAdmin(ExportDigitalAssetBackupAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("GET /api/admin/digital-assets/export/jobs/{job_id}/download", requireAdmin(DownloadDigitalAssetBackupAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("POST /api/admin/digital-assets/import/backup", requireAdmin(ImportDigitalAssetBackupAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("GET /api/admin/digital-assets/import/jobs/{job_id}", requireAdmin(GetDigitalAssetImportJobAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("GET /api/admin/digital-assets/settings", requireAdmin(GetDigitalAssetSettingsAdminHandler(digitalAssetSvc)))
-		mux.HandleFunc("PUT /api/admin/digital-assets/settings", requireAdmin(PutDigitalAssetSettingsAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/libraries", requireTenantAdmin(ListDigitalAssetLibrariesAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries", requireTenantAdmin(CreateDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("PATCH /api/admin/digital-assets/libraries/{id}", requireTenantAdmin(PatchDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("DELETE /api/admin/digital-assets/libraries/{id}", requireTenantAdmin(DeleteDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/libraries/{id}/search", requireTenantAdmin(SearchDigitalAssetLibraryAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/libraries/{id}/sources", requireTenantAdmin(ListDigitalAssetLibrarySourcesAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("DELETE /api/admin/digital-assets/libraries/{id}/sources/{source_id}", requireTenantAdmin(DeleteDigitalAssetLibrarySourceAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/sources/delete", requireTenantAdmin(DeleteDigitalAssetLibrarySourcesBatchAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/libraries/{id}/import-jobs", requireTenantAdmin(ListDigitalAssetLibraryImportJobsAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/upload", requireTenantAdmin(ImportDigitalAssetUploadAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/archive", requireTenantAdmin(ImportDigitalAssetArchiveAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/local-dir", requireTenantAdmin(ImportDigitalAssetLocalDirAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/browser-dir", requireTenantAdmin(ImportDigitalAssetBrowserDirAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/{id}/import/knowledge-share", requireTenantAdmin(ImportDigitalAssetKnowledgeShareAdminHandler(digitalAssetSvc, shareLoader)))
+		mux.HandleFunc("POST /api/admin/digital-assets/libraries/merge", requireTenantAdmin(MergeDigitalAssetLibrariesAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/export", requireTenantAdmin(ExportDigitalAssetBackupAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/export/jobs/{job_id}/download", requireTenantAdmin(DownloadDigitalAssetBackupAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/import/backup", requireTenantAdmin(ImportDigitalAssetBackupAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/import/jobs/{job_id}", requireTenantAdmin(GetDigitalAssetImportJobAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/settings", requireTenantAdmin(GetDigitalAssetSettingsAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("PUT /api/admin/digital-assets/settings", requireTenantAdmin(PutDigitalAssetSettingsAdminHandler(digitalAssetSvc)))
 		mux.HandleFunc("GET /api/digital-assets/libraries", ListDigitalAssetLibrariesUserHandler(digitalAssetSvc, identity))
 		mux.HandleFunc("GET /api/digital-assets/sync/manifest", DigitalAssetSyncManifestHandler(digitalAssetSvc, identity))
 		mux.HandleFunc("POST /api/digital-assets/sync/pull", DigitalAssetSyncPullHandler(digitalAssetSvc, identity))
@@ -368,18 +374,27 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/virtual-repositories/sync", VirtualRepositorySyncHandler(identity, virtualRepositorySyncDir))
 	mux.HandleFunc("GET /api/admin/sessions/all", requireAdmin(AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", requireAdmin(ManualBindHandler(identity)))
-	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc)))
+	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc, userReferralRepo)))
 	// Shared purger: single source of truth for "what data does a user leave behind".
 	userPurger := &UserDataPurger{
-		Identity:      identity,
-		DeviceSvc:     deviceSvc,
-		InvitationSvc: invitationSvc,
-		FeishuNotify:  feishuNotifier,
-		IMCleaners:    imCleaners,
-		SecuritySvc:   securitySvc,
-		System:        system,
-		DB:            hubDB,
-		RouteDeleter:  centerSvc,
+		Identity:                 identity,
+		DeviceSvc:                deviceSvc,
+		InvitationSvc:            invitationSvc,
+		FeishuNotify:             feishuNotifier,
+		IMCleaners:               imCleaners,
+		SecuritySvc:              securitySvc,
+		System:                   system,
+		DB:                       hubDB,
+		RouteDeleter:             centerSvc,
+		GroupDiscussionSvc:       groupDiscussionSvc,
+		KnowledgeSharePackageDir: knowledgeSharePackageDir,
+		KnowledgeSyncDir:         knowledgeSyncPackageDir,
+		WelcomeSyncDir:           welcomeSyncPackageDir,
+		VirtualRepositorySyncDir: virtualRepositorySyncDir,
+		UserDataMigrationDir:     filepath.Join(runtimeDataDir, "user-data-migrations"),
+	}
+	if chatFileSvc != nil {
+		userPurger.ChatFileDir = chatFileSvc.DataDir()
 	}
 	mux.HandleFunc("DELETE /api/admin/users", requireAdmin(DeleteBoundUserHandler(identity, userPurger, system)))
 	mux.HandleFunc("POST /api/admin/users/force-delete-virtual", requireAdmin(ForceDeleteVirtualBoundUserHandler(admins, identity, userPurger, system)))
@@ -422,8 +437,10 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/mail/config", requireGlobalAdmin(UpdateMailConfigHandler(mailer)))
 	mux.HandleFunc("GET /api/admin/mail/sender-name", requireTenantAdmin(GetTenantMailSenderNameHandler(system)))
 	mux.HandleFunc("POST /api/admin/mail/sender-name", requireTenantAdmin(UpdateTenantMailSenderNameHandler(system)))
-	mux.HandleFunc("GET /api/admin/settings/registration-auth", requireAdmin(GetRegistrationAuthConfigHandler(system)))
-	mux.HandleFunc("PUT /api/admin/settings/registration-auth", requireAdmin(UpdateRegistrationAuthConfigHandler(system)))
+	// Registration verification is tenant policy. Global admins must not read or
+	// modify a tenant's registration method or SMS credentials.
+	mux.HandleFunc("GET /api/admin/settings/registration-auth", requireTenantAdmin(GetRegistrationAuthConfigHandler(system)))
+	mux.HandleFunc("PUT /api/admin/settings/registration-auth", requireTenantAdmin(UpdateRegistrationAuthConfigHandler(system)))
 	mux.HandleFunc("POST /api/admin/center/register", requireGlobalAdmin(RegisterCenterHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/mail/test", requireGlobalAdmin(AdminSendTestMailHandler(mailer)))
 	mux.HandleFunc("GET /api/admin/feishu/config", requireTenantAdmin(GetFeishuConfigHandler(system)))
@@ -462,18 +479,19 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/admin/llm/system-free", requireTenantAdmin(UpdateSystemFreeLLMHandler(system, adminAudit)))
 	mux.HandleFunc("POST /api/admin/llm/system-free/test", requireTenantAdmin(TestSystemFreeLLMHandler(system)))
 	configAgentDeps := ConfigAgentDeps{
-		System:    system,
-		Audit:     adminAudit,
-		Invites:   emailInviteRepo,
-		Identity:  identity,
-		Codes:     invitationSvc,
-		Security:  securitySvc,
-		Feishu:    feishuNotifier,
-		WeCom:     wecomPlugin,
-		DingTalk:  dingtalkPlugin,
-		QQBot:     qqbotPlugin,
-		IMRuntime: tenantIMRuntimeReloader,
-		BridgeDir: bridgeDir,
+		System:        system,
+		Audit:         adminAudit,
+		Invites:       emailInviteRepo,
+		Identity:      identity,
+		Codes:         invitationSvc,
+		Security:      securitySvc,
+		Feishu:        feishuNotifier,
+		WeCom:         wecomPlugin,
+		DingTalk:      dingtalkPlugin,
+		QQBot:         qqbotPlugin,
+		IMRuntime:     tenantIMRuntimeReloader,
+		BridgeDir:     bridgeDir,
+		DigitalAssets: digitalAssetSvc,
 	}
 	mux.HandleFunc("POST /api/admin/config-agent/plan", requireTenantAdmin(ConfigAgentPlanHandler(configAgentDeps)))
 	mux.HandleFunc("POST /api/admin/config-agent/execute", requireTenantAdmin(ConfigAgentExecuteHandler(configAgentDeps)))
@@ -600,6 +618,41 @@ func NewRouter(
 	mux.HandleFunc("GET /api/mobile/digital-employees/tasks/{taskId}", MobileDigitalEmployeeTaskStatusHandler(identity))
 	mux.HandleFunc("PATCH /api/mobile/digital-employees/tasks/{taskId}", MobileDigitalEmployeeTaskUpdateHandler(identity))
 	mux.HandleFunc("GET /api/my-ranking", GetMyRankingHandler(identity, sessionSvc, rankingCache))
+	// Personal invitation links and the tenant-scoped invitation operations UI.
+	// Referral links deliberately use a separate path from legacy admission
+	// invitation codes: they never bypass allow_user_registration.
+	if hubDB != nil && identity != nil && tenantRepo != nil {
+		mux.HandleFunc("GET /api/me/invitations", GetMyUserInvitationsHandler(identity, userReferralRepo, system))
+		mux.HandleFunc("POST /api/me/invitations/rotate", RotateMyUserInvitationHandler(identity, userReferralRepo, system))
+		mux.HandleFunc("GET /api/admin/user-referrals/config", requireTenantAdmin(GetUserReferralConfigHandler(system)))
+		mux.HandleFunc("PUT /api/admin/user-referrals/config", requireTenantAdmin(UpdateUserReferralConfigHandler(system, adminAudit)))
+		mux.HandleFunc("GET /api/admin/user-referrals", requireTenantAdmin(ListUserReferralInvitersHandler(userReferralRepo, system)))
+		mux.HandleFunc("GET /api/admin/user-referrals/metrics", requireTenantAdmin(GetUserReferralMetricsHandler(userReferralRepo, system)))
+		mux.HandleFunc("GET /api/admin/user-referrals/review-queue", requireTenantAdmin(ListReservedUserReferralsHandler(userReferralRepo)))
+		mux.HandleFunc("GET /api/admin/user-referrals/{inviter_id}", requireTenantAdmin(ListUserReferralInviteesHandler(userReferralRepo, system)))
+		mux.HandleFunc("POST /api/admin/user-referrals/{referral_id}/retry", requireTenantAdmin(RetryUserReferralRewardHandler(identity, userReferralRepo, system, adminAudit, failureLogs)))
+		mux.HandleFunc("POST /api/admin/user-referrals/{referral_id}/{action}", requireTenantAdmin(ModerateUserReferralHandler(identity, userReferralRepo, system, adminAudit, failureLogs)))
+		mux.HandleFunc("GET /invite/{code}", PublicUserReferralLandingHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("GET /invite/{code}/registration/status", PublicUserReferralRegistrationStatusHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("POST /invite/{code}/registration/account-check", PublicUserReferralAccountCheckHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("POST /invite/{code}/handoff", PublicUserReferralHandoffHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("POST /invite/{code}/email/send-code", PublicUserReferralEmailSendCodeHandler(identity, userReferralRepo, system, tenantRepo, mailer))
+		mux.HandleFunc("POST /invite/{code}/phone/send-code", PublicUserReferralPhoneSendCodeHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("POST /invite/{code}/phone/register", PublicUserReferralPhoneRegisterHandler(identity, userReferralRepo, system, tenantRepo, failureLogs))
+		mux.HandleFunc("POST /invite/{code}/register", PublicUserReferralRegisterHandler(identity, userReferralRepo, system, tenantRepo, failureLogs))
+		mux.HandleFunc("POST /api/public/referral-handoffs/claim", PublicUserReferralHandoffClaimHandler(identity, userReferralRepo, system, tenantRepo))
+		// Desktop registration follows the same handlers as the browser path,
+		// but resolves attribution from the claimed opaque handoff session sent
+		// in X-MaClaw-Referral-* headers instead of an invitation-code URL.
+		mux.HandleFunc("POST /api/public/referral-registration/email/send-code", PublicUserReferralEmailSendCodeHandler(identity, userReferralRepo, system, tenantRepo, mailer))
+		mux.HandleFunc("GET /api/public/referral-registration/status", PublicUserReferralDesktopRegistrationStatusHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("POST /api/public/referral-registration/account-check", PublicUserReferralAccountCheckHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("POST /api/public/referral-registration/email/enroll", PublicUserReferralEmailEnrollHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("POST /api/public/referral-registration/phone/send-code", PublicUserReferralPhoneSendCodeHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("POST /api/public/referral-registration/phone/register", PublicUserReferralPhoneRegisterHandler(identity, userReferralRepo, system, tenantRepo, failureLogs))
+		mux.HandleFunc("POST /api/public/referral-registration/phone/enroll", PublicUserReferralPhoneEnrollHandler(identity, userReferralRepo, system, tenantRepo))
+		mux.HandleFunc("POST /api/public/referral-registration/register", PublicUserReferralRegisterHandler(identity, userReferralRepo, system, tenantRepo, failureLogs))
+	}
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models/{model...}", LLMV1ModelHandler(identity, system, securitySvc))
@@ -725,6 +778,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, invitationSvc, securitySvc))
 	mux.HandleFunc("POST /api/enroll/email/send-code", RegistrationEmailSendCodeHandler(identity, mailer, system))
 	mux.HandleFunc("POST /api/enroll/email/verify-and-start", RegistrationEmailVerifyAndStartHandler(identity, invitationSvc, securitySvc, system))
+	mux.HandleFunc("POST /api/enroll/email/start-with-invitation", RegistrationEmailStartWithInvitationHandler(identity, invitationSvc, securitySvc, system))
 	mux.HandleFunc("GET /api/enroll/registration-auth", PublicRegistrationAuthConfigHandler(system, identity))
 	mux.HandleFunc("POST /api/enroll/sms/send-code", RegistrationSMSSendCodeHandler(identity, system, nil))
 	mux.HandleFunc("POST /api/enroll/sms/verify-and-start", RegistrationSMSVerifyAndStartHandler(identity, system, nil))
@@ -1112,6 +1166,12 @@ func NewRouter(
 		} else {
 			expertHandler := NewExpertHandler(expertStore)
 			expertHandler.Register(mux, identity)
+		}
+		managedIndustryExpertStore := industryexpert.NewStore(hubDB)
+		if err := managedIndustryExpertStore.InitSchema(context.Background()); err != nil {
+			log.Printf("[hub] managed industry expert schema init failed: %v", err)
+		} else {
+			NewManagedIndustryExpertHandler(managedIndustryExpertStore).Register(mux, identity)
 		}
 	}
 

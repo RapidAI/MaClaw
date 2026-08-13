@@ -57,6 +57,7 @@ func (a *TenantAuthorization) IsActive(now time.Time) bool {
 type TenantAuthorizationRepository interface {
 	Create(ctx context.Context, auth *TenantAuthorization) error
 	GetByID(ctx context.Context, id string) (*TenantAuthorization, error)
+	GetByCardOrderID(ctx context.Context, orderNo string) (*TenantAuthorization, error)
 	ListByHubTenant(ctx context.Context, hubID, tenantID string) ([]*TenantAuthorization, error)
 	ListByServiceGroup(ctx context.Context, serviceGroupID string) ([]*TenantAuthorization, error)
 	ListAll(ctx context.Context) ([]*TenantAuthorization, error)
@@ -66,6 +67,16 @@ type TenantAuthorizationRepository interface {
 
 type tenantAuthorizationHubLister interface {
 	ListByHub(ctx context.Context, hubID string) ([]*TenantAuthorization, error)
+}
+
+// GetAuthorizationByCardOrderID returns the authorization activated by one
+// purchase order. It is used to make payment confirmation idempotent.
+func GetAuthorizationByCardOrderID(ctx context.Context, repo TenantAuthorizationRepository, orderNo string) (*TenantAuthorization, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	if repo == nil || orderNo == "" {
+		return nil, nil
+	}
+	return repo.GetByCardOrderID(ctx, orderNo)
 }
 
 // CreditDeduction records how a single request charge was applied to a card or

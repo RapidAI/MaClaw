@@ -10,10 +10,8 @@ import {
     type CodingAgentProgress,
 } from "./CodingAgentProgressStatus";
 
-/** How many recent tool events to keep for the live activity feed (Codex-style trail). */
-const MAX_RECENT_TOOL_EVENTS = 8;
-/** Extra failed/blocked tools retained outside the recent window (bounded). */
-const MAX_PRESERVED_CRITICAL_TOOLS = 4;
+/** The activity tray intentionally shows only the latest three operations. */
+const MAX_RECENT_ACTIVITY_EVENTS = 3;
 
 type ParsedRow = {
     msg: ChatMessage;
@@ -22,9 +20,9 @@ type ParsedRow = {
 
 /**
  * Compact coding-agent progress for chat display:
- * 1) keep recent tool trail + critical failures for the latest turn
+ * 1) keep only the recent tool trail for the latest turn
  * 2) coalesce start→finish and drop status noise
- * 3) re-cap tool lines after coalesce (starts no longer inflate the budget)
+ * 3) re-cap every visible activity line after coalesce
  */
 export function compactCodingAgentProgressMessages(messages: ChatMessage[]): ChatMessage[] {
     // Parse once per message for this pipeline.
@@ -55,7 +53,7 @@ export function compactCodingAgentProgressMessages(messages: ChatMessage[]): Cha
         }
     }
     // 2× window so paired starts don't squeeze out finished tools before coalesce.
-    const keepTools = new Set(recentToolIndices.slice(-(MAX_RECENT_TOOL_EVENTS * 2)));
+    const keepTools = new Set(recentToolIndices.slice(-(MAX_RECENT_ACTIVITY_EVENTS * 2)));
 
     const filtered: ParsedRow[] = [];
     for (let index = 0; index < rows.length; index++) {
@@ -74,7 +72,7 @@ export function compactCodingAgentProgressMessages(messages: ChatMessage[]): Cha
     }
 
     const coalesced = coalesceCodingAgentToolLifecycleRows(filtered);
-    return capRecentToolEvents(coalesced, latest).map((row) => row.msg);
+    return capRecentActivityEvents(coalesced, latest).map((row) => row.msg);
 }
 
 /**
@@ -161,47 +159,25 @@ function coalesceCodingAgentToolLifecycleRows(rows: ParsedRow[]): ParsedRow[] {
 }
 
 /**
- * After coalescing, keep at most MAX_RECENT_TOOL_EVENTS tool rows for the latest turn.
- * Critical failures outside the window are kept but bounded.
+ * After coalescing, keep at most MAX_RECENT_ACTIVITY_EVENTS visible activity rows
+ * for the latest turn. Terminal task status remains so the feed header is accurate.
  */
-function capRecentToolEvents(rows: ParsedRow[], latest: CodingAgentProgress): ParsedRow[] {
-    const toolIndices: number[] = [];
+function capRecentActivityEvents(rows: ParsedRow[], latest: CodingAgentProgress): ParsedRow[] {
+    const activityIndices: number[] = [];
     for (let i = 0; i < rows.length; i++) {
         const progress = rows[i].progress;
         if (!progress || !sameCodingProgressTurn(progress, latest)) continue;
-        const event = (progress.event || "").trim().toLowerCase();
-        if (event === "tool_finished" || event === "tool_started") toolIndices.push(i);
+        if (!isCodingAgentTaskStatusOnly(progress)) activityIndices.push(i);
     }
-    if (toolIndices.length <= MAX_RECENT_TOOL_EVENTS) return rows;
+    if (activityIndices.length <= MAX_RECENT_ACTIVITY_EVENTS) return rows;
 
-    const recent = toolIndices.slice(-MAX_RECENT_TOOL_EVENTS);
-    const keepTools = new Set(recent);
-    // Older critical tools (failed/blocked), most recent first, bounded.
-    const olderCritical: number[] = [];
-    for (let i = toolIndices.length - 1; i >= 0; i--) {
-        const idx = toolIndices[i];
-        if (keepTools.has(idx)) continue;
-        const progress = rows[idx].progress;
-        if (progress && isCriticalToolFailure(progress)) olderCritical.push(idx);
-    }
-    for (const idx of olderCritical.slice(0, MAX_PRESERVED_CRITICAL_TOOLS)) {
-        keepTools.add(idx);
-    }
-
+    const keepActivity = new Set(activityIndices.slice(-MAX_RECENT_ACTIVITY_EVENTS));
     return rows.filter((row, index) => {
         if (!row.progress) return true;
         if (!sameCodingProgressTurn(row.progress, latest)) return true;
-        const event = (row.progress.event || "").trim().toLowerCase();
-        if (event !== "tool_finished" && event !== "tool_started") return true;
-        return keepTools.has(index);
+        if (isCodingAgentTaskStatusOnly(row.progress)) return true;
+        return keepActivity.has(index);
     });
-}
-
-/** Real user-visible tool failures only — diagnostic/env probes must not consume the preserve budget. */
-function isCriticalToolFailure(progress: CodingAgentProgress): boolean {
-    const event = (progress.event || "").trim().toLowerCase();
-    if (event !== "tool_finished") return false;
-    return codingAgentProgressLooksCritical(progress);
 }
 
 function codingProgressTurnKey(progress: CodingAgentProgress): string {

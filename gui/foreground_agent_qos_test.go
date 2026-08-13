@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -363,5 +364,39 @@ func TestAgentLoopLLMRoundPreservesBackgroundCaller(t *testing.T) {
 	}
 	if got := agentLoopLLMCallerFromContext(context.Background()); got != "agent_loop" {
 		t.Fatalf("default caller = %q, want agent_loop", got)
+	}
+}
+
+func TestDispatchAgentLoopLLMRoundEmitsFirstRequestStatus(t *testing.T) {
+	var progress []string
+	callback := func(text string) { progress = append(progress, text) }
+	h := &IMMessageHandler{}
+	loopCtx := NewLoopContext("progress-status", 1, nil)
+	defer loopCtx.Cancel()
+	// An empty config fails before the network call, but the status must be
+	// emitted synchronously when the first model request is dispatched.
+	h.dispatchAgentLoopLLMRound(agentLoopLLMDispatchOptions{
+		Context:             loopCtx,
+		RequestContext:      context.Background(),
+		Config:              corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "test"},
+		OnProgress:          callback,
+		FirstRequestMetrics: &llmFirstRequestMetrics{},
+		FirstRequestMarked:  false,
+	})
+	if len(progress) != 1 || progress[0] != "[Status] 模型请求已发送，正在等待响应" {
+		t.Fatalf("progress = %#v", progress)
+	}
+
+	progress = nil
+	h.dispatchAgentLoopLLMRound(agentLoopLLMDispatchOptions{
+		Context:             loopCtx,
+		RequestContext:      context.Background(),
+		Config:              corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "test"},
+		OnProgress:          callback,
+		FirstRequestMetrics: &llmFirstRequestMetrics{},
+		FirstRequestMarked:  true,
+	})
+	if len(progress) != 0 {
+		t.Fatalf("later-round progress = %#v, want no duplicate request status", progress)
 	}
 }

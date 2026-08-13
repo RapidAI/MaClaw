@@ -319,8 +319,8 @@ func TestResolveRemoteRegistrationTargetUsesHubCenterPhoneRoute(t *testing.T) {
 		if r.URL.Path != "/api/enroll/registration-auth" {
 			t.Fatalf("unexpected hub path %s", r.URL.Path)
 		}
-		if got := r.URL.Query().Get("tenant_id"); got != "tenant-phone" {
-			t.Fatalf("registration auth tenant_id = %q", got)
+		if got := r.URL.Query().Get("tenant_id"); got != "" {
+			t.Fatalf("registration auth tenant_id = %q, want public default tenant", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"method":"phone","code_length":6,"code_ttl_minutes":5}`))
@@ -361,7 +361,143 @@ func TestResolveRemoteRegistrationTargetUsesHubCenterPhoneRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRemoteRegistrationTarget() error = %v", err)
 	}
-	if got.HubURL != hub.URL || got.HubID != "hub-phone" || got.TenantID != "tenant-phone" || got.Method != "phone" || got.CodeLength != 6 {
+	if got.HubURL != hub.URL || got.HubID != "hub-phone" || got.TenantID != "" || got.Method != "phone" || got.CodeLength != 6 {
+		t.Fatalf("resolved target = %#v", got)
+	}
+}
+
+func TestResolveRemoteRegistrationTargetWithInvitationPrefersTenantRouteOverGenericDefault(t *testing.T) {
+	remote.InvalidateCenterCache()
+	genericHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("generic fallback Hub must not receive registration auth: %s", r.URL.String())
+	}))
+	defer genericHub.Close()
+	tenantHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/registration-auth" {
+			t.Fatalf("unexpected tenant hub path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("tenant_id"); got != "tenant-acme" {
+			t.Fatalf("registration auth tenant_id = %q, want tenant-acme", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"method":"email","code_length":6,"code_ttl_minutes":5}`))
+	}))
+	defer tenantHub.Close()
+
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/quality":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"quality_score":100,"routable":true,"service_status":"ok","features":{"can_resolve":true}}`))
+		case "/api/client/hubcenters":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"urls":[],"nodes":[],"count":0,"ttl_seconds":300}`))
+		case "/api/entry/resolve":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"email":"new@example.com","mode":"multiple","default_hub_id":"hub-generic","hubs":[{"hub_id":"hub-generic","name":"Generic fallback","base_url":"` + genericHub.URL + `","status":"online"},{"hub_id":"hub-tenant","tenant_id":"tenant-acme","name":"Acme","base_url":"` + tenantHub.URL + `","status":"online"}]}`))
+		default:
+			t.Fatalf("unexpected center path %s", r.URL.Path)
+		}
+	}))
+	defer center.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: center.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	got, err := app.ResolveRemoteRegistrationTargetWithInvitation("new@example.com", "INVITE-ACME")
+	if err != nil {
+		t.Fatalf("ResolveRemoteRegistrationTarget() error = %v", err)
+	}
+	if got.HubURL != tenantHub.URL || got.HubID != "hub-tenant" || got.TenantID != "tenant-acme" || got.Method != "email" {
+		t.Fatalf("resolved target = %#v", got)
+	}
+}
+
+func TestResolveRemoteRegistrationTargetUsesGenericDefaultTenantWithoutInvitation(t *testing.T) {
+	remote.InvalidateCenterCache()
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/registration-auth" {
+			t.Fatalf("unexpected hub path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("tenant_id"); got != "" {
+			t.Fatalf("registration auth tenant_id = %q, want generic default tenant", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"method":"mixed","code_length":6,"code_ttl_minutes":5}`))
+	}))
+	defer hub.Close()
+
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/quality":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"quality_score":100,"routable":true,"service_status":"ok","features":{"can_resolve":true}}`))
+		case "/api/client/hubcenters":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"urls":[],"nodes":[],"count":0,"ttl_seconds":300}`))
+		case "/api/entry/resolve":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"email":"new@example.com","mode":"multiple","default_hub_id":"hub-mypapers","hubs":[{"hub_id":"hub-mypapers","tenant_id":"restricted-tenant","name":"Restricted","base_url":"` + hub.URL + `","status":"online"},{"hub_id":"hub-mypapers","name":"Default","base_url":"` + hub.URL + `","status":"online"}]}`))
+		default:
+			t.Fatalf("unexpected center path %s", r.URL.Path)
+		}
+	}))
+	defer center.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: center.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	got, err := app.ResolveRemoteRegistrationTarget("new@example.com")
+	if err != nil {
+		t.Fatalf("ResolveRemoteRegistrationTarget() error = %v", err)
+	}
+	if got.HubURL != hub.URL || got.HubID != "hub-mypapers" || got.TenantID != "" || got.Method != "mixed" {
+		t.Fatalf("resolved target = %#v", got)
+	}
+}
+
+func TestResolveRemoteRegistrationTargetDropsScopedTenantFromLegacyDefaultWithoutInvitation(t *testing.T) {
+	remote.InvalidateCenterCache()
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/registration-auth" {
+			t.Fatalf("unexpected hub path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("tenant_id"); got != "" {
+			t.Fatalf("registration auth tenant_id = %q, want public default tenant", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"method":"mixed","code_length":6,"code_ttl_minutes":5}`))
+	}))
+	defer hub.Close()
+
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/quality":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"quality_score":100,"routable":true,"service_status":"ok","features":{"can_resolve":true}}`))
+		case "/api/client/hubcenters":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"urls":[],"nodes":[],"count":0,"ttl_seconds":300}`))
+		case "/api/entry/resolve":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"email":"new@example.com","mode":"route","default_hub_id":"hub-mypapers","hubs":[{"hub_id":"hub-mypapers","tenant_id":"bfs","name":"Restricted","base_url":"` + hub.URL + `","status":"online"}]}`))
+		default:
+			t.Fatalf("unexpected center path %s", r.URL.Path)
+		}
+	}))
+	defer center.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: center.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	got, err := app.ResolveRemoteRegistrationTarget("new@example.com")
+	if err != nil {
+		t.Fatalf("ResolveRemoteRegistrationTarget() error = %v", err)
+	}
+	if got.HubURL != hub.URL || got.HubID != "hub-mypapers" || got.TenantID != "" || got.Method != "mixed" {
 		t.Fatalf("resolved target = %#v", got)
 	}
 }
@@ -542,6 +678,119 @@ func TestSendRemoteRegistrationSMSPreservesErrorCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "PHONE_ALREADY_REGISTERED") {
 		t.Fatalf("error = %v, want PHONE_ALREADY_REGISTERED", err)
+	}
+}
+
+func TestReferralRegistrationPhoneRequestsUseOnlyOpaqueSessionHeaders(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("X-MaClaw-Referral-Session") != "desktop-session" || r.Header.Get("X-MaClaw-Referral-Tenant") != "tenant-referral" {
+			t.Fatalf("referral headers session=%q tenant=%q", r.Header.Get("X-MaClaw-Referral-Session"), r.Header.Get("X-MaClaw-Referral-Tenant"))
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/public/referral-registration/phone/send-code":
+			if payload["phone"] != "19900001111" || len(payload) != 1 {
+				t.Fatalf("send payload=%#v", payload)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"tenant_id":"tenant-referral","code_length":6}`))
+		case "/api/public/referral-registration/phone/register":
+			if payload["phone"] != "19900001111" || payload["verify_code"] != "123456" || len(payload) != 2 {
+				t.Fatalf("register payload=%#v", payload)
+			}
+			_, _ = w.Write([]byte(`{"registered":true}`))
+		default:
+			t.Fatalf("unexpected referral endpoint %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	app := &App{}
+	if _, err := app.SendReferralRegistrationSMS(server.URL, "199-0000 1111", "tenant-referral", "desktop-session"); err != nil {
+		t.Fatalf("send referral SMS: %v", err)
+	}
+	if err := app.RegisterReferralPhone(server.URL, "19900001111", "123456", "tenant-referral", "desktop-session"); err != nil {
+		t.Fatalf("register referral phone: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d", calls)
+	}
+}
+
+func TestActivateReferralRemoteEmailUsesOnlyOpaqueSessionHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/public/referral-registration/email/enroll" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-MaClaw-Referral-Session") != "desktop-email-session" || r.Header.Get("X-MaClaw-Referral-Tenant") != "tenant-referral" {
+			t.Fatalf("referral headers session=%q tenant=%q", r.Header.Get("X-MaClaw-Referral-Session"), r.Header.Get("X-MaClaw-Referral-Tenant"))
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if payload["email"] != "new-user@example.com" || payload["client_id"] == "" || payload["machine_name"] == "" {
+			t.Fatalf("payload=%#v", payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"active","tenant_id":"tenant-referral","tenant_name":"Referral Tenant","user_id":"user-referral","email":"new-user@example.com","sn":"SN-referral","machine_id":"machine-referral","machine_token":"token-referral","viewer_token":"viewer-referral"}`))
+	}))
+	defer server.Close()
+	configDir := t.TempDir()
+	t.Setenv("MACLAW_CONFIG_DIR", configDir)
+	app := &App{remoteActivationBackgroundDisabled: true}
+	result, err := app.ActivateReferralRemoteEmail(server.URL, "new-user@example.com", "tenant-referral", "desktop-email-session")
+	if err != nil {
+		t.Fatalf("ActivateReferralRemoteEmail() error = %v", err)
+	}
+	if result.MachineID != "machine-referral" || result.TenantID != "tenant-referral" || result.ViewerToken != "viewer-referral" {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestGetReferralRegistrationStatusUsesOnlyOpaqueSessionHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/public/referral-registration/status" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-MaClaw-Referral-Session"); got != "desktop-session" {
+			t.Fatalf("session header=%q", got)
+		}
+		if got := r.Header.Get("X-MaClaw-Referral-Tenant"); got != "tenant-referral" {
+			t.Fatalf("tenant header=%q", got)
+		}
+		if r.URL.RawQuery != "" || r.Header.Get("Cookie") != "" {
+			t.Fatalf("status request must not carry referral or browser data: query=%q cookie=%q", r.URL.RawQuery, r.Header.Get("Cookie"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"registration_status":"registered_rewarded","registration_method":"email"}`))
+	}))
+	defer server.Close()
+	app := &App{}
+	status, err := app.GetReferralRegistrationStatus(server.URL, "tenant-referral", "desktop-session")
+	if err != nil {
+		t.Fatalf("get status: %v", err)
+	}
+	if status.RegistrationStatus != "registered_rewarded" || status.RegistrationMethod != "email" {
+		t.Fatalf("unexpected status %#v", status)
+	}
+}
+
+func TestClaimReferralHandoffRejectsUnsafeHubURLBeforeNetwork(t *testing.T) {
+	app := &App{}
+	for _, raw := range []string{
+		"http://hub.example.test",
+		"https://user:pass@hub.example.test",
+		"https://hub.example.test/redirect",
+		"https://hub.example.test?next=evil",
+	} {
+		if _, err := app.ClaimReferralHandoff(raw, "0123456789abcdef"); err == nil {
+			t.Fatalf("unsafe hub URL %q was accepted", raw)
+		}
 	}
 }
 
@@ -1138,6 +1387,32 @@ func writeTestHubCentersList(w http.ResponseWriter, centerURL string) {
 		OK   bool     `json:"ok"`
 		URLs []string `json:"urls"`
 	}{OK: true, URLs: []string{centerURL}})
+}
+
+func TestActivateRemoteEmail_InvitationOnlyBypassUsesResolvedDirectHub(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var enrollPath string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enrollPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "approved", "email": "invite@example.com", "machine_id": "m_invite", "machine_token": "mt_invite",
+		})
+	}))
+	defer hub.Close()
+
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	if _, err := app.ActivateRemoteEmail(hub.URL, "invite@example.com", "", "INVITE-1", "", "hub-invite"); err != nil {
+		t.Fatalf("ActivateRemoteEmail: %v", err)
+	}
+	if enrollPath != "/api/enroll/email/start-with-invitation" {
+		t.Fatalf("enrollment path = %q, want invitation-only endpoint", enrollPath)
+	}
 }
 
 func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {

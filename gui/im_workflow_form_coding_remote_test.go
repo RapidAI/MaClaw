@@ -54,7 +54,7 @@ func TestCodingTemplateLocalRemoteVariants(t *testing.T) {
 
 func TestResolveCodingWorkflowRemoteFormData(t *testing.T) {
 	hosts := []corelib.SSHHostEntry{
-		{Label: "gpu-box", Host: "192.168.1.10", User: "root", Port: 2222, Password: "secret", KeyPath: ""},
+		{Label: "gpu-box", Host: "192.168.1.10", User: "root", Port: 2222, Password: "secret", KeyPath: "", HostKeyFingerprint: "SHA256:profile-pin"},
 	}
 
 	// Local variant is a no-op.
@@ -108,6 +108,68 @@ func TestResolveCodingWorkflowRemoteFormData(t *testing.T) {
 	}
 	if fmt.Sprint(ok["ssh_password"]) != "secret" {
 		t.Fatalf("profile password should be copied for session vault, got %v", ok["ssh_password"])
+	}
+	if got := fmt.Sprint(ok[workflowFormSSHHostKeyFingerprintField]); got != "SHA256:profile-pin" {
+		t.Fatalf("profile host-key fingerprint = %q", got)
+	}
+	if creds := captureCodingWorkflowRemoteCreds(ok); creds.HostKeyFingerprint != "SHA256:profile-pin" {
+		t.Fatalf("captured profile pin = %q", creds.HostKeyFingerprint)
+	}
+	// Saved profiles must ignore coordinates that a browser retained while the
+	// user switched away from the new-connection form variant.
+	profileWithStaleCoords := map[string]interface{}{
+		"_agent_view_variant":                  "remote",
+		"ssh_profile":                          "gpu-box",
+		"remote_workdir":                       "/home/root/app",
+		"remote_host":                          "other.example.test",
+		"remote_user":                          "other",
+		"remote_port":                          2200,
+		"ssh_password":                         "session-override",
+		workflowFormSSHHostKeyFingerprintField: "SHA256:stale",
+	}
+	if err := resolveCodingWorkflowRemoteFormData(hosts, profileWithStaleCoords); err != nil {
+		t.Fatalf("stale profile coordinates resolve: %v", err)
+	}
+	if got := formDataTrimString(profileWithStaleCoords, workflowFormRemoteHostField); got != "192.168.1.10" {
+		t.Fatalf("saved profile host = %q", got)
+	}
+	if got := formDataTrimString(profileWithStaleCoords, workflowFormRemoteUserField); got != "root" {
+		t.Fatalf("saved profile user = %q", got)
+	}
+	if got := formDataPort(profileWithStaleCoords, workflowFormRemotePortField, 0); got != 2222 {
+		t.Fatalf("saved profile port = %d", got)
+	}
+	if got := formDataTrimString(profileWithStaleCoords, workflowFormSSHHostKeyFingerprintField); got != "SHA256:profile-pin" {
+		t.Fatalf("saved profile pin = %q", got)
+	}
+	// A stale hidden pin must not survive profile switching. The saved profile
+	// owns its host-key identity, including the valid case where it has no pin.
+	noPinProfile := map[string]interface{}{
+		"_agent_view_variant":                  "remote",
+		"ssh_profile":                          "no-pin",
+		"remote_workdir":                       "/home/root/app",
+		workflowFormSSHHostKeyFingerprintField: "SHA256:stale",
+	}
+	if err := resolveCodingWorkflowRemoteFormData(append(hosts, corelib.SSHHostEntry{Label: "no-pin", Host: "192.168.1.11", User: "root"}), noPinProfile); err != nil {
+		t.Fatalf("no-pin profile resolve: %v", err)
+	}
+	if _, ok := noPinProfile[workflowFormSSHHostKeyFingerprintField]; ok {
+		t.Fatalf("stale profile pin survived: %#v", noPinProfile)
+	}
+	newWithStalePin := map[string]interface{}{
+		"_agent_view_variant":                  "remote",
+		"ssh_profile":                          workflowFormSSHProfileNew,
+		"remote_workdir":                       "/tmp/app",
+		"remote_host":                          "10.0.0.1",
+		"remote_user":                          "ubuntu",
+		"ssh_password":                         "p@ss",
+		workflowFormSSHHostKeyFingerprintField: "SHA256:stale",
+	}
+	if err := resolveCodingWorkflowRemoteFormData(nil, newWithStalePin); err != nil {
+		t.Fatalf("new connection with stale pin: %v", err)
+	}
+	if _, ok := newWithStalePin[workflowFormSSHHostKeyFingerprintField]; ok {
+		t.Fatalf("stale new-connection pin survived: %#v", newWithStalePin)
 	}
 
 	// New connection requires host/user and password or key.

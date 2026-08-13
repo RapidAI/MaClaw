@@ -384,11 +384,43 @@ func buildUnfinishedSlotResumeContextWithLang(slot *agent.UnfinishedTaskSlot, la
 			b.WriteString("\n")
 		}
 	}
+	// Crash recovery metadata is evidence, not a replay plan. Put the safety
+	// boundary in the model context as well as the GUI card: a recovered history
+	// may not contain the unpaired tool call that was in flight when the process
+	// exited, so relying only on the transcript would hide that uncertainty.
+	if toolName := safeRecoveryToolName(slot.LastToolName); toolName != "" {
+		b.WriteString(unfinishedSlotText(lang,
+			"- Interrupted tool evidence: `"+toolName+"` may have started, but its final state is unknown. Do not repeat it merely because this task was recovered.\n",
+			"- 中断工具证据：`"+toolName+"` 可能已开始执行，但最终状态未知。不要因为任务已恢复而直接重复该工具。\n",
+			"- 中斷工具證據：`"+toolName+"` 可能已開始執行，但最終狀態未知。不要因為任務已恢復而直接重複該工具。\n"))
+	}
+	if strings.TrimSpace(slot.RecoveryMode) == "requires_review" {
+		b.WriteString(unfinishedSlotText(lang,
+			"- Recovery safety: prior work may already have changed the workspace or an external system. Inspect the current state before attempting a new mutation or external action.\n",
+			"- 恢复安全：此前工作可能已经修改了工作区或外部系统。再次执行本地修改或外部操作前，先检查当前状态。\n",
+			"- 恢復安全：此前工作可能已經修改了工作區或外部系統。再次執行本機修改或外部操作前，先檢查目前狀態。\n"))
+	}
 	b.WriteString(unfinishedSlotText(lang,
 		"User explicitly chose to continue this unfinished task. Continue only that task; do not mix in other old tasks.\n",
 		"\u7528\u6237\u5df2\u663e\u5f0f\u9009\u62e9\u7ee7\u7eed\u8fd9\u4e2a\u672a\u5b8c\u6210\u4efb\u52a1\u3002\u8bf7\u4ec5\u56f4\u7ed5\u8be5\u4efb\u52a1\u7ee7\u7eed\uff0c\u4e0d\u8981\u6df7\u5165\u5176\u4ed6\u65e7\u4efb\u52a1\u3002\n",
 		"\u4f7f\u7528\u8005\u5df2\u986f\u5f0f\u9078\u64c7\u7e7c\u7e8c\u9019\u500b\u672a\u5b8c\u6210\u4efb\u52d9\u3002\u8acb\u50c5\u570d\u7e5e\u8a72\u4efb\u52d9\u7e7c\u7e8c\uff0c\u4e0d\u8981\u6df7\u5165\u5176\u4ed6\u820a\u4efb\u52d9\u3002\n"))
 	return b.String()
+}
+
+// safeRecoveryToolName prevents provider-controlled tool names from becoming
+// arbitrary instruction text when recovery evidence is appended to the system
+// prompt. Tool names are identifiers, so retain only a small identifier set.
+func safeRecoveryToolName(raw string) string {
+	name := strings.TrimSpace(raw)
+	if name == "" || len(name) > 80 {
+		return ""
+	}
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' {
+			return ""
+		}
+	}
+	return name
 }
 
 func buildResumeSlotActions(slot *agent.UnfinishedTaskSlot) []IMResponseAction {

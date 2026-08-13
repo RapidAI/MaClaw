@@ -31,6 +31,15 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 	brandName := brand.Current().DisplayName
 
 	serve := func(w http.ResponseWriter, r *http.Request) {
+		// The admin console's role-based navigation is client-side. Never allow a
+		// shared intermediary cache to serve an older JavaScript bundle after an
+		// authorization UI change: doing so can temporarily expose tenant-only
+		// navigation to a global administrator. The existing no-store policy for
+		// JS/CSS must also apply to HEAD responses, which net/http dispatches to
+		// the matching GET route.
+		if r.Method == http.MethodHead {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
 		relPath := strings.TrimPrefix(r.URL.Path, routePrefix)
 		relPath = strings.TrimPrefix(relPath, "/")
 
@@ -86,8 +95,10 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 		_, _ = w.Write([]byte(html))
 	}
 
-	mux.HandleFunc("GET "+routePrefix, serve)
-	mux.HandleFunc("GET "+routePrefix+"/{rest...}", serve)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		mux.HandleFunc(method+" "+routePrefix, serve)
+		mux.HandleFunc(method+" "+routePrefix+"/{rest...}", serve)
+	}
 }
 
 func escapeInlineScript(js string) string {

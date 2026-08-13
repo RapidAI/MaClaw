@@ -8,10 +8,17 @@
   "frontend:dev:serverUrl": "auto",
   "info": {
     "productName": "MaClaw",
-    "productVersion": "7.0.0",
+    "productVersion": "7.1.0",
     "companyName": "RapidAI",
     "copyright": "Copyright (C) 2026 RapidAI",
-    "comments": "MaClaw - Master your code, seize the machine."
+    "comments": "MaClaw - Master your code, seize the machine.",
+    "protocols": [
+      {
+        "scheme": "maclaw",
+        "description": "MaClaw invitation onboarding link",
+        "role": "Editor"
+      }
+    ]
   },
   "author": {
     "name": "mayong",

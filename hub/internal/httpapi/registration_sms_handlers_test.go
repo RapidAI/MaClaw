@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -691,13 +693,13 @@ func TestRegistrationContactEmailSendWithoutMailerDoesNotReserveCode(t *testing.
 		req := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/send-code", body)
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
-		if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), "MAIL_NOT_CONFIGURED") {
+		if rr.Code != http.StatusServiceUnavailable || !strings.Contains(rr.Body.String(), "MAIL_NOT_CONFIGURED") {
 			t.Fatalf("attempt %d status = %d body=%s", i+1, rr.Code, rr.Body.String())
 		}
 	}
 }
 
-func TestRegistrationContactEmailSendRejectsTenantDomainMismatch(t *testing.T) {
+func TestRegistrationContactEmailSendAllowsVerifiedUserToAddExternalEmail(t *testing.T) {
 	identity, st, _ := newPreservationTestIdentity(t)
 	identity.SetTenantRepository(st.Tenants)
 	ctx := context.Background()
@@ -707,7 +709,7 @@ func TestRegistrationContactEmailSendRejectsTenantDomainMismatch(t *testing.T) {
 	if !ok {
 		t.Fatal("tenant repository does not support settings updates")
 	}
-	if err := tenantSettings.UpdateSettings(ctx, store.DefaultTenantID, "Default Tenant", "qianxin.com", `{"email_domains":["qianxin.com"],"allow_user_registration":true}`); err != nil {
+	if err := tenantSettings.UpdateSettings(ctx, store.DefaultTenantID, "Default Tenant", "qianxin.com", `{"email_domains":["qianxin.com"],"allow_user_registration":true,"restrict_email_domains":true}`); err != nil {
 		t.Fatalf("update tenant settings: %v", err)
 	}
 	enrolled, err := identity.StartEnrollment(auth.WithTenant(ctx, store.DefaultTenantID), "owner@qianxin.com", "desk", "windows", "client-1", "")
@@ -720,8 +722,65 @@ func TestRegistrationContactEmailSendRejectsTenantDomainMismatch(t *testing.T) {
 	rr := httptest.NewRecorder()
 	RegistrationContactSendCodeHandler(identity, nil, nil, nil).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "EMAIL_DOMAIN_NOT_ALLOWED") {
+	if rr.Code != http.StatusServiceUnavailable || !strings.Contains(rr.Body.String(), "MAIL_NOT_CONFIGURED") {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegistrationContactEmailFailedResendRestoresPreviousCode(t *testing.T) {
+	identity, _, _ := newPreservationTestIdentity(t)
+	enrolled, err := identity.StartEnrollment(auth.WithTenant(context.Background(), store.DefaultTenantID), "owner@example.com", "desk", "windows", "client-1", "")
+	if err != nil {
+		t.Fatalf("start enrollment: %v", err)
+	}
+	const email = "profile-email@example.com"
+	key := registrationContactEmailKey(enrolled.UserID, email)
+	deleteVerifyCode(store.DefaultTenantID, key)
+	t.Cleanup(func() { deleteVerifyCode(store.DefaultTenantID, key) })
+
+	verifyMu.Lock()
+	verifyCodes[verifyCodeKey(store.DefaultTenantID, key)] = &verifyEntry{
+		Code: "123456", ExpiresAt: time.Now().Add(3 * time.Minute), SentAt: time.Now().Add(-2 * time.Minute), Attempts: 1,
+	}
+	verifyMu.Unlock()
+
+	service := mail.New(config.Config{}, &testSystemSettingsRepo{})
+	body := bytes.NewBufferString(`{"kind":"email","email":"` + email + `","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/send-code", body)
+	rr := httptest.NewRecorder()
+	RegistrationContactSendCodeHandler(identity, service, nil, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable || !strings.Contains(rr.Body.String(), "MAIL_NOT_CONFIGURED") {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if ok, _ := consumeVerifyCode(store.DefaultTenantID, key, "123456"); !ok {
+		t.Fatal("previous delivered code should remain valid after resend delivery failure")
+	}
+}
+
+func TestRegistrationContactEmailVerifyPreservesCodeWhenRouteRejects(t *testing.T) {
+	identity, _, _ := newPreservationTestIdentity(t)
+	enrolled, err := identity.StartEnrollment(auth.WithTenant(context.Background(), store.DefaultTenantID), "owner@example.com", "desk", "windows", "client-1", "")
+	if err != nil {
+		t.Fatalf("start enrollment: %v", err)
+	}
+	const email = "routed-profile@example.com"
+	key := registrationContactEmailKey(enrolled.UserID, email)
+	deleteVerifyCode(store.DefaultTenantID, key)
+	if !storeVerifyCode(store.DefaultTenantID, key, "123456") {
+		t.Fatal("store verification code")
+	}
+	t.Cleanup(func() { deleteVerifyCode(store.DefaultTenantID, key) })
+
+	identity.SetUserRouteSyncer(&fakeRegistrationSMSRouteSyncer{allowed: false, targetHubID: "hub_other"})
+	body := bytes.NewBufferString(`{"kind":"email","email":"` + email + `","verify_code":"123456","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/verify", body)
+	rr := httptest.NewRecorder()
+	RegistrationContactVerifyHandler(identity, nil, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "EMAIL_ROUTED_TO_ANOTHER_HUB") {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if ok, _ := consumeVerifyCode(store.DefaultTenantID, key, "123456"); !ok {
+		t.Fatal("route rejection must not consume the verification code")
 	}
 }
 

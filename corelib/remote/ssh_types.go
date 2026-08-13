@@ -28,6 +28,10 @@ type SSHHostConfig struct {
 	// HostKeyFingerprint pins one SHA256 host-key fingerprint for callers that
 	// maintain a dedicated trust store.
 	HostKeyFingerprint string `json:"host_key_fingerprint,omitempty"`
+	// HostKeyFingerprintCapture receives the fingerprint presented by a server
+	// during this connection's SSH handshake. It is runtime-only and lets a
+	// caller establish a first-use pin without a second, unbound connection.
+	HostKeyFingerprintCapture func(string) `json:"-"`
 	// ConnectTimeout 连接超时，默认 10s。
 	ConnectTimeout time.Duration `json:"connect_timeout,omitempty"`
 	// KeepaliveInterval 心跳间隔，默认 15s（更快检测 NAT/防火墙断连与半开连接）。

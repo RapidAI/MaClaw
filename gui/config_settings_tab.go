@@ -24,7 +24,6 @@ var settingsTabFieldKeys = map[string][]string{
 		"show_workflow_entry",
 		"show_utilities_entry",
 		"survey_enabled",
-		"workflow_enabled",
 		"skill_evolution_enabled",
 		"llm_trajectory_logging",
 		"log_detail_enabled",

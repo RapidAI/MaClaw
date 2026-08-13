@@ -189,6 +189,17 @@
           </div>
         </div>
       </section>
+      <section id="tab-industrymanagement" class="panel card">
+        <div class="head"><div><h3 id="industryManagementTitle">Industry Management</h3><div class="desc" id="industryManagementDesc">Create industries, freeze approved expert packages as assets, and assign them to Hub tenants.</div></div><button class="btn-ghost" type="button" onclick="loadIndustryManagement(true)" id="industryManagementRefresh">Refresh</button></div>
+        <div id="industryManagementStatus" class="sm-status" aria-live="polite"></div>
+        <div class="grid2">
+          <div class="item"><div class="item-title" id="industryCreateTitle">Create industry</div><div class="grid2 section-gap"><div><label for="industryCreateCode" id="industryCreateCodeLabel">Code</label><input id="industryCreateCode" placeholder="e.g. finance"></div><div><label for="industryCreateName" id="industryCreateNameLabel">Name</label><input id="industryCreateName" placeholder="e.g. Financial services"></div></div><div class="grid2 stack-gap-sm"><div><label for="industryCreateIcon" id="industryCreateIconLabel">Icon</label><input id="industryCreateIcon" placeholder="🏦"></div><div><label for="industryCreateSort" id="industryCreateSortLabel">Order</label><input id="industryCreateSort" type="number" value="0"></div></div><div class="stack-gap-sm"><label for="industryCreateDescription" id="industryCreateDescriptionLabel">Description</label><textarea id="industryCreateDescription" rows="2"></textarea></div><div class="actions section-gap"><button class="btn-primary" type="button" onclick="createIndustryManagementIndustry()" id="industryCreateSave">Create industry</button></div></div>
+          <div class="item"><div class="item-title" id="industryEligibleTitle">Eligible marketplace experts</div><div class="item-meta" id="industryEligibleDesc">Only listings whose author permits platform distribution can be acquired.</div><div id="industryEligibleAssets" class="list section-gap" aria-live="polite"></div></div>
+        </div>
+        <div class="item section-gap-lg"><div class="head meta-spaced"><div><div class="item-title" id="industryListTitle">Industries</div><div class="item-meta" id="industryListDesc">Bind fixed assets and manage distribution status.</div></div></div><div id="industryManagementIndustries" class="list" aria-live="polite"></div></div>
+        <div class="item section-gap-lg"><div class="item-title" id="industryAssetsTitle">Acquired immutable assets</div><div class="item-meta" id="industryAssetsDesc">Revoking an asset removes it from every assigned tenant catalogue.</div><div id="industryAcquiredAssets" class="list section-gap" aria-live="polite"></div></div>
+        <div class="item section-gap-lg"><div class="item-title" id="industryAuditTitle">Recent industry audit</div><div id="industryAuditEvents" class="list section-gap" aria-live="polite"></div></div>
+      </section>
       <section id="tab-expertmarket" class="panel card">
         <div class="pet-admin-shell">
           <div class="head pet-admin-head"><div><h3 id="expertMarketAdminTitle">AI Expert Market</h3><div class="desc" id="expertMarketAdminDesc">Approval publishes immediately; unlist before deleting a listing.</div></div><div class="actions"><label class="pet-admin-filter-label" id="expertMarketAdminFilterLabel" for="expertMarketAdminStatus">Status</label><select id="expertMarketAdminStatus" onchange="loadExpertMarketAdmin(1)"><option value="">All statuses</option><option value="pending_review">Pending review</option><option value="listed">Listed</option><option value="unlisted">Unlisted</option><option value="rejected">Rejected</option><option value="deleted">Deleted</option></select><button class="btn-ghost" type="button" id="expertMarketAdminRefresh" onclick="loadExpertMarketAdmin()">Refresh</button></div></div>
@@ -289,6 +300,7 @@
   <script src="/admin/assets/js/skillmarket-admin.js?v=tab-autoload-20260614-3" defer></script>
   <script src="/admin/assets/js/petstore-admin.js?v=pet-store-admin-20260801-2" defer></script>
   <script src="/admin/assets/js/expertmarket-admin.js?v=expert-market-admin-20260804-3" defer></script>
+  <script src="/admin/assets/js/industry-management-admin.js?v=industry-management-i18n-20260814-7" defer></script>
   <script src="/admin/assets/js/ha-news-admin.js?v=tab-autoload-20260614-2" defer></script>
   <script src="/admin/assets/js/llm-service-tab.js?v=tab-autoload-20260614-2" defer></script>
   <script src="/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622-2" defer></script>

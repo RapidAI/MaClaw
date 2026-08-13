@@ -562,6 +562,58 @@ func TestTenantCreateCanDisableUserRegistration(t *testing.T) {
 	}
 }
 
+func TestTenantCreateKeepsEmailDomainsOpenUnlessRestrictionIsExplicit(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{}}
+	rec := httptest.NewRecorder()
+	AdminTenantCreateHandler(repo, nil, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants", map[string]any{
+		"name":                   "Public Email Corp",
+		"domains":                []string{"qianxin.com"},
+		"restrict_email_domains": false,
+	}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("tenant create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, tenant := range repo.items {
+		if tenant == nil || strings.Contains(tenant.SettingsJSON, `"restrict_email_domains":true`) {
+			t.Fatalf("tenant should not implicitly restrict email domains: %+v", tenant)
+		}
+		return
+	}
+	t.Fatal("created tenant missing")
+}
+
+func TestTenantCreateCanExplicitlyRestrictEmailDomains(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{}}
+	rec := httptest.NewRecorder()
+	AdminTenantCreateHandler(repo, nil, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants", map[string]any{
+		"name":                   "Restricted Email Corp",
+		"domains":                []string{"qianxin.com"},
+		"restrict_email_domains": true,
+	}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("tenant create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, tenant := range repo.items {
+		if tenant == nil || !strings.Contains(tenant.SettingsJSON, `"restrict_email_domains":true`) {
+			t.Fatalf("tenant should explicitly restrict email domains: %+v", tenant)
+		}
+		return
+	}
+	t.Fatal("created tenant missing")
+}
+
+func TestTenantCreateRejectsDomainRestrictionWithoutDomains(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{}}
+	rec := httptest.NewRecorder()
+	AdminTenantCreateHandler(repo, nil, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants", map[string]any{
+		"name":                   "Invalid Restricted Corp",
+		"restrict_email_domains": true,
+	}))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "EMAIL_DOMAIN_RESTRICTION_REQUIRES_DOMAIN") {
+		t.Fatalf("tenant create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestTenantDTORegistrationDefaultsOpen(t *testing.T) {
 	tenant := &store.Tenant{ID: "tenant_open", Slug: "tenant-open", Name: "Open", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	dto := tenantDTO(tenant)
@@ -574,6 +626,26 @@ func TestTenantRegistrationSettingPrefersExplicitAllowFlag(t *testing.T) {
 	tenant := &store.Tenant{ID: "tenant_open", SettingsJSON: `{"allow_user_registration":true,"registration_enabled":false}`}
 	if !tenantAllowsUserRegistration(tenant) {
 		t.Fatal("expected allow_user_registration to override legacy registration_enabled")
+	}
+}
+
+func TestTenantLogoURLIsValidatedAndExposed(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	admin := &store.AdminUser{Scope: "tenant", TenantID: "tenant_a", ID: "tenant-admin"}
+	for _, logoURL := range []string{"http://cdn.example.com/logo.svg", "https://user:pass@cdn.example.com/logo.svg", "https://cdn.example.com/" + strings.Repeat("x", 2050)} {
+		rec := httptest.NewRecorder()
+		AdminTenantDomainsUpdateHandler(repo, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{"logo_url": logoURL}, admin, "tenant_a"))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "INVALID_TENANT_LOGO_URL") {
+			t.Fatalf("logo %q status=%d body=%s", logoURL, rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	AdminTenantDomainsUpdateHandler(repo, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{"logo_url": "https://cdn.example.com/acme-logo.svg"}, admin, "tenant_a"))
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"logo_url":"https://cdn.example.com/acme-logo.svg"`)) {
+		t.Fatalf("valid logo update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := tenantLogoURL(repo.items["tenant_a"]); got != "https://cdn.example.com/acme-logo.svg" {
+		t.Fatalf("stored logo=%q", got)
 	}
 }
 
@@ -619,6 +691,48 @@ func TestTenantDomainsUpdateCanToggleUserRegistration(t *testing.T) {
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte(`"allow_user_registration":false`)) {
 		t.Fatalf("response missing registration setting: %s", rec.Body.String())
+	}
+}
+
+func TestTenantDomainsUpdateCanToggleEmailDomainRestriction(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", SettingsJSON: `{"email_domains":["tenant-a.example.com"]}`, CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	admin := &store.AdminUser{Scope: "tenant", TenantID: "tenant_a", ID: "tenant-admin"}
+	rec := httptest.NewRecorder()
+
+	AdminTenantDomainsUpdateHandler(repo, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{
+		"domains":                []string{"tenant-a.example.com"},
+		"restrict_email_domains": true,
+	}, admin, "tenant_a"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable restriction code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if tenant := repo.items["tenant_a"]; tenant == nil || !strings.Contains(tenant.SettingsJSON, `"restrict_email_domains":true`) {
+		t.Fatalf("restriction was not enabled: %#v", tenant)
+	}
+
+	rec = httptest.NewRecorder()
+	AdminTenantDomainsUpdateHandler(repo, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{
+		"domains":                []string{"tenant-a.example.com"},
+		"restrict_email_domains": false,
+	}, admin, "tenant_a"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("disable restriction code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if tenant := repo.items["tenant_a"]; tenant == nil || strings.Contains(tenant.SettingsJSON, `"restrict_email_domains":true`) {
+		t.Fatalf("restriction was not disabled: %#v", tenant)
+	}
+}
+
+func TestTenantDomainsUpdateRejectsRestrictedTenantWithoutDomains(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", SettingsJSON: `{"email_domains":["tenant-a.example.com"],"restrict_email_domains":true}`, CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	admin := &store.AdminUser{Scope: "tenant", TenantID: "tenant_a", ID: "tenant-admin"}
+	rec := httptest.NewRecorder()
+
+	AdminTenantDomainsUpdateHandler(repo, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{
+		"domains": []string{},
+	}, admin, "tenant_a"))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "EMAIL_DOMAIN_RESTRICTION_REQUIRES_DOMAIN") {
+		t.Fatalf("restricted tenant domain removal code=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

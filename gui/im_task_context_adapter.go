@@ -124,7 +124,12 @@ func (h *IMMessageHandler) resolveTaskContext(
 		ExplicitNewTask:               explicitNewTask,
 	}
 
-	decision := h.taskContextManager.Resolve(input)
+	// Task switching is useful context hygiene, but it is not an execution
+	// authority. Do not place its auxiliary LLM classification ahead of the
+	// main Agent's first request: remote reasoning models can take seconds even
+	// for a one-word "continue/new" answer. Explicit and structural boundaries
+	// still apply; ambiguity deliberately preserves context for this turn.
+	decision := h.taskContextManager.ResolveFast(input)
 
 	log.Printf("[TaskContext] user=%s action=%s reason=%q source=%s historyLen=%d archivedLen=%d",
 		userID, decision.Action, decision.Reason, decision.Source, len(history), len(archived))

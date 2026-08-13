@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -45,16 +45,16 @@ type pluginMarketplaceStore struct {
 }
 
 type pluginMarketplaceEntry struct {
-	Name        string                `json:"name"`
-	Source      string                `json:"source"` // owner/repo, git URL, or local path
-	Repo        string                `json:"repo,omitempty"`
-	Branch      string                `json:"branch,omitempty"`
-	ManifestURL string                `json:"manifest_url,omitempty"`
-	DisplayName string                `json:"display_name,omitempty"`
-	Description string                `json:"description,omitempty"`
-	AddedAt     string                `json:"added_at"`
-	UpdatedAt   string                `json:"updated_at,omitempty"`
-	Plugins     []marketplacePlugin   `json:"plugins,omitempty"`
+	Name        string              `json:"name"`
+	Source      string              `json:"source"` // owner/repo, git URL, or local path
+	Repo        string              `json:"repo,omitempty"`
+	Branch      string              `json:"branch,omitempty"`
+	ManifestURL string              `json:"manifest_url,omitempty"`
+	DisplayName string              `json:"display_name,omitempty"`
+	Description string              `json:"description,omitempty"`
+	AddedAt     string              `json:"added_at"`
+	UpdatedAt   string              `json:"updated_at,omitempty"`
+	Plugins     []marketplacePlugin `json:"plugins,omitempty"`
 }
 
 type marketplacePlugin struct {
@@ -609,55 +609,14 @@ func downloadGitHubArchive(ctx context.Context, owner, repo, preferredBranch, de
 }
 
 func unzipTo(zipPath, destDir string) error {
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	destAbs, err := filepath.Abs(destDir)
-	if err != nil {
-		return err
-	}
-	destAbs = filepath.Clean(destAbs)
-
-	for _, f := range r.File {
-		// Reject absolute paths and traversal.
-		name := filepath.ToSlash(f.Name)
-		name = strings.TrimPrefix(name, "/")
-		if name == "" || strings.Contains(name, "..") {
-			continue
-		}
-		target := filepath.Join(destAbs, filepath.FromSlash(name))
-		target = filepath.Clean(target)
-		rel, relErr := filepath.Rel(destAbs, target)
-		if relErr != nil || strings.HasPrefix(rel, "..") {
-			continue
-		}
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode().Perm())
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		_, copyErr := io.Copy(out, io.LimitReader(rc, 32<<20))
-		out.Close()
-		rc.Close()
-		if copyErr != nil {
-			return copyErr
-		}
+	result := archiveutil.ExtractToDirectory(zipPath, destDir, archiveutil.Limits{
+		MaxInputBytes: 64 << 20,
+		MaxFileBytes:  32 << 20,
+		MaxTotalBytes: 256 << 20,
+		MaxFiles:      4_096,
+	})
+	if !result.OK {
+		return fmt.Errorf("extract marketplace archive: %s: %s", result.Code, result.Message)
 	}
 	return nil
 }

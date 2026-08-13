@@ -5,6 +5,7 @@ import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { ExpertDefinition } from "./expertTypes";
 import { expertTabId, expertWelcomeMessageText } from "./expertTypes";
 import { expertSessionKey } from "./aiAssistantPanelSessionUtils";
+import { StartWorkflowTemplateInTab } from "../../../wailsjs/go/main/App";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { isLocalHumanParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
@@ -16,6 +17,12 @@ export type PendingProjectTabOpen = CodingTaskLaunch;
 /** Pending expert tab open request (e.g. clicking an expert card on the utilities page). */
 export interface PendingExpertOpen {
     expert: ExpertDefinition;
+}
+
+/** Receipt returned after a queued project-tab request has been handled. */
+export interface PendingProjectTabOpenResult {
+    outcome: "opened" | "rejected";
+    launchId?: string;
 }
 
 export interface PendingHistoryDiscussionOpen {
@@ -102,6 +109,21 @@ function newTaskContextMessage(
         timestamp: Date.now(),
     };
 }
+
+function workflowStartFailureMessage(lang?: string) {
+    return {
+        id: `workflow-start-error-${Date.now()}`,
+        role: "assistant" as const,
+        content: textForPendingTabLang(
+            lang,
+            "This workflow could not be started. Please try again.",
+            "暂时无法启动此工作流，请重试。",
+            "暫時無法啟動此工作流，請重試。",
+        ),
+        timestamp: Date.now(),
+    };
+}
+
 function looksLikeRawDiscussionTitle(value: string): boolean {
     return /^(disc|discussion|consultation|session)[-_][A-Za-z0-9-]+$|^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -129,11 +151,13 @@ interface PendingAssistantTabOpenOptions {
     pendingHistoryDiscussionOpen?: PendingHistoryDiscussionOpen | null;
     onPendingHistoryDiscussionOpenHandled?: () => void;
     pendingProjectTabOpen?: PendingProjectTabOpen | null;
-    onPendingProjectTabOpenHandled?: () => void;
+    onPendingProjectTabOpenHandled?: (result: PendingProjectTabOpenResult) => void;
     pendingExpertOpen?: PendingExpertOpen | null;
     onPendingExpertOpenHandled?: () => void;
     /** Persist the expert in task management before its tab is opened. */
     onEnsureExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
+    /** Persist a non-main assistant tab before it is opened. */
+    onEnsureAssistantTabTask?: (tabType: string, tabIdentity: string, title: string, projectPath?: string) => Promise<void> | void;
 }
 
 export function usePendingAssistantTabOpen({
@@ -157,8 +181,9 @@ export function usePendingAssistantTabOpen({
     pendingExpertOpen,
     onPendingExpertOpenHandled,
     onEnsureExpertTask,
+    onEnsureAssistantTabTask,
 }: PendingAssistantTabOpenOptions) {
-    const openHistoryDiscussion = useCallback((discussion: PendingHistoryDiscussionOpen) => {
+    const openHistoryDiscussion = useCallback(async (discussion: PendingHistoryDiscussionOpen) => {
         const discussionId = String(discussion?.id || "").trim();
         if (!discussionId) return;
 
@@ -179,7 +204,10 @@ export function usePendingAssistantTabOpen({
             });
         };
 
-        // First prefer any already-open tab for this discussion/session. History
+        // First prefer any already-open tab for this discussion/session. A tab
+        // that already exists was previously registered, so do not wait for a
+        // redundant task-store call before focusing it.
+        // History
         // rows can represent active, read-only, or invited conversations, but a
         // double-click should focus the live tab when it is already present.
         if (activateTab && getTabList) {
@@ -210,41 +238,63 @@ export function usePendingAssistantTabOpen({
 
         const title = readableHistoryDiscussionTitle(discussion, discussionId, lang);
         const role = discussion?.local_relation || discussion?.role;
+        // A discussion may render as a VE tab when it is one-to-one, or fall
+        // back to a group tab when the VE tab cannot be reused. Its discussion
+        // id is therefore the only stable task identity across both outcomes.
+        const singleVE = !readOnly ? singlePendingParticipantId(discussion) : "";
+
+        try {
+            await Promise.resolve(onEnsureAssistantTabTask?.("discussion", discussionId, title));
+        } catch (error) {
+            console.error("[task_management] create discussion assistant task failed:", error);
+            return;
+        }
 
         // For continuable 1:1 discussions (non-read-only with a single VE participant),
         // open as a live VE tab so the full-featured input area is rendered instead of
         // the simplified history textarea. This matches the user expectation that
         // "我发起 - 可继续讨论" sessions behave identically to active sessions.
-        if (!readOnly) {
-            const singleVE = singlePendingParticipantId(discussion);
-            if (singleVE) {
-                const veTab = createVETab(singleVE, title, discussionId, undefined, undefined, undefined, { allowIdentityReuse: false });
-                if (veTab) return;
+        if (singleVE) {
+            const veTab = createVETab(singleVE, title, discussionId, undefined, undefined, undefined, { allowIdentityReuse: false });
+            if (veTab) return;
                 // Tab limit reached — fall through to createGroupTab as degraded fallback.
-            }
         }
 
         createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role, groupTitle: title });
-    }, [activateTab, createGroupTab, createVETab, getTabList, getTabState, lang, saveTabState]);
+    }, [activateTab, createGroupTab, createVETab, getTabList, getTabState, lang, onEnsureAssistantTabTask, saveTabState]);
 
     useEffect(() => {
         if (!pendingVEOpen) return;
         const participantId = String(pendingVEOpen.machine_id || pendingVEOpen.id || '').trim();
-        createVETab(
-            participantId || pendingVEOpen.id,
+        if (!participantId) {
+            onPendingVEOpenHandled?.();
+            return;
+        }
+        const title = String(pendingVEOpen.name || participantId || pendingVEOpen.id).trim();
+        let cancelled = false;
+        void Promise.resolve(onEnsureAssistantTabTask?.("ve", participantId, title)).then(() => {
+            if (cancelled) return;
+            createVETab(
+            participantId,
             pendingVEOpen.name,
             undefined,
             pendingVEOpen.online_status,
             pendingVEOpen.avatar_data_url,
             pendingVEOpen.skill_description,
-        );
-        onPendingVEOpenHandled?.();
-    }, [createVETab, onPendingVEOpenHandled, pendingVEOpen]);
+            );
+        }).catch((error) => console.error("[task_management] create VE assistant task failed:", error)).finally(() => {
+            if (!cancelled) onPendingVEOpenHandled?.();
+        });
+        return () => { cancelled = true; };
+    }, [createVETab, onEnsureAssistantTabTask, onPendingVEOpenHandled, pendingVEOpen]);
 
     useEffect(() => {
         if (!pendingHistoryDiscussionOpen) return;
-        openHistoryDiscussion(pendingHistoryDiscussionOpen);
-        onPendingHistoryDiscussionOpenHandled?.();
+        let cancelled = false;
+        void openHistoryDiscussion(pendingHistoryDiscussionOpen).finally(() => {
+            if (!cancelled) onPendingHistoryDiscussionOpenHandled?.();
+        });
+        return () => { cancelled = true; };
     }, [onPendingHistoryDiscussionOpenHandled, openHistoryDiscussion, pendingHistoryDiscussionOpen]);
 
     // --- Project Tab: use refs to avoid stale closures in async operations ---
@@ -267,11 +317,9 @@ export function usePendingAssistantTabOpen({
     useEffect(() => {
         if (!pendingProjectTabOpen) return;
 
-        // Capture request data and clear pending state synchronously.
-        // The guard above prevents re-entry when pending becomes null.
-        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, imPlatform, imTargetUID, imIsGroup, newTaskContext } = pendingProjectTabOpen;
-        onProjectTabHandledRef.current?.();
-
+        // Capture request data synchronously. The parent clears the one-shot
+        // pending state through the receipt callback below.
+        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext } = pendingProjectTabOpen;
         // Check if the tab already exists in the tab list BEFORE creating it.
         // This is a synchronous read of tabStateRef — reliable for tabs that were
         // restored from localStorage (synchronous on mount) or from the backend
@@ -281,7 +329,13 @@ export function usePendingAssistantTabOpen({
         const tabExistedInList = hasProjectTabRef.current?.(projectPath) ?? false;
 
         const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect });
-        if (!tab) return;
+        if (!tab) {
+            onProjectTabHandledRef.current?.({ outcome: "rejected", launchId });
+            return;
+        }
+        // Report the synchronous tab-creation outcome before optional async send
+        // work, so callers can safely release their next queued launch.
+        onProjectTabHandledRef.current?.({ outcome: "opened", launchId });
         const initialState = getTabStateRef.current?.(tab.id);
         const existingHistory = Array.isArray(initialState?.history) ? initialState.history : [];
         const hasExistingConversation = existingHistory.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
@@ -340,6 +394,28 @@ export function usePendingAssistantTabOpen({
         });
 
         // Async operations use refs — no stale closure, no dependency churn.
+        if (workflowType) {
+            // A stale/replayed launch may focus a project tab that already
+            // exists. Starting its template again would duplicate a workflow
+            // inside the same session, so only start when this effect created
+            // a genuinely new tab.
+            if (tabExistedInList || hasExistingConversation) return;
+            // Scope all workflow events to this newly-created project tab.
+            void StartWorkflowTemplateInTab(workflowType, tab.projectPath || projectPath, tab.id)
+                .catch((error) => {
+                    console.warn("[usePendingAssistantTabOpen] workflow start failed", { workflowType, tabId: tab.id, error });
+                    const current = getTabStateRef.current?.(tab.id);
+                    if (!current) return;
+                    const history = Array.isArray(current?.history) ? current.history : [];
+                    saveTabStateRef.current?.(tab.id, {
+                        ...current,
+                        history: [...history, workflowStartFailureMessage(lang)],
+                        lastActiveAt: Date.now(),
+                    });
+                });
+            return;
+        }
+
         (async () => {
             if (!shouldAutoSend) return;
             const send = sendMessageRef.current;

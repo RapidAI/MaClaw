@@ -3,6 +3,7 @@ import type { AIExecutionProfile, AITab, AITabType, AITabState, AIAssistantPanel
 import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
 import { LoadProjectTabIndex, CloseAssistantTabSession, CreateProjectTabSession, SaveProjectTabConversation, LoadProjectTabConversation, ClearAIAssistantHistoryForSession } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { EVENT_PROJECT_TASK_RENAMED } from "../../constants/events";
 import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
@@ -79,6 +80,15 @@ interface BackendTabIndexEntry {
 
 function executionProfileForProjectMode(agentMode?: string): AIExecutionProfile {
     return agentMode === "coding_dev" || agentMode === "remote_coding_dev" ? "coding" : "none";
+}
+
+function projectTaskRenameEventInfo(data: unknown): { projectPath: string; title: string } {
+    const outer = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+    const payload = (outer.payload && typeof outer.payload === "object" ? outer.payload : outer) as Record<string, unknown>;
+    return {
+        projectPath: normalizeProjectSessionPath(String(payload.project_path || payload.projectPath || "")),
+        title: String(payload.name || payload.title || "").trim(),
+    };
 }
 
 function normalizeTabParticipantId(value: string | undefined): string {
@@ -220,6 +230,10 @@ export interface UseAITabManagerResult {
     upgradeVETabToGroup: (tabId: string, participants: string[], discussionId?: string, participantNames?: Record<string, string>, localParticipantIds?: string[]) => AITab | null;
     /** Rename a writable group tab locally. */
     renameGroupTab: (tabId: string, title: string) => AITab | null;
+    /** Rename every open project tab associated with a task path. */
+    renameProjectTabs: (projectPath: string, title: string) => void;
+    /** Rename the fixed local AI assistant tab. Pass an empty value to restore its localized default. */
+    renameLocalTab: (title: string) => AITab | null;
     /** Error message when max tabs exceeded (cleared after reading) */
     tabLimitError: string | null;
     /** Clear the tab limit error */
@@ -229,6 +243,25 @@ export interface UseAITabManagerResult {
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
 const PROJECT_TAB_HISTORY_STORAGE_KEY = "ai_assistant_project_tab_histories";
 const VE_TABS_STORAGE_KEY = "ai_assistant_ve_tabs";
+const LOCAL_TAB_CUSTOM_TITLE_STORAGE_KEY = "ai_assistant_local_tab_custom_title";
+
+function loadLocalTabCustomTitle(): string | undefined {
+    try {
+        const title = String(localStorage.getItem(LOCAL_TAB_CUSTOM_TITLE_STORAGE_KEY) || "").trim();
+        return title ? title.slice(0, 60) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function persistLocalTabCustomTitle(title: string | undefined) {
+    try {
+        if (title) localStorage.setItem(LOCAL_TAB_CUSTOM_TITLE_STORAGE_KEY, title);
+        else localStorage.removeItem(LOCAL_TAB_CUSTOM_TITLE_STORAGE_KEY);
+    } catch {
+        // localStorage unavailable
+    }
+}
 
 function isACPMirrorTab(tab: AITab): boolean {
     return typeof tab.sessionKey === "string" && tab.sessionKey.trim().startsWith("desktop-user:acp:");
@@ -518,6 +551,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // Backend tabs will be merged asynchronously via useEffect below.
         // Limit to 5 tabs to prevent tab bar overflow on startup.
         const initial = createInitialTabState(maxVETabs);
+        const localCustomTitle = loadLocalTabCustomTitle();
+        if (localCustomTitle) initial.tabs[0] = { ...initial.tabs[0], customTitle: localCustomTitle };
         const restored = loadPersistedProjectTabs();
         restoredProjectPathsRef.current = new Set(restored.map(t => normalizeProjectSessionPath(t.projectPath)).filter(Boolean));
         if (restored.length > 0) {
@@ -721,6 +756,27 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             else EventsOff("ve:discussion_rename");
             if (typeof offAny === "function") offAny();
             else EventsOff("ve-event");
+        };
+    }, [updateTabState]);
+
+    useEffect(() => {
+        const handleTaskRename = (data: unknown) => {
+            const { projectPath, title } = projectTaskRenameEventInfo(data);
+            if (!projectPath || !title) return;
+            updateTabState(prev => {
+                let changed = false;
+                const tabs = prev.tabs.map(tab => {
+                    if (tab.type !== "project" || normalizeProjectSessionPath(tab.projectPath) !== projectPath || tab.title === title) return tab;
+                    changed = true;
+                    return { ...tab, title };
+                });
+                return changed ? { ...prev, tabs } : prev;
+            });
+        };
+        const off = EventsOn(EVENT_PROJECT_TASK_RENAMED, handleTaskRename);
+        return () => {
+            if (typeof off === "function") off();
+            else EventsOff(EVENT_PROJECT_TASK_RENAMED);
         };
     }, [updateTabState]);
 
@@ -1089,7 +1145,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 return Promise.resolve();
             }
             return CreateProjectTabSession(tabId, projectPath)
-                .then(() => options?.onSessionReady?.(newTab))
+                .then(() => {
+                    options?.onSessionReady?.(newTab);
+                })
                 .catch(() => {});
         };
         if (pendingClose) pendingClose.finally(register);
@@ -1442,6 +1500,36 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return renamed;
     }, [updateTabState]);
 
+    const renameProjectTabs = useCallback((projectPath: string, title: string) => {
+        const normalizedPath = normalizeProjectSessionPath(projectPath);
+        const nextTitle = String(title || "").trim();
+        if (!normalizedPath || !nextTitle) return;
+        updateTabState(prev => {
+            let changed = false;
+            const tabs = prev.tabs.map(tab => {
+                if (tab.type !== "project" || normalizeProjectSessionPath(tab.projectPath) !== normalizedPath || tab.title === nextTitle) return tab;
+                changed = true;
+                return { ...tab, title: nextTitle };
+            });
+            return changed ? { ...prev, tabs } : prev;
+        });
+    }, [updateTabState]);
+
+    const renameLocalTab = useCallback((title: string): AITab | null => {
+        const customTitle = String(title || "").trim().slice(0, 60) || undefined;
+        const prev = tabStateRef.current;
+        const tab = prev.tabs.find(item => item.type === "local");
+        if (!tab) return null;
+        if (tab.customTitle === customTitle) return tab;
+        const renamed: AITab = { ...tab, customTitle };
+        updateTabState(() => ({
+            ...prev,
+            tabs: prev.tabs.map(item => item.id === tab.id ? renamed : item),
+        }));
+        persistLocalTabCustomTitle(customTitle);
+        return renamed;
+    }, [updateTabState]);
+
     const clearTabLimitError = useCallback(() => {
         setTabLimitError(null);
     }, []);
@@ -1464,6 +1552,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         hasProjectTab,
         upgradeVETabToGroup,
         renameGroupTab,
+        renameProjectTabs,
+        renameLocalTab,
         tabLimitError,
         clearTabLimitError,
     };

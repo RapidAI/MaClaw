@@ -1,0 +1,6 @@
+# Dedicated non-release Task Registry lifecycle HIL configuration.
+# It runs before any profile driver is initialized, exercising bounded mutex
+# acquisition, multi-owner reverse stop, mixed outcomes and retained-entry
+# cleanup without exposing a runtime control path.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_TASK_REGISTRY_LIFECYCLE_TEST=y

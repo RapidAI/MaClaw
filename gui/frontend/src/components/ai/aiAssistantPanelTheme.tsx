@@ -623,14 +623,13 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
     }
     .ai-attachment-row {
         contain: layout style;
-        width: 100%;
+        width: fit-content;
     }
     .ai-attachment-strip {
         display: grid;
-        width: min(100%, 760px);
-        /* Keep empty tracks so a short list remains compact instead of stretching
-           its last attachment across the entire available strip. */
-        grid-template-columns: repeat(auto-fill, minmax(min(100%, 218px), 1fr));
+        width: fit-content;
+        max-width: min(100%, 760px);
+        grid-template-columns: repeat(auto-fill, minmax(58px, max-content));
         align-items: start;
     }
     .ai-attachment-remove:hover:not(:disabled) {

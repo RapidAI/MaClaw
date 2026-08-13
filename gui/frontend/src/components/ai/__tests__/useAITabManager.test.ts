@@ -565,6 +565,16 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         });
     });
 
+    it("signals that the project-tab session is ready after backend initialization", async () => {
+        const onReady = vi.fn();
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createProjectTab("D:/tasks/session-ready", "Session ready", { onSessionReady: onReady });
+        });
+        await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
+        expect(onReady.mock.calls[0][0]).toEqual(expect.objectContaining({ id: expect.stringMatching(/^proj-/) }));
+    });
+
     it("serializes project tab reopen after pending close for the same deterministic tab", async () => {
         let resolveClose!: () => void;
         vi.mocked(CloseAssistantTabSession).mockImplementation(() => new Promise<void>(resolve => {

@@ -36,7 +36,17 @@ bool fangtang_identity_compose_state(const fangtang_identity_composer_t *c,
     const char *state = identity->state;
     if (ambient) {
         if (!c->text24_width || !c->draw_ascii || !c->draw_text24 || !c->network_is_cellular ||
-            !c->draw_remote_pet) return false;
+            !c->draw_remote_pet || !c->begin_frame || !c->finish_frame || !c->fill_screen) {
+            return false;
+        }
+        /* This profile owns the complete ambient visual layout. The shared
+         * renderer has already selected the logical scene, but its composed
+         * framebuffer must be prepared before the profile draws clock, status
+         * and remote pet into it. Returning true without this transaction used
+         * to leave the prior startup/ready surface as the authoritative front
+         * frame, preventing the multi-frame pet worker from presenting. */
+        const bool composed = c->begin_frame(c->context);
+        c->fill_screen(c->context, background);
         const char *clock = identity->ambient_time && identity->ambient_time[0]
                                 ? identity->ambient_time : "--:--:--";
         const char *online = identity->gateway_ready ? "在线" : "等待";
@@ -66,6 +76,7 @@ bool fangtang_identity_compose_state(const fangtang_identity_composer_t *c,
             !sugar(c, 26, 68, 100, background))
             fangtang_identity_draw_cube(&c->art_raster, state, identity->animation_phase,
                                         36, 70, 120, background);
+        c->finish_frame(c->context, composed);
         return true;
     }
     if (!c->draw_text24_centered) return false;

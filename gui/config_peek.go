@@ -109,7 +109,6 @@ type UIShellConfig struct {
 	ShowAppEntry         *bool   `json:"show_app_entry,omitempty"`
 	ShowCodingToolEntry  *bool   `json:"show_coding_tool_entry,omitempty"`
 	ShowUtilitiesEntry   *bool   `json:"show_utilities_entry,omitempty"`
-	WorkflowEnabled      *bool   `json:"workflow_enabled,omitempty"`
 	MaclawLLMCurrentProv string  `json:"maclaw_llm_current_provider,omitempty"`
 }
 
@@ -130,7 +129,6 @@ func (a *App) GetUIShellConfig() UIShellConfig {
 		ShowAppEntry:         cfg.ShowAppEntry,
 		ShowCodingToolEntry:  &cfg.ShowCodingToolEntry,
 		ShowUtilitiesEntry:   cfg.ShowUtilitiesEntry,
-		WorkflowEnabled:      cfg.WorkflowEnabled,
 		MaclawLLMCurrentProv: cfg.MaclawLLMCurrentProvider,
 	}
 }

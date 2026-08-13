@@ -613,6 +613,49 @@ func (s *Service) DeleteUser(ctx context.Context, tenantID, userID string) error
 	return nil
 }
 
+// PurgeUserData force-removes all user-owned agent runtime data. Unlike
+// DeleteUser, it is deliberately idempotent and does not retain runtime audit
+// events: it is called by a host account-unbind flow, not by normal agent
+// administration. The host's immutable approval audit remains outside this
+// service and is therefore unaffected.
+func (s *Service) PurgeUserData(ctx context.Context, tenantID, userID string) error {
+	_ = ctx
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	if tenantID == "" || userID == "" {
+		return fmt.Errorf("tenant_id and user_id are required")
+	}
+
+	instances, err := s.store.ListInstances(tenantID, userID)
+	if err != nil && !errors.Is(err, ErrUserNotFound) {
+		return err
+	}
+	for _, instance := range instances {
+		runs, runErr := s.store.ListRuns(tenantID, userID, instance.ID)
+		if runErr != nil {
+			return runErr
+		}
+		for _, run := range runs {
+			if cancel, ok := s.takeRunCancel(run.ID); ok {
+				cancel()
+			}
+		}
+	}
+	if err := s.records.DeleteStructuredRecordsForUser(tenantID, userID); err != nil {
+		return err
+	}
+	if _, err := s.store.DeleteAuditEvents(tenantID, userID); err != nil {
+		return err
+	}
+	if err := s.store.DeleteUser(tenantID, userID); err != nil && !errors.Is(err, ErrUserNotFound) {
+		return err
+	}
+	if err := secureRemoveAllWithin(filepath.Join(s.dataRoot, "tenants", slugID(tenantID), "users"), s.userRoot(tenantID, userID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func (s *Service) GetUserDeleteCheck(ctx context.Context, tenantID, userID string) (*UserDeleteCheck, error) {
 	_ = ctx
 	if _, err := s.store.GetTenant(tenantID); err != nil {

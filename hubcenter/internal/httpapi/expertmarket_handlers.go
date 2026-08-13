@@ -41,40 +41,42 @@ var (
 )
 
 type expertMarketListing struct {
-	ID             string `json:"id"`
-	OwnerID        string `json:"-"`
-	OwnerEmail     string `json:"-"`
-	SourceExpertID string `json:"source_expert_id"`
-	Name           string `json:"name"`
-	Description    string `json:"description"`
-	Icon           string `json:"icon"`
-	Version        string `json:"version"`
-	Price          int64  `json:"price"`
-	Visibility     string `json:"visibility"`
-	Status         string `json:"status"`
-	ZipPath        string `json:"-"`
-	PackageSize    int64  `json:"package_size"`
-	DownloadCount  int64  `json:"download_count"`
-	PurchaseCount  int64  `json:"purchase_count"`
-	SalesAmount    int64  `json:"sales_amount"`
-	ReviewNote     string `json:"review_note,omitempty"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
+	ID                   string `json:"id"`
+	OwnerID              string `json:"-"`
+	OwnerEmail           string `json:"-"`
+	SourceExpertID       string `json:"source_expert_id"`
+	Name                 string `json:"name"`
+	Description          string `json:"description"`
+	Icon                 string `json:"icon"`
+	Version              string `json:"version"`
+	Price                int64  `json:"price"`
+	Visibility           string `json:"visibility"`
+	Status               string `json:"status"`
+	ZipPath              string `json:"-"`
+	PackageSize          int64  `json:"package_size"`
+	DownloadCount        int64  `json:"download_count"`
+	PurchaseCount        int64  `json:"purchase_count"`
+	SalesAmount          int64  `json:"sales_amount"`
+	ReviewNote           string `json:"review_note,omitempty"`
+	PlatformDistribution bool   `json:"platform_distribution"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 type expertMarketPublicListing struct {
-	ID             string `json:"id"`
-	SourceExpertID string `json:"source_expert_id"`
-	Name           string `json:"name"`
-	Description    string `json:"description"`
-	Icon           string `json:"icon"`
-	Version        string `json:"version"`
-	Price          int64  `json:"price"`
-	PackageSize    int64  `json:"package_size"`
-	DownloadCount  int64  `json:"download_count"`
-	PurchaseCount  int64  `json:"purchase_count"`
-	Owned          bool   `json:"owned"`
-	CreatedAt      string `json:"created_at"`
+	ID                   string `json:"id"`
+	SourceExpertID       string `json:"source_expert_id"`
+	Name                 string `json:"name"`
+	Description          string `json:"description"`
+	Icon                 string `json:"icon"`
+	Version              string `json:"version"`
+	Price                int64  `json:"price"`
+	PackageSize          int64  `json:"package_size"`
+	DownloadCount        int64  `json:"download_count"`
+	PurchaseCount        int64  `json:"purchase_count"`
+	PlatformDistribution bool   `json:"platform_distribution"`
+	Owned                bool   `json:"owned"`
+	CreatedAt            string `json:"created_at"`
 }
 
 type expertMarketAdminListing struct {
@@ -87,6 +89,9 @@ type expertMarketAdminListing struct {
 	UpdatedAt   string `json:"updated_at"`
 }
 
+// Keep the legacy test and administration SQL column sequence stable. The
+// opt-in distribution bit is selected/scanned separately where needed, which
+// avoids making every existing lifecycle fixture account for a new column.
 const expertMarketListingColumns = "id, owner_user_id, owner_email, source_expert_id, name, description, icon, version, price, visibility, status, zip_path, package_size, download_count, purchase_count, sales_amount, review_note, created_at, updated_at"
 
 func qualifiedExpertMarketListingColumns(alias string) string {
@@ -118,6 +123,10 @@ func (h *SkillMarketHandlers) ensureExpertMarketSchema() {
 		// Existing installations predate the visibility choice. Keep their
 		// behaviour unchanged by treating them as public submissions.
 		_, _ = db.Exec(`ALTER TABLE sm_expert_market_listings ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'`)
+		// Platform distribution is opt-in. A listing can be freely downloaded by
+		// an individual while still being ineligible for tenant-wide industry
+		// distribution until its author gives this separate permission.
+		_, _ = db.Exec(`ALTER TABLE sm_expert_market_listings ADD COLUMN platform_distribution INTEGER NOT NULL DEFAULT 0`)
 		_, _ = db.Exec(`UPDATE sm_expert_market_listings SET visibility='public' WHERE visibility IS NULL OR visibility NOT IN ('public', 'private')`)
 		// The stable package identity is global. Without this guard a buyer could
 		// download an expert package and re-submit it as their own listing.
@@ -202,7 +211,7 @@ func scanExpertMarketListing(row interface{ Scan(...any) error }) (*expertMarket
 }
 
 func publicExpertMarketListing(item *expertMarketListing) expertMarketPublicListing {
-	return expertMarketPublicListing{ID: item.ID, SourceExpertID: item.SourceExpertID, Name: item.Name, Description: item.Description, Icon: item.Icon, Version: item.Version, Price: item.Price, PackageSize: item.PackageSize, DownloadCount: item.DownloadCount, PurchaseCount: item.PurchaseCount, CreatedAt: item.CreatedAt}
+	return expertMarketPublicListing{ID: item.ID, SourceExpertID: item.SourceExpertID, Name: item.Name, Description: item.Description, Icon: item.Icon, Version: item.Version, Price: item.Price, PackageSize: item.PackageSize, DownloadCount: item.DownloadCount, PurchaseCount: item.PurchaseCount, PlatformDistribution: item.PlatformDistribution, CreatedAt: item.CreatedAt}
 }
 
 // expertMarketOwnedListings resolves all of one page's entitlement flags in a
@@ -497,6 +506,7 @@ func (h *SkillMarketHandlers) SubmitExpertMarketListing(w http.ResponseWriter, r
 	if visibility == "" {
 		visibility = "public"
 	}
+	platformDistribution := strings.EqualFold(strings.TrimSpace(r.FormValue("platform_distribution")), "true") || strings.TrimSpace(r.FormValue("platform_distribution")) == "1"
 	if visibility != "public" && visibility != "private" {
 		smError(w, http.StatusBadRequest, "visibility must be public or private")
 		return
@@ -557,9 +567,9 @@ func (h *SkillMarketHandlers) SubmitExpertMarketListing(w http.ResponseWriter, r
 	if visibility == "private" {
 		status = "private"
 	}
-	item := &expertMarketListing{ID: id, OwnerID: userID, OwnerEmail: email, SourceExpertID: sourceID, Name: name, Description: description, Icon: icon, Version: version, Price: price, Visibility: visibility, Status: status, ZipPath: path, PackageSize: int64(len(data)), CreatedAt: now, UpdatedAt: now}
+	item := &expertMarketListing{ID: id, OwnerID: userID, OwnerEmail: email, SourceExpertID: sourceID, Name: name, Description: description, Icon: icon, Version: version, Price: price, Visibility: visibility, Status: status, ZipPath: path, PackageSize: int64(len(data)), PlatformDistribution: platformDistribution, CreatedAt: now, UpdatedAt: now}
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), "INSERT INTO sm_expert_market_listings ("+expertMarketListingColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, '', ?, ?)", item.ID, item.OwnerID, item.OwnerEmail, item.SourceExpertID, item.Name, item.Description, item.Icon, item.Version, item.Price, item.Visibility, item.Status, item.ZipPath, item.PackageSize, item.CreatedAt, item.UpdatedAt)
+		_, err = tx.ExecContext(r.Context(), "INSERT INTO sm_expert_market_listings ("+expertMarketListingColumns+", platform_distribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, '', ?, ?, ?)", item.ID, item.OwnerID, item.OwnerEmail, item.SourceExpertID, item.Name, item.Description, item.Icon, item.Version, item.Price, item.Visibility, item.Status, item.ZipPath, item.PackageSize, item.CreatedAt, item.UpdatedAt, item.PlatformDistribution)
 	}
 	if err == nil {
 		action, reason := "submitted", "submitted for review"
@@ -651,7 +661,11 @@ func (h *SkillMarketHandlers) PurchaseExpertMarketListing(w http.ResponseWriter,
 		return
 	}
 	if item.OwnerID == buyerID {
-		smError(w, http.StatusBadRequest, "you own this expert listing")
+		// Owners have an implicit entitlement, but the GUI uses the purchase
+		// endpoint to normalize both free auto-installs and paid publisher
+		// installs before downloading. Return the same idempotent owned result
+		// rather than making an otherwise valid industry-default card fail.
+		writeJSON(w, http.StatusOK, map[string]any{"status": "owned", "download_url": "/api/v1/expert-market/experts/" + id + "/download"})
 		return
 	}
 	if h.creditsSvc == nil {

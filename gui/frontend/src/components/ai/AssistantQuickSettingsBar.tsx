@@ -1,6 +1,6 @@
 /**
  * Bottom quick-settings bar below the chat input: global system switches
- * (model/provider switch, auto routing, TTS, theme, keep-awake, verbose logs,
+ * (model/provider switch, TTS, theme, keep-awake, verbose logs,
  * LLM cache, language). Session/window-level actions stay in the title bar.
  * Optional statusSlot rides the same row on the right (shell status / warnings).
  */
@@ -27,8 +27,6 @@ type Props = {
     /** Whether the retained assistant panel is visible in the app shell. */
     active?: boolean;
     onToggleTheme: () => void;
-    workflowEnabled: boolean;
-    onToggleWorkflow: () => void;
     ttsEnabled: boolean;
     ttsPlaying: boolean;
     onToggleTts: () => void;
@@ -68,7 +66,7 @@ function langShortLabel(lang: string): string {
     return "中";
 }
 
-export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, workflowEnabled, onToggleWorkflow, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeProfile = "assistant", codingInheritsAssistant = false, providerSelectionPending = false, profileSavePending = false, onOpenLLMSettings, onLanguageChange, statusSlot }: Props) {
+export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeProfile = "assistant", codingInheritsAssistant = false, providerSelectionPending = false, profileSavePending = false, onOpenLLMSettings, onLanguageChange, statusSlot }: Props) {
     const tr = useCallback(
         (en: string, zh: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant),
         [lang]
@@ -340,10 +338,6 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
                     }
                 </div>
             )}
-            <button type="button" data-testid="qs-workflow-toggle" role="switch" aria-checked={!!workflowEnabled} onClick={onToggleWorkflow} style={chipStyle(!!workflowEnabled)} title={workflowEnabled ? tr("Automatic task routing ON - click to disable", "自动决策已开启，点击关闭", "自動決策已開啟，點擊關閉") : tr("Automatic task routing OFF - click to enable", "自动决策已关闭，点击开启", "自動決策已關閉，點擊開啟")} aria-label={workflowEnabled ? tr("Automatic task routing ON - click to disable", "自动决策已开启，点击关闭", "自動決策已開啟，點擊關閉") : tr("Automatic task routing OFF - click to enable", "自动决策已关闭，点击开启", "自動決策已關閉，點擊開啟")}>
-                {dot(!!workflowEnabled)}
-                {tr("Auto routing", "自动决策", "自動決策")}
-            </button>
             <button type="button" data-testid="qs-tts-toggle" role="switch" aria-checked={!!ttsEnabled} onClick={onToggleTts} style={{ ...chipStyle(!!ttsEnabled), position: "relative" }} title={ttsEnabled ? tr("Voice readback ON - click to disable", "语音播报已开启，点击关闭", "語音播報已開啟，點擊關閉") : tr("Voice readback OFF - click to enable", "语音播报已关闭，点击开启", "語音播報已關閉，點擊開啟")} aria-label={ttsEnabled ? tr("Voice readback ON - click to disable", "语音播报已开启，点击关闭", "語音播報已開啟，點擊關閉") : tr("Voice readback OFF - click to enable", "语音播报已关闭，点击开启", "語音播報已關閉，點擊開啟")}>
                 <span aria-hidden="true" style={{ display: "inline-flex", opacity: ttsPlaying ? 0 : 1, transition: "opacity 150ms" }}>
                     <TitleBarToolIcon name={ttsEnabled ? "volumeOn" : "volumeOff"} />

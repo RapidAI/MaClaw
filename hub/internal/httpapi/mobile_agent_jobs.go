@@ -111,6 +111,10 @@ func mobileAgentJobCreate(w http.ResponseWriter, r *http.Request, principal *aut
 		return
 	}
 	ownerID := mobilePrincipalOwnerID(principal)
+	if !mobileOwnerWriteAllowed(principal.TenantID, ownerID) {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+		return
+	}
 	if n := mobileAgentJobActiveCount(ownerID, principal.TenantID); n >= mobileAgentJobMaxActivePerUser {
 		writeError(w, http.StatusTooManyRequests, "JOB_LIMIT", fmt.Sprintf("at most %d active assistant jobs", mobileAgentJobMaxActivePerUser))
 		return
@@ -156,9 +160,16 @@ func mobileAgentJobCreate(w http.ResponseWriter, r *http.Request, principal *aut
 		job.TenantID = "default"
 	}
 
+	mobileKnowledgePurgeState.RLock()
+	if !mobileOwnerWriteAllowedLocked(job.TenantID, job.OwnerID) {
+		mobileKnowledgePurgeState.RUnlock()
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+		return
+	}
 	mobileAgentJobs.Lock()
 	mobileAgentJobs.jobs[job.JobID] = job
 	mobileAgentJobs.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 
 	// Detach from request context so client disconnect does not cancel work.
 	go mobileRunAgentJob(job.JobID, principal, officialLLM)
@@ -254,9 +265,15 @@ func mobileAgentJobActiveCount(ownerID, tenantID string) int {
 }
 
 func mobileAgentJobUpdate(jobID string, mutate func(*mobileAgentJobRecord)) {
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
 	mobileAgentJobs.Lock()
 	job, ok := mobileAgentJobs.jobs[jobID]
 	if !ok {
+		mobileAgentJobs.Unlock()
+		return
+	}
+	if !mobileOwnerWriteAllowedLocked(job.TenantID, job.OwnerID) {
 		mobileAgentJobs.Unlock()
 		return
 	}
@@ -285,6 +302,13 @@ func mobileRunAgentJob(jobID string, principal *auth.ViewerPrincipal, officialLL
 	job, ok := mobileAgentJobs.jobs[jobID]
 	mobileAgentJobs.Unlock()
 	if !ok {
+		return
+	}
+	// A queued job may start after its account has been unbound.  The full
+	// agent loop also holds the purge read lock before it can mutate runtime
+	// state, but stop here as well so a tombstoned owner does not trigger a
+	// document lookup, web search, or LLM authorization lookup unnecessarily.
+	if !mobileOwnerWriteAllowed(job.TenantID, job.OwnerID) {
 		return
 	}
 
@@ -439,9 +463,15 @@ func mobileEnqueueAgentJobFromSearch(
 	if job.TenantID == "" {
 		job.TenantID = "default"
 	}
+	mobileKnowledgePurgeState.RLock()
+	if !mobileOwnerWriteAllowedLocked(job.TenantID, job.OwnerID) {
+		mobileKnowledgePurgeState.RUnlock()
+		return mobileAgentJobRecord{}, fmt.Errorf("account is no longer available")
+	}
 	mobileAgentJobs.Lock()
 	mobileAgentJobs.jobs[job.JobID] = job
 	mobileAgentJobs.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 	go mobileRunAgentJob(job.JobID, principal, officialLLM)
 	return job, nil
 }

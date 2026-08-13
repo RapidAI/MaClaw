@@ -37,9 +37,13 @@ type agentLoopRoundPrepOptions struct {
 	MilestoneTracker        *progress.AgentProgressTracker
 	LastInputTokens         int
 	LastOutputTokens        int
-	SendProgress            func(string)
-	IsDebug                 func() bool
-	RecordSystemMessages    func(int, []interface{})
+	// FirstRequest is true until an LLM request has actually been dispatched.
+	// A cancelled/replanned first request still counts as dispatched, so a
+	// replacement request can use the normal context budget.
+	FirstRequest         bool
+	SendProgress         func(string)
+	IsDebug              func() bool
+	RecordSystemMessages func(int, []interface{})
 }
 
 type agentLoopRoundPrepResult struct {
@@ -148,8 +152,24 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 
 	prepStartedAt := time.Now()
 
+	// Keep the run state's effective limit derived from the provider and prior
+	// usage. The first-request cap below is only a one-shot compaction target;
+	// storing it here would accidentally constrain every later tool round.
 	effectiveTokenLimit, _ := calibratedAgentLoopTokenLimit(opts.Config, conversation, opts.LastInputTokens, opts.LastOutputTokens)
-	conversation = h.compactAgentLoopConversation(ctx, opts.UserID, conversation, tools, effectiveTokenLimit, toolsTokenBudget)
+	compactionTokenLimit := effectiveTokenLimit
+	if opts.FirstRequest {
+		normalLimit := effectiveTokenLimit
+		compactionTokenLimit = firstAgentLoopRequestTokenLimit(effectiveTokenLimit, conversation, tools)
+		if compactionTokenLimit < normalLimit {
+			requestID, loopID := "", ""
+			if ctx != nil {
+				requestID, loopID = ctx.Runtime.RequestID, ctx.ID
+			}
+			log.Printf("[first-request-budget] request_id=%q loop=%q limit=%d normal_limit=%d tools=%d path=legacy",
+				requestID, loopID, compactionTokenLimit, normalLimit, len(tools))
+		}
+	}
+	conversation = h.compactAgentLoopConversation(ctx, opts.UserID, conversation, tools, compactionTokenLimit, toolsTokenBudget, opts.FirstRequest)
 
 	phase := derefAgentLoopPhase(opts.Phase)
 	conversation, systemMessagesStart := h.injectAgentLoopHarnessPrompts(
@@ -244,7 +264,15 @@ func contextCheckpointStatusMode() string {
 	}
 }
 
-func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID string, conversation []interface{}, tools []map[string]interface{}, effectiveTokenLimit, toolsTokenBudget int) []interface{} {
+func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID string, conversation []interface{}, tools []map[string]interface{}, effectiveTokenLimit, toolsTokenBudget int, firstRequestLatencyBudget bool) []interface{} {
+	// A first-response latency budget is intentionally smaller than the normal
+	// context window. Checkpoints are lossless, but their file flush/spill work
+	// is still avoidable local I/O on the critical path. For this one request,
+	// use the fast structural compactor; subsequent rounds retain the normal
+	// checkpoint rollout and its lossless handles.
+	if firstRequestLatencyBudget {
+		return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
+	}
 	sessionKey := userID
 	if h != nil {
 		sessionKey = h.workflowPolicyOwnerID(userID, ctx)

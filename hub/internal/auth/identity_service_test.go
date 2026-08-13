@@ -1873,6 +1873,55 @@ func TestRequestEmailLoginAllowsExistingUserWhenTenantRegistrationClosed(t *test
 	}
 }
 
+func TestIdentityServiceRejectsUnknownInactiveAndDeletedTenantEnrollment(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	deletedAt := now
+	for _, tenant := range []*store.Tenant{
+		{ID: "tenant_inactive", Slug: "tenant-inactive", Name: "Inactive", Status: "inactive", CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now},
+		{ID: "tenant_deleted", Slug: "tenant-deleted", Name: "Deleted", Status: "deleted", CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now, DeletedAt: &deletedAt},
+	} {
+		if err := deps.store.Tenants.Create(context.Background(), tenant); err != nil {
+			t.Fatalf("create tenant %s: %v", tenant.ID, err)
+		}
+	}
+
+	for _, item := range []struct {
+		tenantID string
+		wantErr  error
+	}{
+		{tenantID: "tenant_missing", wantErr: ErrTenantNotFound},
+		{tenantID: "tenant_inactive", wantErr: ErrTenantInactive},
+		{tenantID: "tenant_deleted", wantErr: ErrTenantInactive},
+	} {
+		ctx := WithTenant(context.Background(), item.tenantID)
+		if err := svc.ValidateEmailEnrollment(ctx, "new@example.com"); !errors.Is(err, item.wantErr) {
+			t.Errorf("ValidateEmailEnrollment tenant=%s error=%v, want %v", item.tenantID, err, item.wantErr)
+		}
+		if _, err := svc.StartEnrollment(ctx, "new@example.com", "office-pc", "windows", "", ""); !errors.Is(err, item.wantErr) {
+			t.Errorf("StartEnrollment tenant=%s error=%v, want %v", item.tenantID, err, item.wantErr)
+		}
+		if _, err := svc.RequestEmailLogin(ctx, "new@example.com"); !errors.Is(err, item.wantErr) {
+			t.Errorf("RequestEmailLogin tenant=%s error=%v, want %v", item.tenantID, err, item.wantErr)
+		}
+	}
+}
+
 func TestIdentityServiceRejectsNewEmailUserOutsideTenantDomains(t *testing.T) {
 	deps := newTestStore(t)
 	svc := NewIdentityService(
@@ -1897,7 +1946,7 @@ func TestIdentityServiceRejectsNewEmailUserOutsideTenantDomains(t *testing.T) {
 		Name:             "Qianxin",
 		Status:           "active",
 		PrimaryDomain:    "qianxin.com",
-		SettingsJSON:     `{"email_domains":["qianxin.com"],"allow_user_registration":true}`,
+		SettingsJSON:     `{"email_domains":["qianxin.com"],"allow_user_registration":true,"restrict_email_domains":true}`,
 		CreatedByAdminID: "test",
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -1950,7 +1999,7 @@ func TestIdentityServiceAllowsExistingEmailUserOutsideTenantDomains(t *testing.T
 		Name:             "Qianxin",
 		Status:           "active",
 		PrimaryDomain:    "qianxin.com",
-		SettingsJSON:     `{"email_domains":["qianxin.com"],"allow_user_registration":true}`,
+		SettingsJSON:     `{"email_domains":["qianxin.com"],"allow_user_registration":true,"restrict_email_domains":true}`,
 		CreatedByAdminID: "test",
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -1979,6 +2028,101 @@ func TestIdentityServiceAllowsExistingEmailUserOutsideTenantDomains(t *testing.T
 	}
 	if _, err := svc.ManualBindForTenant(ctx, "tenant_qianxin", "znsoft@163.com"); err != nil {
 		t.Fatalf("ManualBindForTenant existing out-of-domain user: %v", err)
+	}
+}
+
+func TestIdentityServiceAllowsNewEmailUserOutsideTenantDomainsByDefault(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(context.Background(), &store.Tenant{
+		ID:               "tenant_public_email",
+		Slug:             "tenant-public-email",
+		Name:             "Public Email",
+		Status:           "active",
+		PrimaryDomain:    "qianxin.com",
+		SettingsJSON:     `{"email_domains":["qianxin.com"],"allow_user_registration":true}`,
+		CreatedByAdminID: "test",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	ctx := WithTenant(context.Background(), "tenant_public_email")
+	if _, err := svc.StartEnrollment(ctx, "znsoft@163.com", "office-pc", "windows", "", ""); err != nil {
+		t.Fatalf("StartEnrollment public email: %v", err)
+	}
+}
+
+func TestIdentityServiceAllowsPhoneUserToBindEmailOutsideTenantDomains(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(context.Background(), &store.Tenant{
+		ID:               "tenant_phone_email",
+		Slug:             "tenant-phone-email",
+		Name:             "Phone and Email",
+		Status:           "active",
+		PrimaryDomain:    "qianxin.com",
+		SettingsJSON:     `{"email_domains":["qianxin.com"],"allow_user_registration":true}`,
+		CreatedByAdminID: "test",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	user := &store.User{
+		ID:               "u_phone_user",
+		TenantID:         "tenant_phone_email",
+		Email:            "phone:19900001111",
+		SN:               "SN-PHONE-USER",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(context.Background(), user); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+
+	ctx := WithTenant(context.Background(), user.TenantID)
+	if err := svc.CanBindVerifiedEmailToUser(ctx, user, "znsoft@163.com"); err != nil {
+		t.Fatalf("phone user should be allowed to add a verified external email: %v", err)
+	}
+	if err := svc.BindVerifiedEmailToUser(ctx, user, "znsoft@163.com"); err != nil {
+		t.Fatalf("bind verified external email: %v", err)
+	}
+	bound, err := deps.store.Users.GetByTenantIdentity(ctx, user.TenantID, "email", "znsoft@163.com")
+	if err != nil || bound == nil || bound.ID != user.ID {
+		t.Fatalf("bound email user=%+v err=%v", bound, err)
 	}
 }
 

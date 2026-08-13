@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelXAIOAuthURL, CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportCodexAuth, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartXAIOAuth, TestMaclawLLM, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
+import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelXAIOAuth, CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportCodexAuth, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartXAIOAuth, TestAndSaveMaclawLLMProviders, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
-import { BrowserOpenURL, ClipboardSetText, EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, hubCreditGrants, hubOfficialStatus, inputStyle, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
@@ -51,10 +51,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [dlgDirty, setDlgDirty] = useState(false);
     const [dlgTested, setDlgTested] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
-    const [xaiOAuthURL, setXaiOAuthURL] = useState("");
-    const xaiOAuthURLRef = useRef("");
-    const xaiOAuthActiveRef = useRef(false);
-    const xaiOAuthAttemptRef = useRef(0);
+    const oauthAttemptRef = useRef(0);
     const [codegenModels, setCodegenModels] = useState<{id: string; name: string}[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [providerModels, setProviderModels] = useState<{id: string; name: string}[]>([]);
@@ -69,54 +66,17 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
 
-    const setActiveXaiOAuthURL = useCallback((authorizationURL: string) => {
-        xaiOAuthURLRef.current = authorizationURL;
-        setXaiOAuthURL(authorizationURL);
-    }, []);
-
-    const clearActiveXaiOAuthURL = useCallback(() => {
-        xaiOAuthActiveRef.current = false;
-        xaiOAuthURLRef.current = "";
-        setXaiOAuthURL("");
-    }, []);
-
-    const cancelActiveXaiOAuth = useCallback(() => {
-        // Invalidate both a fully prepared session and a StartXAIOAuth call
-        // that is still resolving through the Wails bridge.
-        xaiOAuthAttemptRef.current += 1;
-        if (xaiOAuthURLRef.current) void CancelXAIOAuthURL(xaiOAuthURLRef.current);
+    const cancelActiveOAuth = useCallback((providerName?: string) => {
+        oauthAttemptRef.current += 1;
+        if (providerName === "GitHub Copilot") {
+            CancelGitHubCopilotOAuth();
+        } else if (providerName === "xAI-Grok") {
+            void CancelXAIOAuth();
+        } else {
+            CancelOpenAIOAuth();
+        }
         setOauthBusy(false);
-        clearActiveXaiOAuthURL();
-    }, [clearActiveXaiOAuthURL]);
-
-    const copyXaiOAuthURL = useCallback(async () => {
-        if (!xaiOAuthURL) return;
-        try {
-            if (navigator.clipboard?.writeText) {
-                await navigator.clipboard.writeText(xaiOAuthURL);
-                return;
-            }
-        } catch {
-            // Wails' clipboard bridge is the fallback for restricted WebViews.
-        }
-        ClipboardSetText(xaiOAuthURL);
-    }, [xaiOAuthURL]);
-
-    const openXaiOAuthURL = useCallback((authorizationURL: string) => {
-        try {
-            BrowserOpenURL(authorizationURL);
-        } catch {
-            // The OAuth callback is still listening, so retain the manual
-            // recovery controls instead of abandoning the active session.
-            setDlgTestResult({
-                ok: false,
-                msg: t(
-                    "Couldn't open the browser automatically. Use the link below.",
-                    "无法自动打开浏览器，请使用下方链接继续登录。",
-                ),
-            });
-        }
-    }, [t]);
+    }, []);
 
     const loadHubServiceStatus = useCallback(async () => {
         const statusSeq = ++hubStatusSeqRef.current;
@@ -166,11 +126,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     }, [t, thinkingMode]);
 
     const handleOAuthLogin = useCallback(async () => {
-        const xaiAttempt = ++xaiOAuthAttemptRef.current;
+        const oauthAttempt = ++oauthAttemptRef.current;
         const providerName = (dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined) || "OpenAI";
         setOauthBusy(true);
         setDlgTestResult(null);
-        clearActiveXaiOAuthURL();
         try {
             let loginMessage = "";
 
@@ -200,17 +159,17 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 });
                 loginMessage = await WaitGitHubCopilotOAuth();
             } else if (providerName === "xAI-Grok") {
-                const authorizationURL = await StartXAIOAuth();
-                if (xaiAttempt !== xaiOAuthAttemptRef.current) return;
-                // Keep this correlation key in a ref before the browser opens:
-                // xAI may redirect back quickly, before React commits state.
-                xaiOAuthActiveRef.current = true;
-                setActiveXaiOAuthURL(authorizationURL);
-                openXaiOAuthURL(authorizationURL);
-                return;
+                // StartXAIOAuth launches the system browser itself, matching
+                // the known-working OpenAI OAuth flow. Waiting here also
+                // prevents the WebView bridge from trying to relaunch a long
+                // xAI OIDC URL.
+                loginMessage = await StartXAIOAuth();
+                if (oauthAttempt !== oauthAttemptRef.current) return;
             } else {
                 loginMessage = await StartOpenAIOAuth();
             }
+
+            if (oauthAttempt !== oauthAttemptRef.current) return;
 
             const data = await GetMaclawLLMProviders();
             if (data?.providers) {
@@ -231,12 +190,12 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 setTimeout(() => setDlgOpen(false), 1200);
             }
         } catch (e) {
-            if (providerName === "xAI-Grok" && xaiAttempt !== xaiOAuthAttemptRef.current) return;
+            if (oauthAttempt !== oauthAttemptRef.current) return;
             setDlgTestResult({ ok: false, msg: String(e) });
         } finally {
-            if (providerName !== "xAI-Grok") setOauthBusy(false);
+            setOauthBusy(false);
         }
-    }, [clearActiveXaiOAuthURL, t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, openXaiOAuthURL, setActiveXaiOAuthURL, showPrompt]);
+    }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, showPrompt]);
 
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
@@ -453,37 +412,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         (dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso") &&
         !dlgProvider.key;
 
-    useEffect(() => {
-        const cleanup = EventsOn("xai-oauth-complete", async (payload: { ok?: boolean; message?: string; error?: string; authorization_url?: string } = {}) => {
-            // Do not rely on state captured by this effect: a quick loopback
-            // callback can arrive before React has committed oauthBusy/provider.
-            if (!xaiOAuthActiveRef.current || payload.authorization_url !== xaiOAuthURLRef.current) return;
-            setOauthBusy(false);
-            clearActiveXaiOAuthURL();
-            if (!payload.ok) {
-                setDlgTestResult({ ok: false, msg: payload.error || t("xAI OAuth login failed", "xAI OAuth 登录失败") });
-                return;
-            }
-            try {
-                const data = await GetMaclawLLMProviders();
-                if (data?.providers) {
-                    const fresh = data.providers.map((p: LLMProvider) => ({ ...p }));
-                    setDlgProviders(fresh);
-                    setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
-                    setCurrentName(data.current || NONE_PROVIDER);
-                    setDlgDirty(false);
-                    onStatusChange?.(true, true);
-                    onProviderChanged?.();
-                }
-                setDlgTestResult({ ok: true, msg: payload.message || t("xAI OAuth login successful", "xAI OAuth 登录成功") });
-                setTimeout(() => setDlgOpen(false), 1200);
-            } catch (error) {
-                setDlgTestResult({ ok: false, msg: String(error) });
-            }
-        });
-        return () => { if (typeof cleanup === "function") cleanup(); else EventsOff("xai-oauth-complete"); };
-    }, [clearActiveXaiOAuthURL, onProviderChanged, onStatusChange, t]);
-
     const handleFetchProviderModels = useCallback(async () => {
         if (!dlgProvider || !dlgProvider.url) return;
         const isManagedAuth = dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso";
@@ -535,16 +463,49 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgProviders(prev => {
             const copy = [...prev];
             const parsed: string | number = (field === "context_length" || field === "max_output_tokens") ? (parseInt(value, 10) || 0) : value;
-            copy[dlgSelectedIdx] = { ...copy[dlgSelectedIdx], [field]: parsed };
+            const previous = copy[dlgSelectedIdx];
+            // Vision is a model capability, never a provider-wide promise.
+            // Keep the old model's confirmed result in the backend history and
+            // require a probe/manual confirmation for the newly selected one.
+            const modelChanged = field === "model" && String(previous.model || '').trim() !== String(parsed || '').trim();
+            copy[dlgSelectedIdx] = {
+                ...previous,
+                [field]: parsed,
+                ...(modelChanged ? { supports_vision: false } : {}),
+				// A connection test proves one exact endpoint, credential,
+				// model and protocol combination. Any edit to those fields
+				// requires a fresh successful test before it is assignable.
+				...(["url", "key", "model", "protocol", "agent_type", "wire_api"].includes(field)
+					? { connection_test_passed: false }
+					: {}),
+            };
             return copy;
         });
         setDlgDirty(true);
         setDlgTestResult(null);
         // Reset tested flag when core connection fields change so re-test is required
-        if (["url", "key", "model", "protocol", "agent_type"].includes(field)) {
+        if (["url", "key", "model", "protocol", "agent_type", "wire_api"].includes(field)) {
             setDlgTested(false);
         }
     }, [dlgSelectedIdx]);
+
+    const withVisionResultForCurrentModel = useCallback((provider: LLMProvider, supportsVision: boolean): LLMProvider => {
+        const model = String(provider.model || '').trim();
+        if (!model) return { ...provider, supports_vision: supportsVision };
+        const seen = new Set<string>();
+        const otherVisionModels = (provider.vision_models || []).flatMap((entry) => {
+            const value = String(entry || '').trim();
+            const key = value.toLowerCase();
+            if (!value || key === model.toLowerCase() || seen.has(key)) return [];
+            seen.add(key);
+            return [value];
+        });
+        return {
+            ...provider,
+            supports_vision: supportsVision,
+            vision_models: supportsVision ? [...otherVisionModels, model] : otherVisionModels,
+        };
+    }, []);
 
     const dlgSelectProvider = useCallback((idx: number | null) => {
         setDlgSelectedIdx(idx);
@@ -613,6 +574,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 wire_api: ep.wire_api || "",
                 agent_type: ep.agent_type || "",
                 context_length: ep.context_length || 128000,
+				connection_test_passed: false,
             };
             return copy;
         });
@@ -640,8 +602,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgSaving(true);
         setDlgTestResult(null);
 
-        // OAuth / SSO providers: save directly (token already obtained via OAuth/SSO flow)
-        if (sp.auth_type === "oauth" || sp.auth_type === "sso") {
+        // OAuth completion performs its own backend probe. SSO, by contrast,
+        // only authenticates: it continues through the normal Test & Save path
+        // below so the selected model must accept a real inference request.
+        if (sp.auth_type === "oauth") {
             if (!sp.key) {
                 setDlgSaving(false);
                 setDlgTestResult({
@@ -653,10 +617,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             try {
                 const saveName = sp.name;
                 await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], saveName);
-                // For SSO (CodeGen), sync model choice to Claude Code and other tool configs
-                if (sp.auth_type === "sso" && sp.model) {
-                    await SaveCodeGenModelChoice(sp.model, sp.model).catch(() => {});
-                }
                 setDlgDirty(false);
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
@@ -689,30 +649,18 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 return;
             }
 
-            // Keep provider identity and auth mode on the probe request. Some
-            // managed providers need provider-specific request headers; xAI's
-            // OAuth endpoint is one such example.
-            const testResult = await TestMaclawLLM({
-                url: sp.url,
-                key: sp.key,
-                model: sp.model,
-                protocol: sp.protocol || "openai",
-                agent_type: effectiveAgentType(sp),
-                wire_api: sp.wire_api || "",
-                provider_name: sp.name,
-                auth_type: sp.auth_type || "",
-            } as corelib.MaclawLLMConfig); // Go marks supports_vision required; the probe result (not this flag) decides the persisted value.
+            // The backend owns the successful-test proof and rejects a raced
+            // save, so a browser caller cannot forge assignability.
             const saveName = sp.name;
-            const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
-            const nextProviders = dlgProviders.map((provider, index) => index === dlgSelectedIdx
-                ? {
-                    ...provider,
-                    // Preserve a previously confirmed value when the image
-                    // request itself failed (for example due to a timeout).
-                    supports_vision: visionProbeInconclusive ? provider.supports_vision : testResult.supports_vision,
-                }
-                : { ...provider });
-            await SaveMaclawLLMProviders(nextProviders as corelib.MaclawLLMProvider[], saveName);
+			const testResult = await TestAndSaveMaclawLLMProviders(
+				dlgProviders as corelib.MaclawLLMProvider[],
+				saveName,
+				saveName,
+			);
+			const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
+			if (sp.auth_type === "sso" && sp.model) {
+				await SaveCodeGenModelChoice(sp.model, sp.model).catch(() => {});
+			}
 
             // Refresh providers to pick up persisted supports_vision from backend
             try {
@@ -722,12 +670,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     setDlgProviders(fresh);
                     setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
                 } else {
-                    setDlgProviders(nextProviders);
-                    setProviders(nextProviders.map((p: LLMProvider) => ({ ...p })));
+                    setDlgProviders(dlgProviders);
+                    setProviders(dlgProviders.map((p: LLMProvider) => ({ ...p })));
                 }
             } catch {
-                setDlgProviders(nextProviders);
-                setProviders(nextProviders.map((p: LLMProvider) => ({ ...p })));
+                // The backend completed the save before returning success; a
+                // failed refresh leaves the editable snapshot intact.
+                setDlgProviders(dlgProviders);
+                setProviders(dlgProviders.map((p: LLMProvider) => ({ ...p })));
             }
             setDlgDirty(false);
             setCurrentName(saveName);
@@ -1355,13 +1305,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                 <button aria-label={t("Cancel OAuth login", "取消 OAuth 登录")} onClick={() => {
                                                     const name = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined;
                                                     if (name === "GitHub Copilot") {
-                                                        CancelGitHubCopilotOAuth();
-                                                        setOauthBusy(false);
+                                                        cancelActiveOAuth(name);
                                                     } else if (name === "xAI-Grok") {
-                                                        cancelActiveXaiOAuth();
+                                                        cancelActiveOAuth(name);
                                                     } else {
-                                                        CancelOpenAIOAuth();
-                                                        setOauthBusy(false);
+                                                        cancelActiveOAuth(name);
                                                     }
                                                 }} style={{
                                                     width: "100%", padding: "8px 0", fontSize: "0.76rem",
@@ -1371,24 +1319,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                 }}>
                                                     {t("Cancel", "取消")}
                                                 </button>
-                                            )}
-                                            {oauthBusy && dlgProvider.name === "xAI-Grok" && xaiOAuthURL && (
-                                                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                                                    <button onClick={() => openXaiOAuthURL(xaiOAuthURL)} style={{
-                                                        flex: 1, padding: "8px 0", fontSize: "0.76rem", cursor: "pointer",
-                                                        background: "transparent", color: colors.primary,
-                                                        border: `1px solid ${colors.primary}`, borderRadius: 4,
-                                                    }}>
-                                                        {t("Open browser again", "再次打开浏览器")}
-                                                    </button>
-                                                    <button onClick={() => void copyXaiOAuthURL()} style={{
-                                                        flex: 1, padding: "8px 0", fontSize: "0.76rem", cursor: "pointer",
-                                                        background: "transparent", color: colors.textMuted,
-                                                        border: `1px solid ${colors.border}`, borderRadius: 4,
-                                                    }}>
-                                                        {t("Copy sign-in link", "复制登录链接")}
-                                                    </button>
-                                                </div>
                                             )}
                                             {dlgProvider.name === "OpenAI" && dlgTestResult && !dlgTestResult.ok && !oauthBusy && (
                                                 <button onClick={async () => {
@@ -1488,12 +1418,12 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             if (dlgSelectedIdx === null) return;
                                             setDlgProviders(prev => {
                                                 const copy = [...prev];
-                                                copy[dlgSelectedIdx] = { ...copy[dlgSelectedIdx], supports_vision: e.target.checked };
+                                                copy[dlgSelectedIdx] = withVisionResultForCurrentModel(copy[dlgSelectedIdx], e.target.checked);
                                                 return copy;
                                             });
                                             setDlgDirty(true);
                                             setDlgTestResult(null);
-                                        }}
+                                    }}
                                         style={{ width: 18, height: 18, accentColor: "var(--theme-primary)", cursor: "pointer", flexShrink: 0 }} />
                                 </div>
 

@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef, useState } from "react";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -32,7 +32,7 @@ function directVETitleName(tab: AITab, lang?: string): string {
 
 export function getAITabDisplayTitle(tab: AITab, lang?: string): string {
     // Local main tab always localizes; ignore stored title (legacy "工作台" / static default).
-    if (tab.type === "local") return localAssistantTabTitle(lang);
+    if (tab.type === "local") return String(tab.customTitle || "").trim() || localAssistantTabTitle(lang);
     if (tab.type === "ve") return directVETitleName(tab, lang);
     if (tab.type === "group" && String(tab.groupTitle || "").trim()) return String(tab.groupTitle || "").trim();
     if (tab.type !== "group" || !tab.veId || !tab.participants?.length) return tab.title;
@@ -46,12 +46,18 @@ export interface AITabItemProps {
     onActivate: (tabId: string) => void;
     onClose?: (tabId: string) => void;
     onContextMenu?: (e: React.MouseEvent, tab: AITab) => void;
+    /** Allows inline rename on the fixed local AI assistant tab. */
+    onRename?: (tabId: string, title: string) => void;
     lang?: string;
     /** Whether this tab is currently recording a skill */
     recording?: boolean;
 }
 
-export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMenu, lang, recording }: AITabItemProps) {
+export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMenu, onRename, lang, recording }: AITabItemProps) {
+    const [isRenaming, setIsRenaming] = useState(false);
+    const [renameValue, setRenameValue] = useState("");
+    const tabRef = useRef<HTMLDivElement>(null);
+    const isComposingRef = useRef(false);
     const handleClick = useCallback(() => {
         onActivate(tab.id);
     }, [onActivate, tab.id]);
@@ -61,13 +67,6 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         onClose?.(tab.id);
     }, [onClose, tab.id]);
 
-    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-        if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onActivate(tab.id);
-        }
-    }, [onActivate, tab.id]);
-
     const handleCloseKeyDown = useCallback((e: React.KeyboardEvent) => {
         if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
@@ -75,6 +74,46 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
             onClose?.(tab.id);
         }
     }, [onClose, tab.id]);
+
+    const beginRename = useCallback(() => {
+        if (!onRename) return;
+        isComposingRef.current = false;
+        onActivate(tab.id);
+        setRenameValue(getAITabDisplayTitle(tab, lang));
+        setIsRenaming(true);
+    }, [lang, onActivate, onRename, tab]);
+
+    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.key === "F2" && onRename) {
+            e.preventDefault();
+            beginRename();
+            return;
+        }
+        if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onActivate(tab.id);
+        }
+    }, [beginRename, onActivate, onRename, tab.id, tab.type]);
+
+    const commitRename = useCallback(() => {
+        if (!isRenaming) return;
+        setIsRenaming(false);
+        const title = renameValue.trim();
+        if (title !== getAITabDisplayTitle(tab, lang)) onRename?.(tab.id, title);
+    }, [isRenaming, lang, onRename, renameValue, tab]);
+
+    const cancelRename = useCallback(() => {
+        isComposingRef.current = false;
+        setIsRenaming(false);
+        setRenameValue("");
+        requestAnimationFrame(() => {
+            tabRef.current?.focus();
+        });
+    }, []);
+
+    const handleRenameCompositionEnd = useCallback(() => {
+        isComposingRef.current = false;
+    }, []);
 
     const isLocal = tab.type === "local";
     const isProject = tab.type === "project";
@@ -172,13 +211,16 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
 
     return (
         <div
+            ref={tabRef}
             data-testid={`ai-tab-${tab.id}`}
-            role="tab"
-            aria-selected={active}
+            role={isRenaming ? "presentation" : "tab"}
+            aria-selected={isRenaming ? undefined : active}
             aria-label={accessibleTitle}
-            tabIndex={0}
-            onClick={handleClick}
-            onKeyDown={handleKeyDown}
+            aria-description={onRename ? textForTabLang(lang, "Double-click or press F2 to rename", "双击或按 F2 修改名称", "雙擊或按 F2 修改名稱") : undefined}
+            tabIndex={isRenaming ? -1 : 0}
+            onClick={isRenaming ? undefined : handleClick}
+            onDoubleClick={beginRename}
+            onKeyDown={isRenaming ? undefined : handleKeyDown}
             onContextMenu={(e) => { if (onContextMenu) { e.preventDefault(); onContextMenu(e, tab); } }}
             style={{
                 display: "flex",
@@ -201,9 +243,37 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         >
             {tabIconElement}
             {recording && <span data-testid={`ai-tab-recording-${tab.id}`} aria-label="Recording" style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#dc2626", flexShrink: 0, animation: "pulse-recording 1.5s ease-in-out infinite" }} />}
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                {displayTitle}
-            </span>
+            {isRenaming ? (
+                <input
+                    data-testid={`ai-tab-rename-input-${tab.id}`}
+                    autoFocus
+                    value={renameValue}
+                    maxLength={60}
+                    aria-label={textForTabLang(lang, "AI assistant tab name", "AI 助手标签名称", "AI 助手標籤名稱")}
+                    onChange={(event) => setRenameValue(event.target.value)}
+                    onFocus={(event) => event.currentTarget.select()}
+                    onCompositionStart={() => { isComposingRef.current = true; }}
+                    onCompositionEnd={handleRenameCompositionEnd}
+                    onBlur={commitRename}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                        if (event.key === "Enter" && !isComposingRef.current) {
+                            event.preventDefault();
+                            event.currentTarget.blur();
+                        }
+                        if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancelRename();
+                        }
+                    }}
+                    style={{ width: 104, minWidth: 0, boxSizing: "border-box", padding: "1px 4px", border: `1px solid ${theme.btnColor}`, borderRadius: 4, outline: `2px solid color-mix(in srgb, ${theme.btnColor} 28%, transparent)`, outlineOffset: 1, background: theme.fieldBg || theme.bg, color: theme.text, font: "inherit" }}
+                />
+            ) : (
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {displayTitle}
+                </span>
+            )}
             {readOnlyLabel && (
                 <span style={{ flexShrink: 0, fontSize: 10, lineHeight: 1, padding: "2px 4px", borderRadius: 4, border: `1px solid ${theme.divider}`, color: theme.textMuted }}>
                     {readOnlyLabel}

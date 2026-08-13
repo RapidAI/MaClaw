@@ -1,6 +1,7 @@
 package intent
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sort"
@@ -25,11 +26,12 @@ const DefaultLLMTimeout = 30 * time.Second
 
 // Config holds initialization parameters for the UnifiedIntentClassifier.
 type Config struct {
-	Embedder   embedding.Embedder
-	LLMFunc    LLMClassifyFunc // optional, can be nil
-	LLMTimeout time.Duration   // tree-only path; 0 -> DefaultLLMTimeout (30s)
+	Embedder       embedding.Embedder
+	LLMFunc        LLMClassifyFunc // optional compatibility callback
+	LLMContextFunc LLMClassifyContextFunc
+	LLMTimeout     time.Duration // tree-only path; 0 -> DefaultLLMTimeout (30s)
 	// FusionTreeDeadline caps how long classifyWithFusion waits on the tree
-	// channel when embedding is also available. 0 -> DefaultFusionTreeDeadline (5s).
+	// channel when embedding is also available. 0 -> DefaultFusionTreeDeadline.
 	// Never exceeds LLMTimeout when both are set.
 	FusionTreeDeadline time.Duration
 }
@@ -46,10 +48,11 @@ type Config struct {
 // are fused using a weighted formula. When only one channel is available,
 // the system degrades gracefully (α forced to 0 or 1).
 type UnifiedIntentClassifier struct {
-	affinity   *ToolAffinityRegistry
-	embedder   embedding.Embedder
-	anchors    []intentAnchor
+	affinity           *ToolAffinityRegistry
+	embedder           embedding.Embedder
+	anchors            []intentAnchor
 	llmFunc            LLMClassifyFunc
+	llmContextFunc     LLMClassifyContextFunc
 	llmTimeout         time.Duration
 	fusionTreeDeadline time.Duration
 
@@ -105,6 +108,7 @@ func New(cfg Config) *UnifiedIntentClassifier {
 		embedder:           cfg.Embedder,
 		anchors:            BuildAnchorsFromDefinitions(defs),
 		llmFunc:            cfg.LLMFunc,
+		llmContextFunc:     cfg.LLMContextFunc,
 		llmTimeout:         timeout,
 		fusionTreeDeadline: fusionTreeDeadline,
 		treeText:           treeText,
@@ -119,7 +123,7 @@ func New(cfg Config) *UnifiedIntentClassifier {
 	if !isNoop {
 		layers = append(layers, "Layer 2 (embedding)")
 	}
-	if cfg.LLMFunc != nil {
+	if cfg.LLMFunc != nil || cfg.LLMContextFunc != nil {
 		layers = append(layers, "Layer 3 (LLM)")
 	}
 	if len(layers) == 0 {
@@ -152,11 +156,11 @@ func New(cfg Config) *UnifiedIntentClassifier {
 // calls with the same semantic input return the cached result without recomputation.
 //
 // Execution model:
-//  1. If both L2 (embedding) and L3 (LLM) are available → run in parallel,
-//     fuse results using α·emb + (1-α)·tree, apply three-state verdict.
-//  2. If only L2 available → α forced to 1.0 (embedding only).
-//  3. If only L3 available → α forced to 0.0 (tree only).
-//  4. If neither available → return conservative unknown.
+//  1. Run L2 embedding first. A high-confidence, well-separated result is
+//     returned immediately without any LLM request.
+//  2. Escalate only ambiguous L2 results to L3 tree reasoning.
+//  3. If only one channel is available, use it; if neither is available,
+//     return conservative unknown.
 //
 // Local keyword rules are not used as a degraded decision path. Callers that
 // gate workflow transitions should fail closed or ask for clarification when
@@ -174,7 +178,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	u.mu.RLock()
 	emb := u.embedder
 	anchors := u.anchors
-	hasLLM := u.llmFunc != nil
+	hasLLM := u.llmFunc != nil || u.llmContextFunc != nil
 	isReady := u.ready
 	u.mu.RUnlock()
 
@@ -187,34 +191,34 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 		log.Printf("[UnifiedIntentClassifier] Layer 2 skipped: anchors not ready")
 	}
 
-	// Dual-channel parallel fusion when both channels are available.
-	if canEmb && canTree {
-		fusionResult := u.classifyWithFusion(msg.Text)
-		u.fusionCache.Store(fusionCacheKey(epoch, msg.Text), fusionResult) // store for diagnostics
-		bestResult := u.fusionToClassification(fusionResult)
-		applyExecutionAffordances(msg.Text, &bestResult)
-		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
-		u.cacheAndLog(cacheKey, msg.Text, &bestResult)
-		return bestResult
-	}
-
-	// Single-channel fallback: embedding only.
+	// Fast path: embedding is deterministic and local. Its confidence rule is
+	// intentionally strict (top score >= 0.78 and top-2 gap >= 0.10); only an
+	// unresolved result pays the remote LLM latency.
 	if canEmb {
-		l2Result, _ := classifyByEmbedding(emb, anchors, msg.Text)
-		applyExecutionAffordances(msg.Text, &l2Result)
-		l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
-		u.cacheAndLog(cacheKey, msg.Text, &l2Result)
-		return l2Result
+		l2Result, confident := classifyByEmbedding(emb, anchors, msg.Text)
+		if confident || !canTree {
+			applyExecutionAffordances(msg.Text, &l2Result)
+			l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
+			u.cacheAndLog(cacheKey, msg.Text, &l2Result)
+			return l2Result
+		}
+
+		// Do not start an L3 call speculatively. An ambiguous embedding result is
+		// useful evidence for logs, but the tree's semantic verdict is the route
+		// authority after escalation.
+		log.Printf("[UnifiedIntentClassifier] Layer 2 ambiguous; escalating to tree: text_len=%d primary=%s conf=%.2f", len([]rune(msg.Text)), l2Result.Primary, l2Result.Confidence)
 	}
 
-	// Single-channel fallback: LLM only (tree reasoning).
+	// L3 is reached only when embedding is unavailable or cannot separate the
+	// candidate intents with enough confidence.
 	if canTree {
 		u.mu.RLock()
 		llmFn := u.llmFunc
+		llmContextFn := u.llmContextFunc
 		llmTimeout := u.llmTimeout
 		u.mu.RUnlock()
 
-		candidates, err := classifyByTreeWithTimeout(llmFn, u.treeText, msg.Text, llmTimeout)
+		candidates, err := classifyByTreeWithTimeout(llmContextFn, llmFn, u.treeText, msg.Text, llmTimeout)
 		if err == nil && len(candidates) > 0 {
 			top := candidates[0]
 			bestResult := ClassificationResult{
@@ -222,7 +226,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 				Confidence:   top.Score,
 				Secondary:    secondaryTreeLabels(candidates),
 				Layer:        3,
-				Reason:       fmt.Sprintf("tree-only: %s (%.3f)", top.Label, top.Score),
+				Reason:       fmt.Sprintf("tree-after-embedding: %s (%.3f)", top.Label, top.Score),
 				WorkflowType: top.WorkflowType,
 			}
 			if top.Label == LabelCoding && top.WorkflowType == "coding" {
@@ -234,6 +238,19 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 			return bestResult
 		}
 		log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v; returning conservative unknown intent", err)
+	}
+
+	// If L2 was available but inconclusive and L3 failed, return the L2 signal
+	// explicitly marked degraded. This preserves a useful route hint without
+	// claiming it was semantically confirmed.
+	if canEmb {
+		l2Result, _ := classifyByEmbedding(emb, anchors, msg.Text)
+		l2Result.Degraded = true
+		l2Result.Reason = "embedding ambiguous; tree classification unavailable"
+		applyExecutionAffordances(msg.Text, &l2Result)
+		l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
+		u.cacheAndLog(cacheKey, msg.Text, &l2Result)
+		return l2Result
 	}
 
 	// Degraded mode: neither L2 nor L3 is available (or L3 failed). Primary
@@ -252,24 +269,26 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	return result
 }
 
-func classifyByTreeWithTimeout(llmFn LLMClassifyFunc, treeText, text string, timeout time.Duration) ([]TreeCandidate, error) {
+func classifyByTreeWithTimeout(llmContextFn LLMClassifyContextFunc, llmFn LLMClassifyFunc, treeText, text string, timeout time.Duration) ([]TreeCandidate, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	type result struct {
 		candidates []TreeCandidate
 		err        error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		candidates, err := ClassifyByTree(llmFn, treeText, text)
+		candidates, err := ClassifyByTreeContext(ctx, llmContextFn, llmFn, treeText, text)
 		ch <- result{candidates: candidates, err: err}
 	}()
 	select {
 	case r := <-ch:
 		return r.candidates, r.err
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("tree reasoning LLM call timed out after %s", timeout)
+	case <-ctx.Done():
+		return nil, fmt.Errorf("tree reasoning LLM call timed out after %s: %w", timeout, ctx.Err())
 	}
 }
 
@@ -403,6 +422,15 @@ func (u *UnifiedIntentClassifier) SetFusionTreeDeadline(d time.Duration) {
 func (u *UnifiedIntentClassifier) SetLLMFunc(fn LLMClassifyFunc) {
 	u.mu.Lock()
 	u.llmFunc = fn
+	u.cacheEpoch.Add(1)
+	u.mu.Unlock()
+	u.InvalidateCache()
+}
+
+// SetLLMContextFunc sets the cancellable Layer 3 callback.
+func (u *UnifiedIntentClassifier) SetLLMContextFunc(fn LLMClassifyContextFunc) {
+	u.mu.Lock()
+	u.llmContextFunc = fn
 	u.cacheEpoch.Add(1)
 	u.mu.Unlock()
 	u.InvalidateCache()
@@ -576,6 +604,7 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 	u.mu.RLock()
 	fusionCfg := u.fusionCfg
 	llmFn := u.llmFunc
+	llmContextFn := u.llmContextFunc
 	treeDeadline := u.fusionTreeDeadline
 	u.mu.RUnlock()
 
@@ -599,20 +628,24 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 		embCh <- embResult{scores: scores, ms: float64(time.Since(t).Milliseconds())}
 	}()
 
-	// L3: tree reasoning channel (runs in goroutine).
+	// L3: tree reasoning channel (runs in goroutine). Cancelling this context
+	// on the fusion deadline releases the HTTP request instead of leaving a
+	// slow classifier occupying an LLM scheduler slot in the background.
+	treeCtx, cancelTree := context.WithCancel(context.Background())
+	defer cancelTree()
 	go func() {
 		t := time.Now()
-		candidates, err := ClassifyByTree(llmFn, u.treeText, text)
+		candidates, err := ClassifyByTreeContext(treeCtx, llmContextFn, llmFn, u.treeText, text)
 		treeCh <- treeResult{candidates: candidates, ms: float64(time.Since(t).Milliseconds()), err: err}
 	}()
 
 	// Wait for embedding (fast, <100ms typically).
 	emb := <-embCh
 
-	// Wait for tree channel with a short fusion-only deadline (default 5s), NOT the
+	// Wait for tree channel with the configurable fusion-only deadline (default 5s), NOT the
 	// full 30s LLM timeout. Dual-channel fusion already has embedding; waiting for a
 	// slow reasoning model only delays the control path. On timeout we degrade to
-	// embedding-only (designed path) while the tree goroutine finishes in background.
+	// embedding-only (designed path) and cancel the context-aware transport.
 	if treeDeadline <= 0 {
 		treeDeadline = DefaultFusionTreeDeadline
 	}
@@ -621,12 +654,16 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 	select {
 	case tree = <-treeCh:
 		// Tree responded within deadline.
-		treeTimer.Stop()
+		if !treeTimer.Stop() {
+			select {
+			case <-treeTimer.C:
+			default:
+			}
+		}
 	case <-treeTimer.C:
+		cancelTree()
 		// Tree too slow — proceed with embedding only.
 		tree = treeResult{err: fmt.Errorf("tree channel deadline exceeded (%s)", treeDeadline)}
-		// Let the goroutine finish in background (it will write to the
-		// buffered channel and be GC'd).
 	}
 
 	embOK := len(emb.scores) > 0

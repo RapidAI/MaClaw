@@ -399,6 +399,27 @@ func (s *Service) VerifyHubSecret(ctx context.Context, hubID, rawSecret string) 
 	return s.verifyHubSecret(ctx, hubID, rawSecret)
 }
 
+// ValidateHubID confirms that a Hub still exists and is enabled without
+// requiring its machine secret. It is intended for administrator-scoped
+// control-plane writes; Hub-facing APIs must continue to use VerifyHubSecret.
+func (s *Service) ValidateHubID(ctx context.Context, hubID string) error {
+	if s == nil || s.hubs == nil {
+		return ErrHubUnauthorized
+	}
+	hubID = strings.TrimSpace(hubID)
+	if hubID == "" {
+		return ErrHubUnauthorized
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return err
+	}
+	if hub == nil || hub.IsDisabled || hub.Status == "disabled" {
+		return ErrHubUnauthorized
+	}
+	return nil
+}
+
 const deviceCredentialBackupSettingPrefix = "hub_device_credentials:"
 
 // deviceCredentialBackupSnapshotMaxBytes bounds direct service callers too;

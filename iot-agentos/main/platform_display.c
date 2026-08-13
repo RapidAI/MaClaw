@@ -65,9 +65,6 @@ bool platform_display_is_off(void) {
 void platform_display_show_startup(void) { board_port_show_startup_screen(); }
 void platform_display_set_pet_state(const char *state) { board_port_set_pet_state(state); }
 void platform_display_set_command_stage(const char *stage) { board_port_set_command_stage(stage); }
-void platform_display_set_command_cancel_enabled(bool enabled) {
-    board_port_set_command_cancel_enabled(enabled);
-}
 void platform_display_set_pet_profile(const char *skin, bool motion_enabled) {
     board_port_set_pet_profile(skin, motion_enabled);
 }

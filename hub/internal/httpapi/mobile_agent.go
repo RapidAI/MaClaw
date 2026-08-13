@@ -112,6 +112,20 @@ func mobileRunAgentLoop(
 	if len(baseMessages) == 0 {
 		return "", "", fmt.Errorf("agent messages are required")
 	}
+	if principal == nil {
+		return "", "", errString("mobile account is no longer available")
+	}
+	// Keep the lifecycle read lock for the complete agent invocation. An agent
+	// may write its workspace or materialize a private key after an LLM/tool
+	// round trip, so merely checking the tombstone at request start would let an
+	// in-flight invocation recreate files after an unbind. The unbind path takes
+	// the write lock when it marks the owner deleted, which waits for this run to
+	// finish before removing the agent runtime directory.
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	if !mobileOwnerWriteAllowedLocked(principal.TenantID, mobilePrincipalOwnerID(principal)) {
+		return "", "", errString("mobile account is no longer available")
+	}
 	if answer, requestID, ok := mobileTryCoreAgent(ctx, r, principal, officialLLM, delegated, useDelegated, baseMessages, emit); ok {
 		return answer, requestID, nil
 	}

@@ -61,6 +61,48 @@ func TestBugReportScreenshotPreviewDataURLCreatesBoundedPNGThumbnail(t *testing.
 	}
 }
 
+func TestAIAssistantAttachmentPreviewDataURLCreatesCompactThumbnail(t *testing.T) {
+	app := NewApp()
+	path := filepath.Join(t.TempDir(), "attachment.png")
+	source := image.NewRGBA(image.Rect(0, 0, 480, 120))
+	for y := 0; y < 120; y++ {
+		for x := 0; x < 480; x++ {
+			source.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 120, A: 255})
+		}
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(file, source); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := app.AIAssistantAttachmentPreviewDataURL(path)
+	if err != nil {
+		t.Fatalf("create preview: %v", err)
+	}
+	const prefix = "data:image/png;base64,"
+	if !strings.HasPrefix(preview, prefix) {
+		t.Fatalf("preview = %q, want PNG data URL", preview)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(preview, prefix))
+	if err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	thumbnail, err := png.Decode(bytes.NewReader(decoded))
+	if err != nil {
+		t.Fatalf("decode thumbnail: %v", err)
+	}
+	if got := thumbnail.Bounds(); got.Dx() != 96 || got.Dy() != 24 {
+		t.Fatalf("thumbnail bounds = %v, want 96x24", got)
+	}
+}
+
 func TestNormalizeBugReportScreenshotPathsDeduplicatesAndLimits(t *testing.T) {
 	paths := make([]string, 0, maxBugReportScreenshots+3)
 	paths = append(paths, "", " screenshot-0.png ", "screenshot-0.png")

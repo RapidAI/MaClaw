@@ -28,7 +28,11 @@ type taskIntentResult struct {
 	Evidence   []string
 	Reason     string
 	Confidence float64
-	Source     taskIntentSource
+	// Degraded means this semantic result is a fallback (for example an
+	// inconclusive embedding after the LLM classifier failed). It may provide a
+	// routing hint, but it must not independently authorize an execution path.
+	Degraded bool
+	Source   taskIntentSource
 }
 
 type llmIntentClassification struct {
@@ -41,10 +45,29 @@ type llmIntentClassification struct {
 func classifyTaskIntent(text string) taskIntentResult {
 	if uic := unifiedClassifierPtr.Load(); uic != nil {
 		result := uic.Classify(intent.MessageContext{Text: text})
-		intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
-		return taskIntentResult{Intent: normalizeTaskIntent(taskIntent(intentStr)), Matched: matched, Evidence: evidence, Reason: reason, Confidence: confidence, Source: taskIntentSourceUIC}
+		return taskIntentResultFromUnifiedClassification(result)
 	}
 	return classifyTaskIntentWithoutSemantic(text)
+}
+
+func taskIntentResultFromUnifiedClassification(result intent.ClassificationResult) taskIntentResult {
+	intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
+	resultIntent := normalizeTaskIntent(taskIntent(intentStr))
+	// A failed L3 escalation can leave a strong-but-insufficiently-separated L2
+	// result. Never use that degraded signal to choose a coding/SSH execution
+	// route. The ordinary agent can clarify instead.
+	if result.Degraded && (resultIntent == intentCoding || resultIntent == intentSSH) {
+		resultIntent = intentAmbiguous
+	}
+	return taskIntentResult{
+		Intent:     resultIntent,
+		Matched:    matched,
+		Evidence:   evidence,
+		Reason:     reason,
+		Confidence: confidence,
+		Degraded:   result.Degraded,
+		Source:     taskIntentSourceUIC,
+	}
 }
 
 func classifyTaskIntentWithoutSemantic(text string) taskIntentResult {
@@ -55,14 +78,18 @@ func classifyTaskIntentWithoutSemantic(text string) taskIntentResult {
 }
 
 func (h *IMMessageHandler) classifyTaskIntentForSessionGuard(text string) taskIntentResult {
-	if result, ok := h.classifyTaskIntentWithUIC(text); ok {
-		return result
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		// Session creation is a later tool-level capability decision, not a
+		// reason to make the current turn wait for tree/LLM classification.
+		// An inconclusive local result is fail-closed by the caller.
+		return taskIntentResultFromUnifiedClassification(uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text}))
 	}
 	return classifyTaskIntent(text)
 }
 
 func shouldRequireExecutionConfirmationForIntent(msg IMUserMessage, pending *pendingConfirmation, intent taskIntentResult) bool {
 	return !msg.IsBackground && pending == nil && strings.TrimSpace(msg.Text) != "" &&
+		!intent.Degraded &&
 		!intent.IsContinuationMatch() &&
 		(intent.Intent == intentCoding || intent.Intent == intentSSH)
 }
@@ -72,11 +99,25 @@ func shouldConsiderExecutionConfirmation(freshTask bool, msg IMUserMessage, trim
 }
 
 func (h *IMMessageHandler) classifyTaskIntentForExecution(userID, text string, attachments []MessageAttachment, httpClient *http.Client) taskIntentResult {
-	if len(attachments) == 0 {
-		if result, ok := h.classifyTaskIntentWithUIC(text); ok && isDecisiveTaskIntentResult(result) {
-			return result
-		}
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		// This is on the path before the main Agent's first request. A full UIC
+		// call can escalate an unavailable or ambiguous embedding to L3 and hold
+		// the whole turn for several seconds merely to decide whether to display
+		// an optional confirmation card. Only use the local L2 signal here.
+		//
+		// It cannot authorize execution: a degraded/unknown result simply skips
+		// the optional card and the normal Agent safety gates remain in force.
+		// Attachments are deliberately not sent to a separate intent LLM here for
+		// the same reason; their normal Agent path already receives the files.
+		result := uic.ClassifyEmbeddingOnly(intent.MessageContext{
+			Text:   text,
+			UserID: userID,
+		})
+		return taskIntentResultFromUnifiedClassification(result)
 	}
+	// Compatibility fallback for minimal/standalone handlers that have no UIC
+	// at all. The desktop runtime initializes UIC before accepting turns, so
+	// normal task startup remains on the non-blocking path above.
 	fallback := classifyTaskIntentWithoutSemantic(text)
 	if h == nil || h.app == nil || httpClient == nil {
 		return fallback
@@ -87,25 +128,21 @@ func (h *IMMessageHandler) classifyTaskIntentForExecution(userID, text string, a
 	}
 	llmResult, err := h.classifyTaskIntentWithLLM(cfg, userID, text, attachments, httpClient)
 	if err != nil {
-		if result, ok := h.classifyTaskIntentWithUIC(text); ok && isDecisiveTaskIntentResult(result) {
-			return result
-		}
 		return fallback
 	}
 	if llmResult.Confidence < 0.6 {
-		if fallback.Intent != intentAmbiguous && fallback.Intent != intentUnknown {
-			return fallback
-		}
 		llmResult.Intent = intentAmbiguous
 		if strings.TrimSpace(llmResult.Reason) == "" {
 			llmResult.Reason = "model confidence too low; conservatively downgraded to ambiguous"
 		}
-		return llmResult
 	}
 	return llmResult
 }
 
 func isDecisiveTaskIntentResult(result taskIntentResult) bool {
+	if result.Degraded {
+		return false
+	}
 	if result.IsContinuationMatch() {
 		return true
 	}
@@ -121,15 +158,7 @@ func (h *IMMessageHandler) classifyTaskIntentWithUIC(text string) (taskIntentRes
 		return taskIntentResult{}, false
 	}
 	result := uic.Classify(intent.MessageContext{Text: text})
-	intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
-	return taskIntentResult{
-		Intent:     taskIntent(intentStr),
-		Matched:    matched,
-		Evidence:   evidence,
-		Reason:     reason,
-		Confidence: confidence,
-		Source:     taskIntentSourceUIC,
-	}, true
+	return taskIntentResultFromUnifiedClassification(result), true
 }
 
 func (h *IMMessageHandler) classifyTaskIntentWithLLM(cfg corelib.MaclawLLMConfig, userID, text string, attachments []MessageAttachment, httpClient *http.Client) (taskIntentResult, error) {

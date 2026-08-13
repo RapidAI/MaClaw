@@ -16,6 +16,10 @@
 #error "Bread display adapter may only be included by the Bread Compact profile"
 #endif
 
+#ifndef MACLAW_COMPACT_DISPLAY_ADAPTER_IMPLEMENTATION
+#error "Bread display adapter is owned exclusively by compact_display_service.c"
+#endif
+
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
@@ -72,6 +76,11 @@ static inline int compact_display_adapter_height(void) { return BREAD_DISPLAY_HE
 static inline unsigned compact_display_adapter_default_brightness(void) {
     return BREAD_DISPLAY_DEFAULT_BRIGHTNESS;
 }
+
+/* This is a DMA/staging capacity, not standby visual geometry. Keep it in
+ * the physical panel adapter so a new compact profile can qualify transport
+ * chunking without changing scene/layout data. */
+static inline int compact_display_adapter_transfer_stripe_rows(void) { return 16; }
 
 /* ST7789 accepts bounded dirty rectangles efficiently.  The shared renderer
  * owns frame comparison and recovery; this profile only declares the panel
@@ -421,15 +430,23 @@ static inline void compact_display_adapter_release_consumed_pet_source(void *fra
 /* Decorative renderer workers retain admission, stop/join and scene policy in
  * the shared renderer. This board profile owns their runtime footprint only. */
 static inline BaseType_t compact_display_adapter_start_thinking_animation_task(
-    TaskFunction_t entry, TaskHandle_t *out_task) {
+    TaskFunction_t entry, void *context, TaskHandle_t *out_task) {
     if (!entry || !out_task) return pdFAIL;
-    return xTaskCreate(entry, "maclaw_bread_thinking", 3072, NULL, 2, out_task);
+    return xTaskCreate(entry, "maclaw_bread_thinking", 3072, context, 2, out_task);
+}
+
+/* Bread keeps the conservative established thinking cadence.  The board has
+ * a different panel/transport budget from Fangtang, so this remains a
+ * physical display profile decision rather than a scene-level board branch. */
+static inline uint32_t compact_display_adapter_thinking_worker_wait_ms(
+    uint32_t common_interval_ms) {
+    return common_interval_ms;
 }
 
 static inline BaseType_t compact_display_adapter_start_pet_animation_task(
-    TaskFunction_t entry, TaskHandle_t *out_task) {
+    TaskFunction_t entry, void *context, TaskHandle_t *out_task) {
     if (!entry || !out_task) return pdFAIL;
-    return xTaskCreate(entry, "maclaw_bread_pet", 3072, NULL, 2, out_task);
+    return xTaskCreate(entry, "maclaw_bread_pet", 3072, context, 2, out_task);
 }
 
 /* Bread's pet worker also enforces the shared idle-display timeout.  When no
@@ -439,4 +456,20 @@ static inline BaseType_t compact_display_adapter_start_pet_animation_task(
 static inline uint32_t compact_display_adapter_pet_worker_wait_ms(
     size_t remote_pet_frame_count, uint32_t animated_frame_ms) {
     return remote_pet_frame_count < 2 ? 500u : animated_frame_ms;
+}
+
+/* Bread's established presentation budget can retain the traditional
+ * one-presented-tick phase progression. */
+static inline bool compact_display_adapter_pet_animation_tracks_elapsed_time(void) {
+    return false;
+}
+
+/* Bread does not currently require transport qualification telemetry.  Keep
+ * the private service seam uniform so renderer business/scene behavior never
+ * branches on the selected physical panel. */
+static inline void compact_display_adapter_note_pet_animation_tick(
+    uint32_t target_interval_ms, bool presented, uint32_t presentation_us) {
+    (void)target_interval_ms;
+    (void)presented;
+    (void)presentation_us;
 }

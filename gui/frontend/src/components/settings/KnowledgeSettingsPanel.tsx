@@ -1368,6 +1368,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const hubShareDialogRef = useRef<HTMLElement | null>(null);
     const hubShareDescriptionRef = useRef<HTMLTextAreaElement | null>(null);
     const busyRef = useRef(busy);
+    const enterprisePurgeInFlightRef = useRef(false);
     const syncStatusIdentityRef = useRef('');
     const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
     const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', limit: 20, includeDisabled: false });
@@ -1378,6 +1379,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [qualityOptions, setQualityOptions] = useState({ policy: 'balanced', dryRun: true, distillMode: '', maxSourcesPerAction: 100, allowSensitiveDisable: false, allowDuplicateSuppression: true });
     const [showImportDialog, setShowImportDialog] = useState(false);
     const [confirmDialog, setConfirmDialog] = useState<{ show: boolean; title: string; message: string; onConfirm: () => void }>({ show: false, title: '', message: '', onConfirm: () => {} });
+    const [enterprisePurgePending, setEnterprisePurgePending] = useState(false);
     const [deepCrawlBusy, setDeepCrawlBusy] = useState(false);
     const knowledgeImportGlobal = useKnowledgeImportOptional();
 
@@ -1411,7 +1413,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
 
     const confirmT = (key: string) => {
         const isZh = lang?.startsWith('zh') ?? false;
-        const map: Record<string, string> = { cancel: isZh ? '取消' : 'Cancel', confirm: isZh ? '确认' : 'Confirm' };
+        const map: Record<string, string> = {
+            cancel: isZh ? '取消' : 'Cancel',
+            confirm: isZh ? '确认' : 'Confirm',
+            processing: isZh ? '正在清除缓存，请稍候…' : 'Clearing cache. Please wait…',
+        };
         return map[key] || key;
     };
 
@@ -2104,18 +2110,33 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
 
     const purgeEnterpriseLibrary = async (lib: EnterpriseLibrary) => {
         const id = String(lib.library_id || '').trim();
-        if (!id) return;
+        if (!id || busyRef.current || enterprisePurgeInFlightRef.current) return;
         const name = lib.name || id;
-        if (!window.confirm(t(
-            `Permanently delete local cache for "${name}"? It will only return after the next Hub sync.`,
-            `将永久删除「${name}」的本地缓存，仅在下次 Hub 同步后重新拉取。确认清除？`,
-        ))) return;
-        await runTask(`enterprisePurge:${id}`, async () => {
-            await EnterprisePurgeRevokedLibrary(id);
-            setEnterpriseLibraries(prev => (prev || []).filter(item => item.library_id !== id));
-            notifySuccess(t('Digital-asset cache purged.', '已清除该数字资产本地缓存。'));
-            return true;
-        }, { successMessage: false });
+        setConfirmDialog({
+            show: true,
+            title: t('Purge local cache', '清除本地缓存'),
+            message: t(
+                `Permanently delete local cache for "${name}"? It will only return after the next Hub sync.`,
+                `将永久删除「${name}」的本地缓存，仅在下次 Hub 同步后重新拉取。确认清除？`,
+            ),
+            onConfirm: () => {
+                if (busyRef.current || enterprisePurgeInFlightRef.current) return;
+                enterprisePurgeInFlightRef.current = true;
+                setEnterprisePurgePending(true);
+                void runTask(`enterprisePurge:${id}`, async () => {
+                    try {
+                        await EnterprisePurgeRevokedLibrary(id);
+                        setEnterpriseLibraries(prev => (prev || []).filter(item => item.library_id !== id));
+                        notifySuccess(t('Digital-asset cache purged.', '已清除该数字资产本地缓存。'));
+                        return true;
+                    } finally {
+                        enterprisePurgeInFlightRef.current = false;
+                        setEnterprisePurgePending(false);
+                        setConfirmDialog(prev => ({ ...prev, show: false }));
+                    }
+                }, { successMessage: false });
+            },
+        });
     };
 
     const runEnterpriseSyncNow = async () => {
@@ -3693,7 +3714,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 title={confirmDialog.title}
                 message={confirmDialog.message}
                 t={confirmT}
-                onCancel={() => setConfirmDialog(prev => ({ ...prev, show: false }))}
+                confirmPending={enterprisePurgePending}
+                onCancel={() => {
+                    if (enterprisePurgePending) return;
+                    setConfirmDialog(prev => ({ ...prev, show: false }));
+                }}
                 onConfirm={confirmDialog.onConfirm}
             />
         )}

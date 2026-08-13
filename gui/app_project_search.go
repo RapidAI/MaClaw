@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +27,8 @@ var (
 	remoteCodingTaskMu sync.Mutex
 	// expertTaskMu makes the expert source tag an idempotency key even when two
 	// launchers request the same expert at the same time.
-	expertTaskMu sync.Mutex
+	expertTaskMu       sync.Mutex
+	assistantTabTaskMu sync.Mutex
 )
 
 const (
@@ -41,6 +43,10 @@ const (
 	// taskSourceExpertPrefix marks a durable task-management entry that opens a
 	// named AI expert rather than a generic project conversation.
 	taskSourceExpertPrefix = taskSourceTagPrefix + "expert:"
+	// taskSourceAssistantTabPrefix marks a durable task-management entry created
+	// for a secondary assistant tab (VE, group discussion, ACP, etc.). The
+	// suffix is a stable hash of the tab identity, never user-provided text.
+	taskSourceAssistantTabPrefix = taskSourceTagPrefix + "assistant_tab:"
 	// taskCodingDevTag marks tasks created with the "programming / coding" option.
 	// Used by the GUI to open the task in coding-agent mode.
 	taskCodingDevTag = "coding_dev"
@@ -596,6 +602,70 @@ func (a *App) CreateExpertTask(expertID, expertName string) ProjectSearchResult 
 		title = expertID
 	}
 	content := fmt.Sprintf("# %s\n\nAI expert task. Reopen this task to continue working with expert: %s.", recentTaskDisplayTitle(title), expertID)
+	return a.createTaskRecordWithWorkingDir(title, content, []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		sourceTag,
+	}, "", false)
+}
+
+// EnsureAssistantTabTask creates (or returns) the task-management entry for a
+// non-main AI assistant tab. It is deliberately the backend authority for this
+// invariant so every UI entry point can use the same idempotent registration.
+//
+// If projectPath already identifies a visible task, that task is reused. This
+// keeps ordinary project/coding tabs one-to-one with their existing task while
+// VE, group, and ACP tabs receive their own durable sidebar entry.
+func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath string) ProjectSearchResult {
+	tabType = strings.ToLower(strings.TrimSpace(tabType))
+	tabIdentity = strings.TrimSpace(tabIdentity)
+	if tabType == "" || tabIdentity == "" {
+		return ProjectSearchResult{}
+	}
+	for _, r := range tabType {
+		if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-' && r != '_' {
+			return ProjectSearchResult{}
+		}
+	}
+
+	projectPath = normalizeProjectSessionPath(projectPath)
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{}
+	}
+	if projectPath != "" {
+		if rec := pi.Get(projectPath); rec != nil && isTaskManagementRecord(*rec) && !pi.IsHidden(projectPath) && !pi.IsArchived(projectPath) {
+			return projectRecordToSearchResult(pi, *rec)
+		}
+	}
+
+	// One lock covers lookup and creation, preventing duplicate records when
+	// simultaneous UI events ask to open the same secondary assistant tab.
+	assistantTabTaskMu.Lock()
+	defer assistantTabTaskMu.Unlock()
+	digest := sha256.Sum256([]byte(tabType + "\x00" + tabIdentity))
+	sourceTag := fmt.Sprintf("%s%s:%x", taskSourceAssistantTabPrefix, tabType, digest[:12])
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, sourceTag)
+	}) {
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		return projectRecordToSearchResult(pi, rec)
+	}
+
+	title = normalizeRecentTaskName(title)
+	if title == "" {
+		title = "AI assistant"
+	}
+	// Do not persist the raw external tab identity in task.md: it may originate
+	// from a remote client and the durable source tag above already provides the
+	// opaque idempotency key we need.
+	content := fmt.Sprintf("# %s\n\nSecondary AI assistant tab.\nType: %s", recentTaskDisplayTitle(title), tabType)
 	return a.createTaskRecordWithWorkingDir(title, content, []string{
 		taskManagementTag,
 		taskUserCreatedTag,
@@ -3001,9 +3071,6 @@ func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState
 	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != "" && executionProjectPath != projectPath {
 		return lookup(executionProjectPath)
 	}
-	if a.workflowDisabled.Load() {
-		return nil
-	}
 	return nil
 }
 
@@ -3582,6 +3649,11 @@ func (a *App) ResumeProject(projectPath string) string {
 // Pass empty name to revert to the auto-generated name.
 // This is a Wails binding method called from the frontend inline editor.
 func (a *App) RenameTask(projectPath, newName string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	newName = strings.TrimSpace(newName)
+	if projectPath == "" {
+		return ""
+	}
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
 		return ""
@@ -3591,7 +3663,13 @@ func (a *App) RenameTask(projectPath, newName string) string {
 		return ""
 	}
 	pi.SetCustomName(projectPath, newName)
-	return pi.GetDisplayName(projectPath)
+	displayName := pi.GetDisplayName(projectPath)
+	a.emitEvent(EventProjectTaskRenamed, map[string]string{
+		"project_path": projectPath,
+		"name":         displayName,
+	})
+	a.emitProjectIndexChanged(projectPath)
+	return displayName
 }
 
 // PinTask pins or unpins a task-management item.
@@ -3611,7 +3689,7 @@ func (a *App) PinTask(projectPath string, pinned bool) {
 // HideTask removes a task from task management (soft delete).
 // The underlying memory entries are preserved — only the list visibility is affected.
 func (a *App) HideTask(projectPath string) {
-	projectPath = strings.TrimSpace(projectPath)
+	projectPath = normalizeProjectSessionPath(projectPath)
 	if projectPath == "" {
 		log.Printf("[project_search] HideTask skipped reason=empty_path")
 		return
@@ -3988,18 +4066,15 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 
 	// Cache the tabID → projectPath mapping in memory for fast lookup.
 	a.tabProjectPaths.Store(tabID, projectPath)
-	// Reopening a tab restores its private directory before a message arrives.
-	// With no persisted override it intentionally follows the main assistant.
-	// We already hold tabWorkingDirMu, so use the internal variant instead of
-	// recursively acquiring the non-reentrant mutex.
-	a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
-
 	projectName := a.projectTabDisplayName(projectPath)
 	a.ensureRecentTaskWorkspace(projectPath, projectName)
 
 	// Check if session already exists on disk — if so, just return a welcome-back message.
 	existing, err := persist.LoadSession(tabID)
 	if err == nil && existing != nil {
+		// An existing session owns its tab-local override. Restore it before the
+		// tab can render or dispatch a message.
+		a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
 		a.upsertProjectTabIndexEntry(persist, tabID, projectPath, time.Now())
 		return fmt.Sprintf("已恢复项目会话：%s", projectName)
 	}
@@ -4046,13 +4121,10 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		log.Printf("[CreateProjectTabSession] SaveIndex failed: %v", err)
 	}
 
-	// Save an initial empty session file without overwriting a directory override
-	// that belongs to an existing/reopened tab.
-	previousSession, _ := persist.LoadSession(tabID)
-	workingDir := ""
-	if previousSession != nil {
-		workingDir = normalizeProjectSessionPath(previousSession.WorkingDir)
-	}
+	// An existing session returned above owns its private override. For this new
+	// session, seed the tab from the task's configured working directory rather
+	// than falling back to the main assistant workspace.
+	workingDir := a.recentTaskWorkingDir(projectPath)
 	session := &TabSessionData{
 		TabID:        tabID,
 		ProjectPath:  projectPath,
@@ -4065,6 +4137,10 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 	}
 	if err := persist.SaveSession(session); err != nil {
 		log.Printf("[CreateProjectTabSession] SaveSession failed: %v", err)
+	} else {
+		// Publish the task-provided directory only after it is durable, so the
+		// ProjectDirBar and the first assistant message resolve the same directory.
+		a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
 	}
 
 	// Build initial context message from long-term memory.

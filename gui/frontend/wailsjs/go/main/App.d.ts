@@ -31,6 +31,24 @@ export function ActivateRemoteEmail(arg1:string,arg2:string,arg3:string,arg4:str
 
 export function ActivateRemoteSMS(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<main.RemoteActivationResult>;
 
+export function ClaimReferralHandoff(arg1:string,arg2:string):Promise<main.ReferralHandoffClaimResult>;
+
+export function GetReferralRegistrationStatus(arg1:string,arg2:string,arg3:string):Promise<main.ReferralRegistrationStatus>;
+
+export function SendReferralRegistrationEmail(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.RemoteRegistrationContactResult>;
+
+export function RegisterReferralEmail(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
+
+export function ActivateReferralRemoteEmail(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.RemoteActivationResult>;
+
+export function ActivateReferralRemotePhone(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.RemoteActivationResult>;
+
+export function SendReferralRegistrationSMS(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.RemoteSMSSendResult>;
+
+export function RegisterReferralPhone(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
+
+export function ConsumeReferralHandoff():Promise<main.ReferralHandoffLaunch>;
+
 export function AddExternalSkillDir(arg1:string):Promise<number>;
 
 export function AddLansengerWatchMember(arg1:string,arg2:string,arg3:string):Promise<void>;
@@ -137,8 +155,6 @@ export function CancelSwarmRun(arg1:string):Promise<void>;
 export function CancelVirtualRepositoryOperation(arg1:string):Promise<void>;
 
 export function CancelXAIOAuth():Promise<void>;
-
-export function CancelXAIOAuthURL(arg1:string):Promise<boolean>;
 
 export function CaptureRemoteScreenshot(arg1:string):Promise<void>;
 
@@ -290,6 +306,8 @@ export function CorrectASRText(arg1:string):Promise<string>;
 
 export function CreateExpertTask(arg1:string,arg2:string):Promise<main.ProjectSearchResult>;
 
+export function EnsureAssistantTabTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ProjectSearchResult>;
+
 export function CreateMobileAuthDesktopQRSession():Promise<main.MobileLLMQRCodeSession>;
 
 export function CreateMobileDocumentDraft(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.MobileDocumentDraftSummary>;
@@ -338,6 +356,8 @@ export function DeleteLansengerWatchJob(arg1:string):Promise<void>;
 export function DeleteLansengerWatchJobForBot(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteMemory(arg1:string):Promise<void>;
+
+export function DeleteMemories(arg1:Array<string>):Promise<number>;
 
 export function DeleteMemoryBackup(arg1:string):Promise<void>;
 
@@ -620,6 +640,12 @@ export function GetHubRecommendedCapabilities():Promise<Array<main.HubCapability
 export function GetHubSecurityPolicy():Promise<main.HubSecurityPolicy>;
 
 export function GetHubUserRanking():Promise<main.HubUserRanking>;
+
+export function GetHubUserInvitations():Promise<main.HubUserInvitation>;
+
+export function GetHubUserInvitationsPage(arg1:number):Promise<main.HubUserInvitation>;
+
+export function RotateHubUserInvitation():Promise<main.HubUserInvitation>;
 
 export function GetIMAuditStats():Promise<main.IMAuditStats>;
 
@@ -1035,6 +1061,8 @@ export function PurchaseExpertMarketListing(arg1:string):Promise<Record<string, 
 
 export function SubmitExpertMarketListing(arg1:string,arg2:string,arg3:number,arg4:string):Promise<Record<string, any>>;
 
+export function SubmitExpertMarketListingWithDistribution(arg1:string,arg2:string,arg3:number,arg4:string,arg5:boolean):Promise<Record<string, any>>;
+
 export function PublishExpertMarketListing(arg1:string):Promise<Record<string, any>>;
 
 export function MakeExpertMarketListingPrivate(arg1:string):Promise<Record<string, any>>;
@@ -1370,6 +1398,10 @@ export function ListComputerUseLogArtifacts(arg1:string,arg2:number):Promise<Rec
 export function ListExperienceAudit():Promise<Array<experience.AuditEntry>>;
 
 export function ListExperts():Promise<string>;
+
+export function ListManagedIndustryExperts():Promise<string>;
+
+export function PurchaseAndInstallManagedIndustryExpert(arg1:string,arg2:string):Promise<void>;
 
 export function ListExternalSkillDirs():Promise<Array<string>>;
 
@@ -2185,6 +2217,8 @@ export function StartWorkflowDirect(arg1:string,arg2:string):Promise<string>;
 
 export function StartWorkflowTemplate(arg1:string,arg2:string):Promise<string>;
 
+export function StartWorkflowTemplateInTab(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function StartXAIOAuth():Promise<string>;
 
 export function StopAllBackgroundLoops():Promise<Array<string>>;
@@ -2240,6 +2274,8 @@ export function TestMCPEndpoint(arg1:string,arg2:string,arg3:string,arg4:Record<
 export function TestMISDataConnection(arg1:corelib.MISDataConfig):Promise<main.MISDataConnectionStatus>;
 
 export function TestMaclawLLM(arg1:corelib.MaclawLLMConfig):Promise<corelib.MaclawLLMTestResult>;
+
+export function TestAndSaveMaclawLLMProviders(arg1:Array<corelib.MaclawLLMProvider>,arg2:string,arg3:string):Promise<corelib.MaclawLLMTestResult>;
 
 export function TestMaclawLLMProfile(arg1:string,arg2:string,arg3:string):Promise<main.MaclawLLMProfileProbeResult>;
 
@@ -2355,3 +2391,4 @@ export function WithdrawMaclawAppPackageSubmission(arg1:string):Promise<boolean>
 export function WithdrawPetStorePack(arg1:string):Promise<void>;
 
 export function WriteCodingWorkbenchConflictFileContent(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
+export function AIAssistantAttachmentPreviewDataURL(arg1:string):Promise<string>;

@@ -90,6 +90,15 @@ func (r *mockAuthRepo) GetByID(_ context.Context, id string) (*TenantAuthorizati
 	}
 	return nil, nil
 }
+
+func (r *mockAuthRepo) GetByCardOrderID(_ context.Context, orderNo string) (*TenantAuthorization, error) {
+	for _, auth := range r.auths {
+		if auth != nil && auth.CardOrderID == orderNo {
+			return auth, nil
+		}
+	}
+	return nil, nil
+}
 func (r *mockAuthRepo) ListByHubTenant(_ context.Context, hubID, tenantID string) ([]*TenantAuthorization, error) {
 	var result []*TenantAuthorization
 	for _, a := range r.auths {

@@ -60,9 +60,10 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	}
 	gatesDone := time.Since(execStart)
 
-	// Immediate UI feedback before any potentially multi-ms pre-loop work.
+	// Immediate UI feedback before history/prompt preparation. These are safe
+	// execution milestones, not model chain-of-thought.
 	if opts.OnProgress != nil {
-		opts.OnProgress(imEarlyProgressText)
+		opts.OnProgress("[Status] " + imEarlyProgressText)
 	}
 
 	// Load conversation history in parallel with loop-context + profile classify.
@@ -131,6 +132,15 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	loopCtx.Runtime.Execution = executionProfile
 	loopCtx.Runtime.SemanticIntent = semanticIntent
 	loopCtxElapsed := time.Since(loopCtxStart)
+	if opts.OnProgress != nil {
+		if executionProfile.IsDirect() {
+			opts.OnProgress("[Status] 已匹配直接执行能力，正在处理")
+		} else if executionProfile.IsLight() {
+			opts.OnProgress("[Status] 已选择快速执行路径，正在构建请求")
+		} else {
+			opts.OnProgress("[Status] 已选择完整执行路径，正在构建请求")
+		}
+	}
 
 	history, historyElapsed := drainHistory()
 	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
@@ -154,6 +164,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	}
 
 	promptStart := time.Now()
+	if opts.OnProgress != nil {
+		opts.OnProgress("[Status] 正在整理上下文并准备模型请求")
+	}
 	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.PhasePrompt, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
 	promptElapsed := time.Since(promptStart)
 

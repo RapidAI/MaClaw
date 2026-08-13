@@ -1,0 +1,6 @@
+# Dedicated non-release EchoEar-2ST display acquisition boundary.
+# The round ST77916/QSPI adapter fails only after panel initialization, display-on
+# and PWM brightness have succeeded, exercising private reverse cleanup.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_DISPLAY_FAILURE_INITIALIZATION=y
+CONFIG_MACLAW_DISPLAY_FAILURE_STAGE=5

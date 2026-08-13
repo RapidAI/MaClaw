@@ -154,6 +154,27 @@ func TestPublicRegistrationAuthConfigIncludesDailySMSLimit(t *testing.T) {
 	}
 }
 
+func TestPublicRegistrationAuthConfigPublishesInvitationOnlyEmailVerificationBypass(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	body := bytes.NewBufferString(`{"method":"email","email_verification_disabled":true}`)
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/admin/settings/registration-auth", body)
+	saveRec := httptest.NewRecorder()
+	UpdateRegistrationAuthConfigHandler(settings).ServeHTTP(saveRec, saveReq)
+	if saveRec.Code != http.StatusOK {
+		t.Fatalf("save status = %d body=%s", saveRec.Code, saveRec.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/enroll/registration-auth", nil)
+	rr := httptest.NewRecorder()
+	PublicRegistrationAuthConfigHandler(settings).ServeHTTP(rr, req)
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["email_verification_required"] != false {
+		t.Fatalf("email verification requirement = %#v, want false", got["email_verification_required"])
+	}
+}
+
 func TestPublicRegistrationAuthConfigUsesTenantIDHint(t *testing.T) {
 	settings := &testSystemSettingsRepo{values: map[string]string{
 		registrationAuthConfigKey:                          `{"method":"email","code_ttl_minutes":5,"code_length":6}`,
@@ -222,6 +243,27 @@ func TestPublicRegistrationAuthConfigResolvesExistingEmailTenant(t *testing.T) {
 	}
 	if _, present := got["daily_email_limit"]; present {
 		t.Fatalf("public config must not advertise the removed email quota: %#v", got)
+	}
+}
+
+func TestPublicRegistrationAuthConfigPreservesExplicitInvitationTenant(t *testing.T) {
+	settings := &testSystemSettingsRepo{values: map[string]string{
+		registrationAuthConfigKey:                             `{"method":"email"}`,
+		"tenant:tenant_invited:" + registrationAuthConfigKey:  `{"method":"mixed","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"sms-platform"}`,
+		"tenant:tenant_existing:" + registrationAuthConfigKey: `{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"sms-platform"}`,
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/enroll/registration-auth?email=existing%40example.com&tenant_id=tenant_invited", nil)
+	rr := httptest.NewRecorder()
+	PublicRegistrationAuthConfigHandler(settings, registrationAuthTenantResolver{tenantID: "tenant_existing"}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["method"] != "mixed" || got["tenant_id"] != "tenant_invited" {
+		t.Fatalf("explicit invitation tenant must win, response = %#v", got)
 	}
 }
 

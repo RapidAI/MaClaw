@@ -456,6 +456,9 @@ func (h *IMMessageHandler) classifyCodingWorkflowDelegateIntent(text, userID str
 		return intent.ClassificationResult{}, false
 	}
 	if uic := h.getUnifiedClassifier(); uic != nil {
+		// This runs only after the main Agent deliberately proposes an
+		// execution-capable CodingSubAgent call. Keep the stronger semantic gate
+		// here; it is not on the first-response path and must fail closed.
 		return uic.Classify(intent.MessageContext{Text: text, UserID: userID}), true
 	}
 	if uic := unifiedClassifierPtr.Load(); uic != nil {
@@ -918,7 +921,7 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 			if err := groupPermissions.restrictKnowledgeArgs(args); err != nil {
 				return toolExecutionResult{Text: "[system rejected] " + err.Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 			}
-		case "read_file", "list_directory", "search_files", "send_file", "send_to_im":
+		case "read_file", "list_directory", "search_files", "send_file", "send_to_im", "archive":
 			if err := groupPermissions.resolveAndValidateFileToolArgs(name, args, func(path string) (string, error) {
 				return h.resolveFileToolPathForOwner(path, policyUserID)
 			}); err != nil {
@@ -992,6 +995,9 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 				return registeredToolValidationFailureResult(name, registeredToolValidationMessages(validationIssues))
 			}
 			securityCtx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}
+			if h.emitArchiveExternalApprovalIfNeeded(args, securityCtx, policyUserID) {
+				return toolExecutionResult{Text: "External archive extraction needs approval. An approval panel has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureApprovalRequired}
+			}
 			if h.emitRegisteredToolApprovalAgentViewIfNeeded(name, args, securityCtx, policyUserID) {
 				return toolExecutionResult{Text: "Tool execution needs approval. An approval panel has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureApprovalRequired}
 			}
@@ -1166,7 +1172,7 @@ func (h *IMMessageHandler) registeredToolAcceptsRuntimePlatformArg(name string) 
 func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 	switch strings.TrimSpace(name) {
 	case "bash",
-		"read_file", "read_tool_result", "write_file", "edit_file", "edit_lines", "list_directory", "send_file", "send_to_im",
+		"read_file", "read_tool_result", "write_file", "edit_file", "edit_lines", "list_directory", "send_file", "send_to_im", "archive",
 		"office",
 		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
 		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",

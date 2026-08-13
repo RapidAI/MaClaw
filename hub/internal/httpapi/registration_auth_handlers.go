@@ -26,16 +26,24 @@ const (
 )
 
 type RegistrationAuthConfig struct {
-	Method                string `json:"method"`
-	AliyunAccessKeyID     string `json:"aliyun_access_key_id,omitempty"`
-	AliyunAccessKeySecret string `json:"aliyun_access_key_secret,omitempty"`
-	AliyunSignName        string `json:"aliyun_sign_name,omitempty"`
-	AliyunTemplateCode    string `json:"aliyun_template_code,omitempty"`
-	CodeTTLMinutes        int    `json:"code_ttl_minutes,omitempty"`
-	CodeLength            int    `json:"code_length,omitempty"`
-	DailySMSLimit         int    `json:"daily_sms_limit,omitempty"`
-	AliyunSMSBuyURL       string `json:"aliyun_sms_buy_url,omitempty"`
-	Provider              string `json:"provider,omitempty"`
+	Method string `json:"method"`
+	// EmailVerificationDisabled permits invitation-code registrations to skip
+	// the email OTP. It never permits an unauthenticated registration: the
+	// regular enrollment path still validates and consumes the invitation code.
+	EmailVerificationDisabled bool   `json:"email_verification_disabled,omitempty"`
+	AliyunAccessKeyID         string `json:"aliyun_access_key_id,omitempty"`
+	AliyunAccessKeySecret     string `json:"aliyun_access_key_secret,omitempty"`
+	AliyunSignName            string `json:"aliyun_sign_name,omitempty"`
+	AliyunTemplateCode        string `json:"aliyun_template_code,omitempty"`
+	CodeTTLMinutes            int    `json:"code_ttl_minutes,omitempty"`
+	CodeLength                int    `json:"code_length,omitempty"`
+	DailySMSLimit             int    `json:"daily_sms_limit,omitempty"`
+	AliyunSMSBuyURL           string `json:"aliyun_sms_buy_url,omitempty"`
+	Provider                  string `json:"provider,omitempty"`
+}
+
+func (c RegistrationAuthConfig) EmailVerificationRequired() bool {
+	return (c.Method == registrationAuthMethodEmail || c.Method == registrationAuthMethodMixed) && !c.EmailVerificationDisabled
 }
 
 func GetRegistrationAuthConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
@@ -112,9 +120,14 @@ func PublicRegistrationAuthConfigHandler(system store.SystemSettingsRepository, 
 			resolver = resolvers[0]
 		}
 		tenantHint := tenantIDFromClientHint(r)
+		hasExplicitTenantHint := registrationAuthHasExplicitTenantHint(r)
 		tenantID := tenantHint
 		emailHint := strings.TrimSpace(r.URL.Query().Get("email"))
-		if emailHint != "" && resolver != nil {
+		// An explicit tenant hint comes from a HubCenter invitation route. Do
+		// not replace it with the email's existing-account route: doing so can
+		// advertise one tenant's registration method while the subsequent
+		// invitation-bound OTP request is sent to another tenant.
+		if emailHint != "" && resolver != nil && !hasExplicitTenantHint {
 			if resolved, found, ambiguous, resolveErr := resolver.ResolveTenantByEmail(r.Context(), emailHint); resolveErr != nil {
 				log.Printf("[onboarding-auth] public_config_rejected code=REGISTRATION_AUTH_TENANT_LOOKUP_FAILED tenant_hint=%s err=%v", tenantHint, resolveErr)
 				writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_TENANT_LOOKUP_FAILED", resolveErr.Error())
@@ -141,15 +154,23 @@ func PublicRegistrationAuthConfigHandler(system store.SystemSettingsRepository, 
 				tenantHint, tenantID, cfg.Method, cfg.CodeLength, cfg.DailySMSLimit)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"method":             cfg.Method,
-			"code_ttl_minutes":   cfg.CodeTTLMinutes,
-			"code_length":        cfg.CodeLength,
-			"daily_sms_limit":    cfg.DailySMSLimit,
-			"tenant_id":          tenantID,
-			"provider":           cfg.Provider,
-			"aliyun_sms_buy_url": cfg.AliyunSMSBuyURL,
+			"method":                      cfg.Method,
+			"email_verification_required": cfg.EmailVerificationRequired(),
+			"code_ttl_minutes":            cfg.CodeTTLMinutes,
+			"code_length":                 cfg.CodeLength,
+			"daily_sms_limit":             cfg.DailySMSLimit,
+			"tenant_id":                   tenantID,
+			"provider":                    cfg.Provider,
+			"aliyun_sms_buy_url":          cfg.AliyunSMSBuyURL,
 		})
 	}
+}
+
+func registrationAuthHasExplicitTenantHint(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return strings.TrimSpace(r.Header.Get("X-Tenant-ID")) != "" || strings.TrimSpace(r.URL.Query().Get("tenant_id")) != ""
 }
 
 func loadRegistrationAuthConfig(r *http.Request, system store.SystemSettingsRepository) (RegistrationAuthConfig, error) {

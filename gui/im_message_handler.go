@@ -128,10 +128,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return resp
 	}
 
-	// Emit immediate progress feedback before any heavy processing (preflight/entry_context).
-	// This ensures the frontend shows "正在思考..." within <100ms of message receipt.
+	// Emit immediate progress feedback before any preflight work. In particular,
+	// preflight reads conversation state and may process a typed confirmation, so
+	// it cannot be allowed to leave the user staring at an empty placeholder.
+	// This ensures the frontend shows activity within <100ms of message receipt.
 	if onProgress != nil {
-		onProgress("正在思考...")
+		onProgress("[Status] 已接收任务，正在准备执行路径")
 	}
 
 	// Start a request-level heartbeat ticker that covers the ENTIRE request
@@ -149,6 +151,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	preflight := h.prepareIMMessagePreflight(&msg, &trimmed)
 	if preflight.Handled {
 		return preflight.Response
+	}
+	if onProgress != nil {
+		onProgress("[Status] 会话预检完成，正在准备上下文")
 	}
 
 	// 治本: expand GUI-selected document paths into bounded native extracts so the
@@ -188,6 +193,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return serialization.Response
 	}
 	defer serialization.Unlock()
+	if onProgress != nil {
+		onProgress("[Status] 会话已就绪，正在确定执行方式")
+	}
 	clearAssistantBinding := activateAssistantBindingForTurn(msg.UserID, bindingScope)
 	defer clearAssistantBinding()
 	entriesBeforeClear = serialization.EntriesBeforeClear
@@ -209,6 +217,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if entryContext.Handled {
 		return finalizeIMEntryHostResponse(entryContext.Response, requestID, msg.UserID)
 	}
+	if onProgress != nil {
+		onProgress("[Status] 上下文已准备，正在启动任务")
+	}
 	// Host-side post-recording ASR (and similar) must not hold state.mu: the
 	// serialization acquire timeout is 60s and long ASR would block the session.
 	if entryContext.DeferredHostResponse != nil {
@@ -222,6 +233,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 	imPerfLog("im_pre_execution", msgReceivedAt, requestID, msg.UserID, "preflight", preflightDone, "serialization", serializationDone-preflightDone, "entry_context", entryContextDone-serializationDone)
 	unfinishedSlot = entryContext.UnfinishedSlot
+	decision = entryContext.Decision
 	freshTask = entryContext.FreshTask
 	workflowAgentLoop := entryContext.WorkflowAgentLoop
 	workflowDocPhase := entryContext.WorkflowDocPhase

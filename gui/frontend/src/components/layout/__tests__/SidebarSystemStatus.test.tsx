@@ -55,6 +55,41 @@ function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction
 }
 
 describe('SidebarSystemStatus Hub credits', () => {
+    it('shows the image-input SVG before a provider whose active model supports vision', () => {
+        render(
+            <SidebarSystemStatus
+                lang="en" maclawLLMOnline remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'Vision Provider', isHubService: false, supportsVision: true, input: 0, output: 0, total: 0 }} sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="Unlimited" noHubAuthorizationText="None" showHubCreditAction={false} openHubCreditsPage={vi.fn()} openLLMSettingsPage={vi.fn()}
+            />,
+        );
+
+        const provider = screen.getByRole('button', { name: 'Vision Provider' });
+        expect(provider.querySelector('.sidebar-system-status__provider-vision-icon')).toBeTruthy();
+        expect(provider.textContent).toBe('Vision Provider');
+        expect(provider.title).toContain('Supports image input');
+    });
+
+    it('omits the image-input SVG for a text-only provider', () => {
+        renderStatus(baseCredits, { isHubService: false });
+
+        expect(document.querySelector('.sidebar-system-status__provider-vision-icon')).toBeNull();
+    });
+
+    it('does not infer image input from an unknown capability value', () => {
+        render(
+            <SidebarSystemStatus
+                lang="en" maclawLLMOnline remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'Unverified Provider', isHubService: false, input: 0, output: 0, total: 0 }} sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="Unlimited" noHubAuthorizationText="None" showHubCreditAction={false} openHubCreditsPage={vi.fn()} openLLMSettingsPage={vi.fn()}
+            />,
+        );
+
+        expect(document.querySelector('.sidebar-system-status__provider-vision-icon')).toBeNull();
+    });
+
     it('always shows assistant and coding effective-profile summaries together', () => {
         render(
             <SidebarSystemStatus

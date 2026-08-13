@@ -93,6 +93,34 @@ func TestWorkflowTemplatePanelLaunchCodingUsesComplexChoice(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkflowTemplatePanelLaunchKeepsTabWorkflowInProjectSession(t *testing.T) {
+	handler := &IMMessageHandler{}
+	now := time.Unix(0, 323456789)
+	projectPath := `D:\workprj\sample-tab-workflow`
+
+	launch, err := prepareWorkflowTemplatePanelLaunch(handler, "coding", projectPath, projectPath, now)
+	if err != nil {
+		t.Fatalf("prepareWorkflowTemplatePanelLaunch failed: %v", err)
+	}
+	if launch.UserID != desktopAIAssistantUserIDForProjectPath(projectPath) {
+		t.Fatalf("user ID = %q, want project session user", launch.UserID)
+	}
+	if launch.SendProjectPath != projectPath {
+		t.Fatalf("send project path = %q, want %q", launch.SendProjectPath, projectPath)
+	}
+	raw, ok := handler.pendingWorkflowChoice.Load(launch.UserID)
+	if !ok {
+		t.Fatal("expected pending workflow choice in the project session")
+	}
+	pending, ok := raw.(*pendingWorkflowChoice)
+	if !ok || pending == nil || pending.RouteResult == nil {
+		t.Fatalf("pending workflow choice = %#v", raw)
+	}
+	if pending.RouteResult.ProjectPath != projectPath {
+		t.Fatalf("route project path = %q, want %q", pending.RouteResult.ProjectPath, projectPath)
+	}
+}
+
 func TestPrepareWorkflowTemplatePanelLaunchRejectsNilHandler(t *testing.T) {
 	if _, err := prepareWorkflowTemplatePanelLaunch(nil, "coding", "", "", time.Unix(0, 1)); err == nil {
 		t.Fatal("expected nil handler error")

@@ -104,6 +104,12 @@ func (h *IMMessageHandler) dispatchAgentLoopLLMRound(opts agentLoopLLMDispatchOp
 	if !result.FirstRequestMarked {
 		result.FirstRequestMarked = true
 		result.FirstRequestStarted = llmCallStartedAt
+		// This is a transport milestone, not model reasoning. It gives the UI a
+		// precise explanation for the remaining wait when provider time-to-first-
+		// token dominates the turn.
+		if opts.OnProgress != nil {
+			opts.OnProgress("[Status] 模型请求已发送，正在等待响应")
+		}
 	}
 	llmRound := h.executeAgentLoopLLMRound(agentLoopLLMRoundOptions{
 		Context:             opts.Context,

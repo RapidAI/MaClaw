@@ -1266,8 +1266,11 @@ func TestInstallMaclawAppDependenciesDerivesProvenanceFromLegacyStableWrapperPan
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
-		if source != "skillmarket" || id != "paper_pdf_translator" || installRef != "paper_pdf_translator" {
-			t.Fatalf("legacy stable wrapper must retain SkillMarket provenance: source=%q id=%q ref=%q", source, id, installRef)
+		// A Hub cache may replace the stable target with its immutable UUID.
+		// Both forms are valid, but the legacy panel/container ID must never be
+		// used as the remote Skill download target.
+		if source != "skillmarket" || id != "paper_pdf_translator" || strings.TrimSpace(installRef) == "" || strings.EqualFold(installRef, legacyPanelID) {
+			t.Fatalf("legacy stable wrapper must retain runtime SkillMarket target: source=%q id=%q ref=%q", source, id, installRef)
 		}
 		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", id)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {

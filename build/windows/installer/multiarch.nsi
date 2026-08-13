@@ -356,6 +356,14 @@ Section
     
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+
+    # Browser invitation pages use maclaw://onboarding to transfer an opaque,
+    # short-lived handoff to the installed desktop app. Keep the scheme fixed
+    # across OEM brands: it is part of the public invitation URL contract.
+    WriteRegStr HKLM "Software\Classes\maclaw" "" "MaClaw invitation onboarding link"
+    WriteRegStr HKLM "Software\Classes\maclaw" "URL Protocol" ""
+    WriteRegStr HKLM "Software\Classes\maclaw\DefaultIcon" "" "$INSTDIR\${PRODUCT_EXECUTABLE},0"
+    WriteRegStr HKLM "Software\Classes\maclaw\shell\open\command" "" "$\"$INSTDIR\${PRODUCT_EXECUTABLE}$\" $\"%1$\""
     
     # Taskbar pinning is restricted by Windows. 
     # We can't programmatically pin to taskbar reliably on Win10/11 without using non-standard methods.
@@ -397,6 +405,10 @@ Section "uninstall"
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
+
+    # This scheme is owned by MaClaw's installer and must leave with it so an
+    # uninstalled client cannot be selected by the browser for invitation URLs.
+    DeleteRegKey HKLM "Software\Classes\maclaw"
 
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}"
     DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${AUTOSTART_REG_NAME}"

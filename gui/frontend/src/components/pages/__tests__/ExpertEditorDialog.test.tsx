@@ -394,6 +394,15 @@ describe('ExpertEditorDialog', () => {
         expect(onClose).toHaveBeenCalledTimes(1);
     });
 
+    it('moves focus into the discard confirmation so hidden editor actions cannot be used', () => {
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: 'draft' } });
+        fireEvent.click(screen.getByTestId('expert-save-button').parentElement?.querySelector('button') as HTMLButtonElement);
+
+        const confirmation = screen.getByRole('alertdialog');
+        expect(document.activeElement).toBe(confirmation.querySelector('button'));
+    });
+
     it('states explicitly when an optimization leaves prompt and capabilities unchanged', () => {
         const draft = {
             name: '论文精修',

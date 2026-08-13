@@ -743,15 +743,16 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		}
 	}
 	provider := corelib.MaclawLLMProvider{
-		Name:          hubServiceProviderName,
-		IsHubService:  true,
-		URL:           strings.TrimRight(strings.TrimSpace(status.HubLLMBaseURL), "/"),
-		Key:           strings.TrimSpace(cfg.RemoteViewerToken),
-		Model:         model,
-		Protocol:      "openai",
-		ContextLength: corelib.DefaultContextTokens,
-		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
-		AgentType:     "openclaw",
+		Name:                 hubServiceProviderName,
+		IsHubService:         true,
+		URL:                  strings.TrimRight(strings.TrimSpace(status.HubLLMBaseURL), "/"),
+		Key:                  strings.TrimSpace(cfg.RemoteViewerToken),
+		Model:                model,
+		Protocol:             "openai",
+		ContextLength:        corelib.DefaultContextTokens,
+		TimeoutSec:           corelib.DefaultLLMTimeoutSec,
+		AgentType:            "openclaw",
+		ConnectionTestPassed: true,
 	}
 	if providerIndex >= 0 {
 		// Replacing the service connection must retain its stable identity. Both

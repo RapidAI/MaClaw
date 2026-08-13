@@ -31,6 +31,12 @@ func TestLLMConcurrencySchedulerClassifiesBackgroundCallers(t *testing.T) {
 	if got := classifyLLMRequestPriority(llm.RequestTrace{Caller: "simple_llm"}); got != llmPriorityForeground {
 		t.Fatalf("untraced simple_llm priority = %s, want foreground", got)
 	}
+	if got := classifyLLMRequestPriority(llm.RequestTrace{Caller: "pending-reply-answer-fast", OwnerID: "desktop-user"}); got != llmPriorityForeground {
+		t.Fatalf("fast pending-reply answer priority = %s, want foreground", got)
+	}
+	if got := classifyLLMRequestPriority(llm.RequestTrace{Caller: "confirmation-intent-fast", OwnerID: "desktop-user"}); got != llmPriorityForeground {
+		t.Fatalf("fast confirmation intent priority = %s, want foreground", got)
+	}
 }
 
 func TestLLMConcurrencySchedulerDoesNotSelfBlockUntracedSimpleLLM(t *testing.T) {

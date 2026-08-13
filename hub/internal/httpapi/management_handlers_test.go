@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +26,200 @@ type fakeBoundUserRouteDeleter struct {
 	tenantID string
 	err      error
 	calls    []fakeBoundUserRouteDeleteCall
+}
+
+func TestUserDataPurgerRemovesAllUserOwnedSQLAndFiles(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &store.User{ID: "purge-all-user", TenantID: "tenant_purge_all", Email: "purge-all@example.com", SN: "sn-purge-all", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := services.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := services.db.ExecContext(ctx, `INSERT INTO machines (id, tenant_id, user_id, name, platform, machine_token_hash, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, "a2a-machine-1", user.TenantID, user.ID, "private machine", "windows", "token-hash", "online", now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("seed a2a machine: %v", err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO a2a_group_profiles (tenant_id, agent_id, display_name, discoverable, available, updated_at, profile_json) VALUES ('tenant_purge_all', 'a2a-machine-1', 'Private agent', 1, 1, '2026-08-13T00:00:00Z', '{"id":"a2a-machine-1"}')`,
+		`INSERT INTO a2a_group_sessions (tenant_id, session_id, status, topic, created_at, updated_at, session_json) VALUES ('tenant_purge_all', 'a2a-session-1', 'open', 'private', '2026-08-13T00:00:00Z', '2026-08-13T00:00:00Z', '{"participants":[{"id":"a2a-machine-1"}]}')`,
+		`INSERT INTO a2a_group_invites (tenant_id, invite_id, session_id, to_id, from_id, role, status, created_at, invite_json) VALUES ('tenant_purge_all', 'a2a-invite-1', 'a2a-session-1', 'other-machine', 'a2a-machine-1', 'member', 'pending', '2026-08-13T00:00:00Z', '{}')`,
+	} {
+		if _, err := services.db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("seed a2a data: %v", err)
+		}
+	}
+	for _, statement := range []string{
+		`CREATE TABLE chat_channels (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, created_by TEXT NOT NULL)`,
+		`CREATE TABLE chat_members (channel_id TEXT NOT NULL, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL)`,
+		`CREATE TABLE chat_messages (id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, tenant_id TEXT NOT NULL, sender_id TEXT NOT NULL)`,
+		`CREATE TABLE chat_files (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, uploader_id TEXT NOT NULL, channel_id TEXT NOT NULL)`,
+		`CREATE TABLE chat_voice_calls (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_id TEXT NOT NULL)`,
+		`CREATE TABLE chat_voice_participants (call_id TEXT NOT NULL, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL)`,
+		`CREATE TABLE chat_push_tokens (tenant_id TEXT NOT NULL, user_id TEXT NOT NULL)`,
+		`CREATE TABLE chat_presence (tenant_id TEXT NOT NULL, user_id TEXT NOT NULL)`,
+	} {
+		if _, err := services.db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("create chat table: %v", err)
+		}
+	}
+
+	root := t.TempDir()
+	shareDir := filepath.Join(root, "knowledge-packages")
+	shareFile := filepath.Join(shareDir, "share-1.json")
+	if err := os.MkdirAll(shareDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shareFile, []byte(`{"package":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := services.db.ExecContext(ctx, `INSERT INTO knowledge_shares (knowledge_id, tenant_id, owner_user_id, owner_user_email, storage_ref, status, created_at, updated_at, published_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`, "share-1", user.TenantID, user.ID, user.Email, "local:knowledge-packages/share-1.json", now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("seed knowledge share: %v", err)
+	}
+
+	seed := []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{"sessions", `INSERT INTO sessions (id, tenant_id, machine_id, user_id, tool, title, project_path, status, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, []any{"s-1", user.TenantID, "m-1", user.ID, "codex", "private", "/private", "closed", now.Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"session usage", `INSERT INTO session_token_usage_snapshots (tenant_id, session_id, user_id, updated_at) VALUES (?, ?, ?, ?)`, []any{user.TenantID, "s-1", user.ID, now.Format(time.RFC3339)}},
+		{"daily usage", `INSERT INTO user_usage_daily (tenant_id, user_id, user_email, day, updated_at) VALUES (?, ?, ?, ?, ?)`, []any{user.TenantID, user.ID, user.Email, "2026-08-13", now.Format(time.RFC3339)}},
+		{"heartbeat", `INSERT INTO machine_heartbeat_log (tenant_id, machine_id, user_id, heartbeat_at) VALUES (?, ?, ?, ?)`, []any{user.TenantID, "m-1", user.ID, now.Format(time.RFC3339)}},
+		{"cursor", `INSERT INTO digital_asset_sync_cursors (tenant_id, library_id, user_id, device_id, last_sync_at) VALUES (?, ?, ?, ?, ?)`, []any{user.TenantID, "lib-1", user.ID, "m-1", now.Format(time.RFC3339)}},
+		{"content audit", `INSERT INTO content_audit_logs (tenant_id, user_id, platform, content_type, summary, return_code, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{user.TenantID, user.ID, "web", "prompt", "private", 200, 1}},
+		{"audit", `INSERT INTO audit_logs (id, user_id, event_type, created_at) VALUES (?, ?, ?, ?)`, []any{"audit-1", user.ID, "private", now.Format(time.RFC3339)}},
+		{"capability request", `INSERT INTO capability_acquisition_requests (tenant_id, id, requester_user_id, capability_type, source, source_capability_key, request_kind, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, []any{user.TenantID, "request-1", user.ID, "skill", "market", "x", "purchase", "pending", now.Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"referral code", `INSERT INTO user_referral_codes (id, tenant_id, inviter_user_id, code_hash, encrypted_code, status, created_at) VALUES (?, ?, ?, ?, ?, 'active', ?)`, []any{"code-1", user.TenantID, user.ID, "hash-1", "enc", now.Format(time.RFC3339)}},
+		{"referral", `INSERT INTO user_referrals (id, tenant_id, referral_code_id, inviter_user_id, invitee_user_id, status, registered_at, inviter_grant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'attributed', ?, ?, ?, ?)`, []any{"ref-1", user.TenantID, "code-1", user.ID, "other", now.Format(time.RFC3339), "referral-grant-1", now.Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"referral history", `INSERT INTO user_referral_status_history (id, tenant_id, referral_id, to_status, created_at) VALUES (?, ?, ?, ?, ?)`, []any{"history-1", user.TenantID, "ref-1", "attributed", now.Format(time.RFC3339)}},
+		{"referral session", `INSERT INTO user_referral_registration_sessions (tenant_id, token_hash, code_hash, user_agent_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`, []any{user.TenantID, "session-hash-1", "hash-1", "agent-hash", now.Add(time.Hour).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"invitee referral session", `INSERT INTO user_referral_registration_sessions (tenant_id, token_hash, code_hash, user_agent_hash, invitee_user_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{user.TenantID, "session-hash-invitee", "other-hash", "agent-hash", user.ID, now.Add(time.Hour).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"referral reservation", `INSERT INTO user_referral_identity_reservations (tenant_id, identity_hash, code_hash, session_hash, reserved_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`, []any{user.TenantID, "identity-hash-1", "hash-1", "session-hash-1", now.Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339)}},
+		{"referral handoff", `INSERT INTO user_referral_handoffs (token_hash, tenant_id, code_hash, referral_code_id, inviter_user_id, config_epoch, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, []any{"handoff-1", user.TenantID, "hash-1", "code-1", user.ID, "epoch", now.Add(time.Hour).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"gossip post", `INSERT INTO gossip_posts (id, machine_id, user_email, nickname, content, created_at) VALUES (?, ?, ?, ?, ?, ?)`, []any{"post-1", "m-1", user.Email, "owner", "private", now.Format(time.RFC3339)}},
+		{"gossip comment", `INSERT INTO gossip_comments (id, post_id, machine_id, user_email, nickname, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{"comment-1", "post-1", "m-2", "other@example.com", "other", "reply", now.Format(time.RFC3339)}},
+		{"migration export", `INSERT INTO user_data_migration_exports (id, tenant_id, user_id, source_machine_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{"migration-1", user.TenantID, user.ID, "m-1", "ready", now.Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"migration chunk", `INSERT INTO user_data_migration_chunks (export_id, tenant_id, user_id, chunk_index, uploaded_at) VALUES (?, ?, ?, ?, ?)`, []any{"migration-1", user.TenantID, user.ID, 0, now.Format(time.RFC3339)}},
+		{"chat channel", `INSERT INTO chat_channels (id, tenant_id, created_by) VALUES (?, ?, ?)`, []any{"channel-1", user.TenantID, user.ID}},
+		{"chat member", `INSERT INTO chat_members (channel_id, tenant_id, user_id) VALUES (?, ?, ?)`, []any{"channel-1", user.TenantID, "other-user"}},
+		{"chat message", `INSERT INTO chat_messages (id, channel_id, tenant_id, sender_id) VALUES (?, ?, ?, ?)`, []any{"message-1", "channel-1", user.TenantID, "other-user"}},
+		{"chat file", `INSERT INTO chat_files (id, tenant_id, uploader_id, channel_id) VALUES (?, ?, ?, ?)`, []any{"file-1", user.TenantID, "other-user", "channel-1"}},
+		{"chat call", `INSERT INTO chat_voice_calls (id, tenant_id, caller_id) VALUES (?, ?, ?)`, []any{"call-1", user.TenantID, user.ID}},
+		{"chat call participant", `INSERT INTO chat_voice_participants (call_id, tenant_id, user_id) VALUES (?, ?, ?)`, []any{"call-1", user.TenantID, "other-user"}},
+		{"chat push token", `INSERT INTO chat_push_tokens (tenant_id, user_id) VALUES (?, ?)`, []any{user.TenantID, user.ID}},
+		{"chat presence", `INSERT INTO chat_presence (tenant_id, user_id) VALUES (?, ?)`, []any{user.TenantID, user.ID}},
+		{"failure log", `INSERT INTO failure_event_logs (id, tenant_id, category, event_code, message, email, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{"failure-1", user.TenantID, "registration", "failed", "private", user.Email, now.Format(time.RFC3339)}},
+		{"email invite", `INSERT INTO email_invites (id, tenant_id, email, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{"invite-1", user.TenantID, user.Email, "viewer", "pending", now.Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"owned survey", `INSERT INTO surveys (id, tenant_id, short_code, title, status, settings_json, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, []any{"survey-owned", user.TenantID, "OWNED1", "private", "draft", `{"anonymous":false}`, user.ID, now.Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"other survey", `INSERT INTO surveys (id, tenant_id, short_code, title, status, settings_json, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, []any{"survey-other", user.TenantID, "OTHER1", "other", "published", `{"anonymous":false}`, "other-user", now.Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"owned survey question", `INSERT INTO survey_questions (survey_id, question_id, position, type, title) VALUES (?, ?, ?, ?, ?)`, []any{"survey-owned", "q1", 0, "text", "private"}},
+		{"owned survey binding", `INSERT INTO survey_bindings (survey_id, platform, group_id, bound_at) VALUES (?, ?, ?, ?)`, []any{"survey-owned", "lansenger", "group-1", now.Format(time.RFC3339)}},
+		{"owned survey response", `INSERT INTO survey_responses (id, tenant_id, survey_id, platform, respondent_key, answers_json, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{"response-owned", user.TenantID, "survey-owned", "lansenger", "other-user", `{}`, now.Format(time.RFC3339)}},
+		{"user survey response", `INSERT INTO survey_responses (id, tenant_id, survey_id, platform, respondent_key, answers_json, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{"response-user", user.TenantID, "survey-other", "lansenger", user.ID, `{}`, now.Format(time.RFC3339)}},
+		{"owned survey session", `INSERT INTO survey_sessions (session_key, tenant_id, survey_id, platform, user_id, phase, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, []any{"session-owned", user.TenantID, "survey-owned", "lansenger", "other-user", "answering", now.Add(time.Hour).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{"user survey session", `INSERT INTO survey_sessions (session_key, tenant_id, survey_id, platform, user_id, phase, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, []any{"session-user", user.TenantID, "survey-other", "lansenger", user.ID, "answering", now.Add(time.Hour).Format(time.RFC3339), now.Format(time.RFC3339)}},
+	}
+	for _, item := range seed {
+		if _, err := services.db.ExecContext(ctx, item.query, item.args...); err != nil {
+			t.Fatalf("seed %s: %v", item.name, err)
+		}
+	}
+
+	knowledgeSyncDir := filepath.Join(root, "knowledge-sync")
+	welcomeDir := filepath.Join(root, "welcome-sync")
+	migrationDir := filepath.Join(root, "user-data-migrations")
+	chatFileDir := filepath.Join(root, "chat-files")
+	chatFile := filepath.Join(chatFileDir, "file-1.pdf")
+	if err := os.MkdirAll(chatFileDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(chatFile, []byte("private attachment"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	principal := &auth.ViewerPrincipal{TenantID: user.TenantID, UserID: user.ID, Email: user.Email}
+	for _, dir := range []string{knowledgeSyncUserDir(knowledgeSyncDir, principal), welcomeSyncUserDir(welcomeDir, principal), filepath.Join(migrationDir, safeMigrationSegment(user.TenantID), safeMigrationSegment(user.ID), "migration-1")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	tenantSystem := ScopedSystemSettingsForTenant(user.TenantID, services.store.System)
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "purge-referral-group"}}, Grants: []llmservice.Grant{{ID: "referral-grant-1", UserID: user.ID, Email: user.Email, ServiceGroupID: "purge-referral-group", Source: "user_referral", CardID: "ref-1", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 10}}}); err != nil {
+		t.Fatalf("seed referral grant: %v", err)
+	}
+	purger := &UserDataPurger{Identity: identity, System: services.store.System, DB: services.db, KnowledgeSharePackageDir: shareDir, KnowledgeSyncDir: knowledgeSyncDir, WelcomeSyncDir: welcomeDir, UserDataMigrationDir: migrationDir, ChatFileDir: chatFileDir}
+	if _, err := purger.PurgeAll(ctx, user); err != nil {
+		t.Fatalf("purge user: %v", err)
+	}
+
+	for table, check := range map[string]struct {
+		where string
+		args  []any
+	}{
+		"knowledge_shares":                    {"tenant_id = ? AND owner_user_id = ?", []any{user.TenantID, user.ID}},
+		"sessions":                            {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"session_token_usage_snapshots":       {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"user_usage_daily":                    {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"machine_heartbeat_log":               {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"digital_asset_sync_cursors":          {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"content_audit_logs":                  {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"audit_logs":                          {"user_id = ?", []any{user.ID}},
+		"capability_acquisition_requests":     {"tenant_id = ? AND requester_user_id = ?", []any{user.TenantID, user.ID}},
+		"user_referral_registration_sessions": {"tenant_id = ? AND code_hash = ?", []any{user.TenantID, "hash-1"}},
+		"user_referral_identity_reservations": {"tenant_id = ? AND code_hash = ?", []any{user.TenantID, "hash-1"}},
+		"user_referral_handoffs":              {"tenant_id = ? AND inviter_user_id = ?", []any{user.TenantID, user.ID}},
+		"gossip_posts":                        {"id = ?", []any{"post-1"}},
+		"gossip_comments":                     {"post_id = ?", []any{"post-1"}},
+		"user_data_migration_exports":         {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"user_data_migration_chunks":          {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"chat_channels":                       {"tenant_id = ? AND created_by = ?", []any{user.TenantID, user.ID}},
+		"chat_members":                        {"tenant_id = ? AND channel_id = ?", []any{user.TenantID, "channel-1"}},
+		"chat_messages":                       {"tenant_id = ? AND channel_id = ?", []any{user.TenantID, "channel-1"}},
+		"chat_files":                          {"tenant_id = ? AND channel_id = ?", []any{user.TenantID, "channel-1"}},
+		"chat_voice_calls":                    {"tenant_id = ? AND caller_id = ?", []any{user.TenantID, user.ID}},
+		"chat_voice_participants":             {"tenant_id = ? AND call_id = ?", []any{user.TenantID, "call-1"}},
+		"chat_push_tokens":                    {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"chat_presence":                       {"tenant_id = ? AND user_id = ?", []any{user.TenantID, user.ID}},
+		"failure_event_logs":                  {"tenant_id = ? AND lower(email) = lower(?)", []any{user.TenantID, user.Email}},
+		"email_invites":                       {"tenant_id = ? AND lower(email) = lower(?)", []any{user.TenantID, user.Email}},
+		"a2a_group_profiles":                  {"tenant_id = ? AND agent_id = ?", []any{user.TenantID, "a2a-machine-1"}},
+		"a2a_group_sessions":                  {"tenant_id = ? AND session_id = ?", []any{user.TenantID, "a2a-session-1"}},
+		"a2a_group_invites":                   {"tenant_id = ? AND invite_id = ?", []any{user.TenantID, "a2a-invite-1"}},
+		"surveys":                             {"tenant_id = ? AND created_by = ?", []any{user.TenantID, user.ID}},
+		"survey_questions":                    {"survey_id = ?", []any{"survey-owned"}},
+		"survey_bindings":                     {"survey_id = ?", []any{"survey-owned"}},
+		"survey_responses":                    {"survey_id = ? OR id = ?", []any{"survey-owned", "response-user"}},
+		"survey_sessions":                     {"survey_id = ? OR user_id = ?", []any{"survey-owned", user.ID}},
+	} {
+		var count int
+		if err := services.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE "+check.where, check.args...).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s not purged: count=%d err=%v", table, count, err)
+		}
+	}
+	var referralStatus, codeStatus string
+	var referralHistory int
+	if err := services.db.QueryRowContext(ctx, `SELECT status FROM user_referrals WHERE tenant_id = ? AND id = ?`, user.TenantID, "ref-1").Scan(&referralStatus); err != nil || referralStatus != "revoked" {
+		t.Fatalf("referral audit record must be retained and revoked: status=%q err=%v", referralStatus, err)
+	}
+	if err := services.db.QueryRowContext(ctx, `SELECT status FROM user_referral_codes WHERE tenant_id = ? AND id = ?`, user.TenantID, "code-1").Scan(&codeStatus); err != nil || codeStatus != "revoked" {
+		t.Fatalf("referral code audit record must be retained and revoked: status=%q err=%v", codeStatus, err)
+	}
+	if err := services.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_referral_status_history WHERE tenant_id = ? AND referral_id = ? AND to_status = 'revoked'`, user.TenantID, "ref-1").Scan(&referralHistory); err != nil || referralHistory != 1 {
+		t.Fatalf("referral revoke history count=%d err=%v", referralHistory, err)
+	}
+	registry, err := llmservice.LoadRegistry(ctx, tenantSystem)
+	if err != nil || registry == nil || len(registry.Grants) != 1 || !registry.Grants[0].Frozen {
+		t.Fatalf("referral grant must be retained and frozen: registry=%#v err=%v", registry, err)
+	}
+	var inviteeSessionCount int
+	if err := services.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_referral_registration_sessions WHERE tenant_id = ? AND invitee_user_id = ?`, user.TenantID, user.ID).Scan(&inviteeSessionCount); err != nil || inviteeSessionCount != 0 {
+		t.Fatalf("invitee referral registration session not purged: count=%d err=%v", inviteeSessionCount, err)
+	}
+	for _, path := range []string{shareFile, chatFile, knowledgeSyncUserDir(knowledgeSyncDir, principal), welcomeSyncUserDir(welcomeDir, principal), filepath.Join(migrationDir, safeMigrationSegment(user.TenantID), safeMigrationSegment(user.ID))} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s removed, stat err=%v", path, err)
+		}
+	}
 }
 
 type fakeBoundUserRouteDeleteCall struct {

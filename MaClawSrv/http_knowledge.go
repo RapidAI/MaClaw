@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"database/sql"
@@ -21,10 +20,10 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
-	"github.com/nwaples/rardecode/v2"
 )
 
 const defaultMaxFileSize int64 = 50 << 20 // 50MB
@@ -182,15 +181,21 @@ func extractKnowledgeArchive(ctx context.Context, archivePath, uploadName, paren
 	if err != nil {
 		return "", nil, err
 	}
-	var paths []string
-	switch strings.ToLower(filepath.Ext(uploadName)) {
-	case ".zip":
-		paths, err = extractKnowledgeZip(ctx, archivePath, extractDir, maxBytes)
-	case ".rar":
-		paths, err = extractKnowledgeRAR(ctx, archivePath, extractDir, maxBytes)
-	default:
-		err = fmt.Errorf("unsupported archive type")
+	if err := ctx.Err(); err != nil {
+		_ = os.RemoveAll(extractDir)
+		return "", nil, err
 	}
+	result := archiveutil.ExtractToDirectory(archivePath, extractDir, archiveutil.Limits{
+		MaxInputBytes: maxBytes,
+		MaxFiles:      maxKnowledgeArchiveFiles,
+		MaxFileBytes:  maxBytes,
+		MaxTotalBytes: maxBytes,
+	})
+	if !result.OK {
+		_ = os.RemoveAll(extractDir)
+		return "", nil, fmt.Errorf("extract knowledge archive (%s): %s", result.Code, result.Message)
+	}
+	paths, err := knowledgeArchiveFiles(ctx, extractDir)
 	if err != nil {
 		_ = os.RemoveAll(extractDir)
 		return "", nil, err
@@ -202,139 +207,22 @@ func extractKnowledgeArchive(ctx context.Context, archivePath, uploadName, paren
 	return extractDir, paths, nil
 }
 
-func extractKnowledgeZip(ctx context.Context, archivePath, extractDir string, maxBytes int64) ([]string, error) {
-	zr, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return nil, err
-	}
-	defer zr.Close()
-	paths := make([]string, 0, len(zr.File))
-	var total int64
-	for _, file := range zr.File {
+func knowledgeArchiveFiles(ctx context.Context, root string) ([]string, error) {
+	paths := make([]string, 0)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
-		if file.FileInfo().IsDir() {
-			continue
+		if path == root || entry.IsDir() {
+			return nil
 		}
-		if file.UncompressedSize64 > uint64(maxBytes-total) {
-			return nil, fmt.Errorf("archive exceeds extracted size limit")
-		}
-		outPath, err := safeKnowledgeArchivePath(extractDir, file.Name)
-		if err != nil {
-			return nil, err
-		}
-		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-			return nil, err
-		}
-		rc, err := file.Open()
-		if err != nil {
-			return nil, err
-		}
-		written, copyErr := writeKnowledgeArchiveFile(outPath, rc, maxBytes-total)
-		closeErr := rc.Close()
-		if copyErr != nil {
-			return nil, copyErr
-		}
-		if closeErr != nil {
-			return nil, closeErr
-		}
-		total += written
-		paths = append(paths, outPath)
-		if len(paths) > maxKnowledgeArchiveFiles {
-			return nil, fmt.Errorf("archive exceeds file count limit")
-		}
-	}
-	return paths, nil
-}
-
-func extractKnowledgeRAR(ctx context.Context, archivePath, extractDir string, maxBytes int64) ([]string, error) {
-	rr, err := rardecode.OpenReader(archivePath, rardecode.MaxDictionarySize(128<<20))
-	if err != nil {
-		return nil, err
-	}
-	defer rr.Close()
-	var paths []string
-	var total int64
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		header, err := rr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if header.IsDir {
-			continue
-		}
-		if header.Encrypted || header.HeaderEncrypted {
-			return nil, fmt.Errorf("encrypted rar archives are not supported")
-		}
-		if !header.UnKnownSize && header.UnPackedSize > maxBytes-total {
-			return nil, fmt.Errorf("archive exceeds extracted size limit")
-		}
-		outPath, err := safeKnowledgeArchivePath(extractDir, header.Name)
-		if err != nil {
-			return nil, err
-		}
-		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-			return nil, err
-		}
-		written, err := writeKnowledgeArchiveFile(outPath, rr, maxBytes-total)
-		if err != nil {
-			return nil, err
-		}
-		total += written
-		paths = append(paths, outPath)
-		if len(paths) > maxKnowledgeArchiveFiles {
-			return nil, fmt.Errorf("archive exceeds file count limit")
-		}
-	}
-	return paths, nil
-}
-
-func safeKnowledgeArchivePath(root, name string) (string, error) {
-	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
-	clean := filepath.Clean(filepath.FromSlash(name))
-	if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) || clean == ".." {
-		return "", fmt.Errorf("archive contains unsafe path")
-	}
-	outPath := filepath.Join(root, clean)
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	outAbs, err := filepath.Abs(outPath)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(rootAbs, outAbs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("archive contains unsafe path")
-	}
-	return outAbs, nil
-}
-
-func writeKnowledgeArchiveFile(path string, src io.Reader, maxBytes int64) (int64, error) {
-	if maxBytes <= 0 {
-		return 0, fmt.Errorf("archive exceeds extracted size limit")
-	}
-	out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return 0, err
-	}
-	defer out.Close()
-	written, err := io.Copy(out, io.LimitReader(src, maxBytes+1))
-	if err != nil {
-		return written, err
-	}
-	if written > maxBytes {
-		return written, fmt.Errorf("archive exceeds extracted size limit")
-	}
-	return written, nil
+		paths = append(paths, path)
+		return nil
+	})
+	return paths, err
 }
 
 func (s *HTTPServer) handleKnowledgeImportURL(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

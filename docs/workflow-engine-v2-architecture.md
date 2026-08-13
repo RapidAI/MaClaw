@@ -277,4 +277,4 @@ WorkflowRouter.Route(msg)
 - `workflow.db`（V1）保留不动，V2 使用 `workflow_v2.db`
 - V1 的工作流模板定义（`templates.go`）可以复用，只需要简化 Phase 结构
 - 前端面板（WorkflowDocPreview、phaseLabels）接口不变，只是后端数据源切换
-- config 中的 `workflow_enabled` 开关保留，控制 V2 是否激活
+- 工作流仅由用户显式从工作流面板或命令启动；普通消息不会自动触发。

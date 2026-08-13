@@ -322,6 +322,9 @@ func creditGrantSummariesForOwner(reg *Registry, owner userAccountRef, now time.
 		if !grantMatchesUser(g, owner) {
 			continue
 		}
+		if g.Frozen {
+			continue
+		}
 		if reg.FindModelServiceGroup(g.ServiceGroupID) == nil {
 			continue
 		}
@@ -610,6 +613,9 @@ func PromoteQueuedMeteredGrants(reg *Registry, now time.Time) int {
 	changed := 0
 	for i := range reg.Grants {
 		g := &reg.Grants[i]
+		if g.Frozen {
+			continue
+		}
 		if !g.StartsAt.After(now) {
 			continue
 		}
@@ -654,6 +660,9 @@ func hasActiveWindowGrantForOwnerGroup(reg *Registry, owner userAccountRef, serv
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
+		if grant.Frozen {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
 			continue
 		}
@@ -674,6 +683,9 @@ func nextGrantStart(reg *Registry, owner userAccountRef, serviceGroupID string, 
 	latestActiveExpiry := now
 	for _, g := range reg.Grants {
 		if !grantMatchesUser(g, owner) || !strings.EqualFold(g.ServiceGroupID, serviceGroupID) {
+			continue
+		}
+		if g.Frozen {
 			continue
 		}
 		// Only consider grants currently within their validity window.
@@ -711,6 +723,9 @@ func effectiveGrantExpiresAt(reg *Registry, owner userAccountRef, now time.Time)
 		if !grantMatchesUser(g, owner) {
 			continue
 		}
+		if g.Frozen {
+			continue
+		}
 		if reg.FindModelServiceGroup(g.ServiceGroupID) == nil {
 			continue
 		}
@@ -741,6 +756,9 @@ func findGrantWithSource(reg *Registry, owner userAccountRef, serviceGroupID, so
 	for i := range reg.Grants {
 		grant := &reg.Grants[i]
 		if !grantMatchesUser(*grant, owner) {
+			continue
+		}
+		if grant.Frozen {
 			continue
 		}
 		if !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
@@ -824,6 +842,9 @@ func effectiveServiceGroupIDsForOwner(ctx context.Context, reg *Registry, securi
 	activeGrants := make([]Grant, 0)
 	for _, g := range reg.Grants {
 		if !grantMatchesUser(g, owner) {
+			continue
+		}
+		if g.Frozen {
 			continue
 		}
 		if !now.Before(g.ExpiresAt) {
@@ -1189,6 +1210,65 @@ func GrantInvitationCodeBenefitForUserID(ctx context.Context, system SystemSetti
 	return SaveRegistry(ctx, system, reg)
 }
 
+// GrantUserReferralBenefitForUserID creates one independently expiring reward
+// grant for a successful user referral. The referral ID is its idempotency key:
+// retries return the original grant instead of duplicating credits. Unlike card
+// top-ups, its time window starts at registration, never after a prior grant.
+func GrantUserReferralBenefitForUserID(ctx context.Context, system SystemSettingsRepository, userID, email, referralID, serviceGroupID string, durationDays int, credits float64, registeredAt time.Time) (string, error) {
+	owner := newUserAccountRef(userID, email)
+	if owner.empty() || strings.TrimSpace(referralID) == "" || strings.TrimSpace(serviceGroupID) == "" || durationDays <= 0 || credits <= 0 || math.IsNaN(credits) || math.IsInf(credits, 0) {
+		return "", nil
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return "", err
+	}
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if reg.FindModelServiceGroup(serviceGroupID) == nil {
+		return "", nil
+	}
+	for _, grant := range reg.Grants {
+		if grantMatchesUser(grant, owner) && strings.EqualFold(strings.TrimSpace(grant.Source), "user_referral") && strings.TrimSpace(grant.CardID) == strings.TrimSpace(referralID) && strings.TrimSpace(grant.ServiceGroupID) == serviceGroupID {
+			return grant.ID, nil
+		}
+	}
+	if registeredAt.IsZero() {
+		registeredAt = time.Now().UTC()
+	}
+	registeredAt = registeredAt.UTC()
+	grantID := NewID("grant")
+	reg.Grants = append(reg.Grants, Grant{ID: grantID, UserID: owner.UserID, Email: owner.Email, ServiceGroupID: serviceGroupID, Source: "user_referral", CardID: strings.TrimSpace(referralID), StartsAt: registeredAt, ExpiresAt: registeredAt.Add(time.Duration(durationDays) * 24 * time.Hour), CreatedAt: registeredAt, CreditsTotal: roundCredits(credits)})
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		return "", err
+	}
+	return grantID, nil
+}
+
+// FreezeUserReferralBenefits retains every referral grant for audit while
+// preventing its remaining credits from being selected for future usage.
+func FreezeUserReferralBenefits(ctx context.Context, system SystemSettingsRepository, referralID string) error {
+	referralID = strings.TrimSpace(referralID)
+	if referralID == "" {
+		return nil
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil || reg == nil {
+		return err
+	}
+	changed := false
+	for idx := range reg.Grants {
+		grant := &reg.Grants[idx]
+		if strings.EqualFold(strings.TrimSpace(grant.Source), "user_referral") && strings.TrimSpace(grant.CardID) == referralID && !grant.Frozen {
+			grant.Frozen = true
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return SaveRegistry(ctx, system, reg)
+}
+
 func grantNewUserBenefit(ctx context.Context, system SystemSettingsRepository, email, source string, ratio float64, useRegistrationWindow bool) error {
 	return grantNewUserBenefitForUserID(ctx, system, "", email, source, ratio, useRegistrationWindow)
 }
@@ -1344,6 +1424,9 @@ func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGrou
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
+		if grant.Frozen {
+			continue
+		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
@@ -1370,10 +1453,31 @@ func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGrou
 		if candidates[i].earlyStart != candidates[j].earlyStart {
 			return !candidates[i].earlyStart
 		}
-		if candidates[i].g.ExpiresAt.Equal(candidates[j].g.ExpiresAt) {
-			return candidates[i].g.CreatedAt.Before(candidates[j].g.CreatedAt)
+		left, right := candidates[i].g, candidates[j].g
+		// Each referral reward has an independent validity window. When two
+		// referral rewards compete, consume the oldest issuance first rather than
+		// allowing a newer, earlier-expiring reward to jump the queue. Keep the
+		// pre-existing expiry ordering for every other pairing so card, system and
+		// queued-grant semantics remain unchanged.
+		if left.Source == "user_referral" && right.Source == "user_referral" {
+			if !left.StartsAt.Equal(right.StartsAt) {
+				return left.StartsAt.Before(right.StartsAt)
+			}
+			if !left.CreatedAt.Equal(right.CreatedAt) {
+				return left.CreatedAt.Before(right.CreatedAt)
+			}
+			if left.ID != right.ID {
+				return left.ID < right.ID
+			}
+			return candidates[i].idx < candidates[j].idx
 		}
-		return candidates[i].g.ExpiresAt.Before(candidates[j].g.ExpiresAt)
+		if left.ExpiresAt.Equal(right.ExpiresAt) {
+			if !left.CreatedAt.Equal(right.CreatedAt) {
+				return left.CreatedAt.Before(right.CreatedAt)
+			}
+			return candidates[i].idx < candidates[j].idx
+		}
+		return left.ExpiresAt.Before(right.ExpiresAt)
 	})
 	remaining := credits
 	consumed := 0.0
@@ -1423,6 +1527,9 @@ func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, servi
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
+		if grant.Frozen {
+			continue
+		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
@@ -1464,6 +1571,9 @@ func earlyStartableUnmeteredUnlimitedGrantIndex(reg *Registry, owner userAccount
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
+		if grant.Frozen {
+			continue
+		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
@@ -1484,6 +1594,9 @@ func queuedGrantBlockedOnlyByExhausted(reg *Registry, owner userAccountRef, serv
 	blockedByExhausted := false
 	for _, grant := range reg.Grants {
 		if !grantMatchesUser(grant, owner) {
+			continue
+		}
+		if grant.Frozen {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1507,7 +1620,7 @@ func queuedGrantBlockedOnlyByExhausted(reg *Registry, owner userAccountRef, serv
 }
 
 func canEarlyStartQueuedGrant(reg *Registry, owner userAccountRef, queued Grant, queuedIndex int, serviceGroupSet map[string]struct{}, now time.Time) bool {
-	if reg == nil || !queued.StartsAt.After(now) || !queued.ExpiresAt.After(now) {
+	if reg == nil || queued.Frozen || !queued.StartsAt.After(now) || !queued.ExpiresAt.After(now) {
 		return false
 	}
 	if queued.CreditsTotal > 0 && remainingGrantCredits(queued) <= 0 {
@@ -1517,6 +1630,9 @@ func canEarlyStartQueuedGrant(reg *Registry, owner userAccountRef, queued Grant,
 	blockedByPeriodLimit := false
 	for _, grant := range reg.Grants {
 		if !grantMatchesUser(grant, owner) {
+			continue
+		}
+		if grant.Frozen {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1548,6 +1664,9 @@ func hasEarlierQueuedGrant(reg *Registry, owner userAccountRef, queued Grant, qu
 			continue
 		}
 		if !grantMatchesUser(grant, owner) {
+			continue
+		}
+		if grant.Frozen {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1762,6 +1881,9 @@ func hasAnyGrantForServiceGroups(reg *Registry, owner userAccountRef, serviceGro
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
+		if grant.Frozen {
+			continue
+		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; ok {
 			return true
 		}
@@ -1792,6 +1914,9 @@ func grantStartAtForServiceGroups(reg *Registry, owner userAccountRef, serviceGr
 	var startsAt *time.Time
 	for _, grant := range reg.Grants {
 		if !grantMatchesUser(grant, owner) {
+			continue
+		}
+		if grant.Frozen {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1831,6 +1956,9 @@ func hasActiveGrantForServiceGroups(reg *Registry, owner userAccountRef, service
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
+		if grant.Frozen {
+			continue
+		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
@@ -1864,6 +1992,9 @@ func periodLimitRetryAtForServiceGroups(reg *Registry, owner userAccountRef, ser
 	var retryAt *time.Time
 	for _, grant := range reg.Grants {
 		if !grantMatchesUser(grant, owner) {
+			continue
+		}
+		if grant.Frozen {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1904,6 +2035,9 @@ func hasUnlimitedActiveGrantForServiceGroups(reg *Registry, owner userAccountRef
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
+		if grant.Frozen {
+			continue
+		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
@@ -1936,6 +2070,9 @@ func hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg *Registry, owner userA
 	}
 	for _, grant := range reg.Grants {
 		if !grantMatchesUser(grant, owner) {
+			continue
+		}
+		if grant.Frozen {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {

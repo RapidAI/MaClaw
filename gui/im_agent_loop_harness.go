@@ -189,7 +189,7 @@ func agentLoopProgressSender(onProgress func(string)) func(string) {
 
 // agentLoopProgressSenderLang wraps progress delivery so intermediate status
 // text is visually distinct from final assistant replies on IM channels.
-// Tool-status cards (【工具】/[Tool]) and heartbeats are left unchanged.
+// Tool activity items (工具 · /Tool · ) and heartbeats are left unchanged.
 func agentLoopProgressSenderLang(onProgress func(string), lang string) func(string) {
 	return func(text string) {
 		if onProgress == nil {

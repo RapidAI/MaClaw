@@ -142,6 +142,7 @@ func (h *IMMessageHandler) routeLLMConfigFromBase(task cllm.TaskType, primary co
 		routed.ProviderName = primary.ProviderName
 	}
 	routed.RouteSource = "route"
+	routed.SupportsVision = h.routedConfigSupportsVision(primary, routed)
 	return routed
 }
 
@@ -254,6 +255,11 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 		}
 	}
 
+	// A route can change only the model name. Do not let it inherit the
+	// primary model's vision flag: image bytes require a confirmed final
+	// provider/model pair.
+	cfg.SupportsVision = h.routedConfigSupportsVision(primary, cfg)
+
 	decision = modelRouteDecision{
 		Task:             string(classified.Task),
 		Source:           source,
@@ -280,6 +286,33 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 		h.app.recordLastModelRoute(decision)
 	}
 	return cfg, decision
+}
+
+func (h *IMMessageHandler) routedConfigSupportsVision(primary, cfg corelib.MaclawLLMConfig) bool {
+	if cfg.SupportsVision && cfg.Model == primary.Model && cfg.URL == primary.URL && cfg.ProviderName == primary.ProviderName {
+		return true
+	}
+	if h == nil || h.app == nil {
+		// Standalone handlers have no provider catalogue to verify a changed
+		// route. Preserve a known primary capability only; never assume that a
+		// route-selected model accepts image input.
+		return false
+	}
+	providerName := strings.TrimSpace(cfg.ProviderName)
+	if providerName == "" {
+		return false
+	}
+	for _, provider := range h.app.GetMaclawLLMProviders().Providers {
+		if !strings.EqualFold(strings.TrimSpace(provider.Name), providerName) {
+			continue
+		}
+		if strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(provider.URL) != "" &&
+			!strings.EqualFold(strings.TrimRight(cfg.URL, "/"), strings.TrimRight(provider.URL, "/")) {
+			return false
+		}
+		return providerSupportsVisionForModel(provider, cfg.Model)
+	}
+	return cfg.SupportsVision && cfg.Model == primary.Model && cfg.URL == primary.URL
 }
 
 // escalateRunStateToReasoning upgrades a light turn to the reasoning model after

@@ -26,6 +26,8 @@ export interface AITab {
     executionProfile?: AIExecutionProfile;
     /** Primary conversation title. For VE/group tabs this remains the primary VE name or history topic. */
     title: string;
+    /** User-defined title for the fixed local AI assistant tab. */
+    customTitle?: string;
     /** Explicit group topic/name, separate from participant names. */
     groupTitle?: string;
     /** Digital Employee ID (only for type="ve") */
@@ -121,7 +123,8 @@ export const DEFAULT_MAX_VE_TABS = 8;
 /**
  * Fixed local AI assistant tab (main session surface).
  * `title` is a persistence/default fallback only — UI must render via
- * `localAssistantTabTitle(lang)` / `getAITabDisplayTitle` so English never sticks on Chinese.
+ * `localAssistantTabTitle(lang)` / `getAITabDisplayTitle` so English never sticks on Chinese
+ * unless the user explicitly supplied `customTitle`.
  */
 export const LOCAL_TAB: AITab = {
     id: "local",

@@ -195,20 +195,28 @@ func mobileTransformDocumentDraftWithinQuota(
 			}
 		}
 
+		mobileKnowledgePurgeState.RLock()
+		if !mobileOwnerWriteAllowedLocked(principal.TenantID, ownerID) {
+			mobileKnowledgePurgeState.RUnlock()
+			return mobileDocumentDraftRecord{}, errMobileDocumentDraftNotFound
+		}
 		mobileDocuments.Lock()
 		latest, stillExists := mobileDocuments.drafts[draftID]
 		if !stillExists || latest.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, latest.TenantID) {
 			mobileDocuments.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			return mobileDocumentDraftRecord{}, errMobileDocumentDraftNotFound
 		}
 		if latest.Markdown != current.Markdown {
 			mobileDocuments.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			continue
 		}
 		latest.Markdown = nextMarkdown
 		latest.UpdatedAt = time.Now().UTC()
 		mobileDocuments.drafts[draftID] = latest
 		mobileDocuments.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 		return latest, nil
 	}
 	return mobileDocumentDraftRecord{}, errMobileDocumentDraftChanged

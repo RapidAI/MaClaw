@@ -16,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/text/unicode/norm"
 )
 
 var (
@@ -467,7 +468,9 @@ func scopedAdminLookup(scope, tenantID string) (string, string) {
 }
 
 func normalizeEmail(email string) string {
-	return strings.TrimSpace(strings.ToLower(email))
+	// NFC must happen before case folding: otherwise canonically equivalent
+	// Unicode input could result in distinct accounts, routes, or referrals.
+	return strings.ToLower(norm.NFC.String(strings.TrimSpace(email)))
 }
 
 var adminEmailPattern = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)

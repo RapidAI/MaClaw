@@ -13,6 +13,26 @@ type tenantScopedSystemSettings struct {
 	base     store.SystemSettingsRepository
 }
 
+// userReferralMetricSystemSettings carries the durable referral repository
+// alongside the existing settings dependency. It keeps the metering API
+// unchanged while letting its periodic flush record aggregate-only referral
+// reward metrics without a database lookup on every request.
+type userReferralMetricSystemSettings struct {
+	store.SystemSettingsRepository
+	repo store.UserReferralRepository
+}
+
+func (s userReferralMetricSystemSettings) UserReferralMetricRepository() store.UserReferralRepository {
+	return s.repo
+}
+
+func (s userReferralMetricSystemSettings) TenantID() string {
+	if scoped, ok := s.SystemSettingsRepository.(interface{ TenantID() string }); ok {
+		return scoped.TenantID()
+	}
+	return store.DefaultTenantID
+}
+
 func scopedSystemSettingsForRequest(r *http.Request, base store.SystemSettingsRepository) store.SystemSettingsRepository {
 	if base == nil || r == nil || !isTenantScopedAdminRequest(r) {
 		return base
@@ -36,14 +56,25 @@ func ScopedSystemSettingsForTenant(tenantID string, base store.SystemSettingsRep
 	if base == nil || tenantID == "" || tenantID == store.DefaultTenantID {
 		return base
 	}
+	if metrics, ok := base.(userReferralMetricSystemSettings); ok {
+		metrics.SystemSettingsRepository = tenantScopedSystemSettings{tenantID: tenantID, base: metrics.SystemSettingsRepository}
+		return metrics
+	}
 	return tenantScopedSystemSettings{tenantID: tenantID, base: base}
 }
 
 func globalSystemSettings(base store.SystemSettingsRepository) store.SystemSettingsRepository {
+	if metrics, ok := base.(userReferralMetricSystemSettings); ok {
+		return globalSystemSettings(metrics.SystemSettingsRepository)
+	}
 	if scoped, ok := base.(tenantScopedSystemSettings); ok {
 		return scoped.base
 	}
 	return base
+}
+
+func (s tenantScopedSystemSettings) GlobalSystemSettings() store.SystemSettingsRepository {
+	return globalSystemSettings(s.base)
 }
 
 func (s tenantScopedSystemSettings) Set(ctx context.Context, key, valueJSON string) error {

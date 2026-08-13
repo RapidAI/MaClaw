@@ -28,8 +28,6 @@ const renderBar = (overrides: Partial<Parameters<typeof AssistantQuickSettingsBa
         theme: overlayTheme,
         themeMode: 'light',
         onToggleTheme: vi.fn(),
-        workflowEnabled: false,
-        onToggleWorkflow: vi.fn(),
         ttsEnabled: false,
         ttsPlaying: false,
         onToggleTts: vi.fn(),
@@ -58,7 +56,6 @@ describe('AssistantQuickSettingsBar', () => {
         renderBar();
         expect(screen.getByTestId('assistant-quick-settings-bar')).toBeTruthy();
         expect(screen.getByTestId('assistant-quick-settings-chips')).toBeTruthy();
-        expect(screen.getByTestId('qs-workflow-toggle')).toBeTruthy();
         expect(screen.getByTestId('qs-tts-toggle')).toBeTruthy();
         expect(screen.getByTestId('qs-theme-toggle')).toBeTruthy();
         expect(screen.getByTestId('qs-workstation-toggle')).toBeTruthy();
@@ -296,8 +293,6 @@ describe('AssistantQuickSettingsBar', () => {
                 theme={overlayTheme}
                 themeMode="light"
                 onToggleTheme={vi.fn()}
-                workflowEnabled={false}
-                onToggleWorkflow={vi.fn()}
                 ttsEnabled={false}
                 ttsPlaying={false}
                 onToggleTts={vi.fn()}
@@ -392,8 +387,6 @@ describe('AssistantQuickSettingsBar', () => {
                 theme={overlayTheme}
                 themeMode="light"
                 onToggleTheme={vi.fn()}
-                workflowEnabled={false}
-                onToggleWorkflow={vi.fn()}
                 ttsEnabled={false}
                 ttsPlaying={false}
                 onToggleTts={vi.fn()}

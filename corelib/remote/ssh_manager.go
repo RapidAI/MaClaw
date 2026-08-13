@@ -134,10 +134,13 @@ func (m *SSHSessionManager) Create(spec SSHSessionSpec) (*SSHManagedSession, err
 	hostID := spec.HostConfig.SSHHostID()
 
 	// 从连接池获取连接
-	client, err := m.pool.Acquire(spec.HostConfig)
+	client, resolvedHostConfig, err := m.pool.AcquireResolved(spec.HostConfig)
 	if err != nil {
 		return nil, fmt.Errorf("acquire ssh connection: %w", err)
 	}
+	// Host-key capture is resolved before the PTY starts, so the session's
+	// identity, lifecycle release and every later reconnect share one pin.
+	spec.HostConfig = resolvedHostConfig
 
 	// 创建 PTY 会话
 	ptySession := NewSSHPTYSession(client, hostID)

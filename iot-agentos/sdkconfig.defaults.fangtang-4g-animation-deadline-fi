@@ -1,0 +1,6 @@
+# Dedicated non-release proof for compact Display animation lifecycle budget.
+# Unlike display-service rollback FIs this reaches the selected compact
+# renderer, starts one private worker, and verifies stop+cleanup do not reset
+# the caller's 100 ms deadline.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_COMPACT_DISPLAY_ANIMATION_DEADLINE_TEST=y

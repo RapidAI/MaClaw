@@ -274,6 +274,7 @@ func (h *IMMessageHandler) ensureCodingWorkflowRemoteSSHSession(userID string, s
 	password := ""
 	keyPath := ""
 	label := ""
+	hostKeyFingerprint := ""
 	if creds, ok := h.loadCodingWorkflowRemoteCreds(userID); ok {
 		if strings.TrimSpace(creds.Password) != "" {
 			password = strings.TrimSpace(creds.Password)
@@ -284,6 +285,7 @@ func (h *IMMessageHandler) ensureCodingWorkflowRemoteSSHSession(userID string, s
 		if strings.TrimSpace(creds.Profile) != "" && creds.Profile != workflowFormSSHProfileNew {
 			label = strings.TrimSpace(creds.Profile)
 		}
+		hostKeyFingerprint = strings.TrimSpace(creds.HostKeyFingerprint)
 		// Prefer session vault host if FormData was scrubbed oddly.
 		if host == "" {
 			host = strings.TrimSpace(creds.Host)
@@ -311,11 +313,14 @@ func (h *IMMessageHandler) ensureCodingWorkflowRemoteSSHSession(userID string, s
 				label = p
 			}
 		}
+		if hostKeyFingerprint == "" {
+			hostKeyFingerprint = formDataTrimString(phase.FormData, workflowFormSSHHostKeyFingerprintField)
+		}
 	}
 	if h.ensureSSHManager() == nil {
 		return "", "", "SSH 会话管理器不可用"
 	}
-	sessionID, failReason := h.findOrCreateSSHSessionWithAuth(user, host, port, password, keyPath, label)
+	sessionID, failReason := h.findOrCreateSSHSessionWithPinnedAuth(user, host, port, password, keyPath, label, hostKeyFingerprint)
 	if sessionID == "" {
 		return "", "", sshConnectFailureMessage(user, host, port, failReason)
 	}
@@ -363,6 +368,12 @@ func (h *IMMessageHandler) findOrCreateSSHSessionWithPinnedAuth(user, host strin
 	}
 	if hostKeyFingerprint != "" {
 		args["host_key_fingerprint"] = hostKeyFingerprint
+	} else {
+		// Capture the server key during this exact authenticated connection.
+		// This leaves the user with a single password prompt while giving the
+		// coding runtime the pin it needs for all later commands/reconnects.
+		args["capture_host_key"] = true
+		args["force_new"] = true
 	}
 	result := h.sshConnect(args)
 	if match := extractSSHSessionIDFromConnectResult(result); match != "" {

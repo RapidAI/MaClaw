@@ -45,9 +45,10 @@ func (a *App) initEarlyClassifier() {
 	a.classifierOnce.Do(func() {
 		// Create UIC with noop embedder; no local keyword fallback is enabled.
 		uic := intent.New(intent.Config{
-			Embedder:   embedding.NoopEmbedder{},
-			LLMFunc:    a.buildUICLLMFunc(),
-			LLMTimeout: 30 * time.Second,
+			Embedder:       embedding.NoopEmbedder{},
+			LLMFunc:        a.buildUICLLMFunc(),
+			LLMContextFunc: a.buildUICLLMContextFunc(),
+			LLMTimeout:     30 * time.Second,
 		})
 		a.unifiedClassifier = uic
 
@@ -631,6 +632,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		a.unifiedClassifier.SetEmbedder(emb)
 	}
 	a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
+	a.unifiedClassifier.SetLLMContextFunc(a.buildUICLLMContextFunc())
 	// Ensure toolRouter has the UIC reference. initEarlyClassifier may have
 	// skipped this wiring if toolRouter was nil at that time (e.g., startup
 	// without Hub credentials where ensureRemoteInfra runs later).
@@ -716,6 +718,7 @@ func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
 	a.initEarlyClassifier()
 	a.unifiedClassifier.SetEmbedder(emb)
 	a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
+	a.unifiedClassifier.SetLLMContextFunc(a.buildUICLLMContextFunc())
 	// Intent-only activation is also useful for interruption relevance. It is
 	// deliberately available when vector search is off, so this must not wait for
 	// activateEmbedderAsync (which correctly exits in that configuration).
@@ -901,6 +904,33 @@ func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 		}
 		client := &http.Client{Timeout: 35 * time.Second}
 		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "unified-intent-classifier"})
+		resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
+		a.observeLLMEndpointResult(cfg, err)
+		if err != nil {
+			return "", err
+		}
+		return resp.Content, nil
+	}
+}
+
+// buildUICLLMContextFunc is the production L3 callback. Its context comes
+// from the fusion deadline, so a slow classification call is cancelled at the
+// transport layer instead of continuing in the background.
+func (a *App) buildUICLLMContextFunc() intent.LLMClassifyContextFunc {
+	return func(ctx context.Context, systemPrompt, userText string) (string, error) {
+		cfg := a.GetMaclawLLMConfig()
+		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+			return "", fmt.Errorf("LLM not configured")
+		}
+		if reason, skip := a.shouldSkipLightweightLLM(cfg); skip {
+			return "", fmt.Errorf("unified-intent-classifier LLM endpoint temporarily unavailable after recent network failure: %s", reason)
+		}
+		messages := []interface{}{
+			map[string]string{"role": "system", "content": systemPrompt},
+			map[string]string{"role": "user", "content": userText},
+		}
+		client := &http.Client{Timeout: 35 * time.Second}
+		ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "unified-intent-classifier"})
 		resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 		a.observeLLMEndpointResult(cfg, err)
 		if err != nil {

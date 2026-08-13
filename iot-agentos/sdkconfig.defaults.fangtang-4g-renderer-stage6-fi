@@ -1,0 +1,6 @@
+# Dedicated non-release configuration for the published-scanner boundary.
+# This is deliberately after task creation so rollback must use the normal
+# cooperative input stop/join path rather than discard an unpublished handle.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION=y
+CONFIG_MACLAW_COMPACT_RENDERER_FAILURE_STAGE=6

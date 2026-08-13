@@ -23,6 +23,7 @@ type imEntryContextOptions struct {
 type imEntryContextResult struct {
 	EntriesBeforeClear        []agent.ConversationEntry
 	UnfinishedSlot            *agent.UnfinishedTaskSlot
+	Decision                  explicitTaskSlotDecision
 	FreshTask                 bool
 	ConfirmedResume           bool
 	SkipWorkflowRouting       bool
@@ -52,6 +53,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	result := imEntryContextResult{
 		EntriesBeforeClear:  opts.EntriesBeforeClear,
 		UnfinishedSlot:      opts.UnfinishedSlot,
+		Decision:            opts.Decision,
 		FreshTask:           opts.FreshTask,
 		ConfirmedResume:     opts.ConfirmedResume,
 		SkipWorkflowRouting: opts.SkipWorkflowRouting,
@@ -93,7 +95,14 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	// App-exit slots (written at graceful shutdown for in-flight sessions) bind
 	// automatically: reopening the restored/historical tab is the resume intent.
 	opts.Decision = applyAppExitAutoResumeDecision(*msg, trimmed, result.UnfinishedSlot, opts.Decision)
-
+	// Crash/lease-expiry recovery is deliberately opt-in: only an explicit
+	// continuation message binds the recovered context. Any other substantive
+	// message starts a new task and dismisses the stale recovery slot.
+	//
+	// This must run here, after the serialization boundary has reloaded (and,
+	// if needed, materialized) the slot, but before slot actions mutate memory.
+	opts.Decision = applyImplicitInFlightRecoveryDecision(*msg, trimmed, result.UnfinishedSlot, opts.Decision)
+	result.Decision = opts.Decision
 	if slotFreshTask, resp, handled := h.applyExplicitTaskSlotAction(msg, opts.Trimmed, opts.Decision, &result.EntriesBeforeClear, &result.UnfinishedSlot); handled {
 		slotActionElapsed = time.Since(lastPhaseAt)
 		result.Handled = true
@@ -122,17 +131,13 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	// routeWorkflowIMMessage is kept for compilation but never called.
 	var workflowRoute workflowIMRouteResult
 	v2State := h.getWorkflowV2()
-	v2Disabled := h.app != nil && h.app.workflowDisabled.Load()
-	log.Printf("[workflow-v2-debug] entry_context: v2=%v disabled=%v user=%s skip=%v", v2State != nil, v2Disabled, msg.UserID, opts.SkipWorkflowRouting)
+	log.Printf("[workflow-v2-debug] entry_context: v2=%v user=%s skip=%v", v2State != nil, msg.UserID, opts.SkipWorkflowRouting)
 	// Skip workflow routing when the user already confirmed execution at the
 	// confirmation gate. The modified msg.Text now contains the execution plan /
 	// enhanced instruction — running it through BM25 template matching causes
 	// false-positive workflow triggers (e.g. plan text matching unrelated templates).
-	// Exception: explicit workflow interactions must always be processed even
-	// when workflows are disabled. The global toggle controls cold-start
-	// auto-detection from free-form chat, but workflow tiles/forms create an
-	// active workflow that must be allowed to finish. Otherwise form auto-continue
-	// falls through to a plain chat loop and leaves the workflow phase stuck.
+	// Explicit workflow interactions and active sessions must always be processed.
+	// Ordinary messages never auto-start a workflow.
 	isExplicitWorkflowCommand := strings.HasPrefix(trimmed, workflowChoiceCommandPrefix)
 	hasActiveWorkflow := h.hasWorkflowRoutingContinuation(msg.UserID)
 	hasPendingTemplateExecution := h.hasPendingTemplateSubAgentExecution(msg.UserID)
@@ -140,10 +145,11 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	result.WorkflowActive = hasActiveWorkflow
 	result.WorkflowChoicePending = hasPendingWorkflowChoice
 	// A pure-coding template can be armed before the workflow router sets its
-	// WorkflowAgentLoop marker (for example when V2 is disabled). It is still a
-	// stateful continuation and must never replay an independent-answer cache.
+	// A pure-coding template can be armed before the workflow router sets its
+	// WorkflowAgentLoop marker. It is still a stateful continuation and must
+	// never replay an independent-answer cache.
 	result.TemplateSubAgentPending = hasPendingTemplateExecution
-	shouldRouteWorkflow := !v2Disabled || isExplicitWorkflowCommand || hasActiveWorkflow || hasPendingTemplateExecution
+	shouldRouteWorkflow := isExplicitWorkflowCommand || hasActiveWorkflow || hasPendingTemplateExecution
 	if v2State != nil && shouldRouteWorkflow && !opts.SkipWorkflowRouting {
 		workflowRoute = h.routeWithWorkflowV2(*msg, trimmed)
 	}

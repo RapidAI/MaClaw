@@ -261,6 +261,20 @@ func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.
 	return &IMAgentResponse{Text: cancelMsg}
 }
 
+// interruptedSharedLoopExitResponse is used when a shared-loop pre-tool
+// checkpoint is already durable but the in-memory history ends in an unpaired
+// assistant tool-call declaration. The durable checkpoint intentionally keeps
+// only the last provider-valid prefix plus an uncertain recovery marker, so
+// replacing it with that partial delta would make the next provider request
+// invalid. Do not save history or clear the marker on this path.
+func (h *IMMessageHandler) interruptedSharedLoopExitResponse(userText string) *IMAgentResponse {
+	message := "Task interrupted while a tool batch was in progress. Restart and use the recovery task to review the saved context before continuing."
+	if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
+		message = fmt.Sprintf("Task interrupted while processing: %s\nRestart and use the recovery task to review the saved context before continuing.", taskPreview)
+	}
+	return &IMAgentResponse{Text: message}
+}
+
 // llmErrorExitResponse saves accumulated history and returns an LLM error
 // message. This is the single exit point for all LLM error paths inside
 // runAgentLoop, structurally enforcing the invariant that the loop always
@@ -292,10 +306,12 @@ func (h *IMMessageHandler) llmErrorExitResponse(userID string, history []agent.C
 }
 
 // stripTrailingBrokenToolGroup checks if the history ends with an incomplete
-// tool_calls group (assistant with tool_calls + fewer tool results than
-// tool_call IDs). If so, strips ToolCalls from the assistant and removes
-// the partial tool results. This is only needed for cancel/error exit paths
-// where the agent loop was interrupted mid-execution.
+// tool_calls group. A group is complete only when each announced call ID has
+// exactly one paired tool result with the same ID; matching counts alone can
+// incorrectly accept duplicate or mismatched results and produce a provider-
+// invalid history. On an incomplete group, strip ToolCalls from the assistant
+// and remove partial tool results. This is only needed for cancel/error exit
+// paths where the agent loop was interrupted mid-execution.
 func stripTrailingBrokenToolGroup(history []agent.ConversationEntry) []agent.ConversationEntry {
 	if len(history) == 0 {
 		return history
@@ -316,26 +332,15 @@ func stripTrailingBrokenToolGroup(history []agent.ConversationEntry) []agent.Con
 	if assistantIdx < 0 {
 		return history
 	}
-	// Check if all tool results are present after this assistant.
-	// Count tool entries immediately following the assistant.
-	toolCount := 0
+	// Read tool result IDs immediately following the assistant.
+	resultIDs := make([]string, 0)
 	for j := assistantIdx + 1; j < len(history); j++ {
 		if history[j].Role != "tool" {
 			break
 		}
-		toolCount++
+		resultIDs = append(resultIDs, strings.TrimSpace(history[j].ToolCallID))
 	}
-	// Count expected tool_call IDs.
-	expectedCount := 0
-	if data, err := json.Marshal(history[assistantIdx].ToolCalls); err == nil {
-		var arr []struct {
-			ID string `json:"id"`
-		}
-		if json.Unmarshal(data, &arr) == nil {
-			expectedCount = len(arr)
-		}
-	}
-	if expectedCount > 0 && toolCount >= expectedCount {
+	if pairedToolCallIDs(history[assistantIdx].ToolCalls, resultIDs) {
 		return history // group is complete, nothing to fix
 	}
 	// Incomplete group 鈥?strip ToolCalls and remove partial tool results.
@@ -372,15 +377,14 @@ func stripTrailingBrokenConversationToolGroup(conversation []interface{}) []inte
 	if assistantIdx < 0 {
 		return conversation
 	}
-	toolCount := 0
+	resultIDs := make([]string, 0)
 	for j := assistantIdx + 1; j < len(conversation); j++ {
 		if msgRole(conversation[j]) != "tool" {
 			break
 		}
-		toolCount++
+		resultIDs = append(resultIDs, conversationToolResultCallID(conversation[j]))
 	}
-	expectedCount := conversationToolCallCount(conversation[assistantIdx])
-	if expectedCount > 0 && toolCount >= expectedCount {
+	if pairedConversationToolCallIDs(conversation[assistantIdx], resultIDs) {
 		return conversation
 	}
 	conversation = append([]interface{}(nil), conversation...)
@@ -395,33 +399,86 @@ func stripTrailingBrokenConversationToolGroup(conversation []interface{}) []inte
 	return conversation
 }
 
-func conversationToolCallCount(message interface{}) int {
-	var raw interface{}
-	switch m := message.(type) {
-	case map[string]interface{}:
-		raw = m["tool_calls"]
-	case map[string]string:
-		return 0
-	default:
-		data, err := json.Marshal(message)
-		if err != nil {
-			return 0
-		}
-		var obj map[string]interface{}
-		if json.Unmarshal(data, &obj) != nil {
-			return 0
-		}
-		raw = obj["tool_calls"]
-	}
-	data, err := json.Marshal(raw)
+func pairedToolCallIDs(toolCalls interface{}, resultIDs []string) bool {
+	data, err := json.Marshal(toolCalls)
 	if err != nil {
-		return 0
+		return false
 	}
-	var arr []interface{}
-	if json.Unmarshal(data, &arr) != nil {
-		return 0
+	var calls []struct {
+		ID string `json:"id"`
 	}
-	return len(arr)
+	if json.Unmarshal(data, &calls) != nil || len(calls) == 0 {
+		return false
+	}
+	expectedIDs := make([]string, 0, len(calls))
+	for _, call := range calls {
+		expectedIDs = append(expectedIDs, strings.TrimSpace(call.ID))
+	}
+	return exactToolCallIDPairs(expectedIDs, resultIDs)
+}
+
+func pairedConversationToolCallIDs(message interface{}, resultIDs []string) bool {
+	data, err := json.Marshal(message)
+	if err != nil {
+		return false
+	}
+	var envelope struct {
+		ToolCalls []struct {
+			ID string `json:"id"`
+		} `json:"tool_calls"`
+	}
+	if json.Unmarshal(data, &envelope) != nil || len(envelope.ToolCalls) == 0 {
+		return false
+	}
+	expectedIDs := make([]string, 0, len(envelope.ToolCalls))
+	for _, call := range envelope.ToolCalls {
+		expectedIDs = append(expectedIDs, strings.TrimSpace(call.ID))
+	}
+	return exactToolCallIDPairs(expectedIDs, resultIDs)
+}
+
+func exactToolCallIDPairs(expectedIDs, resultIDs []string) bool {
+	if len(expectedIDs) == 0 || len(expectedIDs) != len(resultIDs) {
+		return false
+	}
+	expected := make(map[string]struct{}, len(expectedIDs))
+	for _, id := range expectedIDs {
+		if id == "" {
+			return false
+		}
+		if _, duplicate := expected[id]; duplicate {
+			return false
+		}
+		expected[id] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(resultIDs))
+	for _, id := range resultIDs {
+		if id == "" {
+			return false
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return false
+		}
+		if _, wanted := expected[id]; !wanted {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	return len(seen) == len(expected)
+}
+
+func conversationToolResultCallID(message interface{}) string {
+	data, err := json.Marshal(message)
+	if err != nil {
+		return ""
+	}
+	var envelope struct {
+		ToolCallID string `json:"tool_call_id"`
+	}
+	if json.Unmarshal(data, &envelope) != nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.ToolCallID)
 }
 
 func withoutMessageToolCalls(message interface{}) interface{} {

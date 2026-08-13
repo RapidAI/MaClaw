@@ -7,11 +7,11 @@
  * intents through this module.  The selected Platform Display implementation
  * remains the only route to a board renderer and its physical panel.
  *
- * This first Phase 3 seam is deliberately synchronous: the existing board
- * renderers still own their framebuffer, DMA fence and scene-transition
- * ordering.  A later single Display Task may move the forwarding below this
- * interface without making Device API callers aware of its queue or panel
- * handles.
+ * Scene transitions retain synchronous result semantics: existing board
+ * renderers still own framebuffer, DMA fence and scene ordering.  High-rate
+ * microphone meter updates are latest-value coalesced inside the service, so
+ * capture never queues one panel request per PCM block.  Neither path exposes
+ * queue, framebuffer or panel handles through Device API.
  */
 
 #include <stdbool.h>
@@ -62,7 +62,6 @@ bool display_service_display_is_off(void);
 void display_service_show_startup(void);
 void display_service_set_pet_state(const char *state);
 void display_service_set_command_stage(const char *stage);
-void display_service_set_command_cancel_enabled(bool enabled);
 void display_service_set_pet_profile(const char *skin, bool motion_enabled);
 device_status_t display_service_set_pet_asset(const uint8_t *const *frames,
                                               uint32_t frame_count,

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -68,6 +69,9 @@ func (*mobileLLMAuthorizationPersistenceError) Error() string {
 }
 
 func mobilePersistedLLMAuthorization(ctx context.Context, tenantID, userID string) (mobileLlmAuthorizationRecord, bool) {
+	if mobileKnowledgeOwnerIsPurged(tenantID, userID) {
+		return mobileLlmAuthorizationRecord{}, false
+	}
 	system, key := mobileLLMAuthorizationPersistenceConfig()
 	if system == nil || len(key) != 32 {
 		return mobileLlmAuthorizationRecord{}, false
@@ -108,6 +112,11 @@ func mobilePersistedLLMAuthorization(ctx context.Context, tenantID, userID strin
 }
 
 func persistMobileLLMAuthorization(ctx context.Context, record mobileLlmAuthorizationRecord) error {
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	if mobileKnowledgeOwnerIsPurgedLocked(record.TenantID, record.OwnerID) {
+		return errMobileOwnerPurged
+	}
 	system, key := mobileLLMAuthorizationPersistenceConfig()
 	if system == nil || len(key) != 32 {
 		return nil
@@ -138,6 +147,25 @@ func persistMobileLLMAuthorization(ctx context.Context, record mobileLlmAuthoriz
 		return err
 	}
 	return ScopedSystemSettingsForTenant(record.TenantID, system).Set(ctx, mobileLLMAuthorizationPersistenceKey(record.OwnerID), string(encoded))
+}
+
+// mobileStoreLLMAuthorization updates the in-memory mirror under the same
+// lifecycle guard as persistent writes. This prevents a QR authorization that
+// was already in progress when unlink started from recreating a usable cache.
+func mobileStoreLLMAuthorization(record mobileLlmAuthorizationRecord) bool {
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	if mobileKnowledgeOwnerIsPurgedLocked(record.TenantID, record.OwnerID) {
+		return false
+	}
+	mobileLlmAuthorizations.Lock()
+	mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(record.TenantID, record.OwnerID)] = record
+	mobileLlmAuthorizations.Unlock()
+	return true
+}
+
+func mobileLLMAuthorizationWasPurged(err error) bool {
+	return errors.Is(err, errMobileOwnerPurged)
 }
 
 func deletePersistedMobileLLMAuthorization(ctx context.Context, tenantID, userID string) error {

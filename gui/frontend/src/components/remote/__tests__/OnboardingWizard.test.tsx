@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act, cleanup } from '@testing-library/react';
+import { useState } from 'react';
 import type { Mock } from 'vitest';
 
 const ActivateRemoteMock = vi.fn();
@@ -7,6 +8,7 @@ const ActivateRemoteEmailMock = vi.fn();
 const ActivateRemoteSMSMock = vi.fn();
 const GetRemoteRegistrationAuthMock = vi.fn();
 const ResolveRemoteRegistrationTargetMock = vi.fn();
+const ResolveRemoteRegistrationTargetWithInvitationMock = vi.fn();
 const SendRemoteRegistrationSMSMock = vi.fn();
 const SendRemoteRegistrationEmailMock = vi.fn();
 const GetRemoteActivationStatusMock = vi.fn();
@@ -16,10 +18,11 @@ const RedeemHubLLMServiceMock = vi.fn();
 const GetMaclawLLMProvidersMock = vi.fn();
 const SaveMaclawLLMProvidersMock = vi.fn();
 const TestMaclawLLMMock = vi.fn();
+const TestAndSaveMaclawLLMProvidersMock = vi.fn();
 const ProbeRemoteHubMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
-const CancelXAIOAuthURLMock = vi.fn();
+const CancelXAIOAuthMock = vi.fn();
 const StartCodeGenSSOMock = vi.fn();
 const StartCodeGenSSOEmbeddedMock = vi.fn();
 const WaitCodeGenSSOResultMock = vi.fn();
@@ -33,25 +36,25 @@ const UserDataMigrationInstancesMock = vi.fn();
 const UserDataMigrationStatusMock = vi.fn();
 const StartUserDataMigrationImportMock = vi.fn();
 const GetUserDataMigrationJobMock = vi.fn();
-const BrowserOpenURLMock = vi.fn();
-const EventsOnMock = vi.fn();
-let xaiOAuthEventHandler: ((payload: Record<string, unknown>) => unknown) | undefined;
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
     SaveMaclawLLMProviders: (...args: unknown[]) => SaveMaclawLLMProvidersMock(...args),
     TestMaclawLLM: (...args: unknown[]) => TestMaclawLLMMock(...args),
+    TestAndSaveMaclawLLMProviders: (...args: unknown[]) => TestAndSaveMaclawLLMProvidersMock(...args),
     ActivateRemote: (...args: unknown[]) => ActivateRemoteMock(...args),
     ActivateRemoteEmail: (...args: unknown[]) => ActivateRemoteEmailMock(...args),
     ActivateRemoteSMS: (...args: unknown[]) => ActivateRemoteSMSMock(...args),
     GetRemoteRegistrationAuth: (...args: unknown[]) => GetRemoteRegistrationAuthMock(...args),
     ResolveRemoteRegistrationTarget: (...args: unknown[]) => ResolveRemoteRegistrationTargetMock(...args),
+	ResolveRemoteRegistrationTargetWithInvitation: (...args: unknown[]) => ResolveRemoteRegistrationTargetWithInvitationMock(...args),
     SendRemoteRegistrationSMS: (...args: unknown[]) => SendRemoteRegistrationSMSMock(...args),
     SendRemoteRegistrationEmail: (...args: unknown[]) => SendRemoteRegistrationEmailMock(...args),
     ProbeRemoteHub: (...args: unknown[]) => ProbeRemoteHubMock(...args),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
-    CancelXAIOAuthURL: (...args: unknown[]) => CancelXAIOAuthURLMock(...args),
+    CancelOpenAIOAuth: vi.fn(),
+    CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
     StartCodeGenSSO: (...args: unknown[]) => StartCodeGenSSOMock(...args),
     StartCodeGenSSOEmbedded: (...args: unknown[]) => StartCodeGenSSOEmbeddedMock(...args),
     WaitCodeGenSSOResult: (...args: unknown[]) => WaitCodeGenSSOResultMock(...args),
@@ -71,19 +74,6 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetUserDataMigrationJob: (...args: unknown[]) => GetUserDataMigrationJobMock(...args),
 }));
 
-vi.mock('../../../../wailsjs/runtime', () => ({
-    BrowserOpenURL: (...args: unknown[]) => BrowserOpenURLMock(...args),
-    EventsOn: (...args: unknown[]) => {
-        EventsOnMock(...args);
-        if (args[0] === 'xai-oauth-complete' && typeof args[1] === 'function') {
-            xaiOAuthEventHandler = args[1] as (payload: Record<string, unknown>) => unknown;
-        }
-        return vi.fn();
-    },
-    EventsOff: vi.fn(),
-    ClipboardSetText: vi.fn(),
-}));
-
 import { OnboardingWizard } from '../OnboardingWizard';
 
 describe('OnboardingWizard registration', () => {
@@ -100,7 +90,6 @@ describe('OnboardingWizard registration', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
-        xaiOAuthEventHandler = undefined;
         baseProps = {
             lang: 'en',
             hubUrl: 'http://hub.example.com',
@@ -119,12 +108,19 @@ describe('OnboardingWizard registration', () => {
             method: 'email',
             code_length: 6,
         }));
+		ResolveRemoteRegistrationTargetWithInvitationMock.mockImplementation(async (identity: string) => ({
+			identity,
+			hub_url: 'http://hub.example.com',
+			method: 'email',
+			code_length: 6,
+		}));
         SendRemoteRegistrationSMSMock.mockResolvedValue({ ok: true, code_length: 6, expires_min: 5 });
         SendRemoteRegistrationEmailMock.mockResolvedValue({ ok: true, code_length: 6, resend_cooldown_seconds: 60 });
         ActivateRemoteEmailMock.mockResolvedValue({ email: 'user@example.com', vip_flag: false });
         ActivateRemoteEmailMock.mockImplementation((_hubURL, userEmail, _code, invitationCode) => ActivateRemoteMock(userEmail, invitationCode, ''));
         ActivateRemoteSMSMock.mockResolvedValue({ email: 'phone:13800138000', vip_flag: false });
         SaveMaclawLLMProvidersMock.mockResolvedValue(undefined);
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'ok', supports_vision: false });
         TestMaclawLLMMock.mockResolvedValue({ message: 'ok', supports_vision: false });
         ProbeRemoteHubMock.mockResolvedValue({ invitation_code_required: false });
         GetWeixinStatusMock.mockResolvedValue('');
@@ -225,6 +221,41 @@ describe('OnboardingWizard registration', () => {
 
         await waitFor(() => {
             expect(SaveCodeGenModelChoiceMock).toHaveBeenCalledWith('sso-first-model', 'sso-first-model');
+        });
+    });
+
+    it('persists onboarding completion only once when a save rerender replaces callbacks', async () => {
+        StartCodeGenSSOEmbeddedMock.mockResolvedValue(undefined);
+        WaitCodeGenSSOResultMock.mockResolvedValue({ email: 'tiger@example.com', message: 'SSO OK' });
+        FetchCodeGenModelsMock.mockResolvedValue([]);
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        const saveCompletion = vi.fn();
+
+        function CompletionHarness() {
+            const [, setSaveVersion] = useState(0);
+            return (
+                <OnboardingWizard
+                    {...baseProps}
+                    brandId="qianxin"
+                    brandDisplayName="TigerClaw"
+                    onSaveField={(patch) => {
+                        saveCompletion(patch);
+                        setSaveVersion(version => version + 1);
+                    }}
+                />
+            );
+        }
+
+        render(<CompletionHarness />);
+        fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
+        await waitFor(() => expect(baseProps.onRegistered).toHaveBeenCalledTimes(1));
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Skip' }));
+
+        await waitFor(() => {
+            const completionWrites = saveCompletion.mock.calls.filter(([patch]) => patch?.onboarding_done === true);
+            expect(completionWrites).toHaveLength(1);
+            expect(completionWrites[0]).toEqual([{ onboarding_done: true }]);
         });
     });
 
@@ -576,6 +607,192 @@ describe('OnboardingWizard registration', () => {
             expect(ActivateRemoteEmailMock).toHaveBeenCalledWith('http://mixed-hub.example.com', 'mixed@example.com', '123456', '', 'tenant-mixed', 'hub-mixed');
         });
         expect(ActivateRemoteSMSMock).not.toHaveBeenCalled();
+    });
+
+	it('reroutes email verification with an invitation before sending the code', async () => {
+		ResolveRemoteRegistrationTargetMock.mockResolvedValue({
+			hub_url: 'http://generic-hub.example.com',
+			hub_id: 'hub-generic',
+			method: 'email',
+			code_length: 6,
+		});
+		ResolveRemoteRegistrationTargetWithInvitationMock.mockResolvedValue({
+			hub_url: 'http://tenant-hub.example.com',
+			hub_id: 'hub-tenant',
+			tenant_id: 'tenant-acme',
+			method: 'email',
+			code_length: 6,
+		});
+
+		render(<OnboardingWizard {...baseProps} />);
+		await continueRegistrationIdentity('invited@example.com');
+		fireEvent.change(screen.getByPlaceholderText('Enter invitation code (optional)'), { target: { value: 'invite-1' } });
+		fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+		await waitFor(() => {
+			expect(ResolveRemoteRegistrationTargetWithInvitationMock).toHaveBeenCalledWith('invited@example.com', 'INVITE-1');
+			expect(SendRemoteRegistrationEmailMock).toHaveBeenCalledWith('http://tenant-hub.example.com', 'invited@example.com', 'tenant-acme');
+		});
+		fireEvent.change(await screen.findByLabelText('Email verification code'), { target: { value: '123456' } });
+		fireEvent.click(await screen.findByRole('button', { name: /Verify & continue/ }));
+		await waitFor(() => {
+			expect(ActivateRemoteEmailMock).toHaveBeenCalledWith('http://tenant-hub.example.com', 'invited@example.com', '123456', 'INVITE-1', 'tenant-acme', 'hub-tenant');
+		});
+	});
+
+    it('skips the email OTP only after the invitation route advertises the bypass', async () => {
+        ResolveRemoteRegistrationTargetMock.mockResolvedValue({
+            hub_url: 'http://generic-hub.example.com', hub_id: 'hub-generic', method: 'email', code_length: 6,
+        });
+        ResolveRemoteRegistrationTargetWithInvitationMock.mockResolvedValue({
+            hub_url: 'http://tenant-hub.example.com', hub_id: 'hub-tenant', tenant_id: 'tenant-acme',
+            method: 'email', email_verification_required: false, code_length: 6,
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity('invited@example.com');
+        fireEvent.change(screen.getByPlaceholderText('Enter invitation code (optional)'), { target: { value: 'invite-1' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+        await waitFor(() => {
+            expect(ActivateRemoteEmailMock).toHaveBeenCalledWith('http://tenant-hub.example.com', 'invited@example.com', '', 'INVITE-1', 'tenant-acme', 'hub-tenant');
+        });
+        expect(SendRemoteRegistrationEmailMock).not.toHaveBeenCalled();
+    });
+
+    it('does not let a stale invitation bypass register after the code is edited', async () => {
+        ResolveRemoteRegistrationTargetMock.mockResolvedValue({
+            hub_url: 'http://generic-hub.example.com', hub_id: 'hub-generic', method: 'email', code_length: 6,
+        });
+        let resolveInvitation!: (value: unknown) => void;
+        ResolveRemoteRegistrationTargetWithInvitationMock.mockImplementationOnce(() => new Promise(resolve => {
+            resolveInvitation = resolve;
+        }));
+
+        render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity('invited@example.com');
+        const invitationInput = screen.getByPlaceholderText('Enter invitation code (optional)');
+        fireEvent.change(invitationInput, { target: { value: 'invite-1' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        await waitFor(() => expect(ResolveRemoteRegistrationTargetWithInvitationMock).toHaveBeenCalledWith('invited@example.com', 'INVITE-1'));
+
+        fireEvent.change(invitationInput, { target: { value: 'invite-2' } });
+        resolveInvitation({
+            hub_url: 'http://tenant-hub.example.com', hub_id: 'hub-tenant', tenant_id: 'tenant-acme',
+            method: 'email', email_verification_required: false, code_length: 6,
+        });
+        await act(async () => { await Promise.resolve(); });
+
+        expect(ActivateRemoteEmailMock).not.toHaveBeenCalled();
+        expect(SendRemoteRegistrationEmailMock).not.toHaveBeenCalled();
+    });
+
+    it('reroutes SMS verification with an invitation before sending the code', async () => {
+        mockPhoneRegistrationTarget('http://generic-hub.example.com');
+        ResolveRemoteRegistrationTargetWithInvitationMock.mockResolvedValue({
+            hub_url: 'http://tenant-hub.example.com',
+            hub_id: 'hub-tenant',
+            tenant_id: 'tenant-acme',
+            method: 'phone',
+            code_length: 6,
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity('13800138000');
+        fireEvent.change(screen.getByPlaceholderText('Enter invitation code (optional)'), { target: { value: 'invite-1' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+
+        await waitFor(() => {
+            expect(ResolveRemoteRegistrationTargetWithInvitationMock).toHaveBeenCalledWith('13800138000', 'INVITE-1');
+            expect(SendRemoteRegistrationSMSMock).toHaveBeenCalledWith('http://tenant-hub.example.com', '13800138000', 'tenant-acme');
+        });
+        fireEvent.change(screen.getByPlaceholderText('Enter 6-digit code'), { target: { value: '123456' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        await waitFor(() => {
+            expect(ActivateRemoteSMSMock).toHaveBeenCalledWith('http://tenant-hub.example.com', '13800138000', '123456', 'INVITE-1', 'tenant-acme', 'hub-tenant');
+        });
+    });
+
+    it('does not send an email OTP when an invitation routes to a phone-only tenant', async () => {
+        ResolveRemoteRegistrationTargetMock.mockResolvedValue({
+            hub_url: 'http://generic-hub.example.com', hub_id: 'hub-generic', method: 'email', code_length: 6,
+        });
+        ResolveRemoteRegistrationTargetWithInvitationMock.mockResolvedValue({
+            hub_url: 'http://tenant-hub.example.com', hub_id: 'hub-tenant', tenant_id: 'tenant-acme', method: 'phone', code_length: 6,
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity('invited@example.com');
+        fireEvent.change(screen.getByPlaceholderText('Enter invitation code (optional)'), { target: { value: 'invite-1' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+        expect(await screen.findByText(/phone-only tenant/i)).toBeTruthy();
+        expect(SendRemoteRegistrationEmailMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts an invitation route to the default tenant for email verification', async () => {
+        ResolveRemoteRegistrationTargetMock.mockResolvedValue({
+            hub_url: 'http://generic-hub.example.com', hub_id: 'hub-generic', method: 'email', code_length: 6,
+        });
+        ResolveRemoteRegistrationTargetWithInvitationMock.mockResolvedValue({
+            hub_url: 'http://tenant-hub.example.com', hub_id: 'hub-tenant', tenant_id: '', method: 'email', code_length: 6,
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity('invited@example.com');
+        fireEvent.change(screen.getByPlaceholderText('Enter invitation code (optional)'), { target: { value: 'invite-default' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+        await waitFor(() => {
+            expect(SendRemoteRegistrationEmailMock).toHaveBeenCalledWith('http://tenant-hub.example.com', 'invited@example.com', '');
+        });
+        fireEvent.change(await screen.findByLabelText('Email verification code'), { target: { value: '123456' } });
+        fireEvent.click(await screen.findByRole('button', { name: /Verify & continue/ }));
+        await waitFor(() => {
+            expect(ActivateRemoteEmailMock).toHaveBeenCalledWith('http://tenant-hub.example.com', 'invited@example.com', '123456', 'INVITE-DEFAULT', '', 'hub-tenant');
+        });
+    });
+
+    it('restores the identity route when an invitation is cleared before requesting an OTP', async () => {
+        ResolveRemoteRegistrationTargetMock.mockResolvedValue({
+            hub_url: 'http://generic-hub.example.com', hub_id: 'hub-generic', tenant_id: 'tenant-generic', method: 'email', code_length: 6,
+        });
+        ResolveRemoteRegistrationTargetWithInvitationMock.mockResolvedValue({
+            hub_url: 'http://tenant-hub.example.com', hub_id: 'hub-tenant', tenant_id: 'tenant-acme', method: 'email', code_length: 6,
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity('invited@example.com');
+        const invitationInput = screen.getByPlaceholderText('Enter invitation code (optional)');
+        fireEvent.change(invitationInput, { target: { value: 'invite-1' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        await waitFor(() => expect(SendRemoteRegistrationEmailMock).toHaveBeenCalledWith('http://tenant-hub.example.com', 'invited@example.com', 'tenant-acme'));
+
+        fireEvent.change(invitationInput, { target: { value: '' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Resend' }));
+        await waitFor(() => {
+            expect(SendRemoteRegistrationEmailMock).toHaveBeenLastCalledWith('http://generic-hub.example.com', 'invited@example.com', 'tenant-generic');
+        });
+    });
+
+    it('ignores a stale SMS send after returning to edit the identity', async () => {
+        mockPhoneRegistrationTarget();
+        let resolveSMS!: (value: unknown) => void;
+        SendRemoteRegistrationSMSMock.mockImplementationOnce(() => new Promise(resolve => {
+            resolveSMS = resolve;
+        }));
+
+        render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity('13800138000');
+        fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+        await waitFor(() => expect(SendRemoteRegistrationSMSMock).toHaveBeenCalledTimes(1));
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+        resolveSMS({ ok: true, code_length: 6, expires_min: 5 });
+        await act(async () => { await Promise.resolve(); });
+
+        expect(screen.getByPlaceholderText('Email or phone')).toBeTruthy();
+        expect(screen.queryByText(/Verification code sent/i)).toBeNull();
     });
 
     it('uses SMS verification for a phone identity when the tenant allows mixed registration', async () => {
@@ -948,7 +1165,7 @@ describe('OnboardingWizard registration', () => {
                 { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
             ],
         });
-        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: false });
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: false });
 
         render(<OnboardingWizard {...baseProps} />);
 
@@ -979,22 +1196,14 @@ describe('OnboardingWizard registration', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
         await waitFor(() => {
-            expect(TestMaclawLLMMock).toHaveBeenCalledWith({
-                url: 'https://api.example.com/v1',
-                key: 'secret',
-                model: 'gpt-test',
-                protocol: 'openai',
-                agent_type: 'openclaw',
-                wire_api: '',
-                provider_name: 'Custom1',
-                auth_type: '',
-            });
-        });
-        await waitFor(() => {
-            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
                 [expect.objectContaining({ name: 'Custom1', url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test' })],
                 'Custom1',
+                'Custom1',
             );
+        });
+        await waitFor(() => {
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledTimes(1);
         });
         expect(baseProps.onRegistered).not.toHaveBeenCalled();
         expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
@@ -1175,7 +1384,7 @@ describe('OnboardingWizard registration', () => {
                 { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
             ],
         });
-        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: true });
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: true });
 
         render(<OnboardingWizard {...baseProps} />);
 
@@ -1196,26 +1405,17 @@ describe('OnboardingWizard registration', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
         await waitFor(() => {
-            expect(TestMaclawLLMMock).toHaveBeenCalledWith({
-                url: 'https://api.example.com/v1',
-                key: 'secret',
-                model: 'gpt-test',
-                protocol: 'openai',
-                agent_type: 'openclaw',
-                wire_api: '',
-                provider_name: 'Custom1',
-                auth_type: '',
-            });
-        });
-
-        await waitFor(() => {
-            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
-                [expect.objectContaining({ name: 'Custom1', supports_vision: true, url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test' })],
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'Custom1', url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test' })],
+                'Custom1',
                 'Custom1',
             );
         });
 
-        expect(TestMaclawLLMMock.mock.invocationCallOrder[0]).toBeLessThan(SaveMaclawLLMProvidersMock.mock.invocationCallOrder[0]);
+        await waitFor(() => {
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledTimes(1);
+        });
+
         expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
         expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
     });
@@ -1227,7 +1427,7 @@ describe('OnboardingWizard registration', () => {
                 { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
             ],
         });
-        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
+        StartXAIOAuthMock.mockResolvedValue('xAI-Grok OAuth login successful');
 
         render(<OnboardingWizard {...baseProps} />);
 
@@ -1248,72 +1448,6 @@ describe('OnboardingWizard registration', () => {
             expect(StartXAIOAuthMock).toHaveBeenCalledTimes(1);
         });
         expect(StartOpenAIOAuthMock).not.toHaveBeenCalled();
-        expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://auth.x.ai/authorize?state=test');
-        expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
-    });
-
-    it('keeps the xAI OAuth recovery controls available when opening the browser fails during onboarding', async () => {
-        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
-        GetMaclawLLMProvidersMock.mockResolvedValue({
-            providers: [
-                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
-            ],
-        });
-        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
-        BrowserOpenURLMock.mockImplementation(() => { throw new Error('browser bridge unavailable'); });
-
-        render(<OnboardingWizard {...baseProps} />);
-
-        await continueRegistrationIdentity();
-        fireEvent.click(screen.getByLabelText(/Free trial/));
-        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        await confirmEmailRegistration();
-        await waitFor(() => {
-            expect(screen.getByText(/Registration successful/)).toBeTruthy();
-        });
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-
-        fireEvent.click(await screen.findByRole('button', { name: 'xAI-Grok' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Sign in with xAI' }));
-
-        await waitFor(() => {
-            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://auth.x.ai/authorize?state=test');
-        });
-        expect((await screen.findByText(/Couldn't open the browser automatically/)).textContent).toMatch(/Use the link below/);
-        expect(screen.getByRole('button', { name: 'Open browser again' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Copy sign-in link' })).toBeTruthy();
-    });
-
-    it('ignores a completion event from a superseded xAI OAuth session during onboarding', async () => {
-        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
-        GetMaclawLLMProvidersMock.mockResolvedValue({
-            providers: [
-                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
-            ],
-        });
-        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=current');
-
-        render(<OnboardingWizard {...baseProps} />);
-
-        await continueRegistrationIdentity();
-        fireEvent.click(screen.getByLabelText(/Free trial/));
-        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        await confirmEmailRegistration();
-        await waitFor(() => expect(screen.getByText(/Registration successful/)).toBeTruthy());
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-        fireEvent.click(await screen.findByRole('button', { name: 'xAI-Grok' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Sign in with xAI' }));
-        await waitFor(() => expect(xaiOAuthEventHandler).toBeTypeOf('function'));
-
-        await act(async () => {
-            await xaiOAuthEventHandler?.({ ok: true, authorization_url: 'https://auth.x.ai/authorize?state=stale' });
-        });
-        expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
-        expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
-
-        await act(async () => {
-            await xaiOAuthEventHandler?.({ ok: true, authorization_url: 'https://auth.x.ai/authorize?state=current' });
-        });
         await waitFor(() => expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1));
     });
 
@@ -1324,7 +1458,7 @@ describe('OnboardingWizard registration', () => {
                 { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
             ],
         });
-        TestMaclawLLMMock.mockRejectedValue(new Error('boom'));
+        TestAndSaveMaclawLLMProvidersMock.mockRejectedValue(new Error('boom'));
 
         render(<OnboardingWizard {...baseProps} />);
 
@@ -1345,7 +1479,7 @@ describe('OnboardingWizard registration', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
         await waitFor(() => {
-            expect(TestMaclawLLMMock).toHaveBeenCalled();
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalled();
         });
 
         expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();

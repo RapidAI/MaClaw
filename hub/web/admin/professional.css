@@ -317,3 +317,21 @@ button:active{transform:scale(.985)}
 @media (prefers-reduced-motion:reduce){button:active{transform:none}}
 /* Decorative OS-window dots are gone from the markup; hide any stragglers from older cached HTML. */
 .window-chrome{display:none!important}
+
+/* User referral operations: a compact, tenant-scoped funnel before the action queues. */
+#tab-userreferrals.active{display:grid!important;gap:14px}
+#tab-userreferrals>.item{margin-top:0!important}
+#tab-userreferrals .user-referral-metrics{padding:15px 16px!important;box-shadow:none!important}
+#tab-userreferrals .user-referral-metrics .item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+#tab-userreferrals .user-referral-metrics__controls{display:flex;align-items:end;gap:7px;flex-wrap:wrap}
+#tab-userreferrals .user-referral-metrics__controls label{margin:0 0 5px;font-size:11px}
+#tab-userreferrals .user-referral-metrics__controls select,#tab-userreferrals .user-referral-metrics__controls button{height:34px;min-height:34px;padding-inline:10px;font-size:12px;box-shadow:none}
+#tab-userreferrals .user-referral-metrics-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+#tab-userreferrals .user-referral-metric{min-width:0;padding:11px 12px;border:1px solid #e1e8f1;border-radius:9px;background:#fbfcfe}
+#tab-userreferrals .user-referral-metric strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:19px;line-height:1.15;color:#172033}
+#tab-userreferrals .user-referral-metric span{display:block;margin-top:4px;font-size:11px;line-height:1.35;color:#64748b}
+#tab-userreferrals .user-referral-metric.is-warning{border-color:#f0d59d;background:#fffaf0}
+#tab-userreferrals .user-referral-metric.is-warning strong{color:#9a6700}
+@media (max-width:900px){#tab-userreferrals .user-referral-metrics-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:620px){#tab-userreferrals .user-referral-metrics .item-head{display:grid}.user-referral-metrics__controls{align-items:center}.user-referral-metrics__controls select{flex:1;min-width:0}#tab-userreferrals .user-referral-metrics__controls button{flex:0 0 auto}#tab-userreferrals .user-referral-metrics-grid{grid-template-columns:1fr}}
+@media (max-width:980px) and (min-width:621px){.user-referral-detail-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}

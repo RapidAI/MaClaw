@@ -120,6 +120,145 @@ func TestRulePlanMailAndSmartRoute(t *testing.T) {
 	}
 }
 
+func TestRulePlanTenantConfigurationOverview(t *testing.T) {
+	plan := rulePlanFromMessage("show all tenant configurations", "t1", nil, nil)
+	if plan == nil || plan.Intent != "tenant.configuration.overview" {
+		t.Fatalf("plan = %#v", plan)
+	}
+	if len(plan.Steps) < 20 {
+		t.Fatalf("expected broad tenant settings coverage, steps = %d", len(plan.Steps))
+	}
+	want := map[string]bool{
+		"digital_assets.settings.get":  false,
+		"ve.config.get":                false,
+		"security.settings.get":        false,
+		"security.approval_roles.get":  false,
+		"referrals.config.get":         false,
+		"capability_market.policy.get": false,
+	}
+	for _, step := range plan.Steps {
+		if _, ok := want[step.Tool]; ok {
+			want[step.Tool] = true
+		}
+		if step.Mode != "read" {
+			t.Fatalf("overview step %s mode = %q, want read", step.Tool, step.Mode)
+		}
+	}
+	for tool, seen := range want {
+		if !seen {
+			t.Errorf("overview missing %s", tool)
+		}
+	}
+}
+
+func TestConfigAgentExtendedTenantToolCatalog(t *testing.T) {
+	for _, tool := range []string{
+		"digital_assets.settings.get", "digital_assets.settings.update",
+		"ve.config.get", "ve.config.update",
+		"security.settings.get", "security.settings.update",
+		"security.default_group.get", "security.default_group.update",
+		"security.approval_roles.get", "security.approval_roles.update",
+		"referrals.config.get", "referrals.config.update",
+		"capability_market.policy.get", "capability_market.policy.update",
+	} {
+		if _, ok := configAgentAllowedTools[tool]; !ok {
+			t.Errorf("missing allowed tool %q", tool)
+		}
+		if preview := defaultAPIPreviewForTool(tool); preview == nil {
+			t.Errorf("missing API preview for %q", tool)
+		}
+	}
+}
+
+func TestValidateAndNormalizeLLMPlanDerivesToolModesAndRisk(t *testing.T) {
+	plan, err := validateAndNormalizeLLMPlan(&llmPlanDraft{
+		RiskLevel: "low",
+		Steps: []configAgentStep{
+			{StepID: "s1", Tool: "security.settings.get", Mode: "write"},
+			{StepID: "s2", Tool: "security.settings.update", Mode: "read", Args: map[string]any{"org_structure_enabled": true}, DependsOn: []string{"s1"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize LLM plan: %v", err)
+	}
+	if plan.Steps[0].Mode != "read" || plan.Steps[1].Mode != "write" {
+		t.Fatalf("modes = %#v", plan.Steps)
+	}
+	if plan.RiskLevel != "high" {
+		t.Fatalf("risk = %q, want high for a write plan", plan.RiskLevel)
+	}
+}
+
+func TestValidateAndNormalizeLLMPlanRejectsInvalidDependencies(t *testing.T) {
+	_, err := validateAndNormalizeLLMPlan(&llmPlanDraft{Steps: []configAgentStep{{
+		StepID: "s1", Tool: "security.settings.get", DependsOn: []string{"missing"},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "unknown step") {
+		t.Fatalf("err = %v, want unknown dependency error", err)
+	}
+}
+
+func TestValidateAndNormalizeLLMPlanRejectsNonSequentialDependencies(t *testing.T) {
+	_, err := validateAndNormalizeLLMPlan(&llmPlanDraft{Steps: []configAgentStep{
+		{StepID: "s1", Tool: "security.settings.get", DependsOn: []string{"s2"}},
+		{StepID: "s2", Tool: "security.settings.get", DependsOn: []string{"s1"}},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "must appear earlier") {
+		t.Fatalf("err = %v, want non-sequential dependency error", err)
+	}
+}
+
+func TestConfigAgentUnmetDependencies(t *testing.T) {
+	step := configAgentStep{DependsOn: []string{"s1", "s2", "s1", "  "}}
+	if got := configAgentUnmetDependencies(step, map[string]bool{"s1": true}); len(got) != 1 || got[0] != "s2" {
+		t.Fatalf("unmet dependencies = %#v", got)
+	}
+	if got := configAgentUnmetDependencies(step, map[string]bool{"s1": true, "s2": true}); len(got) != 0 {
+		t.Fatalf("unmet dependencies = %#v, want none", got)
+	}
+}
+
+func TestExecReferralConfigUpdateRotatesSessionEpochWhenAvailabilityChanges(t *testing.T) {
+	system := &testSystemSettingsRepo{}
+	tenantID := "tenant-referrals"
+	initial := defaultUserReferralConfig()
+	initial.SessionEpoch = "epoch-before"
+	initialData, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatalf("marshal initial referral config: %v", err)
+	}
+	if err := ScopedSystemSettingsForTenant(tenantID, system).Set(t.Context(), userReferralSettingsKey, string(initialData)); err != nil {
+		t.Fatalf("seed referral config: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/config-agent/execute", nil)
+	req = req.WithContext(WithRequestTenant(req.Context(), tenantID))
+	// The execute handler now passes its unscoped base repository to tools;
+	// verify the tool still persists under exactly one tenant prefix.
+	result, err := execReferralConfigUpdate(req, system, map[string]any{"enabled": true})
+	if err != nil {
+		t.Fatalf("update referral config: %v", err)
+	}
+	updated, ok := result.(UserReferralConfig)
+	if !ok {
+		t.Fatalf("result type = %T, want UserReferralConfig", result)
+	}
+	if !updated.Enabled || updated.SessionEpoch == "" || updated.SessionEpoch == initial.SessionEpoch {
+		t.Fatalf("updated config = %#v; expected enabled config with a new session epoch", updated)
+	}
+
+	persisted, _, err := loadUserReferralConfigWithVersion(t.Context(), system, tenantID)
+	if err != nil {
+		t.Fatalf("load persisted referral config: %v", err)
+	}
+	if persisted.SessionEpoch != updated.SessionEpoch {
+		t.Fatalf("persisted epoch = %q, want %q", persisted.SessionEpoch, updated.SessionEpoch)
+	}
+	if duplicated, err := system.Get(t.Context(), "tenant:"+tenantID+":tenant:"+tenantID+":"+userReferralSettingsKey); err != nil || duplicated != "" {
+		t.Fatalf("unexpected doubly scoped referral setting = %q, err=%v", duplicated, err)
+	}
+}
+
 func TestRulePlanQQBotAndBridge(t *testing.T) {
 	qq := rulePlanFromMessage("show qqbot config", "t1", nil, nil)
 	if qq == nil || qq.Intent != "qqbot.config.get" {
@@ -227,15 +366,37 @@ func TestConfigAgentStoreConsumeOnce(t *testing.T) {
 		PlanID:       "pln_x",
 		ConfirmToken: "ct_y",
 		AdminUserID:  "admin1",
+		TenantID:     "tenant_a",
 		ExpiresAt:    time.Now().Add(5 * time.Minute),
 	}
 	store.put(p)
-	got, err := store.consume("pln_x", "ct_y", "admin1")
+	got, err := store.consume("pln_x", "ct_y", "admin1", "tenant_a")
 	if err != nil || got == nil {
 		t.Fatalf("consume: %v %#v", err, got)
 	}
-	if _, err := store.consume("pln_x", "ct_y", "admin1"); err == nil {
-		t.Fatal("expected second consume to fail")
+	if _, err := store.consume("pln_x", "ct_y", "admin1", "tenant_a"); err != nil {
+		t.Fatalf("plan should remain available until execution begins: %v", err)
+	}
+	store.discard("pln_x")
+	if _, err := store.consume("pln_x", "ct_y", "admin1", "tenant_a"); err == nil {
+		t.Fatal("expected discarded plan to fail")
+	}
+}
+
+func TestConfigAgentStoreRejectsCrossTenantConsume(t *testing.T) {
+	store := &configAgentStore{plans: map[string]*configAgentPlan{}}
+	store.put(&configAgentPlan{
+		PlanID:       "pln_cross_tenant",
+		ConfirmToken: "ct_cross_tenant",
+		AdminUserID:  "admin1",
+		TenantID:     "tenant_a",
+		ExpiresAt:    time.Now().Add(5 * time.Minute),
+	})
+	if _, err := store.consume("pln_cross_tenant", "ct_cross_tenant", "admin1", "tenant_b"); err == nil {
+		t.Fatal("expected cross-tenant consume to fail")
+	}
+	if _, err := store.consume("pln_cross_tenant", "ct_cross_tenant", "admin1", "tenant_a"); err != nil {
+		t.Fatalf("matching tenant should consume plan: %v", err)
 	}
 }
 

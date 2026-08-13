@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
 )
@@ -86,9 +87,9 @@ func TestInitLLMModuleSeedsDefaultComputeCardTypes(t *testing.T) {
 		t.Fatalf("SaveRegistry: %v", err)
 	}
 
-	module := InitLLMModule(provider, st.System, "node-a", nil, nil)
-	if module == nil {
-		t.Fatal("InitLLMModule returned nil")
+	module, err := InitLLMModule(provider, st.System, "node-a", nil, nil)
+	if err != nil {
+		t.Fatalf("InitLLMModule: %v", err)
 	}
 	types, err := module.CardStoreSvc.ListEnabledCardTypes(ctx)
 	if err != nil {
@@ -104,6 +105,46 @@ func TestInitLLMModuleSeedsDefaultComputeCardTypes(t *testing.T) {
 		if !ct.Enabled || ct.PriceRMB <= 0 || ct.Credits <= 0 {
 			t.Fatalf("invalid seeded card type: %+v", ct)
 		}
+	}
+}
+
+func TestInitLLMModulePublishesDefaultComputeCardTypesToHA(t *testing.T) {
+	ctx := context.Background()
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "hubcenter-llm-init-ha.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	registrySvc := llmservice.NewService(st.System)
+	if err := registrySvc.SaveRegistry(ctx, &llmservice.Registry{ServiceGroups: []llmpool.ServiceGroup{{
+		ID:           "compute-group",
+		Name:         "Compute Group",
+		AccessPolicy: llmservice.AccessPolicyGrantRequired,
+	}}}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	haSvc := ha.NewService("hc-1", "HubCenter 1", "https://hc-1.example.com", "secret", nil)
+	haSvc.AttachStore(st)
+
+	if _, err := InitLLMModule(provider, st.System, "hc-1", nil, haSvc); err != nil {
+		t.Fatalf("InitLLMModule: %v", err)
+	}
+	ops, err := st.HASyncOps.ListAfterSeq(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("ListAfterSeq: %v", err)
+	}
+	count := 0
+	for _, op := range ops {
+		if op.EntityType == ha.EntityLLMCardType {
+			count++
+		}
+	}
+	if count != 3 {
+		t.Fatalf("published default card type ops = %d, want 3", count)
 	}
 }
 
@@ -137,9 +178,9 @@ func TestInitLLMModuleDoesNotSeedCardsForFreeServiceGroup(t *testing.T) {
 		t.Fatalf("SaveRegistry: %v", err)
 	}
 
-	module := InitLLMModule(provider, st.System, "node-a", nil, nil)
-	if module == nil {
-		t.Fatal("InitLLMModule returned nil")
+	module, err := InitLLMModule(provider, st.System, "node-a", nil, nil)
+	if err != nil {
+		t.Fatalf("InitLLMModule: %v", err)
 	}
 	types, err := module.CardStoreSvc.ListEnabledCardTypes(ctx)
 	if err != nil {
@@ -198,9 +239,9 @@ func TestInitLLMModuleRepairsCardBackedFreeServiceGroup(t *testing.T) {
 		t.Fatalf("Create card type: %v", err)
 	}
 
-	module := InitLLMModule(provider, st.System, "node-a", nil, nil)
-	if module == nil {
-		t.Fatal("InitLLMModule returned nil")
+	module, err := InitLLMModule(provider, st.System, "node-a", nil, nil)
+	if err != nil {
+		t.Fatalf("InitLLMModule: %v", err)
 	}
 	reg, err := module.Service.LoadRegistry(ctx)
 	if err != nil {

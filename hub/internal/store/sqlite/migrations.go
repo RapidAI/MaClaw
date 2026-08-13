@@ -410,6 +410,119 @@ func RunMigrations(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		);`,
 
+		`CREATE TABLE IF NOT EXISTS user_referral_codes (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			inviter_user_id TEXT NOT NULL,
+			code_hash TEXT NOT NULL,
+			encrypted_code TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TEXT NOT NULL,
+			rotated_at TEXT,
+			UNIQUE(tenant_id, inviter_user_id, status),
+			UNIQUE(tenant_id, code_hash)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_referral_codes_lookup ON user_referral_codes(tenant_id, code_hash, status);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_referral_codes_active_inviter ON user_referral_codes(tenant_id, inviter_user_id) WHERE status = 'active';`,
+		`CREATE TABLE IF NOT EXISTS user_referrals (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			referral_code_id TEXT NOT NULL,
+			inviter_user_id TEXT NOT NULL,
+			invitee_user_id TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'attributed',
+			registered_at TEXT NOT NULL,
+			service_group_id TEXT NOT NULL DEFAULT '',
+			inviter_credits REAL NOT NULL DEFAULT 0,
+			invitee_credits REAL NOT NULL DEFAULT 0,
+			duration_days INTEGER NOT NULL DEFAULT 30,
+			inviter_grant_id TEXT NOT NULL DEFAULT '',
+			invitee_grant_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(tenant_id, invitee_user_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_referrals_inviter ON user_referrals(tenant_id, inviter_user_id, registered_at DESC);`,
+		`CREATE TABLE IF NOT EXISTS user_referral_daily_metrics (
+			tenant_id TEXT NOT NULL,
+			metric_date TEXT NOT NULL,
+			event TEXT NOT NULL,
+			count INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, metric_date, event)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_referral_daily_metrics_tenant_date ON user_referral_daily_metrics(tenant_id, metric_date DESC);`,
+		`CREATE TABLE IF NOT EXISTS user_referral_reward_metric_events (
+			tenant_id TEXT NOT NULL,
+			event_key TEXT NOT NULL,
+			event TEXT NOT NULL,
+			occurred_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, event_key, event)
+		);`,
+		`CREATE TABLE IF NOT EXISTS user_referral_registration_idempotency (
+			tenant_id TEXT NOT NULL,
+			key_hash TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			status INTEGER NOT NULL,
+			payload BLOB NOT NULL,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, key_hash)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_referral_registration_idempotency_expiry ON user_referral_registration_idempotency(expires_at);`,
+		`CREATE TABLE IF NOT EXISTS user_referral_registration_sessions (
+			tenant_id TEXT NOT NULL,
+			token_hash TEXT NOT NULL,
+			code_hash TEXT NOT NULL,
+			config_epoch TEXT NOT NULL DEFAULT '',
+			user_agent_hash TEXT NOT NULL,
+			invitee_user_id TEXT NOT NULL DEFAULT '',
+			referral_id TEXT NOT NULL DEFAULT '',
+			completed_at TEXT,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, token_hash)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_referral_registration_sessions_expiry ON user_referral_registration_sessions(expires_at);`,
+		`CREATE TABLE IF NOT EXISTS user_referral_identity_reservations (
+			tenant_id TEXT NOT NULL,
+			identity_hash TEXT NOT NULL,
+			code_hash TEXT NOT NULL,
+			session_hash TEXT NOT NULL,
+			reserved_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, identity_hash)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_referral_identity_reservations_expiry ON user_referral_identity_reservations(expires_at);`,
+		`CREATE TABLE IF NOT EXISTS user_referral_handoffs (
+			token_hash TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			code_hash TEXT NOT NULL,
+			referral_code_id TEXT NOT NULL,
+			inviter_user_id TEXT NOT NULL,
+			config_epoch TEXT NOT NULL,
+			service_group_id TEXT NOT NULL DEFAULT '',
+			inviter_credits REAL NOT NULL DEFAULT 0,
+			invitee_credits REAL NOT NULL DEFAULT 0,
+			duration_days INTEGER NOT NULL DEFAULT 30,
+			expires_at TEXT NOT NULL,
+			used_at TEXT,
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_referral_handoffs_expiry ON user_referral_handoffs(expires_at);`,
+		`CREATE TABLE IF NOT EXISTS user_referral_status_history (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			referral_id TEXT NOT NULL,
+			from_status TEXT NOT NULL DEFAULT '',
+			to_status TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			actor_user_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_referral_status_history_referral ON user_referral_status_history(tenant_id, referral_id, created_at DESC);`,
+
 		`CREATE TABLE IF NOT EXISTS llm_prompt_cache (
 			cache_key TEXT PRIMARY KEY,
 			provider_id TEXT NOT NULL,
@@ -931,6 +1044,10 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN validity_days INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE user_enrollments ADD COLUMN mobile TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN exported INTEGER NOT NULL DEFAULT 0`)
+	alterStmts = append(alterStmts, `ALTER TABLE user_referral_registration_sessions ADD COLUMN config_epoch TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `ALTER TABLE user_referral_registration_sessions ADD COLUMN invitee_user_id TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `ALTER TABLE user_referral_registration_sessions ADD COLUMN referral_id TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `ALTER TABLE user_referral_registration_sessions ADD COLUMN completed_at TEXT`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_tenant_created_at ON admin_audit_logs(tenant_id, created_at DESC)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_failure_event_logs_tenant_created_at ON failure_event_logs(tenant_id, created_at DESC)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_content_audit_logs_tenant_timestamp ON content_audit_logs(tenant_id, timestamp)`)

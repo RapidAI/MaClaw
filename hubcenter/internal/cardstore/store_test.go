@@ -59,8 +59,9 @@ func (r *cardTypeTestRepo) Delete(_ context.Context, _ string) error {
 }
 
 type orderTestRepo struct {
-	created []*PurchaseOrder
-	byNo    map[string]*PurchaseOrder
+	created   []*PurchaseOrder
+	byNo      map[string]*PurchaseOrder
+	updateErr error
 }
 
 func (r *orderTestRepo) Create(_ context.Context, order *PurchaseOrder) error {
@@ -95,6 +96,9 @@ func (r *orderTestRepo) UpdateStatus(_ context.Context, orderNo, status string, 
 }
 
 func (r *orderTestRepo) Update(_ context.Context, order *PurchaseOrder) error {
+	if r.updateErr != nil {
+		return r.updateErr
+	}
 	if r.byNo == nil {
 		r.byNo = map[string]*PurchaseOrder{}
 	}
@@ -129,9 +133,13 @@ type authTestRepo struct {
 	byHub                map[string][]*llmservice.TenantAuthorization
 	getByIDCalls         int
 	listByHubTenantCalls int
+	createErr            error
 }
 
 func (r *authTestRepo) Create(_ context.Context, auth *llmservice.TenantAuthorization) error {
+	if r.createErr != nil {
+		return r.createErr
+	}
 	r.created = append(r.created, auth)
 	if r.byID == nil {
 		r.byID = map[string]*llmservice.TenantAuthorization{}
@@ -153,6 +161,15 @@ func (r *authTestRepo) GetByID(_ context.Context, id string) (*llmservice.Tenant
 	return r.byID[id], nil
 }
 
+func (r *authTestRepo) GetByCardOrderID(_ context.Context, orderNo string) (*llmservice.TenantAuthorization, error) {
+	for _, auth := range r.byID {
+		if auth != nil && auth.CardOrderID == orderNo {
+			return auth, nil
+		}
+	}
+	return nil, nil
+}
+
 func (r *authTestRepo) ListByHubTenant(_ context.Context, hubID, tenantID string) ([]*llmservice.TenantAuthorization, error) {
 	r.listByHubTenantCalls++
 	return r.byHub[hubID+"\x00"+tenantID], nil
@@ -163,7 +180,11 @@ func (r *authTestRepo) ListByServiceGroup(_ context.Context, _ string) ([]*llmse
 }
 
 func (r *authTestRepo) ListAll(_ context.Context) ([]*llmservice.TenantAuthorization, error) {
-	return nil, nil
+	items := make([]*llmservice.TenantAuthorization, 0, len(r.byID))
+	for _, auth := range r.byID {
+		items = append(items, auth)
+	}
+	return items, nil
 }
 
 func (r *authTestRepo) Update(_ context.Context, _ *llmservice.TenantAuthorization) error {
@@ -1161,5 +1182,59 @@ func TestConfirmOrderMarksExternalPermissionCardAsExternalProviderGrant(t *testi
 	}
 	if auth.ServiceGroupID != llmservice.ExternalComputePermissionServiceGroupID {
 		t.Fatalf("ServiceGroupID = %q", auth.ServiceGroupID)
+	}
+}
+
+func TestConfirmOrderReusesAuthorizationAlreadyCreatedForOrder(t *testing.T) {
+	now := time.Now().UTC()
+	order := &PurchaseOrder{Order: corecardstore.Order{OrderNo: "HC-IDEMPOTENT", Email: "owner@example.com", Status: corecardstore.StatusPaid}, HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "group-a", Credits: 100, Period: "month"}
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{order.OrderNo: order}}
+	existing := &llmservice.TenantAuthorization{ID: "auth-existing", CardOrderID: order.OrderNo, CreatedAt: now, UpdatedAt: now}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{existing.ID: existing}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	if err := svc.ConfirmOrder(context.Background(), order.OrderNo, "admin@example.com"); err != nil {
+		t.Fatalf("ConfirmOrder: %v", err)
+	}
+	if len(authRepo.created) != 0 {
+		t.Fatalf("created auth count = %d, want 0", len(authRepo.created))
+	}
+	if got := orderRepo.byNo[order.OrderNo].PaymentID; got != existing.ID {
+		t.Fatalf("PaymentID = %q, want %q", got, existing.ID)
+	}
+}
+
+func TestConfirmOrderUsesDeterministicAuthorizationID(t *testing.T) {
+	order := &PurchaseOrder{Order: corecardstore.Order{OrderNo: "HC-STABLE-AUTH", Email: "owner@example.com", Status: corecardstore.StatusPending}, HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "group-a", Credits: 100, Period: "month"}
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{order.OrderNo: order}}
+	authRepo := &authTestRepo{}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	if err := svc.ConfirmOrder(context.Background(), order.OrderNo, "admin@example.com"); err != nil {
+		t.Fatalf("ConfirmOrder: %v", err)
+	}
+	if len(authRepo.created) != 1 {
+		t.Fatalf("created auth count = %d, want 1", len(authRepo.created))
+	}
+	if got, want := authRepo.created[0].ID, "auth_"+order.OrderNo; got != want {
+		t.Fatalf("authorization id = %q, want %q", got, want)
+	}
+	if got, want := orderRepo.byNo[order.OrderNo].PaymentID, "auth_"+order.OrderNo; got != want {
+		t.Fatalf("order PaymentID = %q, want %q", got, want)
+	}
+}
+
+func TestConfirmOrderReturnsErrorWhenReactivatedOrderCannotBeSaved(t *testing.T) {
+	order := &PurchaseOrder{Order: corecardstore.Order{OrderNo: "HC-RETRY-SAVE", Email: "owner@example.com", Status: corecardstore.StatusPaid}, HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "group-a", Credits: 100, Period: "month"}
+	orderRepo := &orderTestRepo{
+		byNo:      map[string]*PurchaseOrder{order.OrderNo: order},
+		updateErr: errors.New("database unavailable"),
+	}
+	authRepo := &authTestRepo{}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	err := svc.ConfirmOrder(context.Background(), order.OrderNo, "admin@example.com")
+	if err == nil || !strings.Contains(err.Error(), "save reactivated order") {
+		t.Fatalf("ConfirmOrder error = %v, want reactivated-order save failure", err)
 	}
 }

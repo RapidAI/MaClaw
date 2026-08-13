@@ -8,28 +8,28 @@
 #include <string.h>
 
 #include "esp_check.h"
-#include "esp_mn_models.h"
-#include "esp_mn_speech_commands.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "mbedtls/base64.h"
-#include "model_path.h"
 #include "provisioning_failure_injection.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
-#include "boards/round_profile_adapter.h"
-#include "boards/round_display_font_adapter.h"
+#include "round_audio_service.h"
+#include "round_display_service.h"
+#include "round_input_service.h"
+#include "round_peripheral_service.h"
+#include "round_visual_profile_service.h"
+#include "round_wake_service.h"
 
-/* The selected round-profile adapter owns all electrical constants.  The
- * renderer keeps these short local aliases only for its profile-neutral
- * framebuffer and PCM algorithms. */
-#define LCD_WIDTH       ROUND_PROFILE_LCD_WIDTH
-#define LCD_HEIGHT      ROUND_PROFILE_LCD_HEIGHT
-#define OUTPUT_VOLUME_DEFAULT ROUND_PROFILE_AUDIO_OUTPUT_VOLUME_DEFAULT
-#define AUDIO_RATE      ROUND_PROFILE_AUDIO_RATE
+/* The shared round renderer owns scene composition.  Geometry, raster and
+ * layout are received only through the private visual-profile contract; audio
+ * session defaults come from its dedicated Audio HAL service. */
+#define LCD_WIDTH       (round_display_service_width())
+#define LCD_HEIGHT      (round_display_service_height())
+#define OUTPUT_VOLUME_DEFAULT (round_audio_service_default_output_volume())
+#define AUDIO_RATE      (round_audio_service_sample_rate())
 
 // End a command after a natural pause instead of a fixed recording window.
 // Thirty seconds leaves room for multi-step requests while keeping the maximum
@@ -43,66 +43,28 @@
 #define COMMAND_CAPTURE_SILENCE_MARGIN 15
 #define COMMAND_CAPTURE_SILENCE_CEILING 90
 #define COMMAND_CAPTURE_PREROLL_MS 300
-#define WAKE_WORD_COMMAND_ID 1
-// Keep one recognizer running in standby. Running Chinese and English models
-// together doubles inference work and makes normal-speed wake-up unreliable.
-#define WAKE_WORD_CN_LABEL "码卡龙"
-// MultiNet7 Chinese commands use space-separated pinyin syllables without
-// tone digits.  Supplying tone digits makes its command validator reject the
-// phrase, which silently disabled standby wake-up altogether.
-// Spaces are token boundaries, not required pauses. Connected delivery often
-// voices the middle consonant or reduces its vowel, so all common paths map to
-// the same command ID and trigger exactly the same interaction.
-static const char *const s_wake_word_cn_phonetics[] = {
-    "ma ka long",
-    "ma ga long",
-    "ma ke long",
-};
-// The default command threshold favours deliberate, slow commands.  A modest
-// reduction preserves a practical false-wake margin while accepting normal
-// conversational delivery of the short product name.
-#define WAKE_WORD_DETECTION_THRESHOLD 0.24f
-#define WAKE_WORD_COOLDOWN_US (2LL * 1000 * 1000)
-#define WAKE_WORD_DIAGNOSTIC_INTERVAL_US (2LL * 1000 * 1000)
-#define WAKE_WORD_TARGET_RMS 3400
-#define WAKE_WORD_MIN_SOFTWARE_GAIN_Q8 256
-#define WAKE_WORD_MAX_SOFTWARE_GAIN_Q8 (24 * 256)
-#define WAKE_WORD_GAIN_ATTACK_SHIFT 1
-#define WAKE_WORD_GAIN_RELEASE_SHIFT 4
-#define WAKE_WORD_GAIN_UPDATE_FLOOR 96
-
-#define RECORDING_INVALID_SAMPLE_ABS 32500
-#define RECORDING_DC_BLOCKER_Q15 32604  // 0.995
-#define RECORDING_TARGET_RMS 3400
-#define RECORDING_MIN_SOFTWARE_GAIN_Q8 256
-#define RECORDING_MAX_SOFTWARE_GAIN_Q8 (24 * 256)
-#define RECORDING_GAIN_ATTACK_SHIFT 1
-#define RECORDING_GAIN_RELEASE_SHIFT 4
-#define RECORDING_GAIN_UPDATE_FLOOR 96
-#define RECORDING_OUTPUT_LIMIT 30000
-
-#define LCD_STRIPE_ROWS ROUND_PROFILE_DISPLAY_STRIPE_ROWS
+#define LCD_STRIPE_ROWS (round_display_service_transfer_stripe_rows())
 #define TEXT_SCALE      2
 #define TEXT_ADVANCE    7
-#define CJK_FONT_SIZE   ROUND_DISPLAY_FONT_24_CELL
+#define CJK_FONT_SIZE   ROUND_VISUAL_PROFILE_CJK24_CELL
 #define CJK_ADVANCE     25
 #define TEXT24_ASCII_ADVANCE 12
 #define TEXT24_SPACE_ADVANCE 8
-#define DYNAMIC_GLYPH_BYTES ROUND_DISPLAY_FONT_24_BYTES
+#define DYNAMIC_GLYPH_BYTES ROUND_VISUAL_PROFILE_CJK24_BYTES
 #define DYNAMIC_GLYPH_CACHE_CAPACITY 128
 #define COMPACT_FONT_SIZE 16
 #define COMPACT_CJK_ADVANCE 17
 #define COMPACT_ASCII_ADVANCE 12
 static const round_display_layout_t *round_display_layout(void) {
-    return round_profile_display_layout();
+    return round_visual_profile_display_layout();
 }
 #define ROUND_LAYOUT                 (round_display_layout())
-#define ROUND_RECORDING_LAYOUT       (round_profile_recording_layout())
-#define ROUND_UPLOAD_LAYOUT          (round_profile_upload_layout())
-#define ROUND_ALARM_LAYOUT           (round_profile_alarm_layout())
-#define ROUND_MESSAGE_LAYOUT         (round_profile_message_layout())
-#define ROUND_RESPONSE_IMAGE_LAYOUT  (round_profile_response_image_layout())
-#define ROUND_QRCODE_LAYOUT          (round_profile_qrcode_layout())
+#define ROUND_RECORDING_LAYOUT       (round_visual_profile_recording_layout())
+#define ROUND_UPLOAD_LAYOUT          (round_visual_profile_upload_layout())
+#define ROUND_ALARM_LAYOUT           (round_visual_profile_alarm_layout())
+#define ROUND_MESSAGE_LAYOUT         (round_visual_profile_message_layout())
+#define ROUND_RESPONSE_IMAGE_LAYOUT  (round_visual_profile_response_image_layout())
+#define ROUND_QRCODE_LAYOUT          (round_visual_profile_qrcode_layout())
 #define RESPONSE_TITLE_Y             (ROUND_LAYOUT->response_title_y)
 #define RESPONSE_RULE_Y              (ROUND_LAYOUT->response_rule_y)
 #define RESPONSE_TEXT_X              (ROUND_LAYOUT->response_text_x)
@@ -146,7 +108,7 @@ static const round_display_layout_t *round_display_layout(void) {
 // 40 MHz QSPI: a marginal edge manifests as repeated coloured columns. Native
 // procedural motion remains calm, while the pre-composed remote pet uses the
 // Bread Compact 80 ms cadence and a changed-region presenter below.
-#define PET_ANIMATION_FRAME_MS 150
+#define PET_ANIMATION_FRAME_MS (round_display_service_pet_animation_frame_ms())
 #define REMOTE_PET_RENDER_FRAME_MS 80
 // Bread Compact advances its 24-column history for each 512-sample I2S read
 // (32 ms at 16 kHz), and immediately presents that change. EchoEar groups two
@@ -157,27 +119,12 @@ static const round_display_layout_t *round_display_layout(void) {
     (RECORDING_WAVE_SAMPLES_PER_COLUMN * 1000u / AUDIO_RATE)
 #define REMOTE_PET_DEFAULT_KEYFRAME_MS 450
 #define READY_PROMPT_TIMEOUT_US (60LL * 1000 * 1000)
-#define IDLE_PET_SLEEP_TIMEOUT_US (30LL * 60 * 1000 * 1000)
-#define INPUT_DOUBLE_WINDOW_US  (500LL * 1000)
-#define INPUT_LONG_HOLD_US      (2500LL * 1000)
 // The default procedural cat is shown on the permanent circular standby
 // surface before a remotely selected pet has loaded.  Keep its head noticeably
 // inside the top date/status ring: the former 103px face plus 55px ears reached
 // into the header and visually collided with the date.  The local fallback is
 // intentionally more compact than a downloaded full-frame pet.
 static const char *TAG = "maclaw_board";
-static board_port_button_cb_t s_on_button;
-static void *s_on_press_arg;
-/* Input Service owns the queues consumed by this scanner's callbacks.  The
- * scanner therefore has an explicit stop/join handshake for degraded-startup
- * rollback.  It intentionally does not make the whole board adapter
- * restartable: LCD, audio and I2C resources are still boot-lifetime. */
-static TaskHandle_t s_button_task;
-static SemaphoreHandle_t s_button_task_stopped;
-/* A timed-out join must not notify a task handle that may have exited and
- * been recycled.  The completion semaphore remains owned until a later stop
- * call consumes it. */
-static bool s_button_task_stop_requested;
 static SemaphoreHandle_t s_background_tasks_lock;
 /* A failed startup can still receive late shared-UI publications while it is
  * draining local services.  Once lifecycle closes this admission, no such
@@ -185,11 +132,6 @@ static SemaphoreHandle_t s_background_tasks_lock;
  * This is intentionally narrower than a board-port deinit: panel/audio/I2C
  * resources remain boot-lifetime and the diagnostic surface stays valid. */
 static bool s_background_tasks_admission_closed;
-static TaskHandle_t s_pet_animation_task;
-static SemaphoreHandle_t s_pet_animation_stopped;
-/* Keep the original task identity after a timed-out join.  A second stop
- * call must consume its completion, never notify a recycled FreeRTOS handle. */
-static bool s_pet_animation_stop_requested;
 
 static char s_pet_state[16] = "quiet";
 static char s_pet_skin[32] = "clawmate";
@@ -222,8 +164,6 @@ static bool s_service_ready;
 static bool s_wifi_connected;
 static bool s_alarm_scheduled;
 static char s_command_stage[32] = "正在处理";
-static volatile bool s_command_capture_active;
-static volatile bool s_command_capture_stop_requested;
 static bool s_recording_paused;
 static volatile uint32_t s_recording_elapsed_seconds;
 // Same attack/release smoothing as Bread Compact's recorder. The same level
@@ -245,7 +185,6 @@ static int s_ambient_temperature_c;
 static bool s_ambient_weather_valid;
 static bool s_ambient_weather_stale;
 static int64_t s_ready_prompt_expires_us;
-static int64_t s_idle_pet_sleep_expires_us;
 static bool s_idle_pet_visible;
 static bool s_display_sleeping;
 // Provisioning is a task-focused screen, not a temporary pet overlay. Keep
@@ -264,21 +203,6 @@ static bool s_alarm_visual_active;
 // app model calls it MESSAGE; track it here so the idle animation cannot
 // repaint a pet over network/setup/meeting notices on its next tick.
 static bool s_message_active;
-// The wake recognizer invokes its callback on its own task while its 10 KiB
-// internal stack and MultiNet allocations are still live.  Do not try to
-// create the equally sized foreground worker in that instant: there may be
-// enough aggregate memory but no contiguous internal block.  Stop and release
-// the recognizer first, then invoke the application callback from a small
-// deferred dispatcher.
-static volatile bool s_wake_callback_pending;
-static TaskHandle_t s_wake_callback_task;
-/* A detected phrase is handed off only after MultiNet has released its model
- * arena.  That handoff is still part of the wake-word generation: a portal,
- * rollback or foreground owner which stops wake processing must be able to
- * cancel and join it before it treats microphone/interaction admission as
- * closed. */
-static volatile bool s_wake_callback_task_starting;
-static volatile bool s_wake_callback_cancel_requested;
 static unsigned s_response_page;
 static char s_response_title[48];
 static char s_response_text[RESPONSE_TEXT_CAPACITY];
@@ -294,7 +218,7 @@ static dynamic_glyph_t s_dynamic_glyphs[DYNAMIC_GLYPH_CACHE_CAPACITY];
 static uint32_t s_dynamic_glyph_clock;
 // Round display drawing and the shared stripe buffer cannot be used concurrently.
 static SemaphoreHandle_t s_lcd_mutex;
-#define s_line (round_display_adapter_stripe_buffer())
+#define s_line (round_display_service_stripe_buffer())
 // Two complete RGB565 frames live in DMA-capable PSRAM. While the LCD sends
 // one frame, the renderer composes the next one into the other buffer. This
 // replaces hundreds of tiny scan-line transactions per pet frame with one
@@ -317,7 +241,6 @@ static volatile bool s_recording_frame_baseline;
 static volatile bool s_recording_meter_dirty;
 static uint16_t *s_render_target;
 static volatile uint32_t s_presented_frames;
-static bool s_pet_animation_started;
 // Status text gets one immutable overlay buffer.  It is never reused before a
 // synchronous transfer completes.  The 466x162 AMOLED header needs 151 KiB,
 // which must live in PSRAM; the 360px EchoEar keeps its smaller DMA-safe copy
@@ -325,166 +248,12 @@ static bool s_pet_animation_started;
 // full-frame stripe presenter.
 static uint16_t *s_ambient_overlay;
 static volatile uint32_t s_skipped_pet_frames;
-static bool s_audio_ready;
 // The meeting stream owns the audio mutex from start to stop.  Track that
 // ownership explicitly (as Bread Compact does) so an error path or duplicate
 // stop cannot release a mutex held by an unrelated wake/audio operation.
-static bool s_audio_stream_owned;
-static TaskHandle_t s_audio_playback_owner;
-static volatile bool s_audio_playback_stop_requested;
-static unsigned s_output_volume = OUTPUT_VOLUME_DEFAULT;
+static unsigned s_output_volume;
 static volatile bool s_command_display_locked;
-static volatile bool s_command_cancel_enabled;
-static volatile uint32_t s_command_gesture_revision;
-// Once a double tap is emitted, discard every residual native/raw touch event
-// until the panel has been continuously released. Otherwise the same physical
-// second tap can later mature into a SHORT event and start a fresh command.
-static volatile bool s_touch_gesture_consumed;
-static int64_t s_touch_gesture_released_at_us;
 static bool s_recording_is_meeting;
-static SemaphoreHandle_t s_audio_mutex;
-static TaskHandle_t s_wake_word_task;
-static volatile bool s_wake_word_task_starting;
-static volatile bool s_wake_word_ready;
-static board_port_wake_word_cb_t s_on_wake_word;
-static void *s_on_wake_word_arg;
-static volatile bool s_wake_word_paused;
-static volatile bool s_wake_word_pause_acknowledged;
-static volatile bool s_wake_word_stop_requested;
-static portMUX_TYPE s_wake_word_lock = portMUX_INITIALIZER_UNLOCKED;
-
-typedef struct {
-    int32_t previous_input;
-    int32_t previous_filtered;
-    uint32_t gain_q8;
-    uint32_t diagnostic_samples;
-    uint32_t diagnostic_bad_samples;
-    int32_t diagnostic_input_peak;
-    int32_t diagnostic_output_peak;
-    uint32_t diagnostic_rms;
-    const char *diagnostic_label;
-} recording_pcm_filter_t;
-static recording_pcm_filter_t s_recording_pcm_filter;
-
-static int32_t sample_magnitude(int32_t sample) {
-    return sample < 0 ? -sample : sample;
-}
-
-static void recording_pcm_reset(const char *label) {
-    memset(&s_recording_pcm_filter, 0, sizeof(s_recording_pcm_filter));
-    // The verified codec stream is quiet, so begin ready for nearby speech.
-    // The attack path below immediately backs this down if a block is loud.
-    s_recording_pcm_filter.gain_q8 = RECORDING_MAX_SOFTWARE_GAIN_Q8;
-    s_recording_pcm_filter.diagnostic_label = label;
-}
-
-// Convert Audio HAL-normalized mono PCM to clean recording samples. Full-scale bus artefacts
-// are replaced before a fixed-point DC blocker. A bounded RMS AGC then restores
-// the very quiet but valid EchoEar signal to the same useful range as the other
-// boards. Gain falls quickly to protect loud speech, recovers slowly, and does
-// not update below the measured speech floor so silence is never pumped up.
-// Meeting and command recordings share this path so uploaded PCM and VAD see
-// identical samples.
-static int32_t recording_pcm_process(const int16_t *input_mono, size_t frames,
-                                     int16_t *mono) {
-    recording_pcm_filter_t *filter = &s_recording_pcm_filter;
-    uint64_t energy = 0;
-    int32_t chunk_peak = 0;
-    for (size_t i = 0; i < frames; ++i) {
-        int32_t input = input_mono[i];
-        int32_t input_magnitude = sample_magnitude(input);
-        if (input_magnitude > filter->diagnostic_input_peak) {
-            filter->diagnostic_input_peak = input_magnitude;
-        }
-
-        if (input_magnitude >= RECORDING_INVALID_SAMPLE_ABS) {
-            // Holding the previous input lets the high-pass output decay
-            // smoothly instead of turning one damaged word into a loud click.
-            input = filter->previous_input;
-            ++filter->diagnostic_bad_samples;
-        }
-
-        int32_t filtered = input - filter->previous_input +
-                           (int32_t)(((int64_t)filter->previous_filtered *
-                                      RECORDING_DC_BLOCKER_Q15) >> 15);
-        filter->previous_input = input;
-        filter->previous_filtered = filtered;
-
-        // Keep the DC-blocked block in the caller's output area while its RMS
-        // is measured; it is replaced with final scaled PCM in the second pass.
-        if (filtered > INT16_MAX) filtered = INT16_MAX;
-        if (filtered < INT16_MIN) filtered = INT16_MIN;
-        mono[i] = (int16_t)filtered;
-        energy += (uint64_t)((int64_t)filtered * filtered);
-    }
-
-    uint32_t rms = frames ? (uint32_t)sqrtf((float)(energy / frames)) : 0;
-    if (rms >= RECORDING_GAIN_UPDATE_FLOOR) {
-        uint32_t target_q8 = (RECORDING_TARGET_RMS * 256u) / rms;
-        if (target_q8 < RECORDING_MIN_SOFTWARE_GAIN_Q8) {
-            target_q8 = RECORDING_MIN_SOFTWARE_GAIN_Q8;
-        }
-        if (target_q8 > RECORDING_MAX_SOFTWARE_GAIN_Q8) {
-            target_q8 = RECORDING_MAX_SOFTWARE_GAIN_Q8;
-        }
-        unsigned shift = target_q8 < filter->gain_q8
-                             ? RECORDING_GAIN_ATTACK_SHIFT
-                             : RECORDING_GAIN_RELEASE_SHIFT;
-        filter->gain_q8 = (uint32_t)((int32_t)filter->gain_q8 +
-                                     ((int32_t)target_q8 - (int32_t)filter->gain_q8) /
-                                         (1 << shift));
-    }
-    filter->diagnostic_rms = rms;
-
-    for (size_t i = 0; i < frames; ++i) {
-        int32_t output = (int32_t)(((int64_t)mono[i] * filter->gain_q8) >> 8);
-        if (output > RECORDING_OUTPUT_LIMIT) output = RECORDING_OUTPUT_LIMIT;
-        if (output < -RECORDING_OUTPUT_LIMIT) output = -RECORDING_OUTPUT_LIMIT;
-        mono[i] = (int16_t)output;
-
-        int32_t output_magnitude = sample_magnitude(output);
-        if (output_magnitude > chunk_peak) chunk_peak = output_magnitude;
-        if (output_magnitude > filter->diagnostic_output_peak) {
-            filter->diagnostic_output_peak = output_magnitude;
-        }
-    }
-
-    filter->diagnostic_samples += (uint32_t)frames;
-    if (filter->diagnostic_samples >= AUDIO_RATE) {
-        ESP_LOGI(TAG, "%s mic: peak=%ld rms=%lu bad=%lu; clean peak=%ld gain=%.2f",
-                 filter->diagnostic_label ? filter->diagnostic_label : "recording",
-                 (long)filter->diagnostic_input_peak,
-                 (unsigned long)filter->diagnostic_rms,
-                 (unsigned long)filter->diagnostic_bad_samples,
-                 (long)filter->diagnostic_output_peak,
-                 (double)filter->gain_q8 / 256.0);
-        filter->diagnostic_samples = 0;
-        filter->diagnostic_bad_samples = 0;
-        filter->diagnostic_input_peak = 0;
-        filter->diagnostic_output_peak = 0;
-    }
-    return chunk_peak;
-}
-
-// Peak is right for an immediate speech-start response, but one short click
-// can keep a peak-only VAD alive for an entire I2S block.  Use the mean
-// absolute deviation around the block's DC level for the completion decision,
-// matching Bread Compact's natural-pause contract while retaining EchoEar's
-// selected-slot cleanup and bounded AGC above.
-static uint16_t command_capture_mean_level(const int16_t *samples, size_t count) {
-    if (!samples || count == 0) return 0;
-    int64_t sum = 0;
-    for (size_t i = 0; i < count; ++i) sum += samples[i];
-    const int32_t dc = (int32_t)(sum / (int64_t)count);
-    uint64_t deviation_sum = 0;
-    for (size_t i = 0; i < count; ++i) {
-        int32_t deviation = (int32_t)samples[i] - dc;
-        deviation_sum += (uint32_t)(deviation < 0 ? -deviation : deviation);
-    }
-    uint32_t mean_deviation = (uint32_t)(deviation_sum / count);
-    return mean_deviation >= 12000 ? 1000
-                                   : (uint16_t)(mean_deviation * 1000 / 12000);
-}
 
 static esp_err_t draw_bitmap_sync(int x0, int y0, int x1, int y1,
                                    const void *pixels);
@@ -494,19 +263,11 @@ static unsigned response_page_count(void);
 static void draw_response_page(void);
 static void draw_recording_visual(void);
 
-static void emit_button_input(board_input_action_t action,
-                               board_input_source_t source) {
-    if (round_input_adapter_consume_boot_gesture(action, source)) {
-        return;
-    }
-    if (s_on_button) s_on_button(action, source, s_on_press_arg);
-}
-
 // Every frame present uses the same completion fence. Keeping this in one
 // helper prevents the pet and recording paths from drifting apart, and makes
 // a failed submission unable to consume a completion from a later transfer.
 static esp_err_t present_frame_sync(const uint16_t *frame) {
-    if (!round_display_adapter_ready() || !frame) return ESP_ERR_INVALID_ARG;
+    if (!round_display_service_ready() || !frame) return ESP_ERR_INVALID_ARG;
     // A non-pet full-screen surface (recording, result, setup, alarm) replaces
     // the pixels that a later standby delta would otherwise compare against.
     // draw_pet_frame() revalidates this cache only after it presents a complete
@@ -541,7 +302,7 @@ static esp_err_t present_frame_sync(const uint16_t *frame) {
 // completion signal and desynchronize all subsequent draws.
 static esp_err_t draw_bitmap_sync(int x0, int y0, int x1, int y1,
                                   const void *pixels) {
-    if (!round_display_adapter_ready() || !pixels) return ESP_ERR_INVALID_ARG;
+    if (!round_display_service_ready() || !pixels) return ESP_ERR_INVALID_ARG;
     // Any direct LCD write (status text, QR, clock ring, etc.) changes pixels
     // outside the pet double buffer.  The next standby frame must therefore be
     // a full present; otherwise its delta compares against an old pet frame and
@@ -554,37 +315,11 @@ static esp_err_t draw_bitmap_sync(int x0, int y0, int x1, int y1,
     // draw_recording_visual() re-arms it only after its entire recorder frame
     // has completed successfully.
     s_recording_frame_baseline = false;
-    return round_display_adapter_draw_bitmap_sync(x0, y0, x1, y1, pixels);
-}
-
-static void audio_init_rollback(void) {
-    // audio_init() is intentionally retryable: board_port_init() probes audio
-    // early for touch support, and wake startup may retry it later. Leaving a
-    // partly-created I2C bus or I2S channel behind makes every later attempt
-    // fail with "bus already acquired", permanently disabling EchoEar wake.
-    round_audio_adapter_release();
-    s_audio_ready = false;
-}
-
-static esp_err_t audio_init(void) {
-    if (s_audio_ready) return ESP_OK;
-    // Recover from an earlier partial attempt before claiming the peripherals
-    // again. A successful initialization never enters this path because it
-    // returns above with s_audio_ready set.
-    audio_init_rollback();
-    esp_err_t err = round_audio_adapter_initialize(s_output_volume);
-    if (err != ESP_OK) goto fail;
-    s_audio_ready = true;
-    return ESP_OK;
-fail:
-    ESP_LOGE(TAG, "round audio initialization failed: %s; rolling back for retry",
-             esp_err_to_name(err));
-    audio_init_rollback();
-    return err;
+    return round_display_service_draw_bitmap_sync(x0, y0, x1, y1, pixels);
 }
 
 static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
-    return round_display_adapter_rgb565(r, g, b);
+    return round_display_service_rgb565(r, g, b);
 }
 
 // Interpolate in the panel's native RGB565 space. The previous pet renderer
@@ -593,7 +328,7 @@ static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
 // memory footprint unchanged while exposing the colour depth that is already
 // available in the ST77916 pipeline.
 static uint16_t rgb565_lerp(uint16_t from, uint16_t to, uint16_t amount) {
-    return round_display_adapter_rgb565_lerp(from, to, amount);
+    return round_display_service_rgb565_lerp(from, to, amount);
 }
 
 static uint16_t state_color(const char *state) {
@@ -626,7 +361,7 @@ static int round_scene_y(int y) {
 }
 
 static void fill_rect(int x0, int y0, int x1, int y1, uint16_t color) {
-    if (!round_display_adapter_ready()) return;
+    if (!round_display_service_ready()) return;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (x1 > LCD_WIDTH) x1 = LCD_WIDTH;
@@ -757,7 +492,7 @@ static const uint8_t *glyph(char c) {
 }
 
 static void draw_text(int x, int y, const char *text, uint16_t fg, uint16_t bg) {
-    if (!round_display_adapter_ready() || !text) return;
+    if (!round_display_service_ready() || !text) return;
     size_t len = strlen(text);
     if (len > 25) len = 25;
     int width = (int)len * TEXT_ADVANCE * TEXT_SCALE;
@@ -936,7 +671,7 @@ static int text24_width(const char *text, int max_glyphs) {
 }
 
 static void draw_text24(int x, int y, const char *text, uint16_t fg, uint16_t bg) {
-    if (!round_display_adapter_ready() || !text) return;
+    if (!round_display_service_ready() || !text) return;
     uint32_t cps[21] = {0};
     int count = 0;
     const char *cursor = text;
@@ -961,11 +696,11 @@ static void draw_text24(int x, int y, const char *text, uint16_t fg, uint16_t bg
         int pen_x = 0;
         for (int index = 0; index < count; ++index) {
             uint32_t cp = cps[index];
-            const uint32_t *rows = round_display_font_cjk24_rows(cp);
+            const uint32_t *rows = round_visual_profile_cjk24_rows(cp);
             uint8_t dynamic_bitmap[DYNAMIC_GLYPH_BYTES];
             const uint8_t *dynamic = !rows &&
                                      (dynamic_glyph_copy(cp, dynamic_bitmap) ||
-                                      round_display_font_copy_cjk24(cp, dynamic_bitmap))
+                                      round_visual_profile_copy_cjk24(cp, dynamic_bitmap))
                                          ? dynamic_bitmap : NULL;
             for (int row = 0; row < CJK_FONT_SIZE; ++row) {
                 int py = y + row;
@@ -995,11 +730,11 @@ static void draw_text24(int x, int y, const char *text, uint16_t fg, uint16_t bg
         int pen_x = 0;
         for (int index = 0; index < count; ++index) {
             uint32_t cp = cps[index];
-            const uint32_t *rows = round_display_font_cjk24_rows(cp);
+            const uint32_t *rows = round_visual_profile_cjk24_rows(cp);
             uint8_t dynamic_bitmap[DYNAMIC_GLYPH_BYTES];
             const uint8_t *dynamic = !rows &&
                                      (dynamic_glyph_copy(cp, dynamic_bitmap) ||
-                                      round_display_font_copy_cjk24(cp, dynamic_bitmap))
+                                      round_visual_profile_copy_cjk24(cp, dynamic_bitmap))
                                          ? dynamic_bitmap : NULL;
             for (int row = strip_y; row < strip_y + rows_in_strip; ++row) {
                 for (int col = 0; col < CJK_FONT_SIZE; ++col) {
@@ -1050,11 +785,11 @@ static void compose_text16_region(uint16_t *target, int stride, int width, int h
             continue;
         }
 
-        const uint32_t *rows = round_display_font_cjk24_rows(cp);
+        const uint32_t *rows = round_visual_profile_cjk24_rows(cp);
         uint8_t dynamic_bitmap[DYNAMIC_GLYPH_BYTES];
         const uint8_t *dynamic = !rows &&
                                  (dynamic_glyph_copy(cp, dynamic_bitmap) ||
-                                  round_display_font_copy_cjk24(cp, dynamic_bitmap))
+                                  round_visual_profile_copy_cjk24(cp, dynamic_bitmap))
                                      ? dynamic_bitmap : NULL;
         for (int row = 0; row < COMPACT_FONT_SIZE; ++row) {
             int source_y0 = row * CJK_FONT_SIZE / COMPACT_FONT_SIZE;
@@ -1156,7 +891,7 @@ static void compose_text24_curve(uint16_t *target, int stride, int width, int he
     const int radius = arc_radius < 0 ? -arc_radius : arc_radius;
     const int scale_num = ROUND_LAYOUT->curve_glyph_scale_num;
     const int scale_den = ROUND_LAYOUT->curve_glyph_scale_den;
-    const int source_cell = (int)round_display_font_curve_cell();
+    const int source_cell = (int)round_visual_profile_curve_glyph_cell();
     const int cell = source_cell * scale_num / scale_den;
     uint32_t glyphs[32] = {0};
     int advances[32] = {0};
@@ -1196,13 +931,13 @@ static void compose_text24_curve(uint16_t *target, int stride, int width, int he
         uint8_t dynamic_source24[DYNAMIC_GLYPH_BYTES];
         const uint8_t *dynamic = dynamic_glyph_copy(glyphs[i], dynamic_source24)
                                      ? dynamic_source24 : NULL;
-        round_display_curve_glyph_t curve_glyph;
-        round_display_font_prepare_curve_glyph(glyphs[i], dynamic, &curve_glyph);
+        round_visual_curve_glyph_t curve_glyph;
+        round_visual_profile_prepare_curve_glyph(glyphs[i], dynamic, &curve_glyph);
         for (int row = 0; row < source_cell; ++row) {
             for (int col = 0; col < source_cell; ++col) {
                 const bool ascii_pixel = glyphs[i] < 0x80 && row < 21 && col < 15 &&
                     (glyph((char)glyphs[i])[col / 3] & (1u << (row / 3)));
-                const bool set = round_display_font_curve_glyph_pixel(
+                const bool set = round_visual_profile_curve_glyph_pixel(
                     &curve_glyph, row, col, ascii_pixel);
                 if (!set) continue;
                 const int dy0 = y + row * scale_num / scale_den;
@@ -2400,12 +2135,12 @@ static void pet_animation_task(void *arg) {
                                   ambient_visible_for_state() &&
                                   !s_recording_active && !s_response_active &&
                                   !s_alarm_visual_active && !s_setup_qrcode_visible;
-        const TickType_t frame_delay = s_recording_active
-                                           ? pdMS_TO_TICKS(RECORDING_RENDER_FRAME_MS)
-                                           : pdMS_TO_TICKS(remote_pack_active
-                                                               ? REMOTE_PET_RENDER_FRAME_MS
-                                                               : PET_ANIMATION_FRAME_MS);
-        if (ulTaskNotifyTake(pdTRUE, frame_delay) != 0) break;
+        const uint32_t frame_delay_ms = s_recording_active
+                                            ? RECORDING_RENDER_FRAME_MS
+                                            : (remote_pack_active
+                                                   ? REMOTE_PET_RENDER_FRAME_MS
+                                                   : PET_ANIMATION_FRAME_MS);
+        if (!round_display_service_animation_wait_ms(frame_delay_ms)) break;
         // Read the revision after the delay. Reading it at the end of a frame
         // can acknowledge a clock update that arrived while the previous DMA
         // transfer was running even though that second was never rendered.
@@ -2433,7 +2168,6 @@ static void pet_animation_task(void *arg) {
             // fresh idle draw removes the temporary instruction text as well.
             strlcpy(s_pet_state, "idle", sizeof(s_pet_state));
             s_idle_pet_visible = true;
-            s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
             draw_pet();
         } else if (!s_display_sleeping && s_pet_motion_enabled &&
                    (s_idle_pet_visible || !strcmp(s_pet_state, "thinking"))) {
@@ -2496,210 +2230,6 @@ static void pet_animation_task(void *arg) {
         // task and networking cannot be starved by catch-up frames.
         taskYIELD();
     }
-    if (s_pet_animation_stopped) xSemaphoreGive(s_pet_animation_stopped);
-    vTaskDelete(NULL);
-}
-
-static void button_task(void *arg) {
-    (void)arg;
-    // A panel tap and the profile-owned physical activation key share gesture
-    // classification. Their sources remain attached to each callback, so the
-    // common state machine never needs to know a board's GPIO or enclosure.
-    bool button_pressed = round_input_adapter_activate_key_pressed();
-    bool panel_pressed = false;
-    round_touch_adapter_read(&panel_pressed, NULL);
-    bool pressed = button_pressed || panel_pressed;
-    board_input_source_t gesture_source = round_input_adapter_resolve_source(
-        button_pressed, panel_pressed);
-    board_input_source_t pending_source = BOARD_INPUT_SOURCE_UNKNOWN;
-    int64_t pressed_at_us = pressed ? esp_timer_get_time() : 0;
-    int64_t released_at_us = 0;
-    bool long_sent = false;
-    bool short_pending = false;
-    bool native_double_sent = false;
-    uint32_t command_gesture_revision = s_command_gesture_revision;
-    /* GPIO identifiers and touch IRQ wiring are profile-private electrical
-     * facts. The shared gesture state machine needs only normalized idle/touch
-     * availability, so diagnostics must not pull those pins across the seam. */
-    ESP_LOGI(TAG, "interaction monitor ready: idle_pressed=%s touch=%s",
-             button_pressed ? "yes" : "no",
-             round_touch_adapter_ready() ? "yes" : "no");
-    while (true) {
-        bool now_button_pressed = round_input_adapter_activate_key_pressed();
-        bool now_panel_pressed = false;
-        uint8_t now_touch_gesture = 0;
-        round_touch_adapter_read(&now_panel_pressed, &now_touch_gesture);
-        bool now_pressed = now_button_pressed || now_panel_pressed;
-        int64_t now_us = esp_timer_get_time();
-        if (command_gesture_revision != s_command_gesture_revision) {
-            // Entering the thinking phase starts a completely fresh gesture
-            // window. In particular, discard the tap that originally started
-            // command recording; otherwise it can be mistaken for the first
-            // half of a later cancel double tap.
-            command_gesture_revision = s_command_gesture_revision;
-            pressed = now_pressed;
-            gesture_source = round_input_adapter_resolve_source(
-                now_button_pressed, now_panel_pressed);
-            pending_source = BOARD_INPUT_SOURCE_UNKNOWN;
-            pressed_at_us = now_pressed ? now_us : 0;
-            released_at_us = 0;
-            long_sent = false;
-            short_pending = false;
-            native_double_sent = false;
-            s_touch_gesture_consumed = false;
-            s_touch_gesture_released_at_us = 0;
-            ESP_LOGI(TAG, "fresh command-cancel gesture window armed");
-            vTaskDelay(pdMS_TO_TICKS(15));
-            continue;
-        }
-        if (s_touch_gesture_consumed) {
-            short_pending = false;
-            native_double_sent = true;
-            if (now_panel_pressed) {
-                s_touch_gesture_released_at_us = 0;
-            } else if (s_touch_gesture_released_at_us == 0) {
-                s_touch_gesture_released_at_us = now_us;
-            } else if (now_us - s_touch_gesture_released_at_us >= 250000) {
-                s_touch_gesture_consumed = false;
-                s_touch_gesture_released_at_us = 0;
-                native_double_sent = false;
-                ESP_LOGD(TAG, "touch gesture drain complete");
-            }
-        }
-        // A profile may expose a reliable controller-native double gesture.
-        // Accept it in standby as well as during command cancellation. A stale
-        // report is gated by a fresh pressed edge plus native_double_sent, so
-        // it cannot be replayed after the contact has drained.
-        if (now_panel_pressed &&
-            round_touch_adapter_is_native_double_tap(now_touch_gesture) &&
-            !native_double_sent) {
-            short_pending = false;
-            native_double_sent = true;
-            s_touch_gesture_consumed = true;
-            s_touch_gesture_released_at_us = 0;
-            ESP_LOGI(TAG, "button gesture: native touch double");
-            if (s_on_button) {
-                // A native double can arrive in the same scan as the first
-                // observable contact. Emit the physical edge here too so
-                // latency-sensitive surfaces never wait for a later debounce.
-                s_on_button(BOARD_INPUT_PRESSED, BOARD_INPUT_SOURCE_TOUCH,
-                            s_on_press_arg);
-                s_on_button(BOARD_BUTTON_DOUBLE, BOARD_INPUT_SOURCE_TOUCH,
-                            s_on_press_arg);
-            }
-        }
-        if (now_pressed != pressed) {
-            vTaskDelay(pdMS_TO_TICKS(25));
-            now_button_pressed = round_input_adapter_activate_key_pressed();
-            now_touch_gesture = 0;
-            round_touch_adapter_read(&now_panel_pressed, &now_touch_gesture);
-            now_pressed = now_button_pressed || now_panel_pressed;
-            if (now_pressed != pressed) {
-                // Use the time after the contact has passed debounce. The old
-                // pre-delay timestamp shortened every touch by about 25 ms,
-                // causing quick but valid taps to be discarded as <30 ms.
-                now_us = esp_timer_get_time();
-                pressed = now_pressed;
-                if (pressed) {
-                    pressed_at_us = now_us;
-                    long_sent = false;
-                    gesture_source = round_input_adapter_resolve_source(
-                        now_button_pressed, now_panel_pressed);
-                    if (!round_touch_adapter_is_native_double_tap(now_touch_gesture)) {
-                        native_double_sent = false;
-                    }
-                    ESP_LOGI(TAG, "button/touch down");
-                    if (!round_touch_adapter_is_native_double_tap(now_touch_gesture)) {
-                        emit_button_input(BOARD_INPUT_PRESSED, gesture_source);
-                    }
-                } else {
-                    uint32_t held_ms = pressed_at_us > 0
-                                           ? (uint32_t)((now_us - pressed_at_us) / 1000)
-                                           : 0;
-                    ESP_LOGI(TAG, "button/touch up: held=%lu ms", (unsigned long)held_ms);
-                    uint32_t minimum_tap_ms =
-                        (gesture_source == BOARD_INPUT_SOURCE_TOUCH &&
-                         s_command_cancel_enabled) ? 15 : 30;
-                    if (!long_sent && held_ms >= minimum_tap_ms) {
-                        int64_t since_previous_us = now_us - released_at_us;
-                        // Keep completion timing identical to Bread Compact:
-                        // a deliberate double tap is a 500 ms gesture and a
-                        // single tap becomes available immediately after that
-                        // window. A profile-native double still takes the
-                        // faster path above; the 100 ms lower bound below
-                        // continues to reject duplicate raw contacts.
-                        int64_t double_window_us = INPUT_DOUBLE_WINDOW_US;
-                        if (!native_double_sent && short_pending &&
-                            pending_source == gesture_source &&
-                            ((gesture_source != BOARD_INPUT_SOURCE_TOUCH &&
-                              since_previous_us <= double_window_us) ||
-                             (gesture_source == BOARD_INPUT_SOURCE_TOUCH &&
-                              since_previous_us >= 100000 &&
-                              since_previous_us <= double_window_us))) {
-                            short_pending = false;
-                            native_double_sent = true;
-                            if (gesture_source == BOARD_INPUT_SOURCE_TOUCH) {
-                                s_touch_gesture_consumed = true;
-                                s_touch_gesture_released_at_us = 0;
-                            }
-                            ESP_LOGI(TAG, "button gesture: double (%s timing gap=%lld ms)",
-                                     gesture_source == BOARD_INPUT_SOURCE_TOUCH ? "touch" : "button",
-                                     (long long)(since_previous_us / 1000));
-                            emit_button_input(BOARD_BUTTON_DOUBLE, gesture_source);
-                        } else if (gesture_source == BOARD_INPUT_SOURCE_TOUCH &&
-                                   s_command_cancel_enabled &&
-                                   short_pending && since_previous_us < 100000) {
-                            // Some controllers report a second contact about
-                            // 100 ms after one physical tap. Keep the original
-                            // release timestamp so that echo is neither a
-                            // cancel nor a new first tap in the double window.
-                            ESP_LOGD(TAG, "ignored touch duplicate contact: gap=%lld ms",
-                                     (long long)(since_previous_us / 1000));
-                        } else if (!native_double_sent && !s_touch_gesture_consumed) {
-                            // A controller-native double is emitted above.
-                            // Multiple raw contacts here still belong to one
-                            // tap, so keep only one pending short event instead
-                            // of promoting an echo to double.
-                            short_pending = true;
-                            pending_source = gesture_source;
-                            released_at_us = now_us;
-                        }
-                    }
-                }
-            }
-        }
-        if (pressed && !long_sent && pressed_at_us > 0 &&
-            now_us - pressed_at_us >= INPUT_LONG_HOLD_US) {
-            long_sent = true;
-            short_pending = false;
-            ESP_LOGI(TAG, "button gesture: long");
-            emit_button_input(BOARD_BUTTON_LONG, gesture_source);
-        }
-        int64_t pending_window_us = INPUT_DOUBLE_WINDOW_US;
-        if (!pressed && short_pending && !s_touch_gesture_consumed &&
-            now_us - released_at_us > pending_window_us) {
-            short_pending = false;
-            ESP_LOGI(TAG, "button gesture: short");
-            emit_button_input(BOARD_BUTTON_SHORT, pending_source);
-            pending_source = BOARD_INPUT_SOURCE_UNKNOWN;
-        }
-        /* The lifecycle owner wakes the scanner through its task notification;
-         * do not use a volatile flag as a cross-task stop protocol. */
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(15)) != 0) break;
-    }
-
-    s_on_button = NULL;
-    s_on_press_arg = NULL;
-    if (s_button_task_stopped) xSemaphoreGive(s_button_task_stopped);
-    vTaskDelete(NULL);
-}
-static unsigned s_display_brightness = 100;
-
-/* Applies a 0..100 brightness level through the selected display adapter.
- * Callers hold s_lcd_mutex, or run during board_port_init before concurrent
- * display work exists. */
-static esp_err_t apply_display_brightness(unsigned percent) {
-    return round_display_adapter_apply_brightness(percent);
 }
 
 /* The shared renderer may need to replace an ambient frame with a foreground
@@ -2707,7 +2237,7 @@ static esp_err_t apply_display_brightness(unsigned percent) {
  * adapter owns the actual panel/backlight or controller-register ordering. */
 static void wake_round_display_for_draw_locked(void) {
     if (!s_display_sleeping) return;
-    esp_err_t err = round_display_adapter_wake_from_display_off(s_display_brightness);
+    esp_err_t err = round_display_service_wake_from_display_off();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "DISPLAY_OFF wake transaction failed: %s", esp_err_to_name(err));
         return;
@@ -2725,17 +2255,13 @@ static void wake_round_display_for_draw_locked(void) {
 }
 
 esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
-    s_on_button = on_button;
-    s_on_press_arg = arg;
-    round_input_adapter_begin_boot_window();
+    if (round_audio_service_sample_rate() == 0) return ESP_ERR_INVALID_STATE;
+    if (s_output_volume == 0) s_output_volume = round_audio_service_default_output_volume();
     s_background_tasks_lock = xSemaphoreCreateMutex();
     if (!s_background_tasks_lock) return ESP_ERR_NO_MEM;
     s_lcd_mutex = xSemaphoreCreateRecursiveMutex();
     if (!s_lcd_mutex) return ESP_ERR_NO_MEM;
-    s_audio_mutex = xSemaphoreCreateMutex();
-    if (!s_audio_mutex) return ESP_ERR_NO_MEM;
-    esp_err_t display_init_err = round_display_adapter_init_hardware(
-        LCD_FRAMEBUFFER_BYTES, s_display_brightness);
+    esp_err_t display_init_err = round_display_service_initialize(100);
     if (display_init_err != ESP_OK) {
         ESP_LOGE(TAG, "round display adapter init failed: %s",
                  esp_err_to_name(display_init_err));
@@ -2743,14 +2269,14 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     }
 
     for (size_t i = 0; i < 2; ++i) {
-        s_framebuffers[i] = round_display_adapter_allocate_framebuffer(
+        s_framebuffers[i] = round_display_service_allocate_framebuffer(
             LCD_FRAMEBUFFER_BYTES);
         if (!s_framebuffers[i]) {
             ESP_LOGW(TAG, "DMA PSRAM framebuffer %u unavailable; using stripe renderer",
                      (unsigned)i);
             for (size_t j = 0; j < 2; ++j) {
                 if (s_framebuffers[j]) {
-                    round_display_adapter_free_render_buffer(s_framebuffers[j]);
+                    round_display_service_free_render_buffer(s_framebuffers[j]);
                 }
                 s_framebuffers[j] = NULL;
             }
@@ -2764,7 +2290,7 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     // The two curved text regions are composed serially.  The larger AMOLED
     // header cannot be a static DMA object without starving internal memory,
     // while panel IO is already configured to bounce PSRAM sources safely.
-    s_ambient_overlay = round_display_adapter_allocate_ambient_overlay(
+    s_ambient_overlay = round_display_service_allocate_ambient_overlay(
         AMBIENT_OVERLAY_BYTES);
     if (!s_ambient_overlay) {
         ESP_LOGE(TAG, "cannot allocate %u-byte ambient overlay", (unsigned)AMBIENT_OVERLAY_BYTES);
@@ -2772,7 +2298,7 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     }
     ESP_LOGI(TAG, "ambient overlay ready: %u bytes in %s",
              (unsigned)AMBIENT_OVERLAY_BYTES,
-              round_display_adapter_ambient_overlay_memory_name()
+              round_display_service_ambient_overlay_memory_name()
     );
     // Do not submit any full-screen transfer until networking has completed
     // its fragile association phase.  On this S3, simultaneous LCD GDMA and
@@ -2780,9 +2306,11 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     // board_port_set_command_display_lock(false) starts the pet task after
     // the startup surface is released.
 
-    // Initialize the shared I2C bus early so both touch interaction and later
-    // microphone capture can use it without reconfiguring GPIO11/GPIO12.
-    esp_err_t input_i2c_err = audio_init();
+    // Peripheral Service owns the semantic preflight for touch/PMIC/IMU before
+    // Input starts. Its private Audio lifecycle bridge creates the shared I2C
+    // bus without leaking that electrical dependency into the renderer.
+    esp_err_t input_i2c_err = round_peripheral_service_prepare(
+        s_output_volume, 5000);
     if (input_i2c_err != ESP_OK) {
         ESP_LOGW(TAG, "touch/audio init deferred: %s", esp_err_to_name(input_i2c_err));
     }
@@ -2805,25 +2333,12 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
         }
     }
 
-    ESP_RETURN_ON_ERROR(round_input_adapter_init_activate_key(), TAG,
-                        "round activation key init failed");
-    s_button_task_stopped = xSemaphoreCreateBinary();
-    if (!s_button_task_stopped) return ESP_ERR_NO_MEM;
-    s_button_task_stop_requested = false;
-    BaseType_t button_task_created = round_input_adapter_start_scan_task(
-        button_task, &s_button_task);
-    if (button_task_created != pdPASS) {
-        ESP_LOGE(TAG, "cannot start button task");
-        vSemaphoreDelete(s_button_task_stopped);
-        s_button_task_stopped = NULL;
-        return ESP_ERR_NO_MEM;
-    }
-    ESP_LOGI(TAG, "%s round display/input adapter ready", ROUND_PROFILE_NAME);
+    ESP_RETURN_ON_ERROR(round_input_service_start(on_button, arg), TAG,
+                        "round input service init failed");
+    ESP_RETURN_ON_ERROR(round_display_service_run_animation_deadline_test(), TAG,
+                        "animation stop deadline test");
+    ESP_LOGI(TAG, "%s round display/input adapter ready", round_audio_service_name());
     return ESP_OK;
-}
-
-bool board_port_wait_for_boot_network_toggle(uint32_t window_ms) {
-    return round_input_adapter_wait_for_boot_network_toggle(window_ms);
 }
 
 bool board_port_load_transport_selection(bool *out_cellular) {
@@ -2886,7 +2401,7 @@ esp_err_t board_port_cellular_http_stream_request(
 }
 
 void board_port_show_startup_screen(void) {
-    if (!round_display_adapter_ready() || !s_lcd_mutex) return;
+    if (!round_display_service_ready() || !s_lcd_mutex) return;
     if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
     if (s_alarm_visual_active) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -2898,7 +2413,7 @@ void board_port_show_startup_screen(void) {
     s_front_frame_valid = false;
     s_recording_frame_baseline = false;
     s_response_active = false;
-    if (round_display_adapter_has_startup_art()) {
+    if (round_display_service_has_startup_art()) {
         // A profile-specific product mark is allowed only on its boot surface.
         // The profile adapter owns the artwork; the shared scene owns its
         // lifetime and replaces it with the normal selected-pet surface on
@@ -2906,7 +2421,7 @@ void board_port_show_startup_screen(void) {
         uint16_t *frame = s_framebuffers[s_next_framebuffer];
         if (frame) s_render_target = frame;
         fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, state_color("idle"));
-        round_display_adapter_compose_startup_art(frame, LCD_WIDTH, LCD_HEIGHT);
+        round_display_service_compose_startup_art(frame, LCD_WIDTH, LCD_HEIGHT);
         draw_startup_brand_arc(state_color("idle"));
         s_render_target = NULL;
         if (frame) {
@@ -2948,18 +2463,11 @@ esp_err_t board_port_adjust_output_volume(int delta_percent, unsigned *out_perce
 
 esp_err_t board_port_set_output_volume(unsigned percent) {
     if (percent > 100) return ESP_ERR_INVALID_ARG;
-    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    esp_err_t err = audio_init();
-    if (err == ESP_OK) {
-        err = round_audio_adapter_set_output_volume(percent);
-    }
+    esp_err_t err = round_audio_service_apply_output_volume(s_output_volume, percent, 1500);
     if (err == ESP_OK) {
         s_output_volume = percent;
         ESP_LOGI(TAG, "speaker output volume: %u%%", percent);
     }
-    xSemaphoreGive(s_audio_mutex);
     return err;
 }
 
@@ -3005,10 +2513,8 @@ void board_port_set_pet_state(const char *state) {
             xSemaphoreGiveRecursive(s_lcd_mutex);
         }
         s_idle_pet_visible = true;
-        s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
     } else {
         s_idle_pet_visible = false;
-        s_idle_pet_sleep_expires_us = 0;
     }
     if (!s_recording_active) draw_pet();
 }
@@ -3061,19 +2567,9 @@ void board_port_set_command_display_lock(bool locked) {
          * a UI thread which sampled `admission_closed=false` could block
          * behind rollback and create a new task immediately after rollback
          * had joined the old generation. */
-        if (!s_background_tasks_admission_closed && !s_pet_animation_started) {
-            s_pet_animation_stopped = xSemaphoreCreateBinary();
-            BaseType_t created = s_pet_animation_stopped
-                ? round_display_adapter_start_pet_animation_task(
-                    pet_animation_task, &s_pet_animation_task)
-                : pdFAIL;
-            if (created == pdPASS) {
-                s_pet_animation_started = true;
-                s_pet_animation_stop_requested = false;
-            } else {
-                if (s_pet_animation_stopped) vSemaphoreDelete(s_pet_animation_stopped);
-                s_pet_animation_stopped = NULL;
-                s_pet_animation_task = NULL;
+        if (!s_background_tasks_admission_closed &&
+            !round_display_service_animation_running()) {
+            if (round_display_service_start_animation(pet_animation_task, NULL) != ESP_OK) {
                 ESP_LOGE(TAG, "cannot start deferred pet animation task");
             }
         }
@@ -3090,16 +2586,12 @@ void board_port_set_command_display_lock(bool locked) {
             xSemaphoreGiveRecursive(s_lcd_mutex);
         }
         s_idle_pet_visible = true;
-        s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
         draw_pet();
     }
 }
 
 void board_port_set_command_cancel_enabled(bool enabled) {
-    if (enabled && !s_command_cancel_enabled) {
-        ++s_command_gesture_revision;
-    }
-    s_command_cancel_enabled = enabled;
+    round_input_service_set_command_cancel_enabled(enabled);
 }
 
 void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
@@ -3157,7 +2649,7 @@ static esp_err_t set_pet_asset_internal(uint8_t **frames, bool consume_sources,
     bool has_visible_pixels = false;
     for (size_t i = 0; i < frame_count; ++i) {
         if (!frames[i]) goto no_mem;
-        copies[i] = round_display_adapter_allocate_remote_pet_frame(bytes);
+        copies[i] = round_display_service_allocate_remote_pet_frame(bytes);
         if (!copies[i]) goto no_mem;
     }
     for (size_t i = 0; i < frame_count; ++i) {
@@ -3175,13 +2667,13 @@ static esp_err_t set_pet_asset_internal(uint8_t **frames, bool consume_sources,
     }
     if (consume_sources) {
         for (size_t i = 0; i < frame_count; ++i) {
-            round_display_adapter_release_consumed_pet_source(frames[i]);
+            round_display_service_release_consumed_pet_source(frames[i]);
             frames[i] = NULL;
         }
     }
     if (s_lcd_mutex) xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     for (size_t i = 0; i < REMOTE_PET_MAX_FRAMES; ++i) {
-        round_display_adapter_free_remote_pet_frame(s_remote_pet_frames[i]);
+        round_display_service_free_remote_pet_frame(s_remote_pet_frames[i]);
         s_remote_pet_frames[i] = copies[i];
     }
     s_remote_pet_frame_count = frame_count;
@@ -3203,7 +2695,7 @@ static esp_err_t set_pet_asset_internal(uint8_t **frames, bool consume_sources,
     return ESP_OK;
 no_mem:
     for (size_t i = 0; i < REMOTE_PET_MAX_FRAMES; ++i) {
-        round_display_adapter_free_remote_pet_frame(copies[i]);
+        round_display_service_free_remote_pet_frame(copies[i]);
     }
     return ESP_ERR_NO_MEM;
 }
@@ -3230,7 +2722,6 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
     if (active) s_ready_prompt_expires_us = 0;
     if (active) {
         s_idle_pet_visible = false;
-        s_idle_pet_sleep_expires_us = 0;
     }
     if (active) {
         // Bread Compact makes a fresh recorder the foreground owner. Clear
@@ -3342,7 +2833,6 @@ void board_port_show_text(const char *title, const char *text) {
     s_message_active = true;
     wake_round_display_for_draw_locked();
     s_idle_pet_visible = false;
-    s_idle_pet_sleep_expires_us = 0;
     const uint16_t bg = state_color(s_pet_state);
     const uint16_t header = rgb565(14, 31, 47);
     const uint16_t ink = rgb565(248, 252, 255);
@@ -3423,7 +2913,6 @@ void board_port_show_upload_progress(size_t completed_bytes, size_t total_bytes,
     // ownership bit set prevents a later completion from restoring standby.
     s_ready_prompt_expires_us = 0;
     s_idle_pet_visible = false;
-    s_idle_pet_sleep_expires_us = 0;
     s_message_active = false;
     s_response_active = false;
     s_response_image_active = false;
@@ -3497,7 +2986,7 @@ void board_port_show_upload_progress(size_t completed_bytes, size_t total_bytes,
 }
 
 static void show_qrcode_matrix(const uint8_t *modules, size_t size, const char *ssid) {
-    if (!round_display_adapter_ready() || !modules || size == 0) return;
+    if (!round_display_service_ready() || !modules || size == 0) return;
     const int quiet_zone = 4;
     const round_qrcode_layout_t *layout = ROUND_QRCODE_LAYOUT;
     // A QR code is necessarily square, but its corners must remain inside the
@@ -3519,7 +3008,6 @@ static void show_qrcode_matrix(const uint8_t *modules, size_t size, const char *
 
     s_ready_prompt_expires_us = 0;
     s_idle_pet_visible = false;
-    s_idle_pet_sleep_expires_us = 0;
     s_message_active = false;
     // Setup replaces every prior foreground page.  Stop a deferred response
     // turn before publishing the QR guard; otherwise an already-due response
@@ -3740,30 +3228,25 @@ esp_err_t board_port_set_display_brightness(unsigned percent) {
     if (percent > 100) return ESP_ERR_INVALID_ARG;
     if (s_lcd_mutex &&
         xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) == pdTRUE) {
-        const unsigned previous = s_display_brightness;
-        // A sleeping panel keeps the level pending; every wake transaction
-        // re-applies it together with DISP ON.  Level 0 is a valid
-        // backlight-off-while-running state, distinct from DISPLAY_OFF.
-        esp_err_t err = ESP_OK;
-        if (!s_display_sleeping) err = apply_display_brightness(percent);
-        if (err != ESP_OK) {
-            s_display_brightness = previous;
-            xSemaphoreGiveRecursive(s_lcd_mutex);
-            return err;
-        }
-        s_display_brightness = percent;
+        /* Display Service owns both the pending-off level and the selected
+         * profile's PWM/DCS write.  A zero level remains a valid illuminated
+         * runtime state distinct from DISPLAY_OFF. */
+        esp_err_t err = round_display_service_set_brightness(percent);
         xSemaphoreGiveRecursive(s_lcd_mutex);
+        return err;
     } else {
-        s_display_brightness = percent;
+        /* Initialization and teardown callers can arrive before the renderer
+         * creates its mutex.  Preserve the exact same service transaction so
+         * profile state cannot diverge from a later wake. */
+        return round_display_service_set_brightness(percent);
     }
-    return ESP_OK;
 }
 
 // Board-owned DISPLAY_OFF transaction. Network, alarm, and wake-word services
 // deliberately stay alive; the application controls idle policy while this HAL
 // owns only the physical panel/backlight state and matching wake bookkeeping.
 bool board_port_enter_display_off(void) {
-    if (!s_lcd_mutex || !round_display_adapter_ready()) return false;
+    if (!s_lcd_mutex || !round_display_service_ready()) return false;
     if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
     // A Power Service deadline can become due just as a foreground transition
     // is being published. The display adapter is the final arbiter of its
@@ -3783,8 +3266,7 @@ bool board_port_enter_display_off(void) {
         return false;
     }
     s_idle_pet_visible = false;
-    s_idle_pet_sleep_expires_us = 0;
-    esp_err_t err = round_display_adapter_enter_display_off();
+    esp_err_t err = round_display_service_enter_display_off();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "DISPLAY_OFF entry transaction failed: %s", esp_err_to_name(err));
         xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -3812,7 +3294,7 @@ bool board_port_display_is_off(void) {
 }
 
 bool board_port_wake_from_idle(void) {
-    if (!s_lcd_mutex || !round_display_adapter_ready()) return false;
+    if (!s_lcd_mutex || !round_display_service_ready()) return false;
     if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
     if (!s_display_sleeping) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -3825,10 +3307,11 @@ bool board_port_wake_from_idle(void) {
     }
     // The first physical contact after the 30-minute ambient timeout is a
     // screen wake, not an implicit voice command. Re-publish the same ready
-    // pet surface and arm its normal hint timeout, matching the documented
-    // board-port contract and the compact board's "first press returns" flow.
+    // pet surface and arm its normal hint timeout. The shared UI / Power
+    // Service remains the sole owner of the DISPLAY_OFF timeout, matching the
+    // documented board-port contract and the compact board's "first press
+    // returns" flow.
     s_idle_pet_visible = true;
-    s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
     s_ready_prompt_expires_us = esp_timer_get_time() + READY_PROMPT_TIMEOUT_US;
     draw_pet();
     xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -3842,86 +3325,26 @@ esp_err_t board_port_audio_stream_start(void) {
     // and foreground network/UI work can delay its mutex release. Allow a
     // bounded settling window so a valid double tap does not intermittently
     // fail before capture has even started.
-    for (unsigned i = 0;
-         s_wake_word_task && !s_wake_word_pause_acknowledged && i < 40; ++i) {
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
-        ESP_LOGE(TAG, "meeting microphone mutex timeout");
-        board_port_pause_wake_word(false);
-        return ESP_ERR_TIMEOUT;
-    }
-    esp_err_t err = audio_init();
-    if (err != ESP_OK) {
-        xSemaphoreGive(s_audio_mutex);
-        board_port_pause_wake_word(false);
-    } else {
-        // Restore the non-clipping analogue gain used by standby recognition.
-        // Software suppression is deliberately bypassed here.
-        err = round_audio_adapter_restore_input_gain();
-        if (err == ESP_OK) recording_pcm_reset("meeting");
-        if (err != ESP_OK) {
-            xSemaphoreGive(s_audio_mutex);
-            board_port_pause_wake_word(false);
-        }
-    }
-    if (err == ESP_OK) s_audio_stream_owned = true;
+    (void)round_wake_service_wait_for_pause_ack(200);
+    esp_err_t err = round_audio_service_stream_begin(s_output_volume, 5000, "meeting");
+    if (err != ESP_OK) board_port_pause_wake_word(false);
     return err;
 }
 
 esp_err_t board_port_audio_stream_read(int16_t *mono, size_t sample_capacity,
                                        size_t *samples_read, uint16_t *level) {
-    if (samples_read) *samples_read = 0;
-    if (level) *level = 0;
-    if (!mono || !samples_read || sample_capacity == 0) return ESP_ERR_INVALID_ARG;
-    ESP_RETURN_ON_ERROR(audio_init(), TAG, "microphone init failed");
-    // Keep an adapter-private wire block and hand the shared meeting path only
-    // logical mono frames.  This preserves the reference 512-sample cadence
-    // even when a future circular board uses a different I2S slot layout.
-    int16_t wire[512];
-    int16_t captured_mono[256];
-    size_t total_frames = 0;
-    int32_t peak = 0;
-    while (total_frames < sample_capacity) {
-        size_t received = 0;
-        esp_err_t err = round_audio_adapter_read_pcm(
-            wire, sizeof(wire), &received, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) return err;
-        size_t frames = round_audio_adapter_extract_capture_mono(
-            wire, received, captured_mono,
-            sizeof(captured_mono) / sizeof(captured_mono[0]));
-        if (frames == 0) continue;
-        if (frames > sample_capacity - total_frames) {
-            frames = sample_capacity - total_frames;
-        }
-        int32_t chunk_peak = recording_pcm_process(captured_mono, frames,
-                                                    mono + total_frames);
-        if (chunk_peak > peak) peak = chunk_peak;
-        total_frames += frames;
-    }
-    uint32_t scaled = peak <= 180 ? 0 : (uint32_t)(peak - 180) * 1000u / (12000u - 180u);
-    if (scaled > 1000) scaled = 1000;
-    if (level) *level = (uint16_t)scaled;
-    // The app UI forwards this exact PCM block to the common recording surface
-    // after it has accepted the read. Keep this transport helper data-only so
-    // a meeting block contributes one waveform bucket rather than two.
-    *samples_read = total_frames;
-    return ESP_OK;
+    return round_audio_service_stream_read(mono, sample_capacity, samples_read, level);
 }
 
 void board_port_audio_stream_stop(void) {
     // Keep I2S enabled for the normal six-second command path. The next stream
     // read drains any DMA frames accumulated while a meeting was paused.
-    if (s_audio_stream_owned && s_audio_mutex) {
-        s_audio_stream_owned = false;
-        xSemaphoreGive(s_audio_mutex);
-    }
+    round_audio_service_stream_end();
     board_port_pause_wake_word(false);
 }
 
 void board_port_pause_wake_word(bool paused) {
-    s_wake_word_paused = paused;
-    if (!paused) s_wake_word_pause_acknowledged = false;
+    round_wake_service_set_paused(paused);
 }
 
 static bool response_break(uint32_t cp) {
@@ -4200,7 +3623,6 @@ void board_port_show_response(const char *title, const char *text) {
     // thinking screen and every streamed response message.
     strlcpy(s_pet_state, "speaking", sizeof(s_pet_state));
     s_idle_pet_visible = false;
-    s_idle_pet_sleep_expires_us = 0;
     wake_round_display_for_draw_locked();
     // EchoEar has manual response keys.  Keep the response timer cleared so a
     // long answer cannot turn beneath the reader; Bread Compact has the same
@@ -4451,431 +3873,28 @@ bool board_port_restore_response_page(unsigned page) {
     return true;
 }
 
-static void wake_callback_dispatch_task(void *arg) {
-    (void)arg;
-    TaskHandle_t self = xTaskGetCurrentTaskHandle();
-    /* The recognizer publishes this task's handle only after creation.  Do
-     * not let a very fast dispatcher clear lifecycle state in that small
-     * creation/registration window. */
-    while (s_wake_callback_task_starting) vTaskDelay(1);
-    // The recognizer has observed the phrase and will tear itself down. Wait
-    // for its own cleanup rather than deleting it from another task; MultiNet
-    // owns several model allocations that must be released on its normal exit.
-    for (unsigned i = 0; i < 240 && s_wake_word_task; ++i) {
-        vTaskDelay(pdMS_TO_TICKS(25));
-    }
-    board_port_wake_word_cb_t callback = NULL;
-    void *callback_arg = NULL;
-    bool recognizer_released = false;
-    bool dispatch_cancelled = false;
-    taskENTER_CRITICAL(&s_wake_word_lock);
-    dispatch_cancelled = s_wake_callback_cancel_requested;
-    if (!s_wake_word_task && s_wake_callback_pending &&
-        !dispatch_cancelled) {
-        callback = s_on_wake_word;
-        callback_arg = s_on_wake_word_arg;
-        recognizer_released = true;
-    }
-    s_wake_callback_pending = false;
-    taskEXIT_CRITICAL(&s_wake_word_lock);
-    if (callback) {
-        ESP_LOGI(TAG, "offline wake recognizer released; dispatching foreground callback");
-        callback(callback_arg);
-    } else if (!recognizer_released && !dispatch_cancelled) {
-        // Do not silently lose a confirmed wake phrase if a future model
-        // cleanup regression holds the task handle beyond this bounded wait.
-        // The next normal supervisor pass will rebuild the recognizer.
-        ESP_LOGW(TAG, "offline wake callback skipped: recognizer cleanup timed out");
-    }
-    /* Keep the dispatcher published until the callback has returned.  The
-     * callback normally only admits the foreground worker, but clearing this
-     * handle before it runs allowed a concurrent stop/start caller to regard
-     * the generation as fully drained while it could still begin recording. */
-    taskENTER_CRITICAL(&s_wake_word_lock);
-    if (s_wake_callback_task == self) s_wake_callback_task = NULL;
-    taskEXIT_CRITICAL(&s_wake_word_lock);
-    vTaskDeleteWithCaps(NULL);
-}
-
-static void wake_word_task(void *arg) {
-    (void)arg;
-    /* start_wake_word publishes the created handle before this task may own
-     * and later clear it. This closes the early model-failure race. */
-    while (s_wake_word_task_starting) vTaskDelay(1);
-    s_wake_word_ready = false;
-    srmodel_list_t *models = esp_srmodel_init("model");
-    if (!models) {
-        ESP_LOGE(TAG, "offline wake disabled: cannot load ESP-SR model partition");
-        goto finish;
-    }
-
-    char *model_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_CHINESE);
-    if (!model_name) {
-        ESP_LOGE(TAG, "offline wake disabled: Chinese MultiNet model not found");
-        esp_srmodel_deinit(models);
-        goto finish;
-    }
-    esp_mn_iface_t *multinet = esp_mn_handle_from_name(model_name);
-    if (!multinet) {
-        ESP_LOGE(TAG, "offline wake disabled: unsupported model %s", model_name);
-        esp_srmodel_deinit(models);
-        goto finish;
-    }
-    model_iface_data_t *model_data = multinet->create(model_name, 4000);
-    if (!model_data) {
-        ESP_LOGE(TAG, "offline wake disabled: cannot create model %s", model_name);
-        esp_srmodel_deinit(models);
-        goto finish;
-    }
-    esp_err_t command_err = esp_mn_commands_alloc(multinet, model_data);
-    for (size_t i = 0;
-         command_err == ESP_OK && i < sizeof(s_wake_word_cn_phonetics) / sizeof(s_wake_word_cn_phonetics[0]);
-         ++i) {
-        command_err = esp_mn_commands_add(WAKE_WORD_COMMAND_ID,
-                                          s_wake_word_cn_phonetics[i]);
-    }
-    esp_mn_error_t *command_errors = command_err == ESP_OK ? esp_mn_commands_update() : NULL;
-    if (command_err != ESP_OK || command_errors != NULL) {
-        ESP_LOGE(TAG, "offline wake disabled: word '%s' is not accepted (err=%s, rejected=%d)",
-                 WAKE_WORD_CN_LABEL, esp_err_to_name(command_err), command_errors ? command_errors->num : 0);
-        multinet->destroy(model_data);
-        esp_srmodel_deinit(models);
-        goto finish;
-    }
-    if (multinet->set_det_threshold) {
-        int threshold_err = multinet->set_det_threshold(model_data, WAKE_WORD_DETECTION_THRESHOLD);
-        if (threshold_err != 0) {
-            ESP_LOGW(TAG, "offline wake threshold %.2f was not applied: %d",
-                     (double)WAKE_WORD_DETECTION_THRESHOLD, threshold_err);
-        }
-    }
-    const int chunk_samples = multinet->get_samp_chunksize(model_data);
-    const int sample_rate = multinet->get_samp_rate(model_data);
-    if (chunk_samples <= 0 || sample_rate != AUDIO_RATE) {
-        ESP_LOGE(TAG, "offline wake disabled: model audio format is %d Hz / %d samples", sample_rate, chunk_samples);
-        multinet->destroy(model_data);
-        esp_srmodel_deinit(models);
-        goto finish;
-    }
-
-    int16_t *mono = round_audio_adapter_allocate_wake_capture_buffer(
-        (size_t)chunk_samples * sizeof(*mono));
-    int16_t *wire = round_audio_adapter_allocate_wake_capture_buffer(
-        round_audio_adapter_capture_wire_bytes((size_t)chunk_samples));
-    if (!mono || !wire) {
-        ESP_LOGE(TAG, "offline wake disabled: no memory for %d-sample audio buffers", chunk_samples);
-        round_audio_adapter_free_wake_capture_buffer(mono);
-        round_audio_adapter_free_wake_capture_buffer(wire);
-        multinet->destroy(model_data);
-        esp_srmodel_deinit(models);
-        goto finish;
-    }
-
-    s_wake_word_ready = true;
-    ESP_LOGI(TAG,
-             "offline wake listening: model=%s phrase='%s' variants=%u threshold=%.2f rate=%d chunk=%d",
-             model_name, WAKE_WORD_CN_LABEL,
-             (unsigned)(sizeof(s_wake_word_cn_phonetics) / sizeof(s_wake_word_cn_phonetics[0])),
-             (double)WAKE_WORD_DETECTION_THRESHOLD, sample_rate, chunk_samples);
-    multinet->print_active_speech_commands(model_data);
-    bool model_was_paused = false;
-    int64_t last_detection_us = 0;
-    int64_t last_audio_diagnostic_us = 0;
-    int16_t last_valid_wake_sample = 0;
-    uint32_t wake_gain_q8 = WAKE_WORD_MAX_SOFTWARE_GAIN_Q8;
-    while (true) {
-        if (s_wake_word_stop_requested) break;
-        if (s_wake_word_paused) {
-            if (!model_was_paused) {
-                multinet->clean(model_data);
-                model_was_paused = true;
-            }
-            s_wake_word_pause_acknowledged = true;
-            vTaskDelay(pdMS_TO_TICKS(20));
-            continue;
-        }
-        model_was_paused = false;
-        s_wake_word_pause_acknowledged = false;
-        if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
-            continue;
-        }
-        size_t received = 0;
-        esp_err_t read_err = round_audio_adapter_read_pcm(
-            wire, round_audio_adapter_capture_wire_bytes((size_t)chunk_samples),
-            &received, pdMS_TO_TICKS(250));
-        xSemaphoreGive(s_audio_mutex);
-        if (read_err != ESP_OK) {
-            if (read_err != ESP_ERR_TIMEOUT) {
-                ESP_LOGW(TAG, "offline wake microphone read failed: %s", esp_err_to_name(read_err));
-            }
-            continue;
-        }
-
-        size_t frames = round_audio_adapter_extract_capture_mono(
-            wire, received, mono, (size_t)chunk_samples);
-        if (frames < (size_t)chunk_samples) {
-            memset(mono + frames, 0,
-                   ((size_t)chunk_samples - frames) * sizeof(*mono));
-        }
-        // Keep wake-word conditioning separate from command/meeting recording:
-        // MultiNet expects a quiet codec-scale signal, while uploads use the
-        // stronger DC blocker and AGC below.  The wire-format/slot decision has
-        // already happened inside the selected Audio HAL.
-        int64_t sum = 0;
-        uint32_t valid = 0;
-        uint16_t bad = 0;
-        int32_t input_peak = 0;
-        for (int i = 0; i < chunk_samples; ++i) {
-            const int32_t sample = mono[i];
-            const int32_t magnitude = sample_magnitude(sample);
-            if (magnitude > input_peak) input_peak = magnitude;
-            if (magnitude < RECORDING_INVALID_SAMPLE_ABS) {
-                sum += sample;
-                ++valid;
-            } else {
-                ++bad;
-            }
-        }
-        const int32_t dc = valid ? (int32_t)(sum / valid) : 0;
-        uint64_t energy = 0;
-        for (int i = 0; i < chunk_samples; ++i) {
-            const int32_t sample = mono[i];
-            if (sample_magnitude(sample) < RECORDING_INVALID_SAMPLE_ABS) {
-                const int32_t centered = sample - dc;
-                energy += (uint64_t)((int64_t)centered * centered);
-            }
-        }
-        const uint32_t mean_square =
-            (uint32_t)(energy / (uint32_t)chunk_samples);
-        const uint32_t rms = (uint32_t)sqrtf((float)mean_square);
-        if (rms >= WAKE_WORD_GAIN_UPDATE_FLOOR) {
-            uint32_t target_q8 = (WAKE_WORD_TARGET_RMS * 256u) / rms;
-            if (target_q8 < WAKE_WORD_MIN_SOFTWARE_GAIN_Q8) {
-                target_q8 = WAKE_WORD_MIN_SOFTWARE_GAIN_Q8;
-            }
-            if (target_q8 > WAKE_WORD_MAX_SOFTWARE_GAIN_Q8) {
-                target_q8 = WAKE_WORD_MAX_SOFTWARE_GAIN_Q8;
-            }
-            unsigned shift = target_q8 < wake_gain_q8
-                                 ? WAKE_WORD_GAIN_ATTACK_SHIFT
-                                 : WAKE_WORD_GAIN_RELEASE_SHIFT;
-            wake_gain_q8 = (uint32_t)((int32_t)wake_gain_q8 +
-                                      ((int32_t)target_q8 - (int32_t)wake_gain_q8) /
-                                          (1 << shift));
-        }
-        for (int i = 0; i < chunk_samples; ++i) {
-            const int32_t input = mono[i];
-            int32_t sample;
-            if (sample_magnitude(input) < RECORDING_INVALID_SAMPLE_ABS) {
-                sample = (int32_t)(((int64_t)(input - dc) *
-                                    wake_gain_q8) >> 8);
-            } else {
-                sample = last_valid_wake_sample;
-            }
-            if (sample > INT16_MAX) sample = INT16_MAX;
-            if (sample < INT16_MIN) sample = INT16_MIN;
-            last_valid_wake_sample = (int16_t)sample;
-            mono[i] = (int16_t)sample;
-        }
-        int64_t diagnostic_now_us = esp_timer_get_time();
-        if (diagnostic_now_us - last_audio_diagnostic_us >=
-            WAKE_WORD_DIAGNOSTIC_INTERVAL_US) {
-            last_audio_diagnostic_us = diagnostic_now_us;
-            ESP_LOGI(TAG,
-                     "offline wake mic: peak=%ld rms=%lu bad=%u gain=%.2f",
-                     (long)input_peak, (unsigned long)rms, (unsigned)bad,
-                     (double)wake_gain_q8 / 256.0);
-        }
-        esp_mn_state_t state = multinet->detect(model_data, mono);
-        // MultiNet is compute-heavy and this task is pinned to CPU1. Yield once
-        // per inference chunk so IDLE1 can feed the task watchdog and service
-        // low-priority system work without affecting the audio cadence.
-        vTaskDelay(1);
-        if (state == ESP_MN_STATE_TIMEOUT) { multinet->clean(model_data); continue; }
-        if (state != ESP_MN_STATE_DETECTED) continue;
-        esp_mn_results_t *result = multinet->get_results(model_data);
-        if (!result || result->num == 0 || result->command_id[0] != WAKE_WORD_COMMAND_ID) continue;
-        int64_t now_us = esp_timer_get_time();
-        if (now_us - last_detection_us >= WAKE_WORD_COOLDOWN_US) {
-            last_detection_us = now_us;
-            ESP_LOGI(TAG, "offline wake word detected: %s phrase=%d text='%s' raw='%s' (prob=%.3f)",
-                     WAKE_WORD_CN_LABEL, result->phrase_id[0], result->string,
-                     result->raw_string, (double)result->prob[0]);
-            multinet->clean(model_data);
-            // Do not create the foreground task while MultiNet still owns its
-            // large internal allocations.  Queue a callback after this task
-            // has released the recognizer, matching the physical-key path
-            // which stops wake recognition before it creates the worker.
-            taskENTER_CRITICAL(&s_wake_word_lock);
-            bool dispatch_pending = s_wake_callback_pending || s_wake_callback_task;
-            if (!dispatch_pending) {
-                s_wake_callback_pending = true;
-                s_wake_callback_task_starting = true;
-                s_wake_word_stop_requested = true;
-            }
-            taskEXIT_CRITICAL(&s_wake_word_lock);
-            if (!dispatch_pending) {
-                TaskHandle_t dispatcher = NULL;
-                BaseType_t created = round_audio_adapter_start_wake_dispatch_task(
-                    wake_callback_dispatch_task, &dispatcher);
-                taskENTER_CRITICAL(&s_wake_word_lock);
-                if (created == pdPASS) {
-                    s_wake_callback_task = dispatcher;
-                } else {
-                    // Keep the device responsive if PSRAM is temporarily
-                    // fragmented; the next detected phrase can retry safely.
-                    s_wake_callback_pending = false;
-                    ESP_LOGE(TAG, "cannot queue offline wake callback");
-                }
-                s_wake_callback_task_starting = false;
-                taskEXIT_CRITICAL(&s_wake_word_lock);
-            }
-        } else {
-            multinet->clean(model_data);
-        }
-    }
-
-    round_audio_adapter_free_wake_capture_buffer(mono);
-    round_audio_adapter_free_wake_capture_buffer(wire);
-    multinet->destroy(model_data);
-    esp_srmodel_deinit(models);
-    ESP_LOGI(TAG, "offline wake stopped and model memory released");
-
-finish:
-    taskENTER_CRITICAL(&s_wake_word_lock);
-    s_wake_word_stop_requested = false;
-    s_wake_word_paused = false;
-    s_wake_word_pause_acknowledged = false;
-    s_wake_word_ready = false;
-    s_wake_word_task = NULL;
-    taskEXIT_CRITICAL(&s_wake_word_lock);
-    vTaskDelete(NULL);
-}
-
 esp_err_t board_port_start_wake_word(board_port_wake_word_cb_t on_wake, void *arg) {
     if (!on_wake) return ESP_ERR_INVALID_ARG;
-    if (!s_audio_mutex ||
-        xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    esp_err_t audio_err = audio_init();
-    xSemaphoreGive(s_audio_mutex);
+    const esp_err_t audio_err = round_audio_service_prepare_for_wake(s_output_volume, 5000);
     if (audio_err != ESP_OK) {
         ESP_LOGE(TAG, "offline wake microphone init failed: %s",
                  esp_err_to_name(audio_err));
         return audio_err;
     }
-    taskENTER_CRITICAL(&s_wake_word_lock);
-    if (s_wake_word_task || s_wake_word_task_starting ||
-        s_wake_callback_pending || s_wake_callback_task ||
-        s_wake_callback_task_starting) {
-        bool starting = s_wake_word_task_starting;
-        bool ready = s_wake_word_ready;
-        bool callback_active = s_wake_callback_pending || s_wake_callback_task ||
-                               s_wake_callback_task_starting;
-        taskEXIT_CRITICAL(&s_wake_word_lock);
-        /* Do not equate an allocated task with a ready recognizer. A restart
-         * request can arrive while MultiNet is still loading; wait for its
-         * explicit readiness signal and propagate timeout/failure accurately. */
-        for (unsigned i = 0;
-             i < 400 && (s_wake_word_task || starting) && !ready; ++i) {
-            vTaskDelay(pdMS_TO_TICKS(25));
-            taskENTER_CRITICAL(&s_wake_word_lock);
-            starting = s_wake_word_task_starting;
-            ready = s_wake_word_ready;
-            taskEXIT_CRITICAL(&s_wake_word_lock);
-        }
-        if (ready) return ESP_OK;
-        if (s_wake_word_task || starting) return ESP_ERR_TIMEOUT;
-        return callback_active ? ESP_ERR_INVALID_STATE : ESP_FAIL;
-    }
-    s_wake_word_task_starting = true;
-    s_on_wake_word = on_wake;
-    s_on_wake_word_arg = arg;
-    s_wake_word_paused = false;
-    s_wake_word_pause_acknowledged = false;
-    s_wake_word_ready = false;
-    s_wake_word_stop_requested = false;
-    s_wake_callback_cancel_requested = false;
-    taskEXIT_CRITICAL(&s_wake_word_lock);
-    TaskHandle_t task = NULL;
-    BaseType_t created = round_audio_adapter_start_wake_recognizer_task(
-        wake_word_task, &task);
-    taskENTER_CRITICAL(&s_wake_word_lock);
-    if (created != pdPASS) {
-        s_wake_word_task_starting = false;
-        s_on_wake_word = NULL;
-        s_on_wake_word_arg = NULL;
-        taskEXIT_CRITICAL(&s_wake_word_lock);
-        return ESP_ERR_NO_MEM;
-    }
-    s_wake_word_task = task;
-    s_wake_word_task_starting = false;
-    taskEXIT_CRITICAL(&s_wake_word_lock);
-    for (unsigned i = 0;
-         i < 400 && s_wake_word_task && !s_wake_word_ready; ++i) {
-        vTaskDelay(pdMS_TO_TICKS(25));
-    }
-    if (s_wake_word_ready) {
-        ESP_LOGI(TAG, "offline wake task ready");
-        return ESP_OK;
-    }
-    if (!s_wake_word_task) {
+    const esp_err_t wake_err = round_wake_service_start(on_wake, arg, 10000);
+    if (wake_err == ESP_OK) ESP_LOGI(TAG, "offline wake task ready");
+    else if (wake_err == ESP_FAIL) {
         ESP_LOGW(TAG, "offline wake task exited during model initialization");
-        return ESP_FAIL;
+    } else if (wake_err == ESP_ERR_TIMEOUT) {
+        ESP_LOGW(TAG, "offline wake model initialization timed out");
     }
-    ESP_LOGW(TAG, "offline wake model initialization timed out");
-    return ESP_ERR_TIMEOUT;
+    return wake_err;
 }
 
 esp_err_t board_port_stop_wake_word_with_timeout(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    taskENTER_CRITICAL(&s_wake_word_lock);
-    if (!s_wake_word_task && !s_wake_word_task_starting &&
-        !s_wake_callback_pending && !s_wake_callback_task &&
-        !s_wake_callback_task_starting) {
-        taskEXIT_CRITICAL(&s_wake_word_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    s_wake_word_paused = true;
-    s_wake_word_stop_requested = true;
-    s_wake_callback_cancel_requested = true;
-    taskEXIT_CRITICAL(&s_wake_word_lock);
-    // The task checks the flag after at most one I2S read timeout. Do not
-    // delete it externally: it owns MultiNet and must release it itself.
-    // Model creation itself can take about two seconds on ESP32-S3. This call
-    // is used only while entering a provisioning portal, so wait long enough
-    // for initialization, one detect chunk, and deterministic model cleanup.
-    const TickType_t started = xTaskGetTickCount();
-    const TickType_t budget = pdMS_TO_TICKS(timeout_ms);
-    for (;;) {
-        taskENTER_CRITICAL(&s_wake_word_lock);
-        const bool active = s_wake_word_task || s_wake_word_task_starting ||
-                            s_wake_callback_pending || s_wake_callback_task ||
-                            s_wake_callback_task_starting;
-        taskEXIT_CRITICAL(&s_wake_word_lock);
-        if (!active) break;
-        const TickType_t elapsed = xTaskGetTickCount() - started;
-        if (elapsed >= budget) return ESP_ERR_TIMEOUT;
-        TickType_t delay = budget - elapsed;
-        const TickType_t polling_interval = pdMS_TO_TICKS(25);
-        if (delay > polling_interval) delay = polling_interval;
-        vTaskDelay(delay == 0 ? 1 : delay);
-    }
-    taskENTER_CRITICAL(&s_wake_word_lock);
-    const bool active = s_wake_word_task || s_wake_word_task_starting ||
-                        s_wake_callback_pending || s_wake_callback_task ||
-                        s_wake_callback_task_starting;
-    if (active) {
-        taskEXIT_CRITICAL(&s_wake_word_lock);
-        return ESP_ERR_TIMEOUT;
-    }
-    s_on_wake_word = NULL;
-    s_on_wake_word_arg = NULL;
-    s_wake_callback_cancel_requested = false;
-    taskEXIT_CRITICAL(&s_wake_word_lock);
-    ESP_LOGI(TAG, "offline wake task stopped cleanly");
-    return ESP_OK;
+    const esp_err_t err = round_wake_service_stop(timeout_ms);
+    if (err == ESP_OK) ESP_LOGI(TAG, "offline wake task stopped cleanly");
+    return err;
 }
 
 esp_err_t board_port_stop_wake_word(void) {
@@ -4893,21 +3912,12 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     // MultiNet reads from this I2S RX channel in the background. It must
     // acknowledge the pause before foreground capture takes the mutex, or it
     // can consume the first command frame in the hand-off window.
-    for (unsigned i = 0;
-         s_wake_word_task && !s_wake_word_pause_acknowledged && i < 40; ++i) {
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
-        board_port_pause_wake_word(false);
-        return ESP_ERR_TIMEOUT;
-    }
-    esp_err_t init_err = audio_init();
+    (void)round_wake_service_wait_for_pause_ack(200);
+    esp_err_t init_err = round_audio_service_command_capture_begin(s_output_volume, 1500);
     if (init_err != ESP_OK) {
-        xSemaphoreGive(s_audio_mutex);
         board_port_pause_wake_word(false);
         return init_err;
     }
-    recording_pcm_reset("command");
 
     const size_t max_samples = AUDIO_RATE * COMMAND_CAPTURE_MAX_SECONDS;
     const size_t start_timeout_samples =
@@ -4921,9 +3931,9 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     // command capture cannot consume the small internal/DMA heap needed by
     // Wi-Fi and mbedTLS immediately afterwards. The recorder writes it only as
     // ordinary byte-addressable PCM; it is never an I2S DMA descriptor.
-    uint8_t *wav = round_audio_adapter_allocate_command_wav(wav_capacity);
+    uint8_t *wav = round_audio_service_allocate_command_wav(wav_capacity);
     if (!wav) {
-        xSemaphoreGive(s_audio_mutex);
+        round_audio_service_command_capture_end();
         board_port_pause_wake_word(false);
         return ESP_ERR_NO_MEM;
     }
@@ -4941,8 +3951,6 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     uint32_t data_size = (uint32_t)(max_samples * 2);
     memcpy(wav + 40, &data_size, 4);
 
-    int16_t wire[512];
-    int16_t capture_mono[256];
     int16_t *mono = (int16_t *)(wav + 44);
     size_t written_samples = 0;
     size_t voiced_samples = 0;
@@ -4957,37 +3965,29 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     size_t meter_pending_samples = 0;
     uint16_t idle_level = 0;
     uint32_t last_ui_second = UINT32_MAX;
-    s_command_capture_active = true;
     while (written_samples < max_samples) {
-        size_t received = 0;
-        esp_err_t err = round_audio_adapter_read_pcm(
-            wire, sizeof(wire), &received, pdMS_TO_TICKS(1000));
+        size_t frames = 0;
+        round_audio_capture_stats_t capture_stats = {0};
+        esp_err_t err = round_audio_service_command_capture_read(
+            &mono[written_samples], max_samples - written_samples,
+            &frames, &capture_stats);
         if (err != ESP_OK) {
-            s_command_capture_active = false;
-            round_audio_adapter_free_command_wav(wav);
-            xSemaphoreGive(s_audio_mutex);
+            round_audio_service_free_command_wav(wav);
+            round_audio_service_command_capture_end();
             board_port_pause_wake_word(false);
             return err;
         }
-        size_t frames = round_audio_adapter_extract_capture_mono(
-            wire, received, capture_mono,
-            sizeof(capture_mono) / sizeof(capture_mono[0]));
         if (frames == 0) {
             // A successful I2S read may still return no complete logical mono
             // frame.  Do not feed the VAD state or pointer arithmetic with an
             // empty chunk; simply keep waiting within the existing bounds.
             continue;
         }
-        if (frames > max_samples - written_samples) frames = max_samples - written_samples;
-        int32_t chunk_peak = recording_pcm_process(capture_mono, frames,
-                                                   &mono[written_samples]);
         written_samples += frames;
-        if (chunk_peak > peak) peak = chunk_peak;
-        // recording_pcm_process() brings the quiet EchoEar capsule into the
-        // same 10k-12k peak range used by the common UI/VAD thresholds.
-        uint16_t raw_level = chunk_peak <= 180 ? 0
-                             : (uint16_t)(((chunk_peak - 180) * 1000) / (12000 - 180));
-        if (raw_level > 1000) raw_level = 1000;
+        if (capture_stats.peak > peak) peak = capture_stats.peak;
+        // Audio HAL conditioning and physical signal statistics bring the
+        // selected capsule into the common UI/VAD scale.
+        const uint16_t raw_level = capture_stats.level;
         uint32_t elapsed = (uint32_t)(written_samples / AUDIO_RATE);
         if (raw_level > meter_pending_peak) meter_pending_peak = raw_level;
         meter_pending_samples += frames;
@@ -5015,8 +4015,7 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
         }
         // Hysteresis ignores short loud clicks before speech, then allows
         // natural intra-word dips without treating them as the command end.
-        const uint16_t mean_level = command_capture_mean_level(
-            &mono[written_samples - frames], frames);
+        const uint16_t mean_level = capture_stats.mean_level;
         if (!speech_started) {
             // Learn the room's actual post-filter noise floor before speech.
             // The minimum avoids a spoken preamble raising the completion
@@ -5033,9 +4032,8 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
                          (unsigned)(written_samples * 1000 / AUDIO_RATE));
             } else if (written_samples >= start_timeout_samples) {
                 ESP_LOGI(TAG, "command capture timed out waiting for speech");
-                s_command_capture_active = false;
-                round_audio_adapter_free_command_wav(wav);
-                xSemaphoreGive(s_audio_mutex);
+                round_audio_service_free_command_wav(wav);
+                round_audio_service_command_capture_end();
                 board_port_pause_wake_word(false);
                 return ESP_ERR_NOT_FOUND;
             }
@@ -5057,17 +4055,16 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
                 break;
             }
         }
-        if (s_command_capture_stop_requested) {
+        if (round_audio_service_command_capture_stop_requested()) {
             ESP_LOGI(TAG, "command capture manually stopped: speech=%s elapsed=%ums",
                      speech_started ? "yes" : "no",
                      (unsigned)(written_samples * 1000 / AUDIO_RATE));
             break;
         }
     }
-    s_command_capture_active = false;
     if (!speech_started) {
-        round_audio_adapter_free_command_wav(wav);
-        xSemaphoreGive(s_audio_mutex);
+        round_audio_service_free_command_wav(wav);
+        round_audio_service_command_capture_end();
         board_port_pause_wake_word(false);
         return ESP_ERR_NOT_FOUND;
     }
@@ -5086,7 +4083,7 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     memcpy(wav + 4, &riff_size, sizeof(riff_size));
     data_size = (uint32_t)(captured_samples * sizeof(*mono));
     memcpy(wav + 40, &data_size, sizeof(data_size));
-    xSemaphoreGive(s_audio_mutex);
+    round_audio_service_command_capture_end();
     board_port_pause_wake_word(false);
     *out_wav = wav;
     *out_len = wav_len;
@@ -5094,37 +4091,25 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
 }
 
 void board_port_release_captured_wav(uint8_t *wav) {
-    round_audio_adapter_free_command_wav(wav);
+    round_audio_service_free_command_wav(wav);
 }
 
 esp_err_t board_port_stop_input(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    if (!s_button_task) return ESP_OK;
-    if (xTaskGetCurrentTaskHandle() == s_button_task) return ESP_ERR_INVALID_STATE;
-
-    if (!s_button_task_stop_requested) {
-        s_button_task_stop_requested = true;
-        xTaskNotifyGive(s_button_task);
-    }
-    if (!s_button_task_stopped ||
-        xSemaphoreTake(s_button_task_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
-        ESP_LOGW(TAG, "timed out stopping board input scanner");
-        return ESP_ERR_TIMEOUT;
-    }
-    vSemaphoreDelete(s_button_task_stopped);
-    s_button_task_stopped = NULL;
-    s_button_task = NULL;
-    s_button_task_stop_requested = false;
-    ESP_LOGI(TAG, "board input scanner stopped");
-    return ESP_OK;
+    return round_input_service_stop(timeout_ms);
 }
 
 esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    /* Match the compact renderer's lifecycle contract: an initialization
+     * rollback may reach this board facade before optional decorative work
+     * has ever been admitted.  There is then no display-owned task to join;
+     * report an idempotent no-op so a later service owner can still close its
+     * own partially initialized state.  This is deliberately not runtime
+     * renderer restart/deinitialization support. */
+    if (!s_background_tasks_lock) return ESP_OK;
     const TickType_t started = xTaskGetTickCount();
     const TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
-    if (!s_background_tasks_lock ||
-        xSemaphoreTake(s_background_tasks_lock, deadline) != pdTRUE) {
+    if (xSemaphoreTake(s_background_tasks_lock, deadline) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     /* Publish closure while holding the same mutex used by the deferred
@@ -5132,31 +4117,18 @@ esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms) {
      * its task before this stop owns the lock (and be joined below), or see
      * this closed generation and remain task-free. */
     s_background_tasks_admission_closed = true;
-    if (!s_pet_animation_task) {
-        xSemaphoreGive(s_background_tasks_lock);
-        return ESP_OK;
-    }
-    if (xTaskGetCurrentTaskHandle() == s_pet_animation_task) {
-        xSemaphoreGive(s_background_tasks_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (!s_pet_animation_stop_requested) {
-        s_pet_animation_stop_requested = true;
-        xTaskNotifyGive(s_pet_animation_task);
-    }
     const TickType_t elapsed = xTaskGetTickCount() - started;
     const TickType_t remaining = elapsed >= deadline ? 0 : deadline - elapsed;
-    if (!s_pet_animation_stopped || remaining == 0 ||
-        xSemaphoreTake(s_pet_animation_stopped, remaining) != pdTRUE) {
+    const esp_err_t animation_stop_err = remaining == 0
+                                           ? ESP_ERR_TIMEOUT
+                                           : round_display_service_stop_animation(
+                                               (uint32_t)(remaining * portTICK_PERIOD_MS));
+    if (animation_stop_err != ESP_OK) {
         xSemaphoreGive(s_background_tasks_lock);
-        ESP_LOGW(TAG, "timed out stopping board pet animation task");
-        return ESP_ERR_TIMEOUT;
+        ESP_LOGW(TAG, "cannot stop board pet animation task: %s",
+                 esp_err_to_name(animation_stop_err));
+        return animation_stop_err;
     }
-    vSemaphoreDelete(s_pet_animation_stopped);
-    s_pet_animation_stopped = NULL;
-    s_pet_animation_task = NULL;
-    s_pet_animation_started = false;
-    s_pet_animation_stop_requested = false;
     xSemaphoreGive(s_background_tasks_lock);
     ESP_LOGI(TAG, "board pet animation task stopped");
     return ESP_OK;
@@ -5169,7 +4141,7 @@ esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms) {
 // rectangle, which makes the authored 80 ms in-between frames look fluid
 // without reintroducing the old panel stripe/flash failure.
 static esp_err_t present_pet_frame_delta_sync(const uint16_t *frame) {
-    if (!round_display_adapter_ready() || !frame) return ESP_ERR_INVALID_ARG;
+    if (!round_display_service_ready() || !frame) return ESP_ERR_INVALID_ARG;
     // Delta presentation trusts that panel GRAM mirrors the front buffer.
     // A silently corrupted QSPI transfer would otherwise persist forever in
     // static regions, because later frames only re-send pixels whose composed
@@ -5203,7 +4175,7 @@ static esp_err_t present_pet_frame_delta_sync(const uint16_t *frame) {
             if (right > right_changed) right_changed = right;
         }
         if (first_changed < 0) continue;
-        round_display_adapter_align_dirty_columns(&left_changed, &right_changed,
+        round_display_service_align_dirty_columns(&left_changed, &right_changed,
                                                   LCD_WIDTH);
         const int changed_rows = last_changed - first_changed + 1;
         const int changed_width = right_changed - left_changed + 1;
@@ -5241,26 +4213,26 @@ void board_port_set_service_ready(bool ready) {
 }
 
 bool board_port_get_power_status(unsigned *level_percent, bool *charging) {
-    return round_peripheral_adapter_get_power_status(level_percent, charging);
+    return round_peripheral_service_get_power_status(level_percent, charging);
 }
 
 esp_err_t board_port_motion_get_sample(device_motion_sample_t *out_sample) {
     if (!out_sample) return ESP_ERR_INVALID_ARG;
-    return round_peripheral_adapter_get_motion_sample(out_sample);
+    return round_peripheral_service_get_motion_sample(out_sample);
 }
 
 void board_port_request_capture_stop(void) {
     // Retain a stop arriving after the application publishes RECORDING but
     // before the synchronous reader marks itself active.
-    s_command_capture_stop_requested = true;
+    round_audio_service_request_command_capture_stop();
 }
 
 void board_port_reset_capture_stop(void) {
-    s_command_capture_stop_requested = false;
+    round_audio_service_reset_command_capture_stop();
 }
 
 void board_port_request_audio_playback_stop(void) {
-    if (s_audio_playback_owner) s_audio_playback_stop_requested = true;
+    round_audio_service_request_playback_stop();
 }
 
 esp_err_t board_port_play_wav(const uint8_t *wav, size_t wav_len) {
@@ -5305,87 +4277,28 @@ esp_err_t board_port_play_wav(const uint8_t *wav, size_t wav_len) {
 }
 
 esp_err_t board_port_audio_playback_begin(void) {
-    if (!s_audio_mutex) return ESP_ERR_INVALID_STATE;
     // Pause recognition before competing for the shared I2S lock. MultiNet may
     // already be inside a bounded microphone read; waiting for its explicit
     // acknowledgement lets it release the bus and clean its detector state
     // before speaker DMA starts. This prevents playback from racing a resumed
     // recognizer and improves wake reliability after a response finishes.
     board_port_pause_wake_word(true);
-    for (unsigned i = 0;
-         s_wake_word_task && !s_wake_word_pause_acknowledged && i < 60; ++i) {
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-    if (xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
-        board_port_pause_wake_word(false);
-        return ESP_ERR_TIMEOUT;
-    }
-    if (s_audio_playback_owner) {
-        xSemaphoreGive(s_audio_mutex);
-        board_port_pause_wake_word(false);
-        return ESP_ERR_INVALID_STATE;
-    }
-    esp_err_t err = audio_init();
-    if (err == ESP_OK) err = round_audio_adapter_playback_prepare();
-    if (err == ESP_OK) {
-        s_audio_playback_stop_requested = false;
-        s_audio_playback_owner = xTaskGetCurrentTaskHandle();
-    } else {
-        (void)round_audio_adapter_playback_abort();
-        xSemaphoreGive(s_audio_mutex);
-        board_port_pause_wake_word(false);
-    }
+    (void)round_wake_service_wait_for_pause_ack(300);
+    esp_err_t err = round_audio_service_playback_begin(s_output_volume, 1500);
+    if (err != ESP_OK) board_port_pause_wake_word(false);
     return err;
 }
 
 esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
                                           unsigned channels) {
-    if (s_audio_playback_owner != xTaskGetCurrentTaskHandle()) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (!pcm || frames == 0 || (channels != 1 && channels != 2)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (s_audio_playback_stop_requested) return ESP_ERR_INVALID_STATE;
-    size_t offset = 0;
-    while (offset < frames) {
-        if (s_audio_playback_stop_requested) return ESP_ERR_INVALID_STATE;
-        size_t count = frames - offset;
-        if (count > 256) count = 256;
-        size_t written = 0;
-        size_t expected = count * 2 * sizeof(int16_t);
-        esp_err_t err = round_audio_adapter_write_pcm(
-            pcm + offset * channels, count, channels, &written,
-            pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) return err;
-        if (written != expected) return ESP_ERR_TIMEOUT;
-        if (offset == 0) {
-            // Reveal audio only after the prepared analogue path has a valid
-            // PCM source; the profile owns the exact DAC/PA sequence.
-            err = round_audio_adapter_playback_reveal();
-            if (err != ESP_OK) return err;
-        }
-        offset += count;
-    }
-    return ESP_OK;
+    return round_audio_service_playback_write(pcm, frames, channels);
 }
 
 esp_err_t board_port_audio_playback_end(esp_err_t playback_err) {
-    if (s_audio_playback_owner != xTaskGetCurrentTaskHandle()) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    int16_t silence[256] = {0};
-    size_t silence_written = 0;
-    /* Always run the profile-owned physical teardown, including after a
-     * failed decode/write. Preserve the original session error for callers. */
-    esp_err_t finish_err = round_audio_adapter_playback_finish(
-        silence, sizeof(silence) / sizeof(silence[0]), &silence_written,
-        pdMS_TO_TICKS(1000));
-    s_audio_playback_owner = NULL;
-    s_audio_playback_stop_requested = false;
-    xSemaphoreGive(s_audio_mutex);
+    const esp_err_t finish_err = round_audio_service_playback_end(playback_err);
+    if (finish_err == ESP_ERR_INVALID_STATE) return finish_err;
     board_port_pause_wake_word(false);
-    return playback_err != ESP_OK ? playback_err : finish_err;
+    return finish_err;
 }
 esp_err_t board_port_play_ack_chime(void) {
     esp_err_t err = board_port_audio_playback_begin();
@@ -5434,77 +4347,4 @@ esp_err_t board_port_play_alarm_burst(void) {
 
 esp_err_t board_port_play_ack_voice(void) {
     return board_port_play_ack_chime();
-#if 0
-    // The acknowledgement is a compact IMA ADPCM asset generated from a
-    // Mandarin voice. Decode it in small pieces so confirmation is immediate
-    // and does not consume a large PCM buffer while Wi-Fi is uploading.
-    static const int s_ima_index_delta[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
-    static const int s_ima_step[89] = {
-        7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31,
-        34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130,
-        143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408,
-        449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282,
-        1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
-        3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630,
-        9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350,
-        22385, 24623, 27086, 29794, 32767,
-    };
-    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return ESP_ERR_TIMEOUT;
-    board_port_pause_wake_word(true);
-    esp_err_t err = audio_init();
-    if (err == ESP_OK) {
-        err = round_audio_adapter_set_power_amplifier(true);
-    }
-    uint8_t compressed[MACLAW_ACK_VOICE_SAMPLES / 2 + 1];
-    size_t compressed_len = 0;
-    int base64_err = mbedtls_base64_decode(compressed, sizeof(compressed), &compressed_len,
-                                           (const unsigned char *)s_maclaw_ack_voice_b64,
-                                           strlen(s_maclaw_ack_voice_b64));
-    if (base64_err != 0 || compressed_len == 0) {
-        ESP_LOGE(TAG, "acknowledgement voice decode failed: %d", base64_err);
-        (void)round_audio_adapter_playback_abort();
-        xSemaphoreGive(s_audio_mutex);
-        board_port_pause_wake_word(false);
-        return ESP_FAIL;
-    }
-    int16_t mono[256];
-    int predictor = 0;
-    int step_index = 0;
-    size_t packed_offset = 0;
-    size_t decoded = 0;
-    while (err == ESP_OK && decoded < MACLAW_ACK_VOICE_SAMPLES && packed_offset < compressed_len) {
-        int frames = (MACLAW_ACK_VOICE_SAMPLES - decoded) > 256 ? 256 : (int)(MACLAW_ACK_VOICE_SAMPLES - decoded);
-        for (int i = 0; i < frames; ++i) {
-            // The asset is 8 kHz ADPCM. Repeat every decoded sample once so
-            // it plays at its intended pitch on the 16 kHz I2S clock.
-            if ((i & 1) == 0) {
-                uint8_t packed = compressed[packed_offset + ((size_t)i / 4)];
-                int code = ((i / 2) & 1) ? (packed >> 4) : (packed & 0x0f);
-                int step = s_ima_step[step_index];
-                int delta = step >> 3;
-                if (code & 4) delta += step;
-                if (code & 2) delta += step >> 1;
-                if (code & 1) delta += step >> 2;
-                predictor += (code & 8) ? -delta : delta;
-                if (predictor > INT16_MAX) predictor = INT16_MAX;
-                if (predictor < INT16_MIN) predictor = INT16_MIN;
-                step_index += s_ima_index_delta[code & 7];
-                if (step_index < 0) step_index = 0;
-                if (step_index > 88) step_index = 88;
-            }
-            mono[i] = (int16_t)predictor;
-        }
-        size_t written = 0;
-        err = round_audio_adapter_write_pcm(
-            mono, (size_t)frames, 1, &written, pdMS_TO_TICKS(1000));
-        if (written != (size_t)frames * 2 * sizeof(int16_t) && err == ESP_OK) err = ESP_ERR_TIMEOUT;
-        decoded += frames;
-        packed_offset += (size_t)(frames + 3) / 4;
-    }
-    vTaskDelay(pdMS_TO_TICKS(30));
-    (void)round_audio_adapter_set_power_amplifier(false);
-    xSemaphoreGive(s_audio_mutex);
-    board_port_pause_wake_word(false);
-    return err;
-#endif
 }

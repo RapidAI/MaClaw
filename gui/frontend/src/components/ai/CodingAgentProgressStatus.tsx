@@ -769,13 +769,14 @@ export function renderCodingAgentActivityFeed(
     // When tools/summaries exist, omit pure task_status lines — header already shows phase.
     const activityRows = rows.filter(({ progress }) => !isCodingAgentTaskStatusOnly(progress));
     const lineRows = activityRows.length > 0 ? activityRows : rows;
-    const lineProgress = lineRows.map((r) => r.progress);
+    const visibleLineRows = lineRows.slice(-3);
+    const lineProgress = visibleLineRows.map((r) => r.progress);
     const tone = resolveCodingAgentFeedTone(header, lineProgress, t.isDark);
     const headerTask = header.taskID;
     const headerTitle = header.title;
     const phaseLabel = codingAgentStatusLabel(header.phase, lang);
     const statusText = codingAgentProgressStatusText(header, lang);
-    const isMulti = lineRows.length > 1;
+    const isMulti = visibleLineRows.length > 1;
     const criticalCount = lineProgress.reduce(
         (n, p) => n + (codingAgentProgressLooksCritical(p) ? 1 : 0),
         0,
@@ -796,7 +797,7 @@ export function renderCodingAgentActivityFeed(
             headerTask,
             headerStatus,
             headerTitle,
-            `${lineRows.length} ${lang.startsWith("zh") ? "\u6b65" : "steps"}`,
+            `${visibleLineRows.length} ${lang.startsWith("zh") ? "\u6b65" : "steps"}`,
         )
         : codingAgentDisplayText(header, lang);
     const borderColor = t.isDark ? "rgba(148,163,184,0.18)" : "rgba(47, 111, 188, 0.14)";
@@ -819,7 +820,7 @@ export function renderCodingAgentActivityFeed(
             aria-label={feedLabel}
             style={{
                 margin: "4px 0",
-                padding: "5px 9px 5px",
+                padding: "4px 7px 4px",
                 borderRadius: 5,
                 border: `1px solid ${borderColor}`,
                 background: bg,
@@ -836,8 +837,8 @@ export function renderCodingAgentActivityFeed(
                     display: "flex",
                     alignItems: "center",
                     gap: 5,
-                    marginBottom: lineRows.length > 0 ? 3 : 0,
-                    paddingBottom: showHeaderRule ? 4 : 0,
+                    marginBottom: lineRows.length > 0 ? 2 : 0,
+                    paddingBottom: showHeaderRule ? 3 : 0,
                     borderBottom: showHeaderRule ? `1px solid ${hairline}` : "none",
                     fontSize: 11,
                     lineHeight: 1.25,
@@ -879,12 +880,13 @@ export function renderCodingAgentActivityFeed(
                     flexDirection: "column",
                     gap: 0,
                     paddingLeft: 2,
+                    overflow: "hidden",
                 }}
             >
-                {lineRows.map(({ msg, progress }) =>
+                {visibleLineRows.map(({ msg, progress }) =>
                     renderCodingAgentToolLine(progress, t, lang, {
                         key: msg.id,
-                        showCommandTestId: lineRows.length === 1,
+                        showCommandTestId: visibleLineRows.length === 1,
                         hideDetailIfEquals: headerTitle || undefined,
                     }),
                 )}

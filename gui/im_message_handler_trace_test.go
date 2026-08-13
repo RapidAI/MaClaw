@@ -1312,7 +1312,7 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 	}
 	foundBaseStage := false
 	for _, msg := range progress {
-		if strings.Contains(msg, "【工具】发送文件") {
+		if strings.Contains(msg, "工具 · 发送文件") {
 			foundBaseStage = true
 		}
 		if strings.Contains(msg, "internal debug-only progress") {
@@ -3494,9 +3494,9 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 		t.Fatalf("LLM call count = %d, want 4", callNum)
 	}
 	wantProgress := []string{
-		"【工具】生成脚本",
-		"【工具】执行命令",
-		"【工具】发送文件",
+		"工具 · 生成脚本",
+		"工具 · 执行命令",
+		"工具 · 发送文件",
 	}
 	for _, want := range wantProgress {
 		found := false

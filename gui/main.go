@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -57,6 +58,7 @@ func main() {
 
 	// Create an instance of the app structure
 	app := NewApp()
+	app.setPendingReferralHandoff(referralHandoffFromArgs(args))
 
 	// Check for command line arguments
 	if len(args) > 1 {
@@ -170,6 +172,9 @@ func main() {
 						shouldShowWindow = false
 					}
 				}
+				if handoff := referralHandoffFromArgs(secondInstanceData.Args); handoff.Handoff != "" {
+					app.setPendingReferralHandoff(handoff)
+				}
 
 				if !shouldShowWindow {
 					return
@@ -218,6 +223,50 @@ func main() {
 	if err != nil {
 		println("Error:", err.Error())
 	}
+}
+
+func referralHandoffFromArgs(args []string) ReferralHandoffLaunch {
+	for _, arg := range args {
+		parsed, err := url.Parse(strings.TrimSpace(arg))
+		if err != nil || !strings.EqualFold(parsed.Scheme, "maclaw") || !strings.EqualFold(parsed.Host, "onboarding") {
+			continue
+		}
+		handoff := strings.TrimSpace(parsed.Query().Get("referral_handoff"))
+		hubURL := ""
+		if rawHandoff, rawHubURL, ok := strings.Cut(handoff, "?hub_url="); ok {
+			handoff = strings.TrimSpace(rawHandoff)
+			if decoded, decodeErr := url.QueryUnescape(rawHubURL); decodeErr == nil {
+				hubURL = strings.TrimRight(strings.TrimSpace(decoded), "/")
+			}
+		}
+		validHub := validReferralHandoffHubURL(hubURL)
+		if len(handoff) >= 16 && len(handoff) <= 256 && !strings.ContainsAny(handoff, "\r\n\t ") && validHub {
+			return ReferralHandoffLaunch{Handoff: handoff, HubURL: hubURL}
+		}
+	}
+	return ReferralHandoffLaunch{}
+}
+
+// validReferralHandoffHubURL accepts only a clean HTTPS Hub origin. Plain
+// HTTP remains useful for local development, but only on an explicit loopback
+// host. Reject userinfo, a path, query or fragment so an opaque handoff can
+// never turn into a request to an attacker-controlled derived URL.
+func validReferralHandoffHubURL(raw string) bool {
+	hub, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || hub == nil || hub.Host == "" || hub.User != nil || hub.RawQuery != "" || hub.Fragment != "" {
+		return false
+	}
+	if hub.Path != "" && hub.Path != "/" {
+		return false
+	}
+	if strings.EqualFold(hub.Scheme, "https") {
+		return true
+	}
+	if !strings.EqualFold(hub.Scheme, "http") {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(hub.Hostname()))
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 // singleInstanceUniqueID isolates OEM brands so MaClaw / TigerClaw / MetaStaff

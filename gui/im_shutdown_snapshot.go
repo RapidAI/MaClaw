@@ -40,14 +40,9 @@ func (h *IMMessageHandler) snapshotInterruptedSessionsForShutdown() {
 			return true
 		}
 
-		// Never overwrite a slot the user has not decided on yet — an older
-		// pending slot is a deliberate user-facing state, not stale data.
-		if unfinishedSlotNeedsDecision(h.memory.GetUnfinishedSlot(userID)) {
-			log.Printf("[ShutdownSnapshot] skip user=%q reason=pending_slot_exists", userID)
-			ctx.Cancel()
-			return true
-		}
-
+		// The atomic memory operation below preserves an older pending slot. A
+		// resolved slot is historical state and may be replaced by this newer
+		// shutdown snapshot.
 		entries := h.memory.Load(userID)
 		taskText := strings.TrimSpace(userText)
 		if taskText == "" {
@@ -73,12 +68,12 @@ func (h *IMMessageHandler) snapshotInterruptedSessionsForShutdown() {
 		// im_loop_control.go), and natural completion does not cancel the
 		// context, so identity comparison is the reliable signal. Writing an
 		// "interrupted" slot for a finished loop would resurrect a completed
-		// task on the next launch. Likewise, a slot that appeared meanwhile
-		// is newer state and must not be overwritten.
+		// task on the next launch. Slot conflict resolution remains inside the
+		// atomic memory operation below.
 		state.stateMu.RLock()
 		stillActive := state.loopCtx == ctx && !ctx.IsCancelled()
 		state.stateMu.RUnlock()
-		if !stillActive || unfinishedSlotNeedsDecision(h.memory.GetUnfinishedSlot(userID)) {
+		if !stillActive {
 			log.Printf("[ShutdownSnapshot] skip user=%q reason=state_changed_during_snapshot", userID)
 			ctx.Cancel()
 			return true
@@ -86,7 +81,7 @@ func (h *IMMessageHandler) snapshotInterruptedSessionsForShutdown() {
 
 		now := time.Now()
 		slot := &agent.UnfinishedTaskSlot{
-			SlotID:      fmt.Sprintf("shutdown-%d", now.UnixMilli()),
+			SlotID:      shutdownRecoverySlotID(now),
 			UserID:      userID,
 			ProjectPath: projectPath,
 			Status:      agent.UnfinishedTaskSlotStatusInterrupted,
@@ -98,14 +93,19 @@ func (h *IMMessageHandler) snapshotInterruptedSessionsForShutdown() {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		h.memory.UpsertUnfinishedSlot(userID, slot)
-		// Clear any stale in-flight marker so the next launch does not convert
-		// it into a duplicate slot via recoverInterruptedTaskSlot.
-		h.memory.ClearInFlightTask(userID)
+		if !h.memory.ReplaceInFlightWithUnfinishedSlot(userID, slot) {
+			log.Printf("[ShutdownSnapshot] skip user=%q reason=pending_slot_exists", userID)
+			ctx.Cancel()
+			return true
+		}
 		log.Printf("[ShutdownSnapshot] saved unfinished slot user=%q project=%q task=%q",
 			userID, projectPath, truncateRunes(taskText, 80))
 
 		ctx.Cancel()
 		return true
 	})
+}
+
+func shutdownRecoverySlotID(now time.Time) string {
+	return fmt.Sprintf("shutdown-%d-%d", now.UnixMilli(), time.Now().UnixNano())
 }

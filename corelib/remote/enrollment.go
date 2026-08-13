@@ -22,23 +22,26 @@ const EnrollTimeout = 25 * time.Second
 
 // EnrollConfig holds all inputs for the enrollment flow.
 type EnrollConfig struct {
-	Email            string   // required
-	VerificationCode string   // optional email OTP; switches to verified enrollment endpoint
-	InvitationCode   string   // optional, for invitation-only hubs
-	Mobile           string   // optional
-	ClientID         string   // existing client_id; empty → auto-generate
-	HubURL           string   // known hub URL; empty → resolve via HubCenter
-	HubCenterURL     string   // explicit HubCenter URL; empty → use defaults
-	HubCenterURLs    []string // additional HubCenter URLs from config
-	MachineName      string   // e.g. hostname
-	Platform         string   // "windows", "mac", "linux"
-	Hostname         string
-	Arch             string // e.g. "amd64", "arm64"
-	AppVersion       string
-	HeartbeatSec     int
-	TenantID         string // resolved tenant for a direct verified enrollment
-	HubID            string // resolved hub metadata for a direct verified enrollment
-	DirectHub        bool   // keep HubURL even when an invitation code is present
+	Email            string // required
+	VerificationCode string // optional email OTP; switches to verified enrollment endpoint
+	// SkipEmailVerification is allowed only for an invitation-code registration
+	// after the Hub has advertised that its tenant disabled email verification.
+	SkipEmailVerification bool
+	InvitationCode        string   // optional, for invitation-only hubs
+	Mobile                string   // optional
+	ClientID              string   // existing client_id; empty → auto-generate
+	HubURL                string   // known hub URL; empty → resolve via HubCenter
+	HubCenterURL          string   // explicit HubCenter URL; empty → use defaults
+	HubCenterURLs         []string // additional HubCenter URLs from config
+	MachineName           string   // e.g. hostname
+	Platform              string   // "windows", "mac", "linux"
+	Hostname              string
+	Arch                  string // e.g. "amd64", "arm64"
+	AppVersion            string
+	HeartbeatSec          int
+	TenantID              string // resolved tenant for a direct verified enrollment
+	HubID                 string // resolved hub metadata for a direct verified enrollment
+	DirectHub             bool   // keep HubURL even when an invitation code is present
 }
 
 // EnrollResult holds the output of a successful enrollment.
@@ -319,6 +322,8 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	enrollPath := "/api/enroll/start"
 	if strings.TrimSpace(cfg.VerificationCode) != "" {
 		enrollPath = "/api/enroll/email/verify-and-start"
+	} else if cfg.SkipEmailVerification && strings.TrimSpace(cfg.InvitationCode) != "" {
+		enrollPath = "/api/enroll/email/start-with-invitation"
 	}
 	enrollURL := strings.TrimRight(hubURL, "/") + enrollPath
 	enrollTimeout := c.enrollTimeout()
@@ -443,7 +448,17 @@ func (c *EnrollmentClient) resolveHubURL(ctx context.Context, httpClient *http.C
 		return nil, err
 	}
 
-	hubURL, hubID, tenantID, err := PickBestHubWithTenantAndID(*result)
+	// Public registration must preserve HubCenter's generic default route.
+	// A tenant-scoped entry may be present in the same response for an
+	// invitation-only tenant, whose domain and mail policies must not leak into
+	// registrations that supplied no invitation code. Invitation requests keep
+	// their tenant-scoped routing.
+	var hubURL, hubID, tenantID string
+	if strings.TrimSpace(cfg.InvitationCode) == "" {
+		hubURL, hubID, tenantID, err = PickDefaultRegistrationHubWithTenantAndID(*result)
+	} else {
+		hubURL, hubID, tenantID, err = PickRegistrationHubWithTenantAndID(*result)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -500,7 +515,6 @@ func PickBestHubWithTenantAndID(result HubCenterResolveResult) (string, string, 
 		}
 		return "", "", "", false
 	}
-
 	// Prefer the default hub (if online).
 	if result.DefaultHubID != "" {
 		var defaultHubs []HubCenterResolveHub
@@ -525,6 +539,98 @@ func PickBestHubWithTenantAndID(result HubCenterResolveResult) (string, string, 
 		return hubURL, hubID, tenantID, nil
 	}
 
+	return "", "", "", fmt.Errorf("hub center did not return a usable hub url")
+}
+
+// PickRegistrationHubWithTenantAndID chooses the route used to create a new
+// account when HubCenter has resolved an invitation code. A tenant-scoped
+// route is more specific than HubCenter's generic default Hub, which is a
+// fallback and can have different mail and signup settings. For registrations
+// without an invitation code, use PickDefaultRegistrationHubWithTenantAndID.
+func PickRegistrationHubWithTenantAndID(result HubCenterResolveResult) (string, string, string, error) {
+	// HubCenter's default remains authoritative when it carries a concrete
+	// tenant context (for example, after a user has explicitly selected one of
+	// several tenant routes). Only a generic default is treated as a fallback
+	// for onboarding.
+	if defaultHubID := strings.TrimSpace(result.DefaultHubID); defaultHubID != "" {
+		for _, hub := range result.Hubs {
+			if strings.TrimSpace(hub.HubID) != defaultHubID || strings.TrimSpace(hub.BaseURL) == "" || strings.TrimSpace(hub.TenantID) == "" || !isHubOnline(hub.Status) {
+				continue
+			}
+			return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, hub.TenantID, nil
+		}
+	}
+
+	for _, hub := range result.Hubs {
+		if strings.TrimSpace(hub.BaseURL) == "" || strings.TrimSpace(hub.TenantID) == "" || !isHubOnline(hub.Status) {
+			continue
+		}
+		return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, hub.TenantID, nil
+	}
+	return PickBestHubWithTenantAndID(result)
+}
+
+// PickDefaultRegistrationHubWithTenantAndID chooses the HubCenter default
+// route for a registration without an invitation code. The generic entry for
+// default_hub_id deliberately carries an empty tenant_id: omitting tenant_id
+// lets the Hub apply its configured default-tenant registration policy.
+//
+// Do not replace this with PickRegistrationHubWithTenantAndID. That selector
+// is intentionally invitation-oriented and may choose a tenant whose domain
+// restrictions do not apply to the Hub's public/default registration flow.
+func PickDefaultRegistrationHubWithTenantAndID(result HubCenterResolveResult) (string, string, string, error) {
+	if len(result.Hubs) == 0 {
+		message := strings.TrimSpace(result.Message)
+		if message == "" {
+			message = "no available hubs found"
+		}
+		return "", "", "", fmt.Errorf("%s", message)
+	}
+	defaultHubID := strings.TrimSpace(result.DefaultHubID)
+	if defaultHubID != "" {
+		// Prefer the generic record, because it represents the Hub's default
+		// tenant rather than an invitation-scoped tenant route.
+		for _, hub := range result.Hubs {
+			if strings.TrimSpace(hub.HubID) != defaultHubID || strings.TrimSpace(hub.BaseURL) == "" || strings.TrimSpace(hub.TenantID) != "" || !isHubOnline(hub.Status) {
+				continue
+			}
+			return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, "", nil
+		}
+		// Older HubCenters may return only one tenant-scoped record for their
+		// default. It still identifies the Hub to contact, but it must never
+		// select that tenant for an unauthenticated public registration.
+		for _, hub := range result.Hubs {
+			if strings.TrimSpace(hub.HubID) != defaultHubID || strings.TrimSpace(hub.BaseURL) == "" || !isHubOnline(hub.Status) {
+				continue
+			}
+			return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, "", nil
+		}
+	}
+	// Some older HubCenters omit default_hub_id even though they still return a
+	// public generic route alongside tenant-scoped routes. A public signup must
+	// not select a restricted tenant merely because that entry appears first.
+	for _, hub := range result.Hubs {
+		if strings.TrimSpace(hub.BaseURL) == "" || strings.TrimSpace(hub.TenantID) != "" || !isHubOnline(hub.Status) {
+			continue
+		}
+		return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, "", nil
+	}
+	// If an older response has no generic route at all, retain the usable Hub
+	// endpoint while deliberately omitting tenant_id. A tenant-scoped record is
+	// routing metadata for invitations, not a public-signup tenant selection.
+	for _, hub := range result.Hubs {
+		if strings.TrimSpace(hub.BaseURL) == "" || !isHubOnline(hub.Status) {
+			continue
+		}
+		return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, "", nil
+	}
+	// Last-resort compatibility with stale HubCenter status snapshots.
+	for _, hub := range result.Hubs {
+		if strings.TrimSpace(hub.BaseURL) == "" {
+			continue
+		}
+		return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, "", nil
+	}
 	return "", "", "", fmt.Errorf("hub center did not return a usable hub url")
 }
 

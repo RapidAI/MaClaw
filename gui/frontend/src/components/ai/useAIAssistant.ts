@@ -141,6 +141,8 @@ interface SendMessageOptions {
     lang?: string;
     uiAction?: boolean;
     displayText?: string;
+    /** Attachment metadata for the UI only; the original paths stay in text. */
+    displayAttachments?: ChatAttachment[];
     markConfirmationRunning?: boolean;
     /** Project path to include when sending from a Project Tab */
     project_path?: string;
@@ -286,6 +288,9 @@ export interface ChatUnfinishedSlot {
     summary?: string;
     projectPath?: string;
     status?: string;
+    lastToolName?: string;
+    sideEffectState?: string;
+    recoveryMode?: string;
     actions?: ChatAction[];
 }
 
@@ -370,6 +375,12 @@ interface AIAssistantResponseUnfinishedSlot {
     ProjectPath?: string;
     status?: string;
     Status?: string;
+    last_tool_name?: string;
+    LastToolName?: string;
+    side_effect_state?: string;
+    SideEffectState?: string;
+    recovery_mode?: string;
+    RecoveryMode?: string;
     actions?: ChatAction[];
     Actions?: ChatAction[];
 }
@@ -419,6 +430,8 @@ export interface ChatMessage {
     // running turn rather than starting an independent turn.
     kind?: 'news' | 'trace' | 'taskContext' | 'guideReceipt' | 'guideRejection' | 'guideInjection';
     content: string;
+    /** Local attachment metadata used only for compact user-bubble rendering. */
+    attachments?: ChatAttachment[];
     /** Reasoning/thinking content from reasoning models (displayed as collapsed gray text). */
     reasoning?: string;
     news?: NewsCardData;
@@ -443,6 +456,14 @@ export interface ChatMessage {
     workflowPhaseID?: string;
     /** Workflow document link label. */
     workflowDocLabel?: string;
+}
+
+export interface ChatAttachment {
+    filePath: string;
+    fileName: string;
+    extension: string;
+    isImage: boolean;
+    thumbnailDataUrl?: string;
 }
 
 // Auto-incrementing ID to avoid collisions from rapid messages / progress events.
@@ -494,8 +515,15 @@ const MAX_PERSISTED_MESSAGES = 200;
 const MAX_CONTEXT_MESSAGES_TO_SEND = 80;
 const MAX_PERSISTED_PROMPTS = 100;
 const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
-const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
-const MAX_LIVE_PROGRESS_MESSAGES = 30;
+// These are the raster formats the desktop host validates and can forward as
+// direct vision input. Other image-like files remain ordinary local files.
+const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+// The activity tray is a live indication of work, not a transcript. Keep its
+// footprint predictable while the full answer remains in the conversation.
+const MAX_LIVE_PROGRESS_MESSAGES = 3;
+// Status milestones are rendered in the answer's reasoning panel. Keep their
+// independent cap so reducing the tool tray does not hide useful milestones.
+const MAX_REASONING_STATUS_MESSAGES = 30;
 const HEARTBEAT_PROGRESS_TEXT = "__heartbeat__";
 const GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXT = "收到，正在处理";
 
@@ -534,6 +562,21 @@ function appendProgressText(messages: ChatMessage[], progressText: string): Chat
     }];
     if (next.length <= MAX_LIVE_PROGRESS_MESSAGES) return next;
     return next.slice(-MAX_LIVE_PROGRESS_MESSAGES);
+}
+
+function isThinkingStatusProgress(progressText: string): boolean {
+    return progressText.trim().startsWith('[Status]');
+}
+
+function appendProgressToReasoning(message: ChatMessage, progressText: string): ChatMessage {
+    if (message.role !== 'assistant' || !isThinkingStatusProgress(progressText)) return message;
+    const statusText = progressText.trim().replace(/^\[Status\]\s*/, '').trim();
+    if (!statusText) return message;
+    const nextLine = `• ${statusText}`;
+    const existing = message.reasoning || '';
+    if (existing.split(/\r?\n/).some(line => line.trim() === nextLine)) return message;
+    const lines = existing ? [...existing.split(/\r?\n/), nextLine] : [nextLine];
+    return { ...message, reasoning: lines.slice(-MAX_REASONING_STATUS_MESSAGES).join('\n') };
 }
 
 function progressSemanticKey(progressText: string): string {
@@ -637,10 +680,22 @@ function filePathInspectionInstructions(filePaths: string[]): string {
     // Keep path-side notes minimal — host injects bodies + paging guidance.
     const hasImages = filePaths.some(isImageFilePath);
     if (hasImages) {
-        return "For image files, use the paths directly (vision / read_file); do not re-capture via screenshot.";
+        return "For image files, the host sends them directly to a vision-capable model when available. Analyze attached images first; do not re-capture them or use read_file on image bytes. Use OCR only for exact text when needed.";
     }
     // Documents: no long tool-routing prompt — host expands via ExpandUserSelectedFilePaths.
     return "";
+}
+
+export function attachmentInfoFromFilePath(filePath: string): ChatAttachment {
+    const trimmedPath = filePath.trim();
+    const fileName = trimmedPath.split(/[/\\]/).pop() || trimmedPath;
+    const extension = filePathExtname(trimmedPath);
+    return { filePath: trimmedPath, fileName, extension, isImage: isImageFilePath(trimmedPath) };
+}
+
+export function buildAttachmentDisplayText(text: string, attachments: ChatAttachment[]): string {
+    const trimmedText = text.trim();
+    return trimmedText || (attachments.length > 0 ? "" : trimmedText);
 }
 
 export function buildOutgoingMessage(text: string, selectedFilePath: string): string {
@@ -806,9 +861,12 @@ function serializePersistedMessages(msgs: ChatMessage[]): string | null {
         .slice(-MAX_PERSISTED_MESSAGES)
         .map(sanitizeChatMessageForDisplay)
         .map(m => {
-            if (!m.thumbnailBase64 && !m.imageKey) return m;
             const { thumbnailBase64: _, imageKey: __, ...rest } = m;
-            return rest;
+            if (!rest.attachments?.length) return rest;
+            return {
+                ...rest,
+                attachments: rest.attachments.map(({ thumbnailDataUrl: ___, ...attachment }) => attachment),
+            };
         });
     return toSave.length === 0 ? null : JSON.stringify(toSave);
 }
@@ -853,6 +911,11 @@ function buildClientContextContent(message: ChatMessage): string {
     const parts: string[] = [];
     const text = message.content.trim();
     if (text) parts.push(text);
+    if (message.role === 'user' && message.attachments?.length) {
+        const attachmentPaths = message.attachments.map(attachment => attachment.filePath).filter(Boolean);
+        const agentAttachmentContext = buildOutgoingMessageMulti('', attachmentPaths);
+        if (agentAttachmentContext) parts.push(agentAttachmentContext);
+    }
     if (message.unfinishedSlot) {
         const slot = message.unfinishedSlot;
         const detail = [
@@ -1493,6 +1556,9 @@ function normalizeUnfinishedSlot(raw: AIAssistantResponseUnfinishedSlot | null |
     const summary = typeof raw.summary === 'string' ? raw.summary.trim() : (typeof raw.Summary === 'string' ? raw.Summary.trim() : '');
     const projectPath = typeof raw.project_path === 'string' ? raw.project_path.trim() : (typeof raw.ProjectPath === 'string' ? raw.ProjectPath.trim() : '');
     const status = typeof raw.status === 'string' ? raw.status.trim() : (typeof raw.Status === 'string' ? raw.Status.trim() : '');
+    const lastToolName = typeof raw.last_tool_name === 'string' ? raw.last_tool_name.trim() : (typeof raw.LastToolName === 'string' ? raw.LastToolName.trim() : '');
+    const sideEffectState = typeof raw.side_effect_state === 'string' ? raw.side_effect_state.trim() : (typeof raw.SideEffectState === 'string' ? raw.SideEffectState.trim() : '');
+    const recoveryMode = typeof raw.recovery_mode === 'string' ? raw.recovery_mode.trim() : (typeof raw.RecoveryMode === 'string' ? raw.RecoveryMode.trim() : '');
     const actions = normalizeActions(raw.actions ?? raw.Actions);
     if (!slotID && !title && !summary) return undefined;
     return {
@@ -1501,6 +1567,9 @@ function normalizeUnfinishedSlot(raw: AIAssistantResponseUnfinishedSlot | null |
         summary: summary || undefined,
         projectPath: projectPath || undefined,
         status: status || undefined,
+        lastToolName: lastToolName || undefined,
+        sideEffectState: sideEffectState || undefined,
+        recoveryMode: recoveryMode || undefined,
         actions,
     };
 }
@@ -3418,6 +3487,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
     }, []);
 
+    const appendProgressToRoundReasoning = useCallback((round: ActiveRound | undefined, progressText: string) => {
+        if (!round?.assistantMessageId || !isThinkingStatusProgress(progressText)) return;
+        setMessages(prev => updateMessageById(prev, round.assistantMessageId, message => appendProgressToReasoning(message, progressText)));
+    }, []);
+
     const finalizeRound = useCallback((generation: number) => {
         if (activeRoundRef.current.generation !== generation) return;
         clearTransientProgress();
@@ -4214,7 +4288,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const userMsg: ChatMessage = {
             id: nextId(),
             role: 'user',
-            content: options?.displayText || outgoingText,
+            content: options?.displayText !== undefined ? options.displayText : outgoingText,
+            attachments: options?.displayAttachments,
             sessionKey,
             tabId: options?.tabId,
             timestamp: Date.now(),
@@ -4876,13 +4951,22 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 || currentRound.sessionKey
                 || activeSessionKey,
             );
-            appendProgressForSession(progressSessionKey, progressText);
+			// Status milestones belong to the answer's thinking panel, not the
+			// separate transient activity feed. Other agent/tool events retain
+			// their existing activity-feed behaviour.
+			if (!isThinkingStatusProgress(progressText)) {
+				appendProgressForSession(progressSessionKey, progressText);
+			}
+			appendProgressToRoundReasoning(
+				matchesDetachedRound ? detachedRound : (matchesSessionRound ? sessionRound || undefined : currentRound),
+				progressText,
+			);
         };
         const offProgress = subscribeEvent(PROGRESS_EVENT, handler);
         return () => {
             offProgress();
         };
-    }, [activeSessionKeyForEvents, appendProgressForSession, findInFlightRoundBySession, findPendingTaskBySession, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound]);
+    }, [activeSessionKeyForEvents, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound]);
 
     useEffect(() => {
         // agent-view:lifecycle is the single source of truth for view state.

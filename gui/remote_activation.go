@@ -36,22 +36,107 @@ type RemoteActivationResult struct {
 }
 
 type RemoteRegistrationAuthResult struct {
-	Method         string `json:"method"`
-	TenantID       string `json:"tenant_id,omitempty"`
-	CodeTTLMinutes int    `json:"code_ttl_minutes,omitempty"`
-	CodeLength     int    `json:"code_length,omitempty"`
-	Provider       string `json:"provider,omitempty"`
+	Method                    string `json:"method"`
+	TenantID                  string `json:"tenant_id,omitempty"`
+	EmailVerificationRequired bool   `json:"email_verification_required,omitempty"`
+	CodeTTLMinutes            int    `json:"code_ttl_minutes,omitempty"`
+	CodeLength                int    `json:"code_length,omitempty"`
+	Provider                  string `json:"provider,omitempty"`
 }
 
 type RemoteRegistrationTargetResult struct {
-	Identity       string `json:"identity"`
-	HubURL         string `json:"hub_url"`
-	HubID          string `json:"hub_id,omitempty"`
-	TenantID       string `json:"tenant_id,omitempty"`
-	Method         string `json:"method"`
-	CodeTTLMinutes int    `json:"code_ttl_minutes,omitempty"`
-	CodeLength     int    `json:"code_length,omitempty"`
-	Provider       string `json:"provider,omitempty"`
+	Identity                  string `json:"identity"`
+	HubURL                    string `json:"hub_url"`
+	HubID                     string `json:"hub_id,omitempty"`
+	TenantID                  string `json:"tenant_id,omitempty"`
+	Method                    string `json:"method"`
+	EmailVerificationRequired bool   `json:"email_verification_required"`
+	CodeTTLMinutes            int    `json:"code_ttl_minutes,omitempty"`
+	CodeLength                int    `json:"code_length,omitempty"`
+	Provider                  string `json:"provider,omitempty"`
+}
+
+// ReferralHandoffClaimResult contains the opaque registration session returned
+// by Hub after the desktop claims a browser-created deep-link handoff. No
+// referral code is returned or stored locally.
+type ReferralHandoffClaimResult struct {
+	RegistrationSession string `json:"registration_session"`
+	ExpiresInSeconds    int    `json:"expires_in_seconds"`
+	Tenant              struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	} `json:"tenant"`
+	RegistrationMethod string  `json:"registration_method"`
+	InviteeCredits     float64 `json:"invitee_credits"`
+	DurationDays       int     `json:"duration_days"`
+}
+
+// ReferralRegistrationStatus is intentionally limited to resume-safe workflow
+// information. Hub never returns the referral code, inviter or invitee details
+// to a desktop client after it has claimed the opaque handoff.
+type ReferralRegistrationStatus struct {
+	RegistrationStatus string `json:"registration_status"`
+	RegistrationMethod string `json:"registration_method"`
+}
+
+func (a *App) GetReferralRegistrationStatus(hubURL string, tenantID string, registrationSession string) (ReferralRegistrationStatus, error) {
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	tenantID = strings.TrimSpace(tenantID)
+	registrationSession = strings.TrimSpace(registrationSession)
+	if !validReferralHandoffHubURL(hubURL) || tenantID == "" || registrationSession == "" || len(registrationSession) > 256 || strings.ContainsAny(registrationSession, "\r\n\t ") {
+		return ReferralRegistrationStatus{}, fmt.Errorf("invalid referral registration session")
+	}
+	req, err := http.NewRequest(http.MethodGet, hubURL+"/api/public/referral-registration/status", nil)
+	if err != nil {
+		return ReferralRegistrationStatus{}, err
+	}
+	req.Header.Set("X-MaClaw-Referral-Session", registrationSession)
+	req.Header.Set("X-MaClaw-Referral-Tenant", tenantID)
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return ReferralRegistrationStatus{}, err
+	}
+	defer resp.Body.Close()
+	var result ReferralRegistrationStatus
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "get referral registration status"); err != nil {
+		return ReferralRegistrationStatus{}, err
+	}
+	if resp.StatusCode >= 300 {
+		return ReferralRegistrationStatus{}, fmt.Errorf("referral registration status is unavailable")
+	}
+	return result, nil
+}
+
+// ClaimReferralHandoff exchanges an opaque deep-link token for a short-lived
+// desktop registration session. The caller keeps it in memory only and sends
+// it to the dedicated public referral registration endpoints.
+func (a *App) ClaimReferralHandoff(hubURL string, handoff string) (ReferralHandoffClaimResult, error) {
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	handoff = strings.TrimSpace(handoff)
+	if !validReferralHandoffHubURL(hubURL) || handoff == "" || len(handoff) > 256 || strings.ContainsAny(handoff, "\r\n\t ") {
+		return ReferralHandoffClaimResult{}, fmt.Errorf("invalid referral handoff")
+	}
+	payload, err := json.Marshal(map[string]string{"handoff": handoff})
+	if err != nil {
+		return ReferralHandoffClaimResult{}, err
+	}
+	resp, err := hubHTTPClient.Post(hubURL+"/api/public/referral-handoffs/claim", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return ReferralHandoffClaimResult{}, err
+	}
+	defer resp.Body.Close()
+	var result ReferralHandoffClaimResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "claim referral handoff"); err != nil {
+		return ReferralHandoffClaimResult{}, err
+	}
+	if resp.StatusCode >= 300 || strings.TrimSpace(result.RegistrationSession) == "" || strings.TrimSpace(result.Tenant.ID) == "" {
+		if resp.StatusCode >= 300 {
+			return ReferralHandoffClaimResult{}, fmt.Errorf("referral handoff is invalid or expired")
+		}
+		return ReferralHandoffClaimResult{}, fmt.Errorf("invalid referral handoff response")
+	}
+	return result, nil
 }
 
 type RemoteSMSSendResult struct {
@@ -95,6 +180,333 @@ func (a *App) SendRemoteRegistrationEmail(hubURL string, email string, tenantID 
 		return RemoteRegistrationContactResult{}, remoteRegistrationContactError(result, "send email code failed: "+resp.Status)
 	}
 	return result, nil
+}
+
+func (a *App) SendReferralRegistrationEmail(hubURL string, email string, tenantID string, registrationSession string) (RemoteRegistrationContactResult, error) {
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	email = strings.TrimSpace(strings.ToLower(email))
+	registrationSession = strings.TrimSpace(registrationSession)
+	if hubURL == "" || tenantID == "" || registrationSession == "" || email == "" || !strings.Contains(email, "@") {
+		return RemoteRegistrationContactResult{}, fmt.Errorf("invalid referral registration request")
+	}
+	payload, err := json.Marshal(map[string]string{"email": email})
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/public/referral-registration/email/send-code", bytes.NewReader(payload))
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Referral-Session", registrationSession)
+	req.Header.Set("X-MaClaw-Referral-Tenant", strings.TrimSpace(tenantID))
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	defer resp.Body.Close()
+	var result RemoteRegistrationContactResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "send referral registration email code"); err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		return RemoteRegistrationContactResult{}, remoteRegistrationContactError(result, "send referral email code failed: "+resp.Status)
+	}
+	return result, nil
+}
+
+func (a *App) RegisterReferralEmail(hubURL string, email string, verifyCode string, tenantID string, registrationSession string) error {
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	registrationSession = strings.TrimSpace(registrationSession)
+	if hubURL == "" || strings.TrimSpace(tenantID) == "" || registrationSession == "" || strings.TrimSpace(email) == "" || strings.TrimSpace(verifyCode) == "" {
+		return fmt.Errorf("invalid referral registration request")
+	}
+	payload, err := json.Marshal(map[string]string{"email": strings.TrimSpace(email), "verify_code": strings.TrimSpace(verifyCode)})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/public/referral-registration/register", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Referral-Session", registrationSession)
+	req.Header.Set("X-MaClaw-Referral-Tenant", strings.TrimSpace(tenantID))
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Message string `json:"message"`
+		Code    string `json:"code"`
+	}
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "complete referral registration"); err != nil {
+		return err
+	}
+	if resp.StatusCode >= 300 {
+		if result.Code != "" {
+			return fmt.Errorf("%s: %s", result.Code, result.Message)
+		}
+		return fmt.Errorf("referral registration failed: %s", resp.Status)
+	}
+	return nil
+}
+
+// SendReferralRegistrationSMS sends a verification code through the same
+// referral-bound session used by the email flow. The tenant and inviter are
+// resolved only by Hub from that opaque session; neither is supplied in JSON.
+func (a *App) SendReferralRegistrationSMS(hubURL string, phoneNumber string, tenantID string, registrationSession string) (RemoteSMSSendResult, error) {
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	phoneNumber = normalizeRemoteRegistrationPhoneNumber(phoneNumber)
+	registrationSession = strings.TrimSpace(registrationSession)
+	if hubURL == "" || strings.TrimSpace(tenantID) == "" || registrationSession == "" || len(phoneNumber) < 6 {
+		return RemoteSMSSendResult{}, fmt.Errorf("invalid referral registration request")
+	}
+	payload, err := json.Marshal(map[string]string{"phone": phoneNumber})
+	if err != nil {
+		return RemoteSMSSendResult{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/public/referral-registration/phone/send-code", bytes.NewReader(payload))
+	if err != nil {
+		return RemoteSMSSendResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Referral-Session", registrationSession)
+	req.Header.Set("X-MaClaw-Referral-Tenant", strings.TrimSpace(tenantID))
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return RemoteSMSSendResult{}, err
+	}
+	defer resp.Body.Close()
+	var result RemoteSMSSendResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "send referral registration SMS"); err != nil {
+		return RemoteSMSSendResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		if result.Code != "" && result.Message != "" {
+			return RemoteSMSSendResult{}, fmt.Errorf("%s: %s", result.Code, result.Message)
+		}
+		if result.Code != "" {
+			return RemoteSMSSendResult{}, fmt.Errorf("%s", result.Code)
+		}
+		if result.Message != "" {
+			return RemoteSMSSendResult{}, fmt.Errorf("%s", result.Message)
+		}
+		return RemoteSMSSendResult{}, fmt.Errorf("send referral SMS failed: %s", resp.Status)
+	}
+	return result, nil
+}
+
+// RegisterReferralPhone verifies a referral-bound phone registration. It
+// creates the user and issues referral credits, but deliberately does not
+// create a machine. ActivateReferralRemotePhone binds this desktop afterwards.
+func (a *App) RegisterReferralPhone(hubURL string, phoneNumber string, verifyCode string, tenantID string, registrationSession string) error {
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	phoneNumber = normalizeRemoteRegistrationPhoneNumber(phoneNumber)
+	registrationSession = strings.TrimSpace(registrationSession)
+	verifyCode = strings.TrimSpace(verifyCode)
+	if hubURL == "" || strings.TrimSpace(tenantID) == "" || registrationSession == "" || len(phoneNumber) < 6 || verifyCode == "" {
+		return fmt.Errorf("invalid referral registration request")
+	}
+	payload, err := json.Marshal(map[string]string{"phone": phoneNumber, "verify_code": verifyCode})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/public/referral-registration/phone/register", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Referral-Session", registrationSession)
+	req.Header.Set("X-MaClaw-Referral-Tenant", strings.TrimSpace(tenantID))
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Message string `json:"message"`
+		Code    string `json:"code"`
+	}
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "complete referral phone registration"); err != nil {
+		return err
+	}
+	if resp.StatusCode >= 300 {
+		if result.Code != "" {
+			return fmt.Errorf("%s: %s", result.Code, result.Message)
+		}
+		return fmt.Errorf("referral registration failed: %s", resp.Status)
+	}
+	return nil
+}
+
+// ActivateReferralRemoteEmail enrolls the first desktop only through the
+// referral-bound endpoint. A normal enrollment endpoint must not be used here:
+// it would permit the newly created account to be rebound without proving the
+// opaque referral session that created it.
+func (a *App) ActivateReferralRemoteEmail(hubURL string, email string, tenantID string, registrationSession string) (RemoteActivationResult, error) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	tenantID = strings.TrimSpace(tenantID)
+	registrationSession = strings.TrimSpace(registrationSession)
+	if hubURL == "" || tenantID == "" || registrationSession == "" || email == "" || !strings.Contains(email, "@") {
+		return RemoteActivationResult{}, fmt.Errorf("invalid referral registration request")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
+	clientID := remote.EnsureDeviceKey(cfg.RemoteClientID)
+	if err := a.PatchConfig(func(next *corelib.AppConfig) { next.RemoteClientID = clientID }); err != nil {
+		return RemoteActivationResult{}, err
+	}
+	heartbeat := profile.HeartbeatSec
+	if heartbeat <= 0 {
+		heartbeat = 30
+	} else if heartbeat < 5 {
+		heartbeat = 5
+	}
+	payload, err := json.Marshal(map[string]any{
+		"email": email, "machine_name": profile.Name, "platform": profile.Platform,
+		"hostname": profile.Hostname, "arch": profile.Arch, "app_version": profile.AppVersion,
+		"heartbeat_interval_sec": heartbeat, "client_id": clientID,
+	})
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/public/referral-registration/email/enroll", bytes.NewReader(payload))
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Referral-Session", registrationSession)
+	req.Header.Set("X-MaClaw-Referral-Tenant", tenantID)
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	defer resp.Body.Close()
+	var enrollResult remote.EnrollResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &enrollResult, "referral email enrollment"); err != nil {
+		return RemoteActivationResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		if enrollResult.Code != "" {
+			return RemoteActivationResult{}, fmt.Errorf("%s: %s", enrollResult.Code, enrollResult.Message)
+		}
+		if enrollResult.Message != "" {
+			return RemoteActivationResult{}, fmt.Errorf("%s", enrollResult.Message)
+		}
+		return RemoteActivationResult{}, fmt.Errorf("referral email enrollment failed: %s", resp.Status)
+	}
+	enrollResult.HubURL = hubURL
+	enrollResult.ClientID = clientID
+	if err := a.PatchConfig(func(next *corelib.AppConfig) {
+		next.RemoteEmail = enrollResult.Email
+		next.RemoteMobile = normalizeRemoteRegistrationPhoneNumber(enrollResult.PhoneNumber)
+		next.RemoteSN = enrollResult.SN
+		next.RemoteUserID = enrollResult.UserID
+		next.RemoteTenantID = enrollResult.TenantID
+		next.RemoteTenantName = enrollResult.TenantName
+		next.RemoteMachineID = enrollResult.MachineID
+		next.RemoteMachineName = profile.Name
+		next.RemoteMachineToken = enrollResult.MachineToken
+		next.RemoteNickname = ""
+		next.RemoteHubID = enrollResult.HubID
+		next.RemoteHubURL = hubURL
+		next.RemoteEnabled = true
+		next.RemoteViewerToken = enrollResult.ViewerToken
+	}); err != nil {
+		return RemoteActivationResult{}, err
+	}
+	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, email), enrollResult.MachineID, enrollResult.ViewerToken)
+	a.emitRemoteStateChanged()
+	return RemoteActivationResult{Status: enrollResult.Status, HubID: enrollResult.HubID, TenantID: enrollResult.TenantID, TenantName: enrollResult.TenantName, Message: enrollResult.Message, Code: enrollResult.Code, UserID: enrollResult.UserID, Email: enrollResult.Email, PhoneNumber: normalizeRemoteRegistrationPhoneNumber(enrollResult.PhoneNumber), SN: enrollResult.SN, MachineID: enrollResult.MachineID, MachineToken: enrollResult.MachineToken, ViewerToken: enrollResult.ViewerToken, ExpiresAt: enrollResult.ExpiresAt, VIPFlag: enrollResult.VIPFlag}, nil
+}
+
+// ActivateReferralRemotePhone binds this desktop only after a referral phone
+// registration has created the user. It uses the dedicated session-bound
+// endpoint, so a normal phone enrollment cannot be substituted for it.
+func (a *App) ActivateReferralRemotePhone(hubURL string, phoneNumber string, tenantID string, registrationSession string) (RemoteActivationResult, error) {
+	phoneNumber = normalizeRemoteRegistrationPhoneNumber(phoneNumber)
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	registrationSession = strings.TrimSpace(registrationSession)
+	if hubURL == "" || strings.TrimSpace(tenantID) == "" || registrationSession == "" || len(phoneNumber) < 6 {
+		return RemoteActivationResult{}, fmt.Errorf("valid phone number is required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
+	clientID := remote.EnsureDeviceKey(cfg.RemoteClientID)
+	if err := a.PatchConfig(func(next *corelib.AppConfig) { next.RemoteClientID = clientID }); err != nil {
+		return RemoteActivationResult{}, err
+	}
+	heartbeat := profile.HeartbeatSec
+	if heartbeat <= 0 {
+		heartbeat = 30
+	} else if heartbeat < 5 {
+		heartbeat = 5
+	}
+	payload, err := json.Marshal(map[string]any{
+		"phone_number": phoneNumber, "machine_name": profile.Name, "platform": profile.Platform,
+		"hostname": profile.Hostname, "arch": profile.Arch, "app_version": profile.AppVersion,
+		"heartbeat_interval_sec": heartbeat, "client_id": clientID,
+	})
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/public/referral-registration/phone/enroll", bytes.NewReader(payload))
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Referral-Session", registrationSession)
+	req.Header.Set("X-MaClaw-Referral-Tenant", strings.TrimSpace(tenantID))
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	defer resp.Body.Close()
+	var enrollResult remote.EnrollResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &enrollResult, "referral phone enrollment"); err != nil {
+		return RemoteActivationResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		if enrollResult.Code != "" {
+			return RemoteActivationResult{}, fmt.Errorf("%s: %s", enrollResult.Code, enrollResult.Message)
+		}
+		if enrollResult.Message != "" {
+			return RemoteActivationResult{}, fmt.Errorf("%s", enrollResult.Message)
+		}
+		return RemoteActivationResult{}, fmt.Errorf("referral phone enrollment failed: %s", resp.Status)
+	}
+	enrollResult.HubURL = hubURL
+	enrollResult.ClientID = clientID
+	if err := a.PatchConfig(func(next *corelib.AppConfig) {
+		next.RemoteEmail = enrollResult.Email
+		next.RemoteMobile = phoneNumber
+		next.RemoteSN = enrollResult.SN
+		next.RemoteUserID = enrollResult.UserID
+		next.RemoteTenantID = enrollResult.TenantID
+		next.RemoteTenantName = enrollResult.TenantName
+		next.RemoteMachineID = enrollResult.MachineID
+		next.RemoteMachineName = profile.Name
+		next.RemoteMachineToken = enrollResult.MachineToken
+		next.RemoteNickname = ""
+		next.RemoteHubID = enrollResult.HubID
+		next.RemoteHubURL = hubURL
+		next.RemoteEnabled = true
+		next.RemoteViewerToken = enrollResult.ViewerToken
+	}); err != nil {
+		return RemoteActivationResult{}, err
+	}
+	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, phoneNumber), enrollResult.MachineID, enrollResult.ViewerToken)
+	a.emitRemoteStateChanged()
+	return RemoteActivationResult{Status: enrollResult.Status, HubID: enrollResult.HubID, TenantID: enrollResult.TenantID, TenantName: enrollResult.TenantName, Message: enrollResult.Message, Code: enrollResult.Code, UserID: enrollResult.UserID, Email: enrollResult.Email, PhoneNumber: phoneNumber, SN: enrollResult.SN, MachineID: enrollResult.MachineID, MachineToken: enrollResult.MachineToken, ViewerToken: enrollResult.ViewerToken, ExpiresAt: enrollResult.ExpiresAt, VIPFlag: enrollResult.VIPFlag}, nil
 }
 
 type RemoteRegistrationContactResult struct {
@@ -351,7 +763,7 @@ func (a *App) GetRemoteRegistrationAuth(hubURL string, tenantID string) (RemoteR
 func getRemoteRegistrationAuth(hubURL string, tenantID string, identity string) (RemoteRegistrationAuthResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
 	if hubURL == "" {
-		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: defaultRemoteRegistrationSMSCodeLength}, nil
+		return RemoteRegistrationAuthResult{Method: "email", EmailVerificationRequired: true, CodeTTLMinutes: 5, CodeLength: defaultRemoteRegistrationSMSCodeLength}, nil
 	}
 	authURL := strings.TrimRight(hubURL, "/") + "/api/enroll/registration-auth"
 	if strings.TrimSpace(tenantID) != "" {
@@ -383,13 +795,14 @@ func getRemoteRegistrationAuth(hubURL string, tenantID string, identity string) 
 	// is unavailable.
 	if resp.StatusCode == http.StatusNotFound {
 		return RemoteRegistrationAuthResult{
-			Method:         "email",
-			TenantID:       strings.TrimSpace(tenantID),
-			CodeTTLMinutes: 5,
-			CodeLength:     defaultRemoteRegistrationSMSCodeLength,
+			Method:                    "email",
+			TenantID:                  strings.TrimSpace(tenantID),
+			EmailVerificationRequired: true,
+			CodeTTLMinutes:            5,
+			CodeLength:                defaultRemoteRegistrationSMSCodeLength,
 		}, nil
 	}
-	var result RemoteRegistrationAuthResult
+	result := RemoteRegistrationAuthResult{EmailVerificationRequired: true}
 	if err := remote.DecodeHTTPJSONResponse(resp, &result, "registration auth config"); err != nil {
 		return RemoteRegistrationAuthResult{}, err
 	}
@@ -436,7 +849,12 @@ func (a *App) resolveRemoteRegistrationTarget(identity string, invitationCode st
 	if err != nil {
 		return RemoteRegistrationTargetResult{}, err
 	}
-	hubURL, hubID, tenantID, err := remote.PickBestHubWithTenantAndID(*result)
+	var hubURL, hubID, tenantID string
+	if strings.TrimSpace(invitationCode) == "" {
+		hubURL, hubID, tenantID, err = remote.PickDefaultRegistrationHubWithTenantAndID(*result)
+	} else {
+		hubURL, hubID, tenantID, err = remote.PickRegistrationHubWithTenantAndID(*result)
+	}
 	if err != nil {
 		if strings.TrimSpace(cfg.RemoteHubURL) != "" && canFallbackToConfiguredHubForPhoneRoute(identity, result) {
 			if fallback, fallbackErr := a.resolveRemoteRegistrationTargetFromHub(identity, cfg.RemoteHubURL, cfg.RemoteHubID, cfg.RemoteTenantID); fallbackErr == nil {
@@ -454,14 +872,15 @@ func (a *App) resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, te
 		return RemoteRegistrationTargetResult{}, err
 	}
 	return RemoteRegistrationTargetResult{
-		Identity:       identity,
-		HubURL:         strings.TrimRight(strings.TrimSpace(hubURL), "/"),
-		HubID:          hubID,
-		TenantID:       firstNonEmpty(auth.TenantID, tenantID),
-		Method:         auth.Method,
-		CodeTTLMinutes: auth.CodeTTLMinutes,
-		CodeLength:     auth.CodeLength,
-		Provider:       auth.Provider,
+		Identity:                  identity,
+		HubURL:                    strings.TrimRight(strings.TrimSpace(hubURL), "/"),
+		HubID:                     hubID,
+		TenantID:                  firstNonEmpty(auth.TenantID, tenantID),
+		Method:                    auth.Method,
+		EmailVerificationRequired: auth.EmailVerificationRequired,
+		CodeTTLMinutes:            auth.CodeTTLMinutes,
+		CodeLength:                auth.CodeLength,
+		Provider:                  auth.Provider,
 	}, nil
 }
 
@@ -795,11 +1214,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 }
 
 func (a *App) ActivateRemoteEmail(hubURL string, email string, verifyCode string, invitationCode string, tenantID string, hubID string) (RemoteActivationResult, error) {
-	verifyCode = strings.TrimSpace(verifyCode)
-	if verifyCode == "" {
-		return RemoteActivationResult{}, fmt.Errorf("verification code is required")
-	}
-	return a.activateRemoteEmail(email, verifyCode, invitationCode, "", hubURL, tenantID, hubID)
+	return a.activateRemoteEmail(email, strings.TrimSpace(verifyCode), invitationCode, "", hubURL, tenantID, hubID)
 }
 
 func (a *App) activateRemoteEmail(email string, verifyCode string, invitationCode string, mobile string, directHubURL string, tenantID string, hubID string) (RemoteActivationResult, error) {
@@ -819,27 +1234,28 @@ func (a *App) activateRemoteEmail(email string, verifyCode string, invitationCod
 	// Build enrollment config from app config.
 	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
 	enrollCfg := remote.EnrollConfig{
-		Email:            email,
-		VerificationCode: verifyCode,
-		InvitationCode:   invitationCode,
-		Mobile:           mobile,
-		ClientID:         cfg.RemoteClientID,
-		HubURL:           strings.TrimSpace(cfg.RemoteHubURL),
-		HubCenterURL:     strings.TrimSpace(cfg.RemoteHubCenterURL),
-		HubCenterURLs:    cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs),
-		MachineName:      profile.Name,
-		Platform:         profile.Platform,
-		Hostname:         profile.Hostname,
-		Arch:             profile.Arch,
-		AppVersion:       profile.AppVersion,
-		HeartbeatSec:     profile.HeartbeatSec,
-		TenantID:         strings.TrimSpace(tenantID),
-		HubID:            strings.TrimSpace(hubID),
+		Email:                 email,
+		VerificationCode:      verifyCode,
+		InvitationCode:        invitationCode,
+		SkipEmailVerification: strings.TrimSpace(verifyCode) == "" && strings.TrimSpace(invitationCode) != "" && strings.TrimSpace(directHubURL) != "",
+		Mobile:                mobile,
+		ClientID:              cfg.RemoteClientID,
+		HubURL:                strings.TrimSpace(cfg.RemoteHubURL),
+		HubCenterURL:          strings.TrimSpace(cfg.RemoteHubCenterURL),
+		HubCenterURLs:         cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs),
+		MachineName:           profile.Name,
+		Platform:              profile.Platform,
+		Hostname:              profile.Hostname,
+		Arch:                  profile.Arch,
+		AppVersion:            profile.AppVersion,
+		HeartbeatSec:          profile.HeartbeatSec,
+		TenantID:              strings.TrimSpace(tenantID),
+		HubID:                 strings.TrimSpace(hubID),
 	}
 	// Activation must dynamically confirm the HubCenter -> Hub routing instead
 	// of reusing a cached Hub URL. The HubCenter shown in About should be the
 	// node that actually resolved this registration.
-	if strings.TrimSpace(verifyCode) != "" {
+	if strings.TrimSpace(directHubURL) != "" && (strings.TrimSpace(verifyCode) != "" || strings.TrimSpace(tenantID) != "" || enrollCfg.SkipEmailVerification) {
 		enrollCfg.HubURL = strings.TrimRight(strings.TrimSpace(directHubURL), "/")
 		enrollCfg.DirectHub = true
 		if enrollCfg.HubURL == "" {

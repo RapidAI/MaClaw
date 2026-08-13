@@ -23,21 +23,27 @@ const (
 	workflowFormRemotePortField  = "remote_port"
 	workflowFormSSHPasswordField = "ssh_password"
 	workflowFormSSHKeyPathField  = "ssh_key_path"
-	workflowFormRemoteTaskPath   = "remote_task_path"
-	workflowFormExecLocal        = "local"
-	workflowFormExecRemote       = "remote"
-	workflowFormSSHProfileNew    = "__new__"
+	// workflowFormSSHHostKeyFingerprintField is non-secret connection
+	// identity metadata. It is populated from a selected saved profile so a
+	// workflow keeps the profile's stricter host-key policy; new connections
+	// leave it empty and establish a pin during the authenticated handshake.
+	workflowFormSSHHostKeyFingerprintField = "ssh_host_key_fingerprint"
+	workflowFormRemoteTaskPath             = "remote_task_path"
+	workflowFormExecLocal                  = "local"
+	workflowFormExecRemote                 = "remote"
+	workflowFormSSHProfileNew              = "__new__"
 )
 
 // codingWorkflowRemoteCreds is session-only auth for coding workflow remote runs.
 type codingWorkflowRemoteCreds struct {
-	Password string
-	KeyPath  string
-	Host     string
-	User     string
-	Port     int
-	WorkDir  string
-	Profile  string
+	Password           string
+	KeyPath            string
+	Host               string
+	User               string
+	Port               int
+	WorkDir            string
+	Profile            string
+	HostKeyFingerprint string
 }
 
 // emitWorkflowPhaseForm builds an AgentView form from the phase's InputSchema
@@ -297,18 +303,15 @@ func resolveCodingWorkflowRemoteFormData(hosts []corelib.SSHHostEntry, data map[
 		if !ok {
 			return fmt.Errorf("未找到 SSH 主机「%s」，请在 SSH 面板检查配置，或选「新建连接」", profile)
 		}
-		if host == "" {
-			host = strings.TrimSpace(entry.Host)
-		}
-		if user == "" {
-			user = strings.TrimSpace(entry.User)
-		}
-		if port <= 0 || formDataTrimString(data, workflowFormRemotePortField) == "" {
-			if entry.Port > 0 {
-				port = entry.Port
-			} else {
-				port = 22
-			}
+		// Profile selection is authoritative for target coordinates. Those form
+		// inputs are hidden for saved profiles, but browsers can still submit
+		// values left over from a previous "new connection" selection. Allowing
+		// them through could pair one profile's host-key pin with another host.
+		host = strings.TrimSpace(entry.Host)
+		user = strings.TrimSpace(entry.User)
+		port = entry.Port
+		if port <= 0 {
+			port = 22
 		}
 		if keyPath == "" {
 			keyPath = strings.TrimSpace(entry.KeyPath)
@@ -321,6 +324,18 @@ func resolveCodingWorkflowRemoteFormData(hosts []corelib.SSHHostEntry, data map[
 		if strings.TrimSpace(entry.Label) != "" {
 			data[workflowFormSSHProfileField] = strings.TrimSpace(entry.Label)
 		}
+		// The selected profile is authoritative for non-secret connection
+		// identity, too. Never keep a pin posted by the form for a different
+		// profile/host; it would turn a harmless stale form into a failed login.
+		if fingerprint := strings.TrimSpace(entry.HostKeyFingerprint); fingerprint != "" {
+			data[workflowFormSSHHostKeyFingerprintField] = fingerprint
+		} else {
+			delete(data, workflowFormSSHHostKeyFingerprintField)
+		}
+	} else {
+		// A new connection has no saved trust anchor. Discard any stale hidden
+		// value so it establishes a pin in its own authenticated handshake.
+		delete(data, workflowFormSSHHostKeyFingerprintField)
 	}
 
 	host = normalizeSSHHostInput(host)
@@ -423,13 +438,14 @@ func findSSHHostEntryByProfile(hosts []corelib.SSHHostEntry, profile string) (co
 func captureCodingWorkflowRemoteCreds(data map[string]interface{}) codingWorkflowRemoteCreds {
 	port := formDataPort(data, workflowFormRemotePortField, 22)
 	return codingWorkflowRemoteCreds{
-		Password: formDataTrimString(data, workflowFormSSHPasswordField),
-		KeyPath:  formDataTrimString(data, workflowFormSSHKeyPathField),
-		Host:     formDataTrimString(data, workflowFormRemoteHostField),
-		User:     formDataTrimString(data, workflowFormRemoteUserField),
-		Port:     port,
-		WorkDir:  formDataTrimString(data, workflowFormRemoteWorkDir),
-		Profile:  formDataTrimString(data, workflowFormSSHProfileField),
+		Password:           formDataTrimString(data, workflowFormSSHPasswordField),
+		KeyPath:            formDataTrimString(data, workflowFormSSHKeyPathField),
+		Host:               formDataTrimString(data, workflowFormRemoteHostField),
+		User:               formDataTrimString(data, workflowFormRemoteUserField),
+		Port:               port,
+		WorkDir:            formDataTrimString(data, workflowFormRemoteWorkDir),
+		Profile:            formDataTrimString(data, workflowFormSSHProfileField),
+		HostKeyFingerprint: formDataTrimString(data, workflowFormSSHHostKeyFingerprintField),
 	}
 }
 

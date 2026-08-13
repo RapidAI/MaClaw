@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -324,41 +325,45 @@ func skillRestore(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	r, err := zip.OpenReader(zipPath)
+	if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
+		return fmt.Errorf("create skills parent: %w", err)
+	}
+	stage, err := os.MkdirTemp(filepath.Dir(root), ".skill-restore-*")
 	if err != nil {
-		return fmt.Errorf("open zip: %w", err)
+		return fmt.Errorf("create skill restore staging directory: %w", err)
 	}
-	defer r.Close()
-
-	count := 0
-	for _, f := range r.File {
-		target := filepath.Join(root, filepath.FromSlash(f.Name))
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(target, 0o755)
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.Create(target)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		_, err = io.Copy(out, rc)
-		out.Close()
-		rc.Close()
-		if err != nil {
-			return err
-		}
-		count++
+	defer os.RemoveAll(stage)
+	result := archiveutil.ExtractToDirectory(zipPath, stage, archiveutil.Limits{
+		MaxInputBytes: 64 << 20,
+		MaxFiles:      4_096,
+		MaxFileBytes:  32 << 20,
+		MaxTotalBytes: 256 << 20,
+	})
+	if !result.OK {
+		return fmt.Errorf("extract skill backup: %s: %s", result.Code, result.Message)
 	}
+	if result.Format != archiveutil.FormatZIP {
+		return fmt.Errorf("skill backup must be a ZIP archive, got %s", result.Format)
+	}
+	if err := restoreStagedSkillTree(stage, root); err != nil {
+		return err
+	}
+	count := result.Files
 	Printf("Skills restored: %d files from %s\n", count, zipPath)
+	return nil
+}
+
+// restoreStagedSkillTree publishes an already-validated archive tree. Archive
+// parsing and untrusted writes happen only in archiveutil's private staging
+// directory; this function retains the historical restore behaviour of
+// merging archive contents into the existing skills root.
+func restoreStagedSkillTree(stage, root string) error {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("create skills directory: %w", err)
+	}
+	if err := archiveutil.MergeValidatedDirectory(stage, root); err != nil {
+		return fmt.Errorf("restore staged skill backup: %w", err)
+	}
 	return nil
 }
 
@@ -434,46 +439,40 @@ func skillImport(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return fmt.Errorf("open zip: %w", err)
+	if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
+		return fmt.Errorf("create skills parent: %w", err)
 	}
-	defer r.Close()
-
-	count := 0
-	var skillName string
-	for _, f := range r.File {
-		target := filepath.Join(root, filepath.FromSlash(f.Name))
-		if skillName == "" {
-			parts := strings.SplitN(filepath.ToSlash(f.Name), "/", 2)
-			if len(parts) > 0 {
-				skillName = parts[0]
-			}
-		}
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(target, 0o755)
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.Create(target)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		_, err = io.Copy(out, rc)
-		out.Close()
-		rc.Close()
-		if err != nil {
-			return err
-		}
-		count++
+	stage, err := os.MkdirTemp(filepath.Dir(root), ".skill-import-*")
+	if err != nil {
+		return fmt.Errorf("create skill import staging directory: %w", err)
+	}
+	defer os.RemoveAll(stage)
+	result := archiveutil.ExtractToDirectory(zipPath, stage, archiveutil.Limits{
+		MaxInputBytes: 64 << 20,
+		MaxFiles:      4_096,
+		MaxFileBytes:  32 << 20,
+		MaxTotalBytes: 256 << 20,
+	})
+	if !result.OK {
+		return fmt.Errorf("extract skill package: %s: %s", result.Code, result.Message)
+	}
+	if result.Format != archiveutil.FormatZIP {
+		return fmt.Errorf("skill package must be a ZIP archive, got %s", result.Format)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("create skills directory: %w", err)
+	}
+	count := result.Files
+	entries, err := os.ReadDir(stage)
+	if err != nil {
+		return fmt.Errorf("read extracted skill package: %w", err)
+	}
+	skillName := ""
+	if len(entries) > 0 {
+		skillName = entries[0].Name()
+	}
+	if err := archiveutil.MergeValidatedDirectory(stage, root); err != nil {
+		return fmt.Errorf("install imported skill package: %w", err)
 	}
 	Printf("Skill '%s' imported: %d files from %s\n", skillName, count, zipPath)
 	return nil

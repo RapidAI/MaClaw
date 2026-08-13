@@ -24,6 +24,14 @@ describe("normalizeCodingTaskLaunch", () => {
         expect(normalizeCodingTaskLaunch({ projectPath: "D:/tasks/plain", taskTitle: "Plain", remoteNeedsReconnect: true })?.remoteNeedsReconnect).toBeUndefined();
     });
 
+    it("preserves a trimmed caller correlation ID", () => {
+        expect(normalizeCodingTaskLaunch({
+            launchId: " skill-run-42 ",
+            projectPath: "D:/tasks/skill",
+            taskTitle: "Run skill",
+        })?.launchId).toBe("skill-run-42");
+    });
+
     it("preserves diagnosis safety only for remote launches", () => {
         expect(normalizeCodingTaskLaunch({
             projectPath: "D:/tasks/incident",

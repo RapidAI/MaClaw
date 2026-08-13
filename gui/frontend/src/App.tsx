@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithMode, DeleteSkill, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithMode, DeleteSkill, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOff, EventsOn, Quit, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
@@ -194,6 +194,7 @@ type SidebarProviderStateWire = {
         agent_type?: string; AgentType?: string;
         auth_type?: string; AuthType?: string;
         is_hub_service?: boolean; IsHubService?: boolean;
+        supports_vision?: boolean; SupportsVision?: boolean;
     }>;
     Providers?: Array<{
         id?: string; ID?: string;
@@ -206,6 +207,7 @@ type SidebarProviderStateWire = {
         agent_type?: string; AgentType?: string;
         auth_type?: string; AuthType?: string;
         is_hub_service?: boolean; IsHubService?: boolean;
+        supports_vision?: boolean; SupportsVision?: boolean;
     }>;
     current?: string;
     Current?: string;
@@ -485,35 +487,6 @@ function App() {
         return () => window.removeEventListener('maclaw:open-apps-panel', openAppsPanel);
     }, [setNavTabNow, showAppEntryEnabled]);
     useEffect(() => {
-        const runSkill = (e: Event) => {
-            const detail = (e as CustomEvent).detail;
-            const name = detail?.name;
-            if (!name) return;
-            // Switch to AI tab and send a run command through the chat.
-            // Use a retry loop to handle the case where AIAssistantPanel hasn't
-            // mounted its inject-chat-message listener yet after tab switch.
-            setNavTabNow('ai');
-            const text = `run skill "${name}"`;
-            let attempts = 0;
-            const tryInject = () => {
-                attempts++;
-                const event = new CustomEvent("maclaw:inject-chat-message", {
-                    detail: { text },
-                    cancelable: true, // Required for preventDefault to work
-                });
-                window.dispatchEvent(event);
-                // If nobody called preventDefault, the listener may not be ready yet.
-                // Retry up to 5 times with increasing delay.
-                if (!event.defaultPrevented && attempts < 5) {
-                    setTimeout(tryInject, attempts * 150);
-                }
-            };
-            setTimeout(tryInject, 50);
-        };
-        window.addEventListener('maclaw:run-skill', runSkill);
-        return () => window.removeEventListener('maclaw:run-skill', runSkill);
-    }, [setNavTabNow]);
-    useEffect(() => {
         if (!showAppEntryEnabled && navTab === 'apps') setNavTabNow('ai');
     }, [navTab, setNavTabNow, showAppEntryEnabled]);
     useEffect(() => {
@@ -625,6 +598,7 @@ function App() {
     const [mainWindowReadyForOverlays, setMainWindowReadyForOverlays] = useState(false);
     const mainWindowReadyForOverlaysRef = useRef(false);
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
+    const [referralHandoff, setReferralHandoff] = useState<{ handoff: string; hubUrl: string } | null>(null);
     const [hubAuthRejectedPrompt, setHubAuthRejectedPrompt] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
@@ -634,7 +608,121 @@ function App() {
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
     const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
     const [pendingProjectTabOpen, setPendingProjectTabOpen] = useState<CodingTaskLaunch | null>(null);
+    // Project-tab opens are a one-slot handoff to the assistant panel. Queue all
+    // producers so a skill run cannot be overwritten by an unrelated task event.
+    const [projectTabOpenQueue, setProjectTabOpenQueue] = useState<CodingTaskLaunch[]>([]);
     const [pendingExpertOpen, setPendingExpertOpen] = useState<{ expert: ExpertDefinition } | null>(null);
+    const [skillRunQueue, setSkillRunQueue] = useState<string[]>([]);
+    const [skillRunLaunchInFlight, setSkillRunLaunchInFlight] = useState(false);
+    const skillRunPendingRef = useRef<{ launchId: string; skillName: string; projectPath: string } | null>(null);
+    const skillRunLaunchInFlightRef = useRef(false);
+    const skillRunLaunchSequenceRef = useRef(0);
+    // A workflow tile stays pending until its project tab has actually been
+    // created. This prevents a fast double-click from creating orphan tasks
+    // while the one-slot assistant-tab handoff is still queued.
+    const workflowTabLaunchRef = useRef<{
+        launchId: string;
+        projectPath: string;
+        resolve: () => void;
+        reject: (error: Error) => void;
+    } | null>(null);
+    const workflowTabLaunchSequenceRef = useRef(0);
+
+    const enqueueProjectTabOpen = useCallback((launch: CodingTaskLaunch) => {
+        setProjectTabOpenQueue(queue => [...queue, launch]);
+    }, []);
+
+    useEffect(() => {
+        if (pendingProjectTabOpen || projectTabOpenQueue.length === 0) return;
+        setPendingProjectTabOpen(projectTabOpenQueue[0]);
+        setProjectTabOpenQueue(([, ...queue]) => queue);
+    }, [pendingProjectTabOpen, projectTabOpenQueue]);
+
+    const finishSkillRunLaunch = useCallback(() => {
+        if (!skillRunLaunchInFlightRef.current) return;
+        skillRunLaunchInFlightRef.current = false;
+        setSkillRunLaunchInFlight(false);
+        setSkillRunQueue(([, ...queue]) => queue);
+    }, []);
+
+    useEffect(() => {
+        const runSkill = (e: Event) => {
+            const name = String((e as CustomEvent).detail?.name || '').trim();
+            if (!name) return;
+            // Move to the assistant immediately while its isolated task/tab is
+            // being created; never silently discard a user-initiated run.
+            setNavTabNow('ai');
+            setSkillRunQueue(queue => [...queue, name]);
+        };
+        window.addEventListener('maclaw:run-skill', runSkill);
+        return () => window.removeEventListener('maclaw:run-skill', runSkill);
+    }, [setNavTabNow]);
+
+    useEffect(() => {
+        if (skillRunLaunchInFlight || skillRunPendingRef.current || skillRunQueue.length === 0) return;
+        const skillName = skillRunQueue[0];
+        const launchId = `skill-run-${++skillRunLaunchSequenceRef.current}`;
+        skillRunLaunchInFlightRef.current = true;
+        setSkillRunLaunchInFlight(true);
+
+        // A skill run gets an isolated, project-backed assistant tab. Process
+        // requests one at a time, with each finished task queued for the
+        // assistant's single-slot handoff.
+        void callBackend(() => CreateTask(`Run skill: ${skillName}`, ''))
+            .then((created) => {
+                if (!created?.project_path) {
+                    throw new Error('skill run task was not created');
+                }
+                skillRunPendingRef.current = { launchId, skillName, projectPath: created.project_path };
+                enqueueProjectTabOpen({
+                    launchId,
+                    projectPath: created.project_path,
+                    taskTitle: created.name || `Run skill: ${skillName}`,
+                    // Preserve the skill name as one literal argument even if
+                    // a third-party package uses quotes or backslashes in it.
+                    initialMessage: `run skill ${JSON.stringify(skillName)}`,
+                    autoSend: true,
+                    prepareMode: 'new-agent',
+                });
+            })
+            .catch((error) => {
+                console.error('[skills] failed to open a dedicated skill-run tab', { skillName, error });
+                finishSkillRunLaunch();
+            })
+            .catch(() => {});
+    }, [enqueueProjectTabOpen, finishSkillRunLaunch, skillRunLaunchInFlight, skillRunQueue]);
+
+    const handlePendingProjectTabOpenHandled = useCallback((result: { outcome: "opened" | "rejected"; launchId?: string }) => {
+        setPendingProjectTabOpen(null);
+        const pendingWorkflow = workflowTabLaunchRef.current;
+        if (pendingWorkflow && result.launchId === pendingWorkflow.launchId) {
+            workflowTabLaunchRef.current = null;
+            if (result.outcome === "opened") {
+                pendingWorkflow.resolve();
+            } else {
+                // A rejected tab has no route back to this task, so do not leave
+                // an inaccessible workflow task in Task Management.
+                void callBackend(() => HideTask(pendingWorkflow.projectPath)).catch((error) => {
+                    console.warn('[workflows] failed to hide rejected workflow task', { projectPath: pendingWorkflow.projectPath, error });
+                });
+                pendingWorkflow.reject(new Error('workflow assistant tab was not opened'));
+            }
+        }
+        const pendingSkillRun = skillRunPendingRef.current;
+        // Only the receipt for this exact skill request may advance the skill
+        // queue. A normal task can be handled while a skill task waits its turn.
+        if (!pendingSkillRun || result.launchId !== pendingSkillRun.launchId) return;
+        skillRunPendingRef.current = null;
+        if (result.outcome === "rejected") {
+            console.warn('[skills] dedicated skill-run tab was not opened', { skillName: pendingSkillRun.skillName });
+            // The task has no tab when creation is rejected (for example at the
+            // tab limit), so do not leave an inaccessible task row behind.
+            void callBackend(() => HideTask(pendingSkillRun.projectPath)).catch((error) => {
+                console.warn('[skills] failed to hide rejected skill-run task', { projectPath: pendingSkillRun.projectPath, error });
+            });
+        }
+        finishSkillRunLaunch();
+    }, [finishSkillRunLaunch]);
 
     // Onboarding is a portal rendered outside #App. Route every request
     // through this guard so it cannot appear while the compact environment
@@ -652,6 +740,21 @@ function App() {
             setShowMaclawLLMPopup(true);
         }
     }, [mainWindowReadyForOverlays]);
+
+    useEffect(() => {
+        const applyHandoff = (payload: any) => {
+            const handoff = String(payload?.handoff || payload?.Handoff || "").trim();
+            const hubUrl = String(payload?.hub_url || payload?.HubURL || "").trim();
+            if (!handoff || !hubUrl) return;
+            setReferralHandoff({ handoff, hubUrl });
+            requestOnboarding();
+        };
+        const unsubscribe = safeEventsOn("referral-handoff", (payload: any) => {
+            applyHandoff(payload);
+        });
+        void callBackend(() => ConsumeReferralHandoff()).then(applyHandoff).catch(() => {});
+        return () => { if (typeof unsubscribe === "function") unsubscribe(); };
+    }, [requestOnboarding]);
 
     // --- Favorite Employees state ---
     const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
@@ -2724,15 +2827,55 @@ function App() {
             throw error;
         }
     }, [lang, refreshTasks, showAlert]);
+    /** Durable registration gateway for every secondary assistant tab. */
+    const ensureAssistantTabTask = useCallback(async (tabType: string, tabIdentity: string, title: string, projectPath?: string) => {
+        const created = await EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath || '');
+        if (!created?.project_path) {
+            throw new Error('assistant tab task record was not created');
+        }
+        taskRefreshGenerationRef.current += 1;
+        setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 50));
+    }, []);
     /** One frontend gateway for every project/coding task handoff into the AI tab. */
     const openCodingTask = useCallback((launch: Partial<CodingTaskLaunch>) => {
         const normalized = normalizeCodingTaskLaunch(launch);
         if (!normalized) return false;
-        setPendingProjectTabOpen(normalized);
+        enqueueProjectTabOpen(normalized);
         switchTool('ai');
         refreshTasks();
         return true;
-    }, [refreshTasks, switchTool]);
+    }, [enqueueProjectTabOpen, refreshTasks, switchTool]);
+
+    const startWorkflowInNewAssistantTab = useCallback(async (workflowType: string, workflowLabel: string) => {
+        if (workflowTabLaunchRef.current) {
+            throw new Error('a workflow assistant tab is already opening');
+        }
+        const title = String(workflowLabel || workflowType).trim() || workflowType;
+        const created = await CreateTask(title, '');
+        if (!created?.project_path) {
+            throw new Error('workflow task was not created');
+        }
+        setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 10));
+        const launchId = `workflow-tab-${++workflowTabLaunchSequenceRef.current}`;
+        const tabOpened = new Promise<void>((resolve, reject) => {
+            workflowTabLaunchRef.current = { launchId, projectPath: created.project_path, resolve, reject };
+        });
+        if (!openCodingTask({
+            launchId,
+            projectPath: created.project_path,
+            taskTitle: created.name || title,
+            prepareMode: 'new-agent',
+            autoSend: false,
+            workflowType,
+        })) {
+            workflowTabLaunchRef.current = null;
+            void callBackend(() => HideTask(created.project_path)).catch((error) => {
+                console.warn('[workflows] failed to hide unopened workflow task', { projectPath: created.project_path, error });
+            });
+            throw new Error('workflow assistant tab was not opened');
+        }
+        await tabOpened;
+    }, [openCodingTask]);
 
     useEffect(() => {
         if (navTab === 'ai') refreshTasks();
@@ -3037,6 +3180,7 @@ function App() {
                 const url = provider?.url ?? provider?.URL ?? '';
                 const key = provider?.key ?? provider?.Key ?? '';
                 const isHub = !!(provider?.is_hub_service ?? provider?.IsHubService);
+                const supportsVision = !!(provider?.supports_vision ?? provider?.SupportsVision);
                 const model = String(provider?.model ?? provider?.Model ?? '').trim();
                 const rawModels = provider?.models ?? provider?.Models ?? [];
                 const models = Array.isArray(rawModels)
@@ -3047,6 +3191,7 @@ function App() {
                     name: provider?.name ?? provider?.Name ?? '',
                     url,
                     isHubService: isHub,
+                    supportsVision,
                     configured: isHub || (!!url && !!key),
                     model,
                     models,
@@ -3137,9 +3282,14 @@ function App() {
             const normalizedMap = usageMap || {};
             const profileUsage = profileUsageMap || {};
             const normalizedProviderState = normalizeSidebarProviderState(providerState);
-            const providerSummaries = normalizedProviderState.providers.length > 0
+            const providerSummaries: SidebarLLMProviderSummary[] = normalizedProviderState.providers.length > 0
                 ? normalizedProviderState.providers
-                : providers.map((provider) => ({ name: provider.name, url: (provider as any).url || (provider as any).URL || '', isHubService: !!(provider as any).is_hub_service || !!(provider as any).IsHubService })).filter((provider) => !!provider.name);
+                : providers.map((provider): SidebarLLMProviderSummary => ({
+                    name: provider.name,
+                    url: (provider as any).url || (provider as any).URL || '',
+                    isHubService: !!(provider as any).is_hub_service || !!(provider as any).IsHubService,
+                    supportsVision: !!(provider as any).supports_vision || !!(provider as any).SupportsVision,
+                })).filter((provider) => !!provider.name);
             const legacyCurrentProviderName = selectSidebarCurrentProvider(
                 providerSummaries,
                 normalizedProviderState.current || selectedProvider || providers[0]?.name || '',
@@ -3150,6 +3300,7 @@ function App() {
                 : activeExecutionProfile === 'coding' ? llmProfilePanelState?.coding : null;
             const activeProviderID = String(activeSummary?.provider_id ?? activeSummary?.providerID ?? '').trim();
             const currentProviderName = String(activeSummary?.provider_name ?? activeSummary?.providerName ?? '').trim() || legacyCurrentProviderName;
+            const activeProfileSupportsVision = activeSummary?.supports_vision === true || activeSummary?.supportsVision === true;
             const profileTotals = Object.values(profileUsage).reduce<Omit<SidebarCurrentProviderTokenUsage, 'provider' | 'isHubService'>>((total, item) => {
                 if (!activeSummary || !item || item.profile !== activeExecutionProfile || item.provider_id !== activeProviderID) return total;
                 total.input += Number(item.input_tokens ?? 0);
@@ -3164,7 +3315,13 @@ function App() {
                 return total;
             }, { input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
             const currentProviderUsage = activeSummary ? profileTotals : getSidebarUsageForProvider(normalizedMap, currentProviderName);
-            const currentProvider = providerSummaries.find((provider) => provider.name === currentProviderName);
+            // Names are editable and therefore not stable identifiers. Prefer
+            // the active profile's provider ID so its vision state cannot be
+            // taken from another provider that happens to share the same name.
+            const currentProvider = activeProviderID
+                ? providerSummaries.find((provider) => provider.id === activeProviderID)
+                    ?? providerSummaries.find((provider) => provider.name === currentProviderName)
+                : providerSummaries.find((provider) => provider.name === currentProviderName);
             let hubStatus: Awaited<ReturnType<typeof GetHubLLMServiceStatus>> | null = null;
             try {
                 hubStatus = await callBackend(() => GetHubLLMServiceStatus());
@@ -3176,7 +3333,14 @@ function App() {
             const currentProviderIsHubService = !!currentProvider?.isHubService || (!!hubServiceURL && !!currentProviderURL && hubServiceURL === currentProviderURL);
             const hubCredits = normalizeSidebarHubCredits(hubStatus);
             if (refreshSeq !== sidebarTokenUsageSeqRef.current) return;
-            setSidebarCurrentProviderTokenUsage({ provider: currentProviderName, isHubService: currentProviderIsHubService, ...currentProviderUsage });
+            setSidebarCurrentProviderTokenUsage({
+                provider: currentProviderName,
+                isHubService: currentProviderIsHubService,
+                // The effective profile is authoritative: a profile can use a
+                // different model than the provider's default model.
+                supportsVision: activeSummary ? activeProfileSupportsVision : currentProvider?.supportsVision === true,
+                ...currentProviderUsage,
+            });
             setSidebarHubCredits(hubCredits);
             setSidebarProviderSummaries(providerSummaries);
         } catch {
@@ -3505,6 +3669,7 @@ function App() {
             name: String(provider?.name ?? provider?.Name ?? name).trim(),
             url: '',
             isHubService: !!(provider?.is_hub_service ?? provider?.isHubService),
+            supportsVision: provider?.supports_vision === true || provider?.supportsVision === true,
             model: String(activeProfileSummary.model ?? '').trim(),
             models: Array.isArray(provider?.models ?? provider?.Models) ? (provider?.models ?? provider?.Models) : [],
             configured: String(activeProfileSummary.health ?? '') !== 'invalid',
@@ -3523,6 +3688,7 @@ function App() {
             name: String(provider?.name ?? provider?.Name ?? '').trim(),
             url: '',
             isHubService: !!(provider?.is_hub_service ?? provider?.isHubService),
+            supportsVision: provider?.supports_vision === true || provider?.supportsVision === true,
             model: String(provider?.model ?? provider?.Model ?? '').trim() || undefined,
             models: Array.isArray(provider?.models ?? provider?.Models) ? (provider?.models ?? provider?.Models) : [],
             configured: true,
@@ -4773,10 +4939,11 @@ ${instruction}`;
                             pendingHistoryDiscussionOpen={pendingHistoryDiscussionOpen}
                             onPendingHistoryDiscussionOpenHandled={() => setPendingHistoryDiscussionOpen(null)}
                             pendingProjectTabOpen={pendingProjectTabOpen}
-                            onPendingProjectTabOpenHandled={() => setPendingProjectTabOpen(null)}
+                            onPendingProjectTabOpenHandled={handlePendingProjectTabOpenHandled}
                             pendingExpertOpen={pendingExpertOpen}
                             onPendingExpertOpenHandled={() => setPendingExpertOpen(null)}
                             onEnsureExpertTask={ensureExpertTask}
+                            onEnsureAssistantTabTask={ensureAssistantTabTask}
                             onOpenProjectTabsChange={handleOpenProjectTabsChange}
                             onOpenExpertTabsChange={handleOpenExpertTabsChange}
                             appUpdateAvailable={appUpdateAvailable}
@@ -5006,7 +5173,7 @@ ${instruction}`;
                     )}
 
                     {navTab === 'workflows' && (
-                        <WorkflowsPage lang={lang} switchToAI={() => setNavTabNow('ai')} />
+                        <WorkflowsPage lang={lang} onStartWorkflow={startWorkflowInNewAssistantTab} />
                     )}
 
                     {navTab === 'skills' && (
@@ -6167,11 +6334,12 @@ ${instruction}`;
             {showMaclawLLMPopup && (
                 <OnboardingWizard
                     lang={lang}
-                    hubUrl={config?.remote_hub_url || ""}
+                    hubUrl={referralHandoff?.hubUrl || config?.remote_hub_url || ""}
                     email={config?.remote_email || ""}
+                    referralHandoff={referralHandoff?.handoff}
                     brandId={brandInfo?.id}
                     brandDisplayName={brandInfo?.displayName}
-                    onClose={() => setShowMaclawLLMPopup(false)}
+                    onClose={() => { setShowMaclawLLMPopup(false); setReferralHandoff(null); }}
                     onLLMConfigured={() => {
                         setMaclawLLMOnline(true);
                         setMaclawLLMConfigured(true);

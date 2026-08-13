@@ -1,5 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
-import { StartWorkflowTemplate } from '../../../wailsjs/go/main/App';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { getAllWorkflowShortcuts, WorkflowShortcutIcon } from '../remote/WorkflowShortcutsSection';
 import './WorkflowsPage.css';
 
@@ -13,11 +12,13 @@ const localizeTextForLang = (lang?: string): LocalizeText => {
     return (en) => en;
 };
 
-export const WorkflowsPage = ({ lang, switchToAI }: { lang?: string; switchToAI?: () => void }) => {
+export const WorkflowsPage = ({ lang, onStartWorkflow }: { lang?: string; onStartWorkflow: (workflowType: string, label: string) => Promise<void> | void }) => {
     const localizeText = useMemo(() => localizeTextForLang(lang), [lang]);
     const allGroups = useMemo(() => getAllWorkflowShortcuts(localizeText), [localizeText]);
     const [query, setQuery] = useState('');
     const [startingType, setStartingType] = useState<string | null>(null);
+    const [startError, setStartError] = useState<string | null>(null);
+    const startingTypeRef = useRef<string | null>(null);
 
     const isZh = !lang || lang.startsWith('zh');
     const title = isZh ? '工作流' : 'Workflows';
@@ -39,26 +40,32 @@ export const WorkflowsPage = ({ lang, switchToAI }: { lang?: string; switchToAI?
             .filter(group => group.items.length > 0);
     }, [allGroups, query]);
 
-    const handleClick = useCallback((workflowType: string) => {
-        if (startingType) return;
+    const handleClick = useCallback(async (workflowType: string) => {
+        // State updates commit after this event handler returns. Keep a ref as
+        // the immediate guard so double-clicks cannot enqueue two workflows
+        // before React has rendered the disabled state.
+        if (startingTypeRef.current) return;
 
         const item = allGroups.flatMap(g => g.items).find(i => i.type === workflowType);
         const label = item?.label || workflowType;
+        startingTypeRef.current = workflowType;
         setStartingType(workflowType);
+        setStartError(null);
 
-        sessionStorage.setItem('maclaw:workflow-starting', JSON.stringify({
-            workflowType, label, ts: Date.now(), activateLocal: true,
-        }));
-
-        if (switchToAI) switchToAI();
-
-        setTimeout(() => window.dispatchEvent(new Event('maclaw:workflow-starting-nudge')), 0);
-        setTimeout(() => {
-            StartWorkflowTemplate(workflowType, '')
-                .catch(err => console.warn('[WorkflowsPage] StartWorkflowTemplate failed:', err))
-                .finally(() => setTimeout(() => setStartingType(null), 2000));
-        }, 50);
-    }, [startingType, switchToAI, allGroups]);
+        try {
+            await onStartWorkflow(workflowType, label);
+        } catch (error) {
+            console.warn('[WorkflowsPage] failed to open workflow assistant tab:', error);
+            setStartError(isZh
+                ? '暂时无法打开工作流，请重试。'
+                : 'Unable to open this workflow. Please try again.');
+        } finally {
+            if (startingTypeRef.current === workflowType) {
+                startingTypeRef.current = null;
+                setStartingType(null);
+            }
+        }
+    }, [onStartWorkflow, allGroups, isZh]);
 
     return (
         <div className="workflows-page">
@@ -82,6 +89,11 @@ export const WorkflowsPage = ({ lang, switchToAI }: { lang?: string; switchToAI?
             </div>
 
             <div className="workflows-page__body elegant-scrollbar">
+                {startError && (
+                    <div className="workflows-page__start-error" role="alert">
+                        {startError}
+                    </div>
+                )}
                 {filteredGroups.length === 0 && (
                     <div className="workflows-page__empty">
                         {isZh ? '没有匹配的工作流' : 'No matching workflows'}

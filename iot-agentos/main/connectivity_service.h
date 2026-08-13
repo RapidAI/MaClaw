@@ -16,7 +16,6 @@
  * Connectivity generation is initialized. */
 void connectivity_service_set_active_uplink(device_uplink_t uplink);
 bool connectivity_service_is_active_cellular(void);
-bool connectivity_service_take_startup_transport_toggle(uint32_t window_ms);
 void connectivity_service_restore_selected_uplink(void);
 bool connectivity_service_apply_startup_transport_toggle(uint32_t window_ms);
 /* The legacy composition root still owns esp_wifi configuration and driver
@@ -56,3 +55,24 @@ void connectivity_service_begin_provisioning(bool pairing_recovery);
 void connectivity_service_end_provisioning(void);
 bool connectivity_service_is_provisioning_active(void);
 bool connectivity_service_is_pairing_recovery_provisioning(void);
+
+/* Cellular operations remain profile-private below Platform Connectivity, but
+ * the service owns their Device-facing admission and argument contract.  This
+ * keeps Device API from becoming a second physical-port caller while a future
+ * Connectivity lifecycle coordinator absorbs Wi-Fi/portal ownership. */
+device_status_t connectivity_service_prepare_cellular_transport(void);
+device_status_t connectivity_service_start_cellular_transport(uint32_t timeout_ms);
+/* One bounded cellular session transition. The service owns publication of the
+ * selected uplink's readiness, so callers cannot retain a stale ready state
+ * across a failed or late ML307 restart. UI/gateway policy stays above it. */
+device_status_t connectivity_service_establish_cellular_transport(uint32_t timeout_ms);
+bool connectivity_service_is_cellular_transport_ready(void);
+device_status_t connectivity_service_quiesce_cellular_transport(uint32_t timeout_ms);
+device_status_t connectivity_service_cellular_http_request(
+    const device_connectivity_http_request_t *request);
+device_status_t connectivity_service_cellular_http_stream_request(
+    const device_connectivity_stream_request_t *request);
+bool connectivity_service_cancel_cellular_foreground_request(void);
+bool connectivity_service_cancel_cellular_requests_for_owner(const void *owner);
+void connectivity_service_adapt_gateway_url(char *gateway_url,
+                                            uint32_t gateway_url_capacity);

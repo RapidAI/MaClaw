@@ -88,9 +88,6 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if !cfg.IsIMProgressNudgeEnabled() {
 		t.Fatal("IMProgressNudgeEnabled = false, want true for first-run default config")
 	}
-	if cfg.WorkflowEnabled == nil || cfg.IsWorkflowEnabled() {
-		t.Fatal("WorkflowEnabled = true/nil, want false for first-run default config")
-	}
 	if !cfg.IsShowAppEntryEnabled() {
 		t.Fatal("ShowAppEntry disabled, want enabled (nil or true) for first-run default config")
 	}
@@ -2159,56 +2156,6 @@ func TestPatchConfigFieldsAppliesRuntimeSideEffects(t *testing.T) {
 	}
 	if got := corelib.EffectiveWorkspaceDir(); got != filepath.Join(tmpHome, "work") {
 		t.Fatalf("WorkspaceDir = %q, want patched working directory", got)
-	}
-}
-
-func TestPatchConfigFieldsWorkflowEnabledToggle(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	app := &App{testHomeDir: tmpHome}
-
-	// Default: workflowDisabled atomic zero-value is false (no config loaded yet)
-	if app.workflowDisabled.Load() {
-		t.Fatal("workflowDisabled should be false by default (atomic zero-value)")
-	}
-
-	// Turn off workflow
-	patched, err := app.PatchConfigFields(map[string]interface{}{
-		"workflow_enabled": false,
-	})
-	if err != nil {
-		t.Fatalf("PatchConfigFields(workflow_enabled=false) error = %v", err)
-	}
-	if patched.IsWorkflowEnabled() {
-		t.Fatal("patched config should have workflow_enabled=false")
-	}
-	if !app.workflowDisabled.Load() {
-		t.Fatal("workflowDisabled atomic should be true after disabling workflow")
-	}
-
-	// Turn on workflow
-	patched, err = app.PatchConfigFields(map[string]interface{}{
-		"workflow_enabled": true,
-	})
-	if err != nil {
-		t.Fatalf("PatchConfigFields(workflow_enabled=true) error = %v", err)
-	}
-	if !patched.IsWorkflowEnabled() {
-		t.Fatal("patched config should have workflow_enabled=true")
-	}
-	if app.workflowDisabled.Load() {
-		t.Fatal("workflowDisabled atomic should be false after re-enabling workflow")
-	}
-
-	// Verify persistence: reload from disk
-	reloaded, err := app.LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if !reloaded.IsWorkflowEnabled() {
-		t.Fatal("workflow_enabled=true should survive reload from disk")
 	}
 }
 

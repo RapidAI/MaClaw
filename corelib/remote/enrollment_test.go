@@ -110,6 +110,71 @@ func TestEnroll_FullFlow(t *testing.T) {
 	}
 }
 
+func TestEnroll_WithoutInvitationUsesGenericDefaultTenant(t *testing.T) {
+	InvalidateCenterCache()
+	var receivedTenantID string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/start" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			TenantID string `json:"tenant_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode enrollment request: %v", err)
+		}
+		receivedTenantID = req.TenantID
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "approved", "email": "new@example.com",
+			"machine_id": "machine-default", "machine_token": "token-default",
+		})
+	}))
+	defer hub.Close()
+
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{"quality_score": 10, "routable": true, "service_status": "ok", "features": map[string]any{"can_resolve": true}})
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "urls": []string{}})
+		case "/api/entry/resolve":
+			_ = json.NewEncoder(w).Encode(HubCenterResolveResult{
+				Email: "new@example.com", Mode: "multiple", DefaultHubID: "hub-default",
+				Hubs: []HubCenterResolveHub{
+					{HubID: "hub-default", TenantID: "restricted-tenant", BaseURL: hub.URL, Status: "online"},
+					{HubID: "hub-default", BaseURL: hub.URL, Status: "online"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer center.Close()
+
+	origDefaults := DefaultRemoteHubCenterURLs
+	origDefault := DefaultRemoteHubCenterURL
+	DefaultRemoteHubCenterURLs = []string{center.URL}
+	DefaultRemoteHubCenterURL = center.URL
+	defer func() {
+		DefaultRemoteHubCenterURLs = origDefaults
+		DefaultRemoteHubCenterURL = origDefault
+	}()
+
+	result, err := NewEnrollmentClient().Enroll(context.Background(), EnrollConfig{
+		Email: "new@example.com", HubCenterURL: center.URL, ClientID: "default-route-client",
+	})
+	if err != nil {
+		t.Fatalf("Enroll() error = %v", err)
+	}
+	if receivedTenantID != "" {
+		t.Fatalf("enrollment tenant_id = %q, want generic default tenant", receivedTenantID)
+	}
+	if result.HubID != "hub-default" || result.MachineID != "machine-default" {
+		t.Fatalf("enrollment result = %#v", result)
+	}
+}
+
 func TestEnroll_WithExistingHubURL(t *testing.T) {
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/enroll/start" {
@@ -185,6 +250,40 @@ func TestEnroll_EmailVerificationUsesVerifiedEndpointAndResolvedTenant(t *testin
 	}
 	if result.HubID != "hub-verified" || result.MachineID != "machine-verified" || result.MachineToken != "token-verified" {
 		t.Fatalf("verified enrollment result = %#v", result)
+	}
+}
+
+func TestEnroll_InvitationWithoutSkipFlagUsesNormalEndpoint(t *testing.T) {
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/start" {
+			t.Fatalf("path = %s, want /api/enroll/start", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(EnrollResult{Status: "approved", MachineID: "machine-normal", MachineToken: "token-normal"})
+	}))
+	defer hub.Close()
+
+	_, err := (&EnrollmentClient{HTTPClient: hub.Client()}).Enroll(context.Background(), EnrollConfig{
+		Email: "invite@example.com", InvitationCode: "INVITE-1", HubURL: hub.URL, DirectHub: true,
+	})
+	if err != nil {
+		t.Fatalf("Enroll() error = %v", err)
+	}
+}
+
+func TestEnroll_InvitationSkipUsesRestrictedEndpoint(t *testing.T) {
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/email/start-with-invitation" {
+			t.Fatalf("path = %s, want invitation endpoint", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(EnrollResult{Status: "approved", MachineID: "machine-invite", MachineToken: "token-invite"})
+	}))
+	defer hub.Close()
+
+	_, err := (&EnrollmentClient{HTTPClient: hub.Client()}).Enroll(context.Background(), EnrollConfig{
+		Email: "invite@example.com", InvitationCode: "INVITE-1", SkipEmailVerification: true, HubURL: hub.URL, DirectHub: true,
+	})
+	if err != nil {
+		t.Fatalf("Enroll() error = %v", err)
 	}
 }
 
@@ -537,6 +636,130 @@ func TestPickBestHubWithTenantAndIDPrefersTenantSpecificDefaultHub(t *testing.T)
 	}
 	if hubURL != "https://hub.example.com" || hubID != "hub-official" || tenantID != "vantagics" {
 		t.Fatalf("picked hubURL=%q hubID=%q tenantID=%q, want tenant-specific default hub", hubURL, hubID, tenantID)
+	}
+}
+
+func TestPickRegistrationHubWithTenantAndIDPrefersTenantRouteOverGenericDefaultHub(t *testing.T) {
+	result := HubCenterResolveResult{
+		Email:        "user@example.com",
+		Mode:         "multiple",
+		DefaultHubID: "hub-backup",
+		Hubs: []HubCenterResolveHub{
+			{HubID: "hub-backup", Name: "Backup", BaseURL: "https://backup.example.com", Status: "online"},
+			{HubID: "hub-tenant", TenantID: "tenant-acme", Name: "Acme", BaseURL: "https://acme.example.com", Status: "online"},
+		},
+	}
+
+	hubURL, hubID, tenantID, err := PickRegistrationHubWithTenantAndID(result)
+	if err != nil {
+		t.Fatalf("PickRegistrationHubWithTenantAndID() error = %v", err)
+	}
+	if hubURL != "https://acme.example.com" || hubID != "hub-tenant" || tenantID != "tenant-acme" {
+		t.Fatalf("picked hubURL=%q hubID=%q tenantID=%q, want tenant route", hubURL, hubID, tenantID)
+	}
+}
+
+func TestPickRegistrationHubWithTenantAndIDHonorsTenantScopedDefault(t *testing.T) {
+	result := HubCenterResolveResult{
+		DefaultHubID: "hub-selected",
+		Hubs: []HubCenterResolveHub{
+			{HubID: "hub-other", TenantID: "tenant-other", BaseURL: "https://other.example.com", Status: "online"},
+			{HubID: "hub-selected", TenantID: "tenant-selected", BaseURL: "https://selected.example.com", Status: "online"},
+		},
+	}
+
+	hubURL, hubID, tenantID, err := PickRegistrationHubWithTenantAndID(result)
+	if err != nil {
+		t.Fatalf("PickRegistrationHubWithTenantAndID() error = %v", err)
+	}
+	if hubURL != "https://selected.example.com" || hubID != "hub-selected" || tenantID != "tenant-selected" {
+		t.Fatalf("picked hubURL=%q hubID=%q tenantID=%q, want tenant-scoped default", hubURL, hubID, tenantID)
+	}
+}
+
+func TestPickRegistrationHubWithTenantAndIDSkipsNonOnlineTenantRoute(t *testing.T) {
+	result := HubCenterResolveResult{
+		DefaultHubID: "hub-fallback",
+		Hubs: []HubCenterResolveHub{
+			{HubID: "hub-tenant-offline", TenantID: "tenant-acme", BaseURL: "https://offline.example.com", Status: "pending_confirmation"},
+			{HubID: "hub-fallback", BaseURL: "https://fallback.example.com", Status: "online"},
+		},
+	}
+
+	hubURL, hubID, tenantID, err := PickRegistrationHubWithTenantAndID(result)
+	if err != nil {
+		t.Fatalf("PickRegistrationHubWithTenantAndID() error = %v", err)
+	}
+	if hubURL != "https://fallback.example.com" || hubID != "hub-fallback" || tenantID != "" {
+		t.Fatalf("picked hubURL=%q hubID=%q tenantID=%q, want online generic fallback", hubURL, hubID, tenantID)
+	}
+}
+
+func TestPickDefaultRegistrationHubWithTenantAndIDUsesGenericDefaultTenant(t *testing.T) {
+	result := HubCenterResolveResult{
+		DefaultHubID: "hub-mypapers",
+		Hubs: []HubCenterResolveHub{
+			{HubID: "hub-mypapers", TenantID: "restricted-tenant", BaseURL: "https://hub.mypapers.top", Status: "online"},
+			{HubID: "hub-mypapers", BaseURL: "https://hub.mypapers.top", Status: "online"},
+		},
+	}
+
+	hubURL, hubID, tenantID, err := PickDefaultRegistrationHubWithTenantAndID(result)
+	if err != nil {
+		t.Fatalf("PickDefaultRegistrationHubWithTenantAndID() error = %v", err)
+	}
+	if hubURL != "https://hub.mypapers.top" || hubID != "hub-mypapers" || tenantID != "" {
+		t.Fatalf("picked hubURL=%q hubID=%q tenantID=%q, want generic default tenant", hubURL, hubID, tenantID)
+	}
+}
+
+func TestPickDefaultRegistrationHubWithTenantAndIDDropsScopedTenantFromLegacyDefault(t *testing.T) {
+	result := HubCenterResolveResult{
+		DefaultHubID: "hub-mypapers",
+		Hubs: []HubCenterResolveHub{
+			{HubID: "hub-mypapers", TenantID: "bfs", BaseURL: "https://hub.mypapers.top", Status: "online"},
+		},
+	}
+
+	hubURL, hubID, tenantID, err := PickDefaultRegistrationHubWithTenantAndID(result)
+	if err != nil {
+		t.Fatalf("PickDefaultRegistrationHubWithTenantAndID() error = %v", err)
+	}
+	if hubURL != "https://hub.mypapers.top" || hubID != "hub-mypapers" || tenantID != "" {
+		t.Fatalf("picked hubURL=%q hubID=%q tenantID=%q, want unscoped public default", hubURL, hubID, tenantID)
+	}
+}
+
+func TestPickDefaultRegistrationHubWithTenantAndIDUsesGenericRouteWhenLegacyResponseOmitsDefaultHubID(t *testing.T) {
+	result := HubCenterResolveResult{
+		Hubs: []HubCenterResolveHub{
+			{HubID: "hub-restricted", TenantID: "restricted-tenant", BaseURL: "https://restricted.example.com", Status: "online"},
+			{HubID: "hub-public", BaseURL: "https://public.example.com", Status: "online"},
+		},
+	}
+
+	hubURL, hubID, tenantID, err := PickDefaultRegistrationHubWithTenantAndID(result)
+	if err != nil {
+		t.Fatalf("PickDefaultRegistrationHubWithTenantAndID() error = %v", err)
+	}
+	if hubURL != "https://public.example.com" || hubID != "hub-public" || tenantID != "" {
+		t.Fatalf("picked hubURL=%q hubID=%q tenantID=%q, want generic legacy route", hubURL, hubID, tenantID)
+	}
+}
+
+func TestPickDefaultRegistrationHubWithTenantAndIDDropsScopedTenantWhenLegacyResponseHasNoDefault(t *testing.T) {
+	result := HubCenterResolveResult{
+		Hubs: []HubCenterResolveHub{
+			{HubID: "hub-mypapers", TenantID: "bfs", BaseURL: "https://hub.mypapers.top", Status: "online"},
+		},
+	}
+
+	hubURL, hubID, tenantID, err := PickDefaultRegistrationHubWithTenantAndID(result)
+	if err != nil {
+		t.Fatalf("PickDefaultRegistrationHubWithTenantAndID() error = %v", err)
+	}
+	if hubURL != "https://hub.mypapers.top" || hubID != "hub-mypapers" || tenantID != "" {
+		t.Fatalf("picked hubURL=%q hubID=%q tenantID=%q, want unscoped public fallback", hubURL, hubID, tenantID)
 	}
 }
 

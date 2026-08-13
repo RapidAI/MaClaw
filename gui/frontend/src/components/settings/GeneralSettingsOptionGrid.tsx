@@ -12,12 +12,6 @@ const textForLang = localizeText;
 export const GeneralSettingsOptionGrid = ({ effectiveConfig, lang, saveConfigPatch }: GeneralSettingsOptionGridProps) => (
     <div className="general-settings-option-grid">
         <label className="general-settings-option">
-            <input type="checkbox" aria-label={textForLang(lang, 'Enable Workflow', '打开工作流', '開啟工作流')} checked={effectiveConfig?.workflow_enabled === true} onChange={(e) => saveConfigPatch({ workflow_enabled: e.target.checked })} />
-            <span>{textForLang(lang, 'Enable Workflow', '打开工作流', '開啟工作流')}</span>
-            <small>{textForLang(lang, 'Enable multi-phase guided workflows (coding, PPT design, etc.). When off, all messages go directly to the agent.', '启用多阶段引导式工作流（编码、PPT 设计等）。关闭后所有消息直接进入 Agent 处理。', '啟用多階段引導式工作流（編碼、PPT 設計等）。關閉後所有訊息直接進入 Agent 處理。')}</small>
-        </label>
-
-        <label className="general-settings-option">
             <input
                 type="checkbox"
                 aria-label={textForLang(lang, 'Skill self-evolution', '技能自进化', '技能自進化')}

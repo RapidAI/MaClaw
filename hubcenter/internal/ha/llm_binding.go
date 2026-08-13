@@ -36,6 +36,14 @@ func bindingKey(b *LLMBinding) string {
 	return b.HubID + "\x00" + b.TenantID
 }
 
+func cloneBinding(b *LLMBinding) *LLMBinding {
+	if b == nil {
+		return nil
+	}
+	copy := *b
+	return &copy
+}
+
 // LLMBindingManager manages tenant-node bindings for the current node.
 type LLMBindingManager struct {
 	nodeID         string
@@ -65,44 +73,63 @@ func (m *LLMBindingManager) SetSyncBinding(fn func(context.Context, *LLMBinding)
 	if m == nil {
 		return
 	}
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
 	m.syncBinding = fn
 }
 
 func (m *LLMBindingManager) sync(ctx context.Context, binding *LLMBinding) {
-	if m == nil || m.syncBinding == nil || binding == nil {
+	if m == nil || binding == nil {
 		return
 	}
 	key := bindingKey(binding)
 	now := time.Now().UTC()
 	m.syncMu.Lock()
+	fn := m.syncBinding
+	if fn == nil {
+		m.syncMu.Unlock()
+		return
+	}
 	if last := m.lastSynced[key]; !last.IsZero() && now.Sub(last) < BindingSyncInterval {
 		m.syncMu.Unlock()
 		return
 	}
 	m.lastSynced[key] = now
 	m.syncMu.Unlock()
-	copy := *binding
-	m.syncBinding(ctx, &copy)
+	fn(ctx, cloneBinding(binding))
 }
 
 // TryBind attempts to bind a tenant to this node.
 func (m *LLMBindingManager) TryBind(ctx context.Context, hubID, tenantID string) (bool, *LLMBinding, error) {
+	if m == nil || m.repo == nil {
+		return false, nil, fmt.Errorf("binding repository is not configured")
+	}
 	key := hubID + "\x00" + tenantID
 	now := time.Now().UTC()
 
-	m.mu.RLock()
+	// Serialize claim/renewal attempts on this node. This cannot replace a
+	// cluster-wide compare-and-swap, but it prevents two concurrent requests
+	// handled by one HubCenter from racing through the local lease check.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	existing := m.bindings[key]
-	m.mu.RUnlock()
 	if existing != nil && !bindingExpired(existing, now) && existing.NodeID == m.nodeID {
-		existing.LastActive = now
-		existing.ExpiresAt = now.Add(BindingLeaseTTL)
-		_ = m.repo.Upsert(ctx, existing)
-		m.sync(ctx, existing)
-		return true, existing, nil
+		renewed := cloneBinding(existing)
+		renewed.LastActive = now
+		renewed.ExpiresAt = now.Add(BindingLeaseTTL)
+		if err := m.repo.Upsert(ctx, renewed); err != nil {
+			return false, nil, fmt.Errorf("renew binding: %w", err)
+		}
+		m.bindings[key] = renewed
+		m.sync(ctx, renewed)
+		return true, cloneBinding(renewed), nil
+	}
+	if existing != nil && bindingExpired(existing, now) {
+		delete(m.bindings, key)
 	}
 
 	m.remoteMu.RLock()
-	remote := m.remoteBindings[key]
+	remote := cloneBinding(m.remoteBindings[key])
 	m.remoteMu.RUnlock()
 	if remote != nil && !bindingExpired(remote, now) && remote.NodeID != m.nodeID {
 		return false, remote, nil
@@ -114,9 +141,20 @@ func (m *LLMBindingManager) TryBind(ctx context.Context, hubID, tenantID string)
 	}
 	if persisted != nil && !bindingExpired(persisted, now) && persisted.NodeID != m.nodeID {
 		m.remoteMu.Lock()
-		m.remoteBindings[key] = persisted
+		m.remoteBindings[key] = cloneBinding(persisted)
 		m.remoteMu.Unlock()
-		return false, persisted, nil
+		return false, cloneBinding(persisted), nil
+	}
+	if persisted != nil && !bindingExpired(persisted, now) && persisted.NodeID == m.nodeID {
+		renewed := cloneBinding(persisted)
+		renewed.LastActive = now
+		renewed.ExpiresAt = now.Add(BindingLeaseTTL)
+		if err := m.repo.Upsert(ctx, renewed); err != nil {
+			return false, nil, fmt.Errorf("renew persisted binding: %w", err)
+		}
+		m.bindings[key] = renewed
+		m.sync(ctx, renewed)
+		return true, cloneBinding(renewed), nil
 	}
 
 	binding := &LLMBinding{
@@ -130,23 +168,27 @@ func (m *LLMBindingManager) TryBind(ctx context.Context, hubID, tenantID string)
 	if err := m.repo.Upsert(ctx, binding); err != nil {
 		return false, nil, fmt.Errorf("create binding: %w", err)
 	}
-	m.mu.Lock()
 	m.bindings[key] = binding
-	m.mu.Unlock()
 	m.sync(ctx, binding)
-	return true, binding, nil
+	return true, cloneBinding(binding), nil
 }
 
 // RenewBinding extends the lease for an existing binding.
 func (m *LLMBindingManager) RenewBinding(ctx context.Context, hubID, tenantID string) {
+	if m == nil || m.repo == nil {
+		return
+	}
 	key := hubID + "\x00" + tenantID
 	now := time.Now().UTC()
 	m.mu.Lock()
 	if b := m.bindings[key]; b != nil && b.NodeID == m.nodeID {
-		b.LastActive = now
-		b.ExpiresAt = now.Add(BindingLeaseTTL)
-		_ = m.repo.Upsert(ctx, b)
-		m.sync(ctx, b)
+		renewed := cloneBinding(b)
+		renewed.LastActive = now
+		renewed.ExpiresAt = now.Add(BindingLeaseTTL)
+		if err := m.repo.Upsert(ctx, renewed); err == nil {
+			m.bindings[key] = renewed
+			m.sync(ctx, renewed)
+		}
 	}
 	m.mu.Unlock()
 }
@@ -159,7 +201,7 @@ func (m *LLMBindingManager) GetLocalBindings() []*LLMBinding {
 	var result []*LLMBinding
 	for _, b := range m.bindings {
 		if !bindingExpired(b, now) {
-			result = append(result, b)
+			result = append(result, cloneBinding(b))
 		}
 	}
 	return result
@@ -177,7 +219,7 @@ func (m *LLMBindingManager) ApplyRemoteBindings(peerNodeID string, bindings []*L
 	}
 	for _, b := range bindings {
 		if b.NodeID == peerNodeID && !bindingExpired(b, now) {
-			m.remoteBindings[bindingKey(b)] = b
+			m.remoteBindings[bindingKey(b)] = cloneBinding(b)
 		}
 	}
 }

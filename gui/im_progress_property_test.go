@@ -59,7 +59,7 @@ func (p *progressTracker) markEntryContext() {
 // immediate progress emission at the entry point.
 func simulateMessageProcessing(msg string, tracker *progressTracker) {
 	// Step 1: IMMEDIATE progress emission (before any processing)
-	tracker.onProgress("正在思考...")
+	tracker.onProgress("[Status] 已接收任务，正在准备执行路径")
 
 	// Step 2: Preflight checks (validation, rate limiting, etc.)
 	tracker.markPreflight()
@@ -181,7 +181,7 @@ func TestProperty10_ProgressText(t *testing.T) {
 		}
 
 		// Property: progress text is a user-facing status message
-		if text != "正在思考..." {
+		if text != "[Status] 已接收任务，正在准备执行路径" {
 			t.Fatalf("unexpected progress text: %q", text)
 		}
 	})

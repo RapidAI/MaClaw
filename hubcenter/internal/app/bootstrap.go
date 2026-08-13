@@ -253,7 +253,6 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 			runHAHistoryPruner(ctx, haSvc, cfg.HA.HistoryRetentionDays, cfg.HA.HistoryMaxRetainedOps, cfg.HA.HistoryPruneIntervalMinutes, cfg.HA.HistoryPruneBatchSize)
 		})
 		app.goBackground(ha.NewProber(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second).Run)
-		app.goBackground(ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run)
 	}
 
 	// --- LLM Service Module ---
@@ -263,7 +262,16 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	} else {
 		nodeID = "single"
 	}
-	_ = InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc)
+	if _, err := InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc); err != nil {
+		return nil, fmt.Errorf("initialize LLM module: %w", err)
+	}
+	if haSvc != nil {
+		// The HA syncer may apply compute-market operations as soon as it starts.
+		// Initialize and attach the LLM repositories first; otherwise a pulled
+		// card-order operation can be marked applied while no order repository is
+		// available to persist it locally.
+		app.goBackground(ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run)
+	}
 
 	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc, st.HubUserUsage, notifSvcCenter)
 

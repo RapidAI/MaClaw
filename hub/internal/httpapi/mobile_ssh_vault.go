@@ -36,13 +36,13 @@ var mobileSSHVault = struct {
 }
 
 type mobileSSHVaultRecord struct {
-	TenantID         string
-	OwnerID          string
-	ProfileID        string
-	AuthMode         string // password | private_key
-	EncryptedSecret  string
+	TenantID            string
+	OwnerID             string
+	ProfileID           string
+	AuthMode            string // password | private_key
+	EncryptedSecret     string
 	EncryptedPassphrase string // optional for private_key
-	UpdatedAt        time.Time
+	UpdatedAt           time.Time
 }
 
 func mobileSSHVaultMapKey(tenantID, ownerID, profileID string) string {
@@ -250,9 +250,16 @@ func MobileSSHVaultHandler(identity *auth.IdentityService) http.HandlerFunc {
 				EncryptedPassphrase: passEnc,
 				UpdatedAt:           now,
 			}
+			mobileKnowledgePurgeState.RLock()
+			if !mobileOwnerWriteAllowedLocked(tenantID, ownerID) {
+				mobileKnowledgePurgeState.RUnlock()
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+				return
+			}
 			mobileSSHVault.Lock()
 			mobileSSHVault.secrets[key] = rec
 			mobileSSHVault.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			go mobilePersistState()
 			writeJSON(w, http.StatusOK, map[string]any{
 				"profile_id": profileID,

@@ -85,6 +85,80 @@
     --theme-control-well: color-mix(in srgb, var(--theme-text-muted) 15%, var(--theme-surface));
 }
 
+/* Invitation dialog: shareable link first, QR secondary, and responsive cards
+   for the user's own invitation history. */
+.hub-invitation-dialog__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-modal, 1200);
+    display: grid;
+    place-items: center;
+    padding: var(--space-4);
+    background: rgba(15, 23, 42, 0.48);
+}
+
+.hub-invitation-dialog {
+    box-sizing: border-box;
+    width: min(760px, 100%);
+    max-height: min(88vh, 780px);
+    overflow: auto;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    box-shadow: var(--shadow-xl);
+}
+
+.hub-invitation-dialog__header,
+.hub-invitation-dialog__link-section,
+.hub-invitation-dialog__invitees { padding: 20px 22px; }
+.hub-invitation-dialog__header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); border-bottom: 1px solid var(--theme-border-subtle); }
+.hub-invitation-dialog__header h2, .hub-invitation-dialog__invitees h3 { margin: 0; font-size: 1rem; }
+.hub-invitation-dialog__header p, .hub-invitation-dialog__link-copy > p, .hub-invitation-dialog__empty { margin: 6px 0 0; color: var(--theme-text-secondary); font-size: .82rem; line-height: 1.45; }
+.hub-invitation-dialog__link-copy > .hub-invitation-dialog__copy-hint { color: var(--theme-warning); }
+.hub-invitation-dialog__link-copy > .hub-invitation-dialog__rotate-error { color: var(--theme-danger); }
+.hub-invitation-dialog__close { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--theme-text-secondary); font: inherit; font-size: 1.3rem; cursor: pointer; }
+.hub-invitation-dialog__close:hover { border-color: var(--theme-border); background: var(--theme-surface-muted); color: var(--theme-text-primary); }
+.hub-invitation-dialog__loading, .hub-invitation-dialog__error { margin: 20px 22px; padding: 12px; border-radius: var(--radius-sm); font-size: .84rem; }
+.hub-invitation-dialog__loading { color: var(--theme-text-secondary); background: var(--theme-surface-muted); }
+.hub-invitation-dialog__error { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: var(--theme-danger); background: var(--theme-danger-bg); }
+.hub-invitation-dialog__error .hub-invitation-dialog__button { flex: 0 0 auto; color: var(--theme-danger); background: var(--theme-surface); }
+.hub-invitation-dialog__link-section { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-5); align-items: center; }
+.hub-invitation-dialog__link-copy > label { display: block; margin-bottom: 7px; color: var(--theme-text-secondary); font-size: .76rem; font-weight: 700; }
+.hub-invitation-dialog__link-actions { display: flex; gap: var(--space-2); }
+.hub-invitation-dialog__link-actions input { min-width: 0; flex: 1; border: 1px solid var(--theme-border); border-radius: var(--radius-sm); background: var(--theme-control-well); color: var(--theme-text-primary); padding: 9px 10px; font: inherit; font-size: .8rem; }
+.hub-invitation-dialog__button { min-height: 34px; border: 1px solid var(--theme-border); border-radius: var(--radius-sm); background: var(--theme-surface); color: var(--theme-text-primary); padding: 0 11px; font: inherit; font-size: .78rem; font-weight: 700; cursor: pointer; transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast); }
+.hub-invitation-dialog__button:hover:not(:disabled) { border-color: var(--theme-primary); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
+.hub-invitation-dialog__button--primary { border-color: var(--theme-primary); background: var(--theme-primary); color: var(--theme-on-primary); }
+.hub-invitation-dialog__button--primary:hover:not(:disabled) { background: var(--theme-primary-strong); color: var(--theme-on-primary); }
+.hub-invitation-dialog__button:disabled { cursor: default; opacity: .55; }
+.hub-invitation-dialog__close:focus-visible, .hub-invitation-dialog__button:focus-visible, .hub-invitation-dialog__link-actions input:focus-visible { outline: 2px solid var(--theme-focus); outline-offset: 2px; }
+.hub-invitation-dialog__qr { display: grid; place-items: center; padding: 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: #fff; }
+.hub-invitation-dialog__invitees { border-top: 1px solid var(--theme-border-subtle); }
+.hub-invitation-dialog__invitees-heading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
+.hub-invitation-dialog__invitees-heading span, .hub-invitation-dialog__pagination { color: var(--theme-text-secondary); font-size: .75rem; }
+.hub-invitation-dialog__invitee-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-2); margin-top: var(--space-3); }
+.hub-invitation-dialog__invitee { min-width: 0; padding: 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-sm); background: var(--theme-surface-muted); }
+.hub-invitation-dialog__invitee strong, .hub-invitation-dialog__invitee span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-invitation-dialog__invitee strong { font-size: .8rem; }
+.hub-invitation-dialog__invitee span { margin-top: 5px; color: var(--theme-text-secondary); font-size: .7rem; }
+.hub-invitation-dialog__pagination { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-4); }
+.hub-invitation-dialog__pagination-loading { min-inline-size: 5.2em; }
+
+@media (max-width: 620px) {
+    .hub-invitation-dialog__header, .hub-invitation-dialog__link-section, .hub-invitation-dialog__invitees { padding: 16px; }
+    .hub-invitation-dialog__link-section { grid-template-columns: 1fr; }
+    .hub-invitation-dialog__qr { width: fit-content; }
+    .hub-invitation-dialog__link-actions { flex-wrap: wrap; }
+    .hub-invitation-dialog__link-actions input { flex-basis: 100%; }
+    .hub-invitation-dialog__pagination { justify-content: space-between; }
+    .hub-invitation-dialog__error { align-items: flex-start; flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .hub-invitation-dialog__button { transition: none; }
+}
+
 .about-page {
     height: 100%;
     overflow-y: auto;
@@ -1684,6 +1758,9 @@ body {
 }
 
 .sidebar-system-status__provider {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     min-width: 0;
     max-width: none;
     overflow: hidden;
@@ -1708,6 +1785,25 @@ body {
 .sidebar-system-status__provider--button {
     padding: 2px 0;
     text-align: left;
+}
+
+.sidebar-system-status__provider--button > span:last-child,
+.sidebar-system-status__provider > span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-system-status__provider-vision-icon {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: var(--theme-primary);
+    stroke-width: 1.35;
+    stroke-linecap: round;
+    stroke-linejoin: round;
 }
 
 .sidebar-system-status__provider--button:hover,
@@ -9261,6 +9357,13 @@ body {
     line-height: 1.5;
 }
 
+.confirm-dialog__status {
+    margin: -10px 0 20px;
+    color: var(--theme-text-secondary);
+    font-size: 0.82rem;
+    line-height: 1.45;
+}
+
 .confirm-dialog__actions {
     display: flex;
     justify-content: flex-end;
@@ -9277,9 +9380,15 @@ body {
     transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
 }
 
-.confirm-dialog__button:hover,
+.confirm-dialog__button:not(:disabled):hover,
 .confirm-dialog__button:focus-visible {
     transform: translateY(-1px);
+}
+
+.confirm-dialog__button:disabled {
+    cursor: progress;
+    opacity: 0.62;
+    transform: none;
 }
 
 .confirm-dialog__button:focus-visible {
@@ -9294,7 +9403,7 @@ body {
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
-.confirm-dialog__button--secondary:hover,
+.confirm-dialog__button--secondary:not(:disabled):hover,
 .confirm-dialog__button--secondary:focus-visible {
     box-shadow: 0 2px 4px rgba(15, 23, 42, 0.1);
 }
@@ -9306,7 +9415,7 @@ body {
     box-shadow: 0 2px 4px color-mix(in srgb, var(--theme-danger) 30%, transparent);
 }
 
-.confirm-dialog__button--danger:hover,
+.confirm-dialog__button--danger:not(:disabled):hover,
 .confirm-dialog__button--danger:focus-visible {
     background: color-mix(in srgb, var(--theme-danger) 86%, #000);
     box-shadow: 0 4px 8px color-mix(in srgb, var(--theme-danger) 40%, transparent);

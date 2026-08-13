@@ -1,0 +1,6 @@
+# Dedicated non-release Bread Compact display acquisition boundary.
+# The ST7789/SPI adapter fails only after panel initialization, inversion and
+# display-on have succeeded, exercising profile-private reverse cleanup.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_DISPLAY_FAILURE_INITIALIZATION=y
+CONFIG_MACLAW_DISPLAY_FAILURE_STAGE=5

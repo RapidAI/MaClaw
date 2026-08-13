@@ -14,7 +14,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
-	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"log"
 	"net/url"
 	"os"
@@ -39,40 +38,10 @@ type HubSkillUpdateInfo struct {
 }
 
 func isVisibleAIAssistantProgressText(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return false
-	}
-
-	// Legacy progress rows may start with decorative pictographs; normalize first.
-	body := strings.TrimSpace(textutil.StripLeadingEmojiCluster(trimmed))
-
-	lower := strings.ToLower(body)
-	blockedMarkers := []string{"search", "thinking", "thought", "search first", "running tool", "preparing", "正在执行工具", "先搜索"}
-
-	for _, marker := range blockedMarkers {
-		if strings.Contains(lower, strings.ToLower(marker)) {
-			return false
-		}
-	}
-	if strings.HasPrefix(body, "Coding Agent:") {
-		return true
-	}
-	if isCodingAgentEventText(body) {
-		return true
-	}
-	// Tool-name progress after optional legacy pictograph: "正在执行 weather-query..."
-	// Also allow early pre-loop acks ("收到，正在处理") so first-token wait is not silent.
-	visiblePrefixes := []string{
-		"Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving",
-		"正在生成", "正在执行", "正在处理", "正在准备", "已接近", "收到",
-	}
-	for _, prefix := range visiblePrefixes {
-		if strings.HasPrefix(body, prefix) {
-			return true
-		}
-	}
-	return false
+	// Progress callbacks contain pre-sanitized, user-facing activity summaries.
+	// Render every non-empty milestone; the frontend decides whether it belongs
+	// in the structured Coding Agent feed or the answer's thinking panel.
+	return strings.TrimSpace(text) != ""
 }
 
 // BackupSkills exports all NL Skills to a zip file (Wails binding).
@@ -873,7 +842,11 @@ func (a *App) SaveMemory(content, category string, tags []string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.SaveManualMemory(content, memory.Category(category), tags)
+	if err := a.memoryStore.SaveManualMemory(content, memory.Category(category), tags); err != nil {
+		return err
+	}
+	a.refreshActiveAgentMemorySnapshots()
+	return nil
 }
 
 // UpdateMemory modifies an existing memory entry by ID (Wails binding).
@@ -885,7 +858,11 @@ func (a *App) UpdateMemory(id, content, category string, tags []string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.UpdateManualMemory(id, content, memory.Category(category), tags)
+	if err := a.memoryStore.UpdateManualMemory(id, content, memory.Category(category), tags); err != nil {
+		return err
+	}
+	a.refreshActiveAgentMemorySnapshots()
+	return nil
 }
 
 // DeleteMemory removes the memory entry with the given ID (Wails binding).
@@ -904,7 +881,42 @@ func (a *App) DeleteMemory(id string) error {
 	if strings.HasPrefix(out, "delete memory failed:") || strings.HasPrefix(out, "missing ") {
 		return fmt.Errorf("%s", out)
 	}
+	a.refreshActiveAgentMemorySnapshots()
 	return nil
+}
+
+// DeleteMemories removes several memory entries in one durable mutation. The
+// mutation updates the in-memory store before returning, so subsequent memory
+// recall no longer sees the deleted content immediately.
+func (a *App) DeleteMemories(ids []string) (int, error) {
+	seen := make(map[string]struct{}, len(ids))
+	deleteIDs := make([]string, 0, len(ids))
+	for _, rawID := range ids {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		deleteIDs = append(deleteIDs, id)
+	}
+	if len(deleteIDs) == 0 {
+		return 0, fmt.Errorf("at least one memory id is required")
+	}
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "delete", "ids": deleteIDs}); err != nil {
+		return 0, err
+	}
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		return 0, fmt.Errorf("memory store not initialized")
+	}
+	if err := a.memoryStore.UpdateEntriesAndDeleteIDs(nil, deleteIDs); err != nil {
+		return 0, fmt.Errorf("delete memory batch failed: %w", err)
+	}
+	a.refreshActiveAgentMemorySnapshots()
+	return len(deleteIDs), nil
 }
 
 // CompressMemories runs dedup + LLM compression once and returns a summary (Wails binding).
@@ -923,6 +935,11 @@ func (a *App) CompressMemories() (*memory.CompressResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	result, err := maintenance.Compress(ctx)
+	// Compression is deliberately best-effort: a timeout or later LLM error can
+	// be returned after deduplication or an earlier entry update already
+	// committed. Always drop frozen prompt snapshots before returning so the
+	// next Agent turn cannot retain pre-maintenance memory on a partial result.
+	a.refreshActiveAgentMemorySnapshots()
 	// Emit event so the frontend refreshes even if the component was
 	// unmounted and remounted (tab switch) during compression.
 	a.emitEvent("memory:compressed", result)
@@ -956,7 +973,13 @@ func (a *App) RestoreMemoryBackup(backupName string) error {
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
-	return maintenance.RestoreBackup(backupName)
+	if err := maintenance.RestoreBackup(backupName); err != nil {
+		return err
+	}
+	// A restore replaces the entire store, so every shared-store Agent must
+	// discard its frozen memory section before this call returns.
+	a.refreshActiveAgentMemorySnapshots()
+	return nil
 }
 
 // DeleteMemoryBackup removes a backup file by name (Wails binding).
@@ -1206,7 +1229,12 @@ func (a *App) RestoreArchiveMemory(id string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.RestoreFromArchive(id)
+	if err := a.memoryStore.RestoreFromArchive(id); err != nil {
+		return err
+	}
+	// Restored archive content joins active prompt recall immediately.
+	a.refreshActiveAgentMemorySnapshots()
+	return nil
 }
 
 // PinMemory marks a memory entry as pinned (protected from eviction) (Wails binding).
@@ -1218,7 +1246,11 @@ func (a *App) PinMemory(id string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.PinEntry(id)
+	if err := a.memoryStore.PinEntry(id); err != nil {
+		return err
+	}
+	a.refreshActiveAgentMemorySnapshots()
+	return nil
 }
 
 // UnpinMemory removes the pinned flag from a memory entry (Wails binding).
@@ -1230,7 +1262,11 @@ func (a *App) UnpinMemory(id string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.UnpinEntry(id)
+	if err := a.memoryStore.UnpinEntry(id); err != nil {
+		return err
+	}
+	a.refreshActiveAgentMemorySnapshots()
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1928,6 +1964,21 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 // If the first phase has an input schema, the AI assistant task panel is shown
 // before execution.
 func (a *App) StartWorkflowTemplate(workflowType string, projectPath string) (string, error) {
+	return a.startWorkflowTemplate(workflowType, projectPath, "")
+}
+
+// StartWorkflowTemplateInTab starts a workflow in an already-created project
+// assistant tab. Workflow events are scoped to that tab rather than the main
+// AI assistant conversation.
+func (a *App) StartWorkflowTemplateInTab(workflowType string, projectPath string, tabID string) (string, error) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return "", fmt.Errorf("assistant tab ID is required")
+	}
+	return a.startWorkflowTemplate(workflowType, projectPath, tabID)
+}
+
+func (a *App) startWorkflowTemplate(workflowType string, projectPath string, eventScopeID string) (string, error) {
 	workflowType = strings.TrimSpace(workflowType)
 	if workflowType == "" {
 		return "", fmt.Errorf("workflow type is required")
@@ -1962,12 +2013,14 @@ func (a *App) StartWorkflowTemplate(workflowType string, projectPath string) (st
 		return "", fmt.Errorf("unknown workflow type: %s", workflowType)
 	}
 
-	// For workflow panel starts, always use the default desktop session (empty
-	// project path). The workflow engine binds the actual working directory via
-	// RouteResult.ProjectPath / EffectiveDesktopWorkingDir. Using empty
-	// sendProjectPath ensures the message is routed to the same session that the
-	// AI assistant panel's default tab is listening on.
+	// Legacy panel starts use the default desktop session (an empty project path),
+	// which keeps existing callers on the local assistant tab. A tab-scoped start
+	// instead owns the workflow with that project's session so its messages and
+	// workflow state remain isolated in the newly opened project tab.
 	sendProjectPath := ""
+	if eventScopeID != "" {
+		sendProjectPath = projectPath
+	}
 	if projectPath == "." {
 		projectPath = "" // normalize for RouteResult too
 	}
@@ -1978,20 +2031,26 @@ func (a *App) StartWorkflowTemplate(workflowType string, projectPath string) (st
 
 	// Send the choice command through the normal message path. This goes through
 	// enterIMMessageSerializationBoundary, ensuring proper session locking.
-	// EventScopeID must be "local" so the backend caches it and subsequent workflow
-	// events carry it — the frontend's useWorkflowState filters events by scope ID
-	// and only accepts events matching the active tab's scope ("local" for default tab).
-	go func() {
-		if _, err := a.SendAIAssistantMessage(AIAssistantSendRequest{
-			Text:         launch.ChoiceCommand,
-			RequestID:    launch.RequestID,
-			ProjectPath:  launch.SendProjectPath,
-			EventScopeID: "local",
-		}); err != nil {
-			log.Printf("[StartWorkflowTemplate] SendAIAssistantMessage failed: type=%s err=%v", workflowType, err)
-			handler.pendingWorkflowChoice.Delete(launch.UserID)
-		}
-	}()
+	// The scope is "local" for the legacy assistant tab or the concrete tab ID for
+	// project-tab starts. The backend caches it so subsequent workflow events are
+	// routed by the frontend's useWorkflowState to that same tab.
+	scopeID := eventScopeID
+	if scopeID == "" {
+		scopeID = "local"
+	}
+	// SendAIAssistantMessage queues the agent loop internally and returns a
+	// deferred receipt immediately. Do this synchronously so a launch failure is
+	// returned to the caller instead of leaving a newly created tab appearing to
+	// run a workflow that was never actually queued.
+	if _, err := a.SendAIAssistantMessage(AIAssistantSendRequest{
+		Text:         launch.ChoiceCommand,
+		RequestID:    launch.RequestID,
+		ProjectPath:  launch.SendProjectPath,
+		EventScopeID: scopeID,
+	}); err != nil {
+		handler.pendingWorkflowChoice.Delete(launch.UserID)
+		return "", fmt.Errorf("start workflow %q: %w", workflowType, err)
+	}
 
 	return launch.RequestID, nil
 }
@@ -2169,6 +2228,15 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		}
 		emitEvent("ai-assistant-progress", progressText)
 	}
+	status := func(english, chinese string) {
+		if strings.HasPrefix(strings.ToLower(msgLang), "en") {
+			onProgress("[Status] " + english)
+			return
+		}
+		onProgress("[Status] " + chinese)
+	}
+	status("Task received", "已接收任务")
+	status("Preparing the execution path", "正在准备执行路径")
 	streamDeltaNormalizer := &aiAssistantStreamDeltaNormalizer{}
 	onToken := func(delta string) {
 		delta = streamDeltaNormalizer.Normalize(delta)
@@ -2199,9 +2267,12 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	imHandlerStartedAt := time.Now()
 	handler := hubClient.ensureIMHandler()
 	ensureIMHandlerElapsed = time.Since(imHandlerStartedAt)
+	status("Execution environment is ready", "执行环境已就绪")
 	if shouldReconcileAIAssistantClientHistory(req, msg.UserID) {
+		status("Synchronizing conversation context", "正在同步会话上下文")
 		a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)
 	}
+	status("Analyzing the task and starting work", "正在分析任务并开始处理")
 	agentLoopStartedAt := time.Now()
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	agentLoopElapsed = time.Since(agentLoopStartedAt)

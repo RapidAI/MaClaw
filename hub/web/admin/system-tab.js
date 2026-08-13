@@ -167,6 +167,8 @@ const REGISTRATION_AUTH_I18N = {
     email: 'Email Registration',
     phone: 'Phone Registration',
     mixed: 'Email or Phone',
+    emailVerification: 'Require email verification (invitation code required when off)',
+    emailVerificationHint: 'Turning this off skips the email code only for registrations with a valid invitation code.',
     emailHint: 'Default mode. Registration continues to use email verification.',
     phoneHint: 'Phone registration uses Aliyun Dypnsapi SMS verification.',
     mixedHint: 'Users can register and sign in with either an email code or an SMS code.',
@@ -194,6 +196,8 @@ const REGISTRATION_AUTH_I18N = {
     email: '\u90ae\u7bb1\u6ce8\u518c',
     phone: '\u624b\u673a\u53f7\u6ce8\u518c',
     mixed: '\u90ae\u7bb1\u6216\u624b\u673a\u53f7',
+    emailVerification: '\u8981\u6c42\u90ae\u7bb1\u9a8c\u8bc1\uff08\u5173\u95ed\u540e\u6ce8\u518c\u5fc5\u987b\u4f7f\u7528\u9080\u8bf7\u7801\uff09',
+    emailVerificationHint: '\u5173\u95ed\u540e\uff0c\u4ec5\u6301\u6709\u6709\u6548\u9080\u8bf7\u7801\u7684\u7528\u6237\u53ef\u8df3\u8fc7\u90ae\u7bb1\u9a8c\u8bc1\u7801\u6ce8\u518c\u3002',
     emailHint: '\u9ed8\u8ba4\u6a21\u5f0f\uff0c\u6ce8\u518c\u7ee7\u7eed\u4f7f\u7528\u90ae\u7bb1\u9a8c\u8bc1\u3002',
     phoneHint: '\u624b\u673a\u53f7\u6ce8\u518c\u4f7f\u7528\u963f\u91cc\u4e91 Dypnsapi \u77ed\u4fe1\u9a8c\u8bc1\u3002',
     mixedHint: '\u7528\u6237\u53ef\u4f7f\u7528\u90ae\u7bb1\u9a8c\u8bc1\u7801\u6216\u77ed\u4fe1\u9a8c\u8bc1\u7801\u6ce8\u518c\u3001\u767b\u5f55\u3002',
@@ -215,6 +219,81 @@ const REGISTRATION_AUTH_I18N = {
   }
 };
 const rax = (key, vars = {}) => ((REGISTRATION_AUTH_I18N[currentLang] || REGISTRATION_AUTH_I18N.en)[key] || REGISTRATION_AUTH_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const USER_REFERRAL_SYSTEM_I18N = {
+  en: {
+    title: 'User Invitations', desc: 'Control whether tenant users can share referral links and set OEM installer destinations.', reload: 'Reload',
+    enabled: 'Enable user invitations', enabledOn: 'Enabled - eligible users can create and share their own invitation link.', enabledOff: 'Disabled - the invitation entry and all new referral registrations are unavailable.', toggleOn: 'Enabled', toggleOff: 'Disabled',
+    downloadsTitle: 'Client download links', downloadsDesc: 'Provide HTTPS installer links for OEM distribution. Leave a value unchanged to keep its current destination.',
+    windowsAMD64: 'Windows x64', windowsARM64: 'Windows ARM64', macosAMD64: 'macOS Intel', macosARM64: 'macOS Apple Silicon', linuxAMD64: 'Linux x64', linuxARM64: 'Linux ARM64',
+    save: 'Save invitation settings', saving: 'Saving...', saved: 'Invitation system settings saved.', defaults: 'Restore official links', restored: 'Official MaClaw installer links restored. Save to apply them.', loadFailed: 'Load invitation system settings failed: {error}', saveFailed: 'Save invitation system settings failed: {error}', conflict: 'Invitation settings changed by another administrator. The latest values have been reloaded.'
+  },
+  zh: {
+    title: '\u7528\u6237\u9080\u8bf7', desc: '\u63a7\u5236\u5f53\u524d\u79df\u6237\u662f\u5426\u53ef\u4ee5\u5206\u4eab\u9080\u8bf7\u94fe\u63a5\uff0c\u5e76\u914d\u7f6e OEM \u5ba2\u6237\u7aef\u4e0b\u8f7d\u5730\u5740\u3002', reload: '\u5237\u65b0',
+    enabled: '\u5f00\u542f\u7528\u6237\u9080\u8bf7', enabledOn: '\u5df2\u5f00\u542f \u2014 \u7b26\u5408\u6761\u4ef6\u7684\u7528\u6237\u53ef\u521b\u5efa\u5e76\u5206\u4eab\u4e2a\u4eba\u9080\u8bf7\u94fe\u63a5\u3002', enabledOff: '\u5df2\u5173\u95ed \u2014 \u4e0d\u663e\u793a\u9080\u8bf7\u5165\u53e3\uff0c\u4e5f\u4e0d\u63a5\u53d7\u65b0\u7684\u9080\u8bf7\u6ce8\u518c\u3002', toggleOn: '\u5df2\u5f00\u542f', toggleOff: '\u5df2\u5173\u95ed',
+    downloadsTitle: '\u5ba2\u6237\u7aef\u4e0b\u8f7d\u94fe\u63a5', downloadsDesc: '\u4e3a OEM \u5206\u53d1\u914d\u7f6e HTTPS \u5b89\u88c5\u5668\u5730\u5740\u3002\u672a\u4fee\u6539\u7684\u5730\u5740\u4f1a\u4fdd\u7559\u5f53\u524d\u503c\u3002',
+    windowsAMD64: 'Windows x64', windowsARM64: 'Windows ARM64', macosAMD64: 'macOS Intel', macosARM64: 'macOS Apple Silicon', linuxAMD64: 'Linux x64', linuxARM64: 'Linux ARM64',
+    save: '\u4fdd\u5b58\u9080\u8bf7\u7cfb\u7edf\u8bbe\u7f6e', saving: '\u4fdd\u5b58\u4e2d...', saved: '\u9080\u8bf7\u7cfb\u7edf\u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002', defaults: '\u6062\u590d\u5b98\u65b9\u94fe\u63a5', restored: '\u5df2\u6062\u590d\u5b98\u65b9 MaClaw \u5b89\u88c5\u5668\u94fe\u63a5\uff0c\u8bf7\u4fdd\u5b58\u4ee5\u751f\u6548\u3002', loadFailed: '\u52a0\u8f7d\u9080\u8bf7\u7cfb\u7edf\u8bbe\u7f6e\u5931\u8d25\uff1a{error}', saveFailed: '\u4fdd\u5b58\u9080\u8bf7\u7cfb\u7edf\u8bbe\u7f6e\u5931\u8d25\uff1a{error}', conflict: '\u5176\u4ed6\u7ba1\u7406\u5458\u5df2\u66f4\u65b0\u9080\u8bf7\u8bbe\u7f6e\uff0c\u5df2\u91cd\u65b0\u52a0\u8f7d\u6700\u65b0\u503c\u3002'
+  }
+};
+const urx = (key, vars = {}) => ((USER_REFERRAL_SYSTEM_I18N[currentLang] || USER_REFERRAL_SYSTEM_I18N.en)[key] || USER_REFERRAL_SYSTEM_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const USER_REFERRAL_OFFICIAL_DOWNLOADS = {
+  windows_amd64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-windows-amd64.exe', windows_arm64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-windows-arm64.exe',
+  macos_amd64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-darwin-amd64', macos_arm64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-darwin-arm64',
+  linux_amd64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-linux-amd64', linux_arm64: 'https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-linux-arm64'
+};
+let userReferralSystemConfig = null;
+let userReferralSystemConfigRequest = 0;
+let userReferralSystemSaveBusy = false;
+function applyUserReferralSystemI18n() {
+  _s('userReferralSystemTitle', 'textContent', urx('title')); _s('userReferralSystemDesc', 'textContent', urx('desc')); _s('userReferralSystemReloadBtn', 'textContent', urx('reload'));
+  _s('userReferralSystemEnabledLabel', 'textContent', urx('enabled')); _s('userReferralDownloadsTitle', 'textContent', urx('downloadsTitle')); _s('userReferralDownloadsDesc', 'textContent', urx('downloadsDesc'));
+  _s('userReferralDownloadWindowsAMD64Label', 'textContent', urx('windowsAMD64')); _s('userReferralDownloadWindowsARM64Label', 'textContent', urx('windowsARM64'));
+  _s('userReferralDownloadMacOSAMD64Label', 'textContent', urx('macosAMD64')); _s('userReferralDownloadMacOSARM64Label', 'textContent', urx('macosARM64'));
+  _s('userReferralDownloadLinuxAMD64Label', 'textContent', urx('linuxAMD64')); _s('userReferralDownloadLinuxARM64Label', 'textContent', urx('linuxARM64'));
+  _s('userReferralSystemSaveBtn', 'textContent', urx('save')); _s('userReferralSystemDefaultsBtn', 'textContent', urx('defaults'));
+  updateUserReferralSystemEnabledState();
+}
+function updateUserReferralSystemEnabledState() {
+  const enabled = !!document.getElementById('userReferralSystemEnabled')?.checked;
+  _s('userReferralSystemEnabledHint', 'textContent', urx(enabled ? 'enabledOn' : 'enabledOff'));
+  _s('userReferralSystemToggleText', 'textContent', urx(enabled ? 'toggleOn' : 'toggleOff'));
+}
+function userReferralDownloadValue(key) { return (document.getElementById('userReferralDownload' + key) || {}).value || ''; }
+function renderUserReferralSystemConfig(cfg = {}) {
+  userReferralSystemConfig = cfg || {};
+  const downloads = cfg.downloads || {};
+  const mapping = { WindowsAMD64: 'windows_amd64', WindowsARM64: 'windows_arm64', MacOSAMD64: 'macos_amd64', MacOSARM64: 'macos_arm64', LinuxAMD64: 'linux_amd64', LinuxARM64: 'linux_arm64' };
+  Object.entries(mapping).forEach(([id, key]) => _s('userReferralDownload' + id, 'value', downloads[key] || USER_REFERRAL_OFFICIAL_DOWNLOADS[key]));
+  const enabled = document.getElementById('userReferralSystemEnabled'); if (enabled) enabled.checked = !!cfg.enabled;
+  updateUserReferralSystemEnabledState();
+}
+async function loadUserReferralSystemConfig() {
+  if (!canManageRegistrationAuth()) return null;
+  const request = ++userReferralSystemConfigRequest;
+  applyUserReferralSystemI18n();
+  try { const data = await api('/api/admin/user-referrals/config'); if (request !== userReferralSystemConfigRequest || userReferralSystemSaveBusy) return null; renderUserReferralSystemConfig(data || {}); return data || {}; }
+  catch (err) { if (request !== userReferralSystemConfigRequest) return null; const msg = urx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); return null; }
+}
+function toggleUserReferralSystemEnabled() { updateUserReferralSystemEnabledState(); }
+function resetUserReferralDownloadDefaults() {
+  const mapping = { WindowsAMD64: 'windows_amd64', WindowsARM64: 'windows_arm64', MacOSAMD64: 'macos_amd64', MacOSARM64: 'macos_arm64', LinuxAMD64: 'linux_amd64', LinuxARM64: 'linux_arm64' };
+  Object.entries(mapping).forEach(([id, key]) => _s('userReferralDownload' + id, 'value', USER_REFERRAL_OFFICIAL_DOWNLOADS[key]));
+  showToast(urx('restored'), 'info');
+}
+async function saveUserReferralSystemConfig() {
+  if (!canManageRegistrationAuth()) return null;
+  if (userReferralSystemSaveBusy) return null;
+  const btn = document.getElementById('userReferralSystemSaveBtn'); const previousLabel = btn ? btn.textContent : '';
+  const mapping = { WindowsAMD64: 'windows_amd64', WindowsARM64: 'windows_arm64', MacOSAMD64: 'macos_amd64', MacOSARM64: 'macos_arm64', LinuxAMD64: 'linux_amd64', LinuxARM64: 'linux_arm64' };
+  const downloads = {}; Object.entries(mapping).forEach(([id, key]) => { downloads[key] = userReferralDownloadValue(id).trim(); });
+  const payload = Object.assign({}, userReferralSystemConfig || {}, { enabled: !!document.getElementById('userReferralSystemEnabled')?.checked, downloads }); const headers = {}; if (userReferralSystemConfig && userReferralSystemConfig.version) headers['If-Match'] = userReferralSystemConfig.version;
+  userReferralSystemSaveBusy = true; ++userReferralSystemConfigRequest;
+  if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.textContent = urx('saving'); }
+  let reloadLatest = false;
+  try { const data = await api('/api/admin/user-referrals/config', { method: 'PUT', headers, body: JSON.stringify(payload) }); renderUserReferralSystemConfig(data || payload); const msg = urx('saved'); setOutput(msg); showToast(msg, 'success'); return data || payload; }
+  catch (err) { if (/CONFIG_CONFLICT|changed by another administrator/i.test(String(err && err.message || err || ''))) { const msg = urx('conflict'); setOutput(msg); showToast(msg, 'error'); reloadLatest = true; } else { const msg = urx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } return null; }
+  finally { userReferralSystemSaveBusy = false; if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.textContent = previousLabel || urx('save'); } if (reloadLatest) void loadUserReferralSystemConfig(); }
+}
 const TENANT_MAIL_SENDER_I18N = {
   en: {
     title: 'Mail Sender Name',
@@ -432,6 +511,8 @@ function applyRegistrationAuthI18n() {
   _s('registrationAuthMethodEmail', 'textContent', rax('email'));
   _s('registrationAuthMethodPhone', 'textContent', rax('phone'));
   _s('registrationAuthMethodMixed', 'textContent', rax('mixed'));
+  _s('registrationAuthEmailVerificationLabel', 'textContent', rax('emailVerification'));
+  _s('registrationAuthEmailVerificationHint', 'textContent', rax('emailVerificationHint'));
   _s('registrationAuthSMSSettingsTitle', 'textContent', rax('smsSettingsTitle'));
   _s('registrationAuthSMSSettingsDesc', 'textContent', rax('smsSettingsDesc'));
   _s('registrationAuthAliyunAccessKeyIDLabel', 'textContent', rax('accessKeyID'));
@@ -448,13 +529,27 @@ function registrationAuthUsesPhone() {
   const el = document.getElementById('registrationAuthMethod');
   return el && (el.value === 'phone' || el.value === 'mixed');
 }
+function canManageRegistrationAuth() {
+  const profile = typeof window !== 'undefined' && typeof window.adminProfile === 'function' ? window.adminProfile() : null;
+  return !!profile && String(profile.scope || '').toLowerCase() === 'tenant';
+}
+function clearTenantSystemFreeState() {
+  tenantSystemFreeStatusCache = null;
+  if (typeof window !== 'undefined') delete window.tenantSystemFreeStatusCache;
+}
+function canManageTenantDigitalAssets() {
+  const profile = typeof window !== 'undefined' && typeof window.adminProfile === 'function' ? window.adminProfile() : null;
+  return !!profile && String(profile.scope || '').toLowerCase() === 'tenant';
+}
 function updateRegistrationAuthModeState() {
   const phoneEnabled = registrationAuthUsesPhone();
+  const method = document.getElementById('registrationAuthMethod')?.value;
   const section = document.getElementById('registrationAuthAliyunSection');
   const buy = document.getElementById('registrationAuthBuyWrap');
+  const emailVerification = document.getElementById('registrationAuthEmailVerificationWrap');
   if (section) section.classList.toggle('hidden', !phoneEnabled);
   if (buy) buy.classList.toggle('hidden', !phoneEnabled);
-  const method = document.getElementById('registrationAuthMethod')?.value;
+  if (emailVerification) emailVerification.classList.toggle('hidden', method === 'phone');
   _s('registrationAuthHint', 'textContent', rax(method === 'mixed' ? 'mixedHint' : phoneEnabled ? 'phoneHint' : 'emailHint'));
 }
 function renderRegistrationAuthConfig(cfg = {}) {
@@ -462,6 +557,7 @@ function renderRegistrationAuthConfig(cfg = {}) {
   const method = savedMethod === 'phone' || savedMethod === 'mixed' ? savedMethod : 'email';
   const methodEl = document.getElementById('registrationAuthMethod');
   if (methodEl) methodEl.value = method;
+  _s('registrationAuthEmailVerificationDisabled', 'checked', !cfg.email_verification_disabled);
   _s('registrationAuthAliyunAccessKeyID', 'value', cfg.aliyun_access_key_id || '');
   _s('registrationAuthAliyunAccessKeySecret', 'value', cfg.aliyun_access_key_secret || '');
   _s('registrationAuthAliyunSignName', 'value', cfg.aliyun_sign_name || '\u901f\u901a\u4e92\u8054\u9a8c\u8bc1\u5e73\u53f0');
@@ -473,6 +569,9 @@ function renderRegistrationAuthConfig(cfg = {}) {
   updateRegistrationAuthModeState();
 }
 async function loadRegistrationAuthConfig() {
+  // The card is tenant-only, but keep this guard for inline handlers and
+  // console calls made after a scope switch.
+  if (!canManageRegistrationAuth()) return null;
   applyRegistrationAuthI18n();
   try {
     const data = await api('/api/admin/settings/registration-auth');
@@ -485,9 +584,13 @@ async function loadRegistrationAuthConfig() {
   }
 }
 async function saveRegistrationAuthConfig() {
+  // The server enforces this too; avoid an unnecessary forbidden request from
+  // stale UI or a direct console invocation.
+  if (!canManageRegistrationAuth()) return null;
   const method = String(document.getElementById('registrationAuthMethod')?.value || 'email').toLowerCase() === 'mixed' ? 'mixed' : registrationAuthUsesPhone() ? 'phone' : 'email';
   const payload = {
     method,
+    email_verification_disabled: !document.getElementById('registrationAuthEmailVerificationDisabled')?.checked,
     aliyun_access_key_id: (document.getElementById('registrationAuthAliyunAccessKeyID') && document.getElementById('registrationAuthAliyunAccessKeyID').value || '').trim(),
     aliyun_access_key_secret: (document.getElementById('registrationAuthAliyunAccessKeySecret') && document.getElementById('registrationAuthAliyunAccessKeySecret').value || '').trim(),
     aliyun_sign_name: (document.getElementById('registrationAuthAliyunSignName') && document.getElementById('registrationAuthAliyunSignName').value || '').trim(),
@@ -638,6 +741,7 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
     applyTLSI18n();
     applySystemRoutingI18n();
     applyRegistrationAuthI18n();
+    applyUserReferralSystemI18n();
     applyTenantMailSenderI18n();
     applyTenantMigrationSettingsI18n();
     applyTenantDigitalAssetsSettingsI18n();
@@ -647,6 +751,7 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
 applyTLSI18n();
 applySystemRoutingI18n();
 applyRegistrationAuthI18n();
+applyUserReferralSystemI18n();
 applyTenantMailSenderI18n();
 applyTenantMigrationSettingsI18n();
 applyTenantDigitalAssetsSettingsI18n();
@@ -662,6 +767,7 @@ async function loadTenantMailSenderName() { applyTenantMailSenderI18n(); try { c
 async function saveTenantMailSenderName() { try { const input = document.getElementById('tenantMailFromName'); const fromName = normalizeTenantMailSenderName(input ? input.value : ''); if (input) input.value = fromName; const data = await api('/api/admin/mail/sender-name', { method: 'POST', body: JSON.stringify({ from_name: fromName }) }); if (input) input.value = (data && data.from_name) || fromName; const msg = tmsx('saved'); setOutput(msg); showToast(msg, 'success'); return data || { from_name: fromName }; } catch (err) { const msg = tmsx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
 async function loadTenantMigrationSettings() { applyTenantMigrationSettingsI18n(); try { const data = await api('/api/admin/migration/settings'); const input = document.getElementById('tenantMigrationMaxMB'); if (input) { input.min = String(tenantMigrationBytesToMB(data && data.min_bytes) || TENANT_MIGRATION_MIN_MB); input.max = String(tenantMigrationBytesToMB(data && data.max_bytes) || TENANT_MIGRATION_MAX_MB); input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); } return data || {}; } catch (err) { const msg = tmgx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function loadTenantDigitalAssetsSettings() {
+  if (!canManageTenantDigitalAssets()) return null;
   applyTenantDigitalAssetsSettingsI18n();
   try {
     const data = await api('/api/admin/digital-assets/settings');
@@ -681,6 +787,7 @@ async function loadTenantDigitalAssetsSettings() {
   }
 }
 async function toggleTenantDigitalAssetsEnabled(enabled) {
+  if (!canManageTenantDigitalAssets()) return null;
   const enabledToggle = document.getElementById('tenantDigitalAssetsEnabledToggle');
   const syncToggle = document.getElementById('tenantDigitalAssetsSyncToggle');
   try {
@@ -706,6 +813,7 @@ async function toggleTenantDigitalAssetsEnabled(enabled) {
   }
 }
 async function toggleTenantDigitalAssetsSync(syncEnabled) {
+  if (!canManageTenantDigitalAssets()) return null;
   const syncToggle = document.getElementById('tenantDigitalAssetsSyncToggle');
   try {
     const data = await api('/api/admin/digital-assets/settings', {
@@ -727,6 +835,10 @@ async function toggleTenantDigitalAssetsSync(syncEnabled) {
 }
 async function saveTenantMigrationSettings() { const input = document.getElementById('tenantMigrationMaxMB'); const valueMB = normalizeTenantMigrationMB(input ? input.value : 0); if (valueMB < TENANT_MIGRATION_MIN_MB || valueMB > TENANT_MIGRATION_MAX_MB) { const msg = tmgx('invalid'); setOutput(msg); showToast(msg, 'error'); return; } const btn = document.getElementById('tenantMigrationSettingsSaveBtn'); const previousLabel = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = tmgx('saving'); } try { const data = await api('/api/admin/migration/settings', { method: 'PUT', body: JSON.stringify({ max_compressed_bytes: valueMB * 1024 * 1024 }) }); if (input) input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); const msg = tmgx('saved'); setOutput(msg); showToast(msg, 'success'); return data || {}; } catch (err) { const msg = tmgx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } finally { if (btn) { btn.disabled = false; btn.textContent = previousLabel || tmgx('save'); } } }
 function getTenantSystemFreeCache() {
+  if (!canManageRegistrationAuth()) {
+    clearTenantSystemFreeState();
+    return null;
+  }
   if (tenantSystemFreeStatusCache) return tenantSystemFreeStatusCache;
   if (typeof window !== 'undefined' && window.tenantSystemFreeStatusCache) {
     tenantSystemFreeStatusCache = window.tenantSystemFreeStatusCache;
@@ -735,6 +847,10 @@ function getTenantSystemFreeCache() {
   return null;
 }
 function setTenantSystemFreeCache(st) {
+  if (!canManageRegistrationAuth()) {
+    clearTenantSystemFreeState();
+    return null;
+  }
   tenantSystemFreeStatusCache = st || {};
   if (typeof window !== 'undefined') {
     window.tenantSystemFreeStatusCache = tenantSystemFreeStatusCache;
@@ -743,10 +859,11 @@ function setTenantSystemFreeCache(st) {
 }
 // Dedupe parallel GETs (bootstrap runs overview + system tab refresh together).
 async function fetchTenantSystemFreeStatus() {
+  if (!canManageRegistrationAuth()) return null;
   if (tenantSystemFreeStatusInflight) return tenantSystemFreeStatusInflight;
   tenantSystemFreeStatusInflight = Promise.resolve()
     .then(function() { return api('/api/admin/llm/system-free'); })
-    .then(function(st) { return setTenantSystemFreeCache(st); })
+    .then(function(st) { return canManageRegistrationAuth() ? setTenantSystemFreeCache(st) : null; })
     .finally(function() { tenantSystemFreeStatusInflight = null; });
   return tenantSystemFreeStatusInflight;
 }
@@ -788,6 +905,7 @@ function renderTenantSystemFreeStatus() {
   }
 }
 function tenantSystemFreeTestButtons() {
+  if (!canManageRegistrationAuth()) return [];
   return [
     document.getElementById('tenantSystemFreeTestBtn'),
     document.getElementById('overviewSystemFreeTestBtn'),
@@ -795,6 +913,7 @@ function tenantSystemFreeTestButtons() {
   ].filter(Boolean);
 }
 function applyTenantSystemFreeStatusUI(st) {
+  if (!canManageRegistrationAuth()) return;
   if (st) setTenantSystemFreeCache(st);
   renderTenantSystemFreeStatus();
   // Paint overview from cache; skipPeer avoids re-entering this path.
@@ -803,12 +922,15 @@ function applyTenantSystemFreeStatusUI(st) {
   }
 }
 async function loadTenantSystemLLMDefaults() {
+  if (!canManageRegistrationAuth()) return null;
   applyTenantSystemLLMDefaultsI18n();
   try {
     const st = await fetchTenantSystemFreeStatus();
+    if (!canManageRegistrationAuth()) return null;
     applyTenantSystemFreeStatusUI(st);
     return getTenantSystemFreeCache() || {};
   } catch (err) {
+    if (!canManageRegistrationAuth()) return null;
     const msg = tslx('loadFailed', { error: err.message });
     setOutput(msg);
     showToast(msg, 'error');
@@ -816,6 +938,7 @@ async function loadTenantSystemLLMDefaults() {
   }
 }
 async function saveTenantSystemLLMDefaults() {
+  if (!canManageRegistrationAuth()) return null;
   // system-free is fixed; open Model Services focused on that group.
   try {
     if (typeof window !== 'undefined' && typeof window.openSystemFreeServiceGroup === 'function') {
@@ -834,6 +957,7 @@ async function saveTenantSystemLLMDefaults() {
   }
 }
 async function testTenantSystemFreeLLM() {
+  if (!canManageRegistrationAuth()) return null;
   if (tenantSystemFreeTestInflight) return null;
   const buttons = tenantSystemFreeTestButtons();
   if (!buttons.length) return null;
@@ -845,6 +969,7 @@ async function testTenantSystemFreeLLM() {
   });
   try {
     const data = await api('/api/admin/llm/system-free/test', { method: 'POST', body: '{}' });
+    if (!canManageRegistrationAuth()) return null;
     if (data && data.status) {
       applyTenantSystemFreeStatusUI(data.status);
     } else if (data && (data.ok || data.success)) {
@@ -868,12 +993,14 @@ async function testTenantSystemFreeLLM() {
     showToast(errMsg, 'error');
     return data;
   } catch (err) {
+    if (!canManageRegistrationAuth()) return null;
     const msg = tslx('testFail', { error: err.message });
     setOutput(msg);
     showToast(msg, 'error');
     throw err;
   } finally {
     tenantSystemFreeTestInflight = false;
+    if (!canManageRegistrationAuth()) return;
     buttons.forEach(function(btn, i) {
       btn.disabled = false;
       btn.textContent = previousLabels[i] || tslx('test');
@@ -882,6 +1009,7 @@ async function testTenantSystemFreeLLM() {
 }
 if (typeof window !== 'undefined') {
   window.getTenantSystemFreeCache = getTenantSystemFreeCache;
+  window.clearTenantSystemFreeState = clearTenantSystemFreeState;
   window.setTenantSystemFreeCache = setTenantSystemFreeCache;
   window.fetchTenantSystemFreeStatus = fetchTenantSystemFreeStatus;
   window.testTenantSystemFreeLLM = testTenantSystemFreeLLM;

@@ -202,6 +202,19 @@ type ResolveInput struct {
 //  3. LLM classification for every ambiguous message with history
 //  4. Non-destructive fallback when the classifier is unavailable
 func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
+	return m.resolve(input, true)
+}
+
+// ResolveFast applies the explicit and structural task-boundary rules without
+// issuing an auxiliary LLM request. It is intended for the first-response
+// path, where an optional context-switch guess must never delay the main agent
+// request. Ambiguous messages conservatively preserve the current task; the
+// normal agent can still clarify or establish the new task in its response.
+func (m *TaskContextManager) ResolveFast(input ResolveInput) TaskContextDecision {
+	return m.resolve(input, false)
+}
+
+func (m *TaskContextManager) resolve(input ResolveInput, allowLLM bool) TaskContextDecision {
 	trimmed := strings.TrimSpace(input.UserMessage)
 
 	// --- Layer 1: Explicit signals (no ambiguity) ---
@@ -267,7 +280,7 @@ func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 
 	// --- Layer 3: LLM classification ---
 
-	if m.llm != nil {
+	if allowLLM && m.llm != nil {
 		return m.classifyWithLLM(input)
 	}
 

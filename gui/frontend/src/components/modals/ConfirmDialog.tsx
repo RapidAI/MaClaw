@@ -6,18 +6,22 @@ type ConfirmDialogProps = {
     t: (key: string) => string;
     onCancel: () => void;
     onConfirm: () => void;
+    confirmPending?: boolean;
 };
 
 // Icon/theme styling keeps stroke="#ef4444", var(--theme-surface), and var(--theme-text-primary) in App.css.
 
-export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: ConfirmDialogProps) => {
+export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm, confirmPending = false }: ConfirmDialogProps) => {
     const titleId = useId();
     const messageId = useId();
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
     const previousFocusRef = useRef<HTMLElement | null>(null);
     const onCancelRef = useRef(onCancel);
+    const confirmPendingRef = useRef(confirmPending);
+    const statusId = useId();
     onCancelRef.current = onCancel;
+    confirmPendingRef.current = confirmPending;
 
     useEffect(() => {
         previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -26,6 +30,7 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopImmediatePropagation();
+                if (confirmPendingRef.current) return;
                 onCancelRef.current();
                 return;
             }
@@ -56,6 +61,7 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
     useEffect(() => {
         const handleFocusIn = (event: FocusEvent) => {
             if (event.target instanceof Node && !dialogRef.current?.contains(event.target)) {
+                if (confirmPendingRef.current) return;
                 cancelButtonRef.current?.focus();
             }
         };
@@ -63,15 +69,22 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
         return () => document.removeEventListener('focusin', handleFocusIn, true);
     }, []);
 
+    useEffect(() => {
+        if (confirmPending && dialogRef.current?.contains(document.activeElement)) {
+            dialogRef.current.focus();
+        }
+    }, [confirmPending]);
+
     return (
     <div className="confirm-dialog-overlay">
         <div
             ref={dialogRef}
             className="confirm-dialog"
+            tabIndex={-1}
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}
-            aria-describedby={messageId}
+            aria-describedby={confirmPending ? `${messageId} ${statusId}` : messageId}
         >
             <div className="confirm-dialog__icon" aria-hidden="true">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -88,12 +101,17 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm }: Confir
             <p id={messageId} className="confirm-dialog__message">
                 {message}
             </p>
+            {confirmPending ? (
+                <p id={statusId} className="confirm-dialog__status" data-confirm-pending-status role="status" aria-live="polite">
+                    {t("processing")}
+                </p>
+            ) : null}
 
             <div className="confirm-dialog__actions">
-                <button ref={cancelButtonRef} type="button" className="confirm-dialog__button confirm-dialog__button--secondary" onClick={onCancel}>
+                <button ref={cancelButtonRef} type="button" className="confirm-dialog__button confirm-dialog__button--secondary" onClick={onCancel} disabled={confirmPending}>
                     {t("cancel")}
                 </button>
-                <button type="button" className="confirm-dialog__button confirm-dialog__button--danger" onClick={onConfirm}>
+                <button type="button" className="confirm-dialog__button confirm-dialog__button--danger" onClick={onConfirm} disabled={confirmPending} aria-busy={confirmPending}>
                     {t("confirm")}
                 </button>
             </div>

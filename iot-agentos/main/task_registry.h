@@ -53,3 +53,8 @@ esp_err_t task_registry_unregister_with_timeout(task_registry_owner_t owner,
 esp_err_t task_registry_stop_owner(task_registry_owner_t owner, uint32_t timeout_ms);
 esp_err_t task_registry_stop_all(uint32_t timeout_ms);
 bool task_registry_get_snapshot(task_registry_snapshot_t *out_snapshot);
+
+/* Internal test-build verification of the Registry's lifecycle transaction
+ * contract. It is invoked only by a compile-time failure-injection profile
+ * before board initialization; production builds return NOT_SUPPORTED. */
+esp_err_t task_registry_run_lifecycle_test(void);

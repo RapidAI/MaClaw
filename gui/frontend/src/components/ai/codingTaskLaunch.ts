@@ -21,6 +21,8 @@ export interface NewTaskContext {
 }
 
 export interface CodingTaskLaunch {
+    /** Correlates a one-shot tab-opening receipt with its caller. */
+    launchId?: string;
     projectPath: string;
     taskTitle: string;
     initialMessage?: string;
@@ -32,6 +34,8 @@ export interface CodingTaskLaunch {
     remoteSafety?: "diagnosis";
     /** True only when SSH must be re-established before task intents may run. */
     remoteNeedsReconnect?: boolean;
+    /** Workflow template to start after its dedicated assistant tab is ready. */
+    workflowType?: string;
     imPlatform?: string;
     imTargetUID?: string;
     imIsGroup?: boolean;
@@ -63,6 +67,7 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
         }
         : undefined;
     return {
+        launchId: String(input?.launchId || "").trim() || undefined,
         projectPath,
         taskTitle: String(input?.taskTitle || "").trim() || projectPath,
         initialMessage: String(input?.initialMessage || "").trim() || undefined,
@@ -75,6 +80,7 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
             : undefined,
         // A local task must never inherit a stale reconnect flag.
         remoteNeedsReconnect: agentMode === "remote_coding_dev" ? input?.remoteNeedsReconnect === true : undefined,
+        workflowType: String(input?.workflowType || "").trim() || undefined,
         imPlatform: String(input?.imPlatform || "").trim() || undefined,
         imTargetUID: String(input?.imTargetUID || "").trim() || undefined,
         imIsGroup: input?.imIsGroup === true,

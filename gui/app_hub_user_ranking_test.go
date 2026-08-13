@@ -46,3 +46,67 @@ func TestGetHubUserRankingIncludesTenantIDAndNormalizesHubURL(t *testing.T) {
 		t.Fatalf("unexpected ranking response: %#v", resp)
 	}
 }
+
+func TestGetHubUserInvitationsNormalizesPageAndKeepsViewerScope(t *testing.T) {
+	var gotPath, gotPage, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotPage = r.URL.Query().Get("page")
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"enabled":true,"invite_url":"https://hub.example/invite/demo","total":1,"page":1}`))
+	}))
+	defer server.Close()
+
+	app := &App{
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL + "/",
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+
+	resp := app.GetHubUserInvitationsPage(0)
+
+	if resp.Error != "" {
+		t.Fatalf("GetHubUserInvitationsPage error = %q", resp.Error)
+	}
+	if gotPath != "/api/me/invitations" || gotPage != "1" {
+		t.Fatalf("request = %s?page=%s, want /api/me/invitations?page=1", gotPath, gotPage)
+	}
+	if gotAuth != "Bearer viewer-token" {
+		t.Fatalf("authorization = %q, want bearer viewer-token", gotAuth)
+	}
+}
+
+func TestRotateHubUserInvitationUsesPostAndViewerScope(t *testing.T) {
+	var gotPath, gotMethod, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"enabled":true,"invite_url":"https://hub.example/invite/new"}`))
+	}))
+	defer server.Close()
+
+	app := &App{
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+
+	resp := app.RotateHubUserInvitation()
+
+	if resp.Error != "" {
+		t.Fatalf("RotateHubUserInvitation error = %q", resp.Error)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/me/invitations/rotate" {
+		t.Fatalf("request = %s %s, want POST /api/me/invitations/rotate", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer viewer-token" {
+		t.Fatalf("authorization = %q, want bearer viewer-token", gotAuth)
+	}
+}

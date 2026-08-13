@@ -57,7 +57,17 @@ func (a *App) ListExperts() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := json.Marshal(mergeBuiltinExpertList(local))
+	// Industry-managed definitions are persisted through the existing hardened
+	// market installer, but must never re-enter the ordinary expert/LWW surface.
+	// They are returned exclusively by ListManagedIndustryExperts with read-only
+	// origin metadata and therefore cannot be edited, deleted, or shared.
+	personal := make([]ExpertDefinition, 0, len(local))
+	for _, def := range local {
+		if !isManagedIndustryExpert(def.ID) {
+			personal = append(personal, def)
+		}
+	}
+	out, err := json.Marshal(mergeBuiltinExpertList(personal))
 	if err != nil {
 		return "", err
 	}
@@ -207,6 +217,9 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 		return "", fmt.Errorf("invalid expert id %q: must match %s", def.ID, expertIDPattern.String())
 	}
 	def.OptimizedFromID = strings.TrimSpace(def.OptimizedFromID)
+	if def.ID != "" && isManagedIndustryExpert(def.ID) {
+		return "", fmt.Errorf("industry-managed expert cannot be edited; use Optimize expert from its AI assistant tab")
+	}
 	var storedExisting *ExpertDefinition
 	if def.ID != "" {
 		if existing, ok, err := defaultExpertStore.Get(def.ID); err != nil {
@@ -321,6 +334,9 @@ func (a *App) DeleteExpert(id string) error {
 	}
 	if builtinExpertByID(id) != nil {
 		return fmt.Errorf("builtin expert cannot be deleted: %s", id)
+	}
+	if isManagedIndustryExpert(id) {
+		return fmt.Errorf("industry-managed expert cannot be deleted")
 	}
 	if err := defaultExpertStore.Delete(id, true); err != nil {
 		return err

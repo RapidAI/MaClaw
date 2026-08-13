@@ -269,7 +269,9 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 			return
 		}
 
-		if !storeVerifyCode(tenantID, email, code) {
+		key := email
+		previousCode := snapshotVerifyCode(tenantID, key)
+		if !storeVerifyCode(tenantID, key, code) {
 			writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "Please wait 60 seconds before requesting a new code")
 			return
 		}
@@ -298,6 +300,12 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 		}
 
 		if len(sentVia) == 0 {
+			// Never reserve a code that was not delivered. If this was a resend,
+			// restore the prior delivered code so the user can still finish the
+			// operation instead of being locked out by a mail outage.
+			if !rollbackVerifyCode(tenantID, key, code, previousCode) {
+				log.Printf("[bind] send code rollback skipped tenant_id=%s email=%s reason=code_replaced", tenantID, registrationEmailLogIdentity(email))
+			}
 			writeError(w, http.StatusInternalServerError, "SEND_FAILED", "Failed to send verification code via any channel")
 			return
 		}

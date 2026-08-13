@@ -18,6 +18,7 @@ type RecordStore interface {
 	GetStructuredRecord(tenantID, userID, collection, recordID string) (StructuredRecord, error)
 	ListStructuredRecords(tenantID, userID string, in ListStructuredRecordsInput) ([]StructuredRecord, error)
 	DeleteStructuredRecord(tenantID, userID, collection, recordID string) error
+	DeleteStructuredRecordsForUser(tenantID, userID string) error
 }
 
 type SQLiteRecordStore struct {
@@ -215,6 +216,24 @@ func (s *SQLiteRecordStore) DeleteStructuredRecord(tenantID, userID, collection,
 	}
 	err = tx.Commit()
 	return err
+}
+
+// DeleteStructuredRecordsForUser removes every structured record and derived
+// FTS/tag row for one user. It is used by host-level account unbinding, where
+// listing collections first would be incomplete and race-prone.
+func (s *SQLiteRecordStore) DeleteStructuredRecordsForUser(tenantID, userID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer rollbackUnlessCommitted(tx, &err)
+	if _, err = tx.Exec(`DELETE FROM structured_record_fts WHERE record_id IN (SELECT id FROM structured_records WHERE tenant_id = ? AND user_id = ?)`, tenantID, userID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM structured_records WHERE tenant_id = ? AND user_id = ?`, tenantID, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteRecordStore) recordTags(recordID string) ([]string, error) {

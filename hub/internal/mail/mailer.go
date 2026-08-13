@@ -3,6 +3,7 @@ package mail
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +16,15 @@ import (
 const systemKeyMailConfig = "mail_config"
 const TenantSenderNameSettingKey = "mail_sender_name"
 const TenantSenderNameMaxRunes = 80
+
+var ErrDeliveryNotConfigured = errors.New("mail delivery is not configured")
+
+// Mail configuration is a Hub-wide delivery credential.  Tenant settings may
+// customize only the visible sender name; they must never shadow the shared
+// SMTP credentials used by public onboarding.
+type globalSettingsRepository interface {
+	GlobalSystemSettings() store.SystemSettingsRepository
+}
 
 type Mailer interface {
 	Send(ctx context.Context, to []string, subject string, body string) error
@@ -71,10 +81,11 @@ func (s *Service) CurrentConfig(ctx context.Context) (ConfigState, error) {
 	if s == nil {
 		return ConfigState{}, nil
 	}
-	if s.settings == nil {
+	settings := globalSettings(s.settings)
+	if settings == nil {
 		return normalizeConfig(s.fallback), nil
 	}
-	raw, err := s.settings.Get(ctx, systemKeyMailConfig)
+	raw, err := settings.Get(ctx, systemKeyMailConfig)
 	if err != nil {
 		return ConfigState{}, err
 	}
@@ -92,11 +103,15 @@ func (s *Service) SaveConfig(ctx context.Context, cfg ConfigState) (ConfigState,
 	cfg = normalizeConfig(cfg)
 	cfg.Tested = false
 	cfg.TestedAt = 0
-	if s == nil || s.settings == nil {
+	if s == nil {
+		return cfg, nil
+	}
+	settings := globalSettings(s.settings)
+	if settings == nil {
 		s.fallback = cfg
 		return cfg, nil
 	}
-	if err := s.settings.Set(ctx, systemKeyMailConfig, mustJSON(cfg)); err != nil {
+	if err := settings.Set(ctx, systemKeyMailConfig, mustJSON(cfg)); err != nil {
 		return ConfigState{}, err
 	}
 	return cfg, nil
@@ -109,11 +124,15 @@ func (s *Service) MarkTestSuccess(ctx context.Context) (ConfigState, error) {
 	}
 	cfg.Tested = true
 	cfg.TestedAt = time.Now().Unix()
-	if s == nil || s.settings == nil {
+	if s == nil {
+		return cfg, nil
+	}
+	settings := globalSettings(s.settings)
+	if settings == nil {
 		s.fallback = cfg
 		return cfg, nil
 	}
-	if err := s.settings.Set(ctx, systemKeyMailConfig, mustJSON(cfg)); err != nil {
+	if err := settings.Set(ctx, systemKeyMailConfig, mustJSON(cfg)); err != nil {
 		return ConfigState{}, err
 	}
 	return cfg, nil
@@ -176,7 +195,13 @@ func (s *Service) Send(ctx context.Context, to []string, subject string, body st
 		return err
 	}
 	if !cfg.Enabled {
-		return fmt.Errorf("mail delivery is not configured")
+		return ErrDeliveryNotConfigured
+	}
+	if cfg.SMTPHost == "" {
+		return fmt.Errorf("%w: SMTP host is empty", ErrDeliveryNotConfigured)
+	}
+	if cfg.FromEmail == "" && cfg.Username == "" {
+		return fmt.Errorf("%w: sender email is empty", ErrDeliveryNotConfigured)
 	}
 	return coremail.Send(ctx, toCoreConfig(cfg), to, subject, body)
 }
@@ -186,7 +211,14 @@ func (s *Service) configForSend(ctx context.Context) (ConfigState, error) {
 	if err != nil {
 		return ConfigState{}, err
 	}
-	if s == nil || s.settings == nil {
+	if s == nil {
+		return cfg, nil
+	}
+	// Sender names are explicitly stored under tenant-prefixed keys in the
+	// global repository. Reading them from the base avoids applying a scoped
+	// wrapper twice when a caller supplies one.
+	settings := globalSettings(s.settings)
+	if settings == nil {
 		return cfg, nil
 	}
 	tenantID, hasTenant := store.TenantIDFromContextIfPresent(ctx)
@@ -197,7 +229,7 @@ func (s *Service) configForSend(ctx context.Context) (ConfigState, error) {
 	if tenantID != store.DefaultTenantID {
 		key = "tenant:" + tenantID + ":" + TenantSenderNameSettingKey
 	}
-	raw, err := s.settings.Get(ctx, key)
+	raw, err := settings.Get(ctx, key)
 	if err != nil {
 		return ConfigState{}, err
 	}
@@ -212,6 +244,15 @@ func (s *Service) configForSend(ctx context.Context) (ConfigState, error) {
 		cfg.FromName = fromName
 	}
 	return cfg, nil
+}
+
+func globalSettings(settings SystemSettingsRepository) SystemSettingsRepository {
+	if scoped, ok := settings.(globalSettingsRepository); ok {
+		if global := scoped.GlobalSystemSettings(); global != nil {
+			return global
+		}
+	}
+	return settings
 }
 
 func NormalizeTenantSenderName(name string) string {

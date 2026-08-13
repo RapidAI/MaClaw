@@ -54,6 +54,9 @@
     smartRouteLabel: { zh: '\u667a\u80fd\u63a7\u5236', en: 'Smart Route' },
     smartRouteAllLabel: { zh: '\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route for all' },
     emailVerifiedTooltip: { zh: '\u90ae\u7bb1\u5df2\u9a8c\u8bc1', en: 'Email verified' },
+    referredUser: { zh: '\ud83c\udf81 \u53d7\u9080\u6ce8\u518c', en: '\ud83c\udf81 Referred signup' },
+    referredUserTooltip: { zh: '\u901a\u8fc7\u7528\u6237\u9080\u8bf7\u5b8c\u6210\u6ce8\u518c', en: 'Registered through a user referral' },
+    referredOnly: { zh: '\u4ec5\u770b\u53d7\u9080\u6ce8\u518c', en: 'Referred signups only' },
     contactEmailLabel: { zh: '\u90ae\u7bb1', en: 'Email' },
     contactPhoneLabel: { zh: '\u624b\u673a', en: 'Phone' },
     boundUsersSearchPlaceholder: { zh: '\u641c\u7d22\u90ae\u7bb1 / \u624b\u673a / SN...', en: 'Search email / phone / SN...' },
@@ -236,6 +239,11 @@
     return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
   }
 
+  function referralRegistrationTime(value) {
+    var date = new Date(value || '');
+    return isNaN(date.getTime()) ? '' : date.toLocaleString();
+  }
+
   function serviceCreditGrants(status) {
     if (!status) return [];
     if (Array.isArray(status.credit_grants) && status.credit_grants.length) return status.credit_grants;
@@ -333,6 +341,7 @@
     global._boundUsersAll = allItems;
     global._boundUsersPage = global._boundUsersPage || 1;
     global._boundUsersSearch = global._boundUsersSearch || '';
+    global._boundUsersReferredOnly = !!global._boundUsersReferredOnly;
     if (!allItems.length) {
       root.innerHTML = hint(tr('emptyBoundUsers'));
       return;
@@ -349,7 +358,10 @@
     const root = document.getElementById('boundUsers');
     const items = global._boundUsersAll || [];
     const query = (global._boundUsersSearch || '').trim().toLowerCase();
-    const filtered = query ? items.filter(function(item) {
+    const referredOnly = !!global._boundUsersReferredOnly;
+    const filtered = (query || referredOnly) ? items.filter(function(item) {
+      if (referredOnly && !item.referral) return false;
+      if (!query) return true;
       return boundUserMatchesSearch(item, query);
     }) : items;
     const pageSize = 36;
@@ -360,6 +372,7 @@
     const pageItems = filtered.slice(start, start + pageSize);
     const searchHtml = '<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
       + '<input id="boundUsersSearchInput" placeholder="' + gt('boundUsersSearchPlaceholder') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="max-width:260px;height:34px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)">'
+      + '<label class="toggle-label" style="font-size:11px;white-space:nowrap"><input type="checkbox" ' + (referredOnly ? 'checked' : '') + ' onchange="window._boundUsersReferredOnly=this.checked;window._boundUsersPage=1;_renderBoundUsersPage()"><span>' + escapeHtml(gt('referredOnly')) + '</span></label>'
       + '<button type="button" class="btn-secondary" id="syncVerifiedPhoneRoutesBtn" style="height:34px;font-size:12px;padding:0 12px" onclick="syncVerifiedPhoneRoutes(this)">' + escapeHtml(gt('syncPhoneRoutes')) + '</button>'
       + '</div>';
     var grouped = groupBoundUsers(pageItems);
@@ -378,6 +391,8 @@
         var primaryPhone = boundUserPhones(item)[0] || '';
         var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" data-tenant-id="' + escapeHtml(String(item.tenant_id || '')) + '" data-user-id="' + escapeHtml(String(item.id || '')) + '" data-phone="' + escapeHtml(String(primaryPhone || '')) + '" data-is-virtual="' + (item.is_virtual_employee ? 'true' : 'false') + '" onclick="unbindBoundUser(this.dataset.email, this.dataset.tenantId, this.dataset.userId, this.dataset.phone)">' + escapeHtml(actionLabel) + '</button>';
         var verifiedStar = item.email_verified ? '<span title="' + escapeHtml(gt('emailVerifiedTooltip')) + '" style="color:#f59e0b;font-size:13px;margin-left:4px;cursor:default">&#9733;</span>' : '';
+        var referralTitle = item.referral ? gt('referredUserTooltip') + (item.referral.inviter_display_name ? ' | ' + item.referral.inviter_display_name + ' | ' + referralRegistrationTime(item.referral.registered_at) : '') : '';
+        var referralBadge = item.referral ? '<span class="badge info" tabindex="0" title="' + escapeHtml(referralTitle) + '" style="padding:4px 8px;font-size:10px;background:#fdf2f8;color:#b23c68;border-color:#f5c7d8">' + escapeHtml(gt('referredUser')) + '</span>' : '';
         var displayName = boundUserDisplayName(item);
         return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
           + '<div style="display:flex;flex-direction:column;gap:8px;min-width:0">'
@@ -386,6 +401,7 @@
           + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0">'
           + '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(formatStatus(item.enrollment_status || item.status || 'active')) + '</span>'
           + typeBadge
+          + referralBadge
           + serviceBadge
           + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '" style="justify-content:flex-start;font-size:11px"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' data-user-id="' + escapeHtml(String(item.id || '')) + '" onchange="toggleSmartRoute(this.dataset.userId, this.checked)"><span>AI</span></label>'
           + unbindBtn

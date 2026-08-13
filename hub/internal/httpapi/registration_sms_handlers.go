@@ -727,6 +727,10 @@ func enrollmentStartResponseMap(resp *auth.EnrollmentResult) map[string]any {
 
 func writeEnrollmentStartError(w http.ResponseWriter, err error, resp *auth.EnrollmentResult) {
 	switch {
+	case errors.Is(err, auth.ErrTenantNotFound):
+		writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", err.Error())
+	case errors.Is(err, auth.ErrTenantInactive):
+		writeError(w, http.StatusForbidden, "TENANT_INACTIVE", err.Error())
 	case errors.Is(err, auth.ErrRoutedToAnotherHub):
 		writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
 	case errors.Is(err, auth.ErrRegistrationDisabled):

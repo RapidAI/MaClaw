@@ -287,14 +287,14 @@ func TestUnzipToRejectsTraversal(t *testing.T) {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := unzipTo(zipPath, dest); err != nil {
-		t.Fatal(err)
+	if err := unzipTo(zipPath, dest); err == nil {
+		t.Fatal("expected traversal archive rejection")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "escape.txt")); err == nil {
 		t.Fatal("zip slip wrote outside dest")
 	}
-	if _, err := os.Stat(filepath.Join(dest, "safe", "ok.txt")); err != nil {
-		t.Fatalf("safe file missing: %v", err)
+	if _, err := os.Stat(filepath.Join(dest, "safe", "ok.txt")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe archive must not leave partial extraction, stat err=%v", err)
 	}
 }
 

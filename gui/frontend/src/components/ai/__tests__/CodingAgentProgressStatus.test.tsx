@@ -1206,4 +1206,19 @@ describe('CodingAgentProgressStatus', () => {
         expect(status.getAttribute('data-tone-accent')).toBe(CODING_AGENT_FAILURE_ACCENT);
         expect(status.textContent).toMatch(/1 failed/);
     });
+
+    it('renders no more than the latest three activity rows', () => {
+        const rows = Array.from({ length: 5 }, (_, index) => makeProgressMsg(
+            `Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success","command":"echo ${index}"}`,
+            `tool-${index}`,
+        ));
+        const { container } = render(
+            <>{renderCodingAgentActivityFeed(rows, { text: '#111827', fieldLabel: '#6b7280' }, 'en')}</>,
+        );
+
+        const renderedLines = container.querySelectorAll('[data-testid="coding-agent-tool-line"]');
+        expect(renderedLines).toHaveLength(3);
+        expect(renderedLines[0].textContent).toContain('echo 2');
+        expect(renderedLines[2].textContent).toContain('echo 4');
+    });
 });

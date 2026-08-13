@@ -137,6 +137,11 @@ func mobileSSHQuickConnectStore(
 		Note:            "mobile AI quick connect",
 		UpdatedAt:       now,
 	}
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	if !mobileOwnerWriteAllowedLocked(tenantID, ownerID) {
+		return mobileSSHQuickConnectResult{}, fmt.Errorf("account is no longer available")
+	}
 	mobileServerProfiles.Lock()
 	mobileServerProfiles.profiles[profileKey] = rec
 	mobileServerProfiles.Unlock()

@@ -6,7 +6,6 @@
 #pragma once
 
 typedef struct {
-    int transfer_stripe_rows;
     int weather_text_y;
     int weather_scale_num;
     int weather_scale_den;

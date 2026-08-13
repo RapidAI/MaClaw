@@ -620,7 +620,10 @@ func (h *IMMessageHandler) shouldEscapeActiveUnderstanding(userID, text string) 
 	if uic == nil || strings.TrimSpace(text) == "" {
 		return false
 	}
-	result := uic.Classify(intent.MessageContext{
+	// Escaping an existing understanding session is a routing convenience, not
+	// an execution authority. Keep it off the first-response L3 path; when L2
+	// is unavailable or uncertain the safe outcome is to retain the session.
+	result := uic.ClassifyEmbeddingOnly(intent.MessageContext{
 		Text:   text,
 		UserID: userID,
 	})
@@ -667,35 +670,10 @@ func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string, cl
 		return true
 	}
 
-	// Slow path: full fusion (embedding + tree LLM) for messages where embedding
-	// is not confident enough for the fast path. This call writes to UIC cache,
-	// so subsequent uic.Classify calls (e.g., in handleNeedsUnderstanding) will
-	// hit cache and return instantly (0ms) instead of re-triggering fusion.
-	result := uic.Classify(intent.MessageContext{
-		Text:   text,
-		UserID: userID,
-	})
-
-	if result.Primary == intent.LabelContinuation {
-		history := h.recentConversationTexts(userID, 8)
-		if len(history) > 0 {
-			result = uic.Classify(intent.MessageContext{
-				Text:          text,
-				UserID:        userID,
-				RecentHistory: history,
-			})
-		}
-		bypass := h.recentContextResolvesToNonWorkflow(uic, userID, history, threshold)
-		log.Printf("[WorkflowInterception] UIC continuation context: user=%s bypass=%v conf=%.2f", userID, bypass, result.Confidence)
-		return bypass
-	}
-
-	bypass := shouldBypassWorkflowForClassification(result, uic.IsWorkflowCandidate(result.Primary), threshold)
-	if bypass {
-		log.Printf("[WorkflowInterception] UIC rejected workflow takeover: user=%s intent=%s conf=%.2f layer=%d workflow_type=%q creation=%v",
-			userID, result.Primary, result.Confidence, result.Layer, result.WorkflowType, result.CreationOriented)
-	}
-	return bypass
+	// Do not turn an optional workflow bypass into a blocking L3 request. For
+	// uncertain or workflow-capable requests, fall through to the normal Agent
+	// path, which is the conservative behavior and can ask for clarification.
+	return false
 }
 
 func shouldBypassWorkflowForClassification(result intent.ClassificationResult, isWorkflowCandidate bool, rejectThreshold float64) bool {

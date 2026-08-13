@@ -4744,6 +4744,13 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
     const skillBinding = binding?.skill || app?.skill;
     const datasrvBinding = binding?.datasrv || app?.datasrv;
     const skillID = String(entry?.skill_id || binding?.appSkill?.id || app?.appSkill?.id || skillBinding?.id || id).trim();
+    const runtimeSkillID = String(skillBinding?.id || '').trim();
+    const declaredAppSkill = binding?.appSkill || app?.appSkill;
+    // Older standalone marketplace app packages used the already-prefixed
+    // panel ID as both their installed wrapper Skill ID and app definition ID.
+    // In that exact legacy form, the panel/container is not a second
+    // executable dependency when its binding names a different runtime Skill.
+    const isLegacyStandaloneWrapper = isLegacyStandaloneSkillAppWrapper(id, skillID, runtimeSkillID);
     if (!id || !name || !skillID) return null;
     const launchMode = String(app?.launchMode || defaultLaunchModeForKind(kind)) as AppManifestBinding['launchMode'];
     const skillOutputModes = skillBinding?.outputModes || skillBinding?.output_modes || [];
@@ -4785,7 +4792,13 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
             launchMode,
             datasrv: normalizeAppDataSrv(datasrvBinding),
             mis: normalizeAppMIS(binding?.mis || app?.mis),
-            appSkill: binding?.appSkill || app?.appSkill || { id: skillID, version: '1.0.0', source: 'local' },
+            // A legacy standalone wrapper's `skill_id` is its panel container,
+            // not a second executable dependency. Some already-persisted
+            // definitions materialized that same fallback into appSkill; omit
+            // it too, while retaining an explicitly different appSkill block.
+            appSkill: legacyStandaloneAppSkillToOmit(id, declaredAppSkill, isLegacyStandaloneWrapper)
+                ? undefined
+                : declaredAppSkill || { id: skillID, version: '1.0.0', source: 'local' },
             dependencies: normalizeAppDependencies(binding?.dependencies || app?.dependencies),
             bundledDependencies,
             ui: normalizeAppWorkspaceLayout(binding?.ui || app?.ui, kind),
@@ -4803,11 +4816,44 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
     };
 }
 
+function isLegacyStandaloneSkillAppWrapper(appID: string, installedSkillID: string, runtimeSkillID: string): boolean {
+    appID = String(appID || '').trim();
+    installedSkillID = String(installedSkillID || '').trim();
+    runtimeSkillID = String(runtimeSkillID || '').trim();
+    const canonicalAppID = appID.toLowerCase();
+    const canonicalInstalledSkillID = installedSkillID.toLowerCase();
+    if (!canonicalAppID.startsWith('skill-app-') || canonicalInstalledSkillID !== canonicalAppID || !runtimeSkillID || skillIdentityKeysOverlap(installedSkillID, runtimeSkillID)) {
+        return false;
+    }
+    // The stable legacy form is skill-app-<runtime-skill-id>-<definition-id>.
+    // Do not apply this migration to an arbitrary custom wrapper whose ID only
+    // happens to start with skill-app-. Older publishers did not always use
+    // the same '-'/'_' separator for the runtime binding and the panel ID.
+    return legacySkillAppPrefixMatchesRuntime(canonicalAppID, runtimeSkillID);
+}
+
+function legacySkillAppPrefixMatchesRuntime(canonicalAppID: string, runtimeSkillID: string): boolean {
+    const runtimeParts = String(runtimeSkillID || '').trim().toLowerCase().split(/[\s_-]+/).filter(Boolean);
+    if (runtimeParts.length === 0) return false;
+    const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const runtimePattern = runtimeParts.map(escapeRegex).join('[\\s_-]+');
+    return new RegExp(`^skill-app-${runtimePattern}-`).test(canonicalAppID);
+}
+
+function legacyStandaloneAppSkillToOmit(appID: string, appSkill: unknown, isLegacyStandaloneWrapper: boolean): boolean {
+    if (!isLegacyStandaloneWrapper) return false;
+    if (!appSkill || typeof appSkill !== 'object') return true;
+    const declaredID = String((appSkill as { id?: unknown }).id || '').trim();
+    return !declaredID || skillIdentityKeysOverlap(appID, declaredID);
+}
+
 function skillPanelAppID(skillID: string, appID: string): string {
     // Standalone legacy SkillMarket packages may persist their panel ID as
     // both the wrapper Skill ID and the app definition ID. It is already the
     // canonical panel identity, so do not create an unreachable double prefix.
-    if (skillID === appID && appID.startsWith('skill-app-')) return appID;
+    const canonicalSkillID = String(skillID || '').trim().toLowerCase();
+    const canonicalAppID = String(appID || '').trim().toLowerCase();
+    if (canonicalSkillID === canonicalAppID && canonicalAppID.startsWith('skill-app-')) return appID;
     return `skill-app-${skillID}-${appID}`;
 }
 

@@ -37,6 +37,8 @@ export interface SidebarTokenUsageStat {
 export interface SidebarCurrentProviderTokenUsage {
     provider: string;
     isHubService: boolean;
+    /** The active provider's currently configured model accepts image input. */
+    supportsVision?: boolean;
     input: number;
     output: number;
     total: number;
@@ -155,6 +157,8 @@ export interface SidebarLLMProviderSummary {
     configured?: boolean;
     /** Model id/name currently configured for this provider (from LLM settings). */
     model?: string;
+    /** Whether the provider's currently configured model accepts image input. */
+    supportsVision?: boolean;
     /** Optional previously discovered model ids for this provider. */
     models?: string[];
     protocol?: string;

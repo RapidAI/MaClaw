@@ -51,6 +51,7 @@ func InitMobileCoreAgent(runtimeDataDir string) {
 // tests can re-init against a fresh data root without cross-test leakage or
 // Windows file-lock failures on TempDir cleanup (knowledge.db / records.db).
 func resetMobileCoreAgentForTest() {
+	mobileResetKnowledgePurgeStateForTest()
 	if mobileKnowledgeStore != nil {
 		_ = mobileKnowledgeStore.Close()
 	}
@@ -84,6 +85,26 @@ func mobileCoreAgentDataRoot() string {
 		return env
 	}
 	return filepath.Join("data", "mobile-agent")
+}
+
+// purgeMobileAgentUserData removes the Mobile full-agent control plane, user
+// configuration, installed skills, workspace and structured records. The
+// tombstone is set by the caller before this runs, so an old authenticated
+// request cannot recreate its agent principal during cleanup.
+func purgeMobileAgentUserData(ctx context.Context, tenantID string, ownerIDs map[string]struct{}) error {
+	if len(ownerIDs) == 0 {
+		return nil
+	}
+	_, svc, err := mobileEnsureCoreAgent()
+	if err != nil {
+		return err
+	}
+	for ownerID := range ownerIDs {
+		if err := svc.PurgeUserData(ctx, tenantID, ownerID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func mobileCoreAgentTokenSecret() string {

@@ -230,7 +230,12 @@ func UnbindInvitationCodeHandlerWithPurger(svc *invitation.Service, identity *au
 			if user == nil {
 				user = &store.User{ID: "", TenantID: code.TenantID, Email: email}
 			}
-			result, _ = purger.PurgeAll(r.Context(), user)
+			result, err = purger.PurgeAll(r.Context(), user)
+			if err != nil {
+				log.Printf("[admin-unbind] purge user for code %s email=%s: %v", code.Code, email, err)
+				writeError(w, http.StatusInternalServerError, "UNBIND_FAILED", "Failed to remove all user data")
+				return
+			}
 		} else if email != "" {
 			// Fallback: no purger available — do minimal cleanup for backward compat.
 			result = &PurgeResult{}
@@ -245,7 +250,14 @@ func UnbindInvitationCodeHandlerWithPurger(svc *invitation.Service, identity *au
 
 		// Delete the invitation code itself (if not already deleted by PurgeAll above).
 		if delErr := svc.DeleteCode(r.Context(), req.ID); delErr != nil {
-			log.Printf("[admin-unbind] delete code %s: %v (may already be deleted)", req.ID, delErr)
+			// PurgeAll removes used codes. A following delete may therefore be a
+			// benign not-found result, but any other error means the admin request
+			// cannot truthfully report a completed unbind.
+			if found, lookupErr := svc.GetCodeByID(r.Context(), req.ID); lookupErr != nil || found != nil {
+				log.Printf("[admin-unbind] delete code %s: %v", req.ID, delErr)
+				writeError(w, http.StatusInternalServerError, "UNBIND_FAILED", "Failed to remove invitation code")
+				return
+			}
 		}
 
 		var deletedMachines int64

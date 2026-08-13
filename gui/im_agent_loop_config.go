@@ -33,7 +33,7 @@ func (h *IMMessageHandler) prepareAgentLoopConfig(ctx *LoopContext) agentLoopCon
 	}
 	maxIter := h.getMaclawAgentMaxIterations()
 	h.loopMaxOverride = 0
-	if ctx.MaxIterations() <= 0 {
+	if ctx != nil && ctx.MaxIterations() <= 0 {
 		ctx.SetMaxIterations(maxIter)
 	}
 	return agentLoopConfigStart{

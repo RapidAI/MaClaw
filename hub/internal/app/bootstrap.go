@@ -24,6 +24,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
+	"github.com/RapidAI/CodeClaw/hub/internal/industryexpert"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -87,6 +88,50 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	centerService.SetStatsProviders(identityService, deviceService)
 	centerService.SetTenantRepository(st.Tenants)
 	centerService.SetTenantAdminProvider(adminService)
+	managedIndustryExpertStore := industryexpert.NewStore(provider.Write)
+	if err := managedIndustryExpertStore.InitSchema(context.Background()); err != nil {
+		return nil, fmt.Errorf("managed industry expert schema init: %w", err)
+	}
+	centerService.SetManagedIndustryExpertSync(&industryexpert.SyncService{
+		Store: managedIndustryExpertStore,
+		BaseURL: func(ctx context.Context) (string, error) {
+			state, err := centerService.Status(ctx)
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(state.ActiveBaseURL), nil
+		},
+		Credentials: func(ctx context.Context) (string, string, error) {
+			state, err := centerService.Status(ctx)
+			if err != nil {
+				return "", "", err
+			}
+			raw, err := st.System.Get(ctx, "center_registration")
+			if err != nil {
+				return "", "", err
+			}
+			var registration struct {
+				HubSecret string `json:"hub_secret"`
+			}
+			if err := json.Unmarshal([]byte(raw), &registration); err != nil {
+				return "", "", err
+			}
+			return strings.TrimSpace(state.HubID), strings.TrimSpace(registration.HubSecret), nil
+		},
+		Tenants: func(ctx context.Context) ([]string, error) {
+			items, err := st.Tenants.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := []string{store.DefaultTenantID}
+			for _, item := range items {
+				if item != nil {
+					out = append(out, item.ID)
+				}
+			}
+			return out, nil
+		},
+	})
 	deviceService.ResetStaleOnlineStatus(context.Background())
 	sessionCache := session.NewCache()
 	sessionService := session.NewService(sessionCache, st.Sessions)
@@ -178,6 +223,24 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 				promptCache.UpdateConfig(llmcache.Config{MemoryMaxEntries: cacheCfg.MemoryMaxEntries, MemoryMaxBytes: cacheCfg.MemoryMaxBytes})
 				_, _ = promptCache.DeleteExpired(context.Background(), time.Now().UTC())
 				_, _ = promptCache.TrimDiskToBytes(context.Background(), cacheCfg.DiskMaxBytes)
+			}
+			if cleaned, err := httpapi.CleanupExpiredUserReferrals(context.Background(), st.UserReferrals, st.Tenants, time.Now().UTC()); err != nil {
+				log.Printf("[user-referral] periodic expiry cleanup failed: %v", err)
+			} else if cleaned.ExpiredReserved > 0 || cleaned.IdempotencyRecords > 0 || cleaned.RegistrationSessions > 0 || cleaned.IdentityReservations > 0 || cleaned.Handoffs > 0 {
+				log.Printf("[user-referral] periodic expiry cleanup expired=%d idempotency=%d sessions=%d reservations=%d handoffs=%d", cleaned.ExpiredReserved, cleaned.IdempotencyRecords, cleaned.RegistrationSessions, cleaned.IdentityReservations, cleaned.Handoffs)
+			}
+			if recovered, err := httpapi.ReconcileUserReferralRewards(context.Background(), identityService, st.UserReferrals, st.System, st.Tenants, st.FailureLogs); err != nil {
+				// Retain the durable reward_failed rows and retry on the next pass.
+				// The warning makes the recovery service observable without making
+				// unrelated Hub traffic unavailable.
+				log.Printf("[user-referral] periodic reward recovery scan failed: %v", err)
+			} else {
+				if recovered.Scanned > 0 {
+					log.Printf("[user-referral] periodic reward recovery scanned=%d rewarded=%d failed=%d", recovered.Scanned, recovered.Rewarded, recovered.Failed)
+				}
+				if recovered.RewardFailedBacklog >= httpapi.UserReferralRewardFailureAlertThreshold {
+					log.Printf("[user-referral] WARNING reward_failed backlog=%d threshold=%d; investigate registry availability or retry from User referrals", recovered.RewardFailedBacklog, httpapi.UserReferralRewardFailureAlertThreshold)
+				}
 			}
 		}
 	}()
@@ -591,6 +654,25 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		systemLLMResolver.MaClawClient = maclawMod.Client
 	}
 	ensureLLMRegistryBuiltinsForAllTenants(context.Background(), st.System, st.Tenants)
+	if cleaned, err := httpapi.CleanupExpiredUserReferrals(context.Background(), st.UserReferrals, st.Tenants, time.Now().UTC()); err != nil {
+		// Expiry cleanup is maintenance only. A failure must not prevent Hub
+		// startup; the next periodic pass will retry it.
+		log.Printf("[user-referral] startup expiry cleanup failed: %v", err)
+	} else if cleaned.ExpiredReserved > 0 || cleaned.IdempotencyRecords > 0 || cleaned.RegistrationSessions > 0 || cleaned.IdentityReservations > 0 || cleaned.Handoffs > 0 {
+		log.Printf("[user-referral] startup expiry cleanup expired=%d idempotency=%d sessions=%d reservations=%d handoffs=%d", cleaned.ExpiredReserved, cleaned.IdempotencyRecords, cleaned.RegistrationSessions, cleaned.IdentityReservations, cleaned.Handoffs)
+	}
+	if recovered, err := httpapi.ReconcileUserReferralRewards(context.Background(), identityService, st.UserReferrals, st.System, st.Tenants, st.FailureLogs); err != nil {
+		// A recovery scan must not make the Hub unavailable. Failed rows remain
+		// durable and will be retried at the next start or by an administrator.
+		log.Printf("[user-referral] startup reward recovery scan failed: %v", err)
+	} else {
+		if recovered.Scanned > 0 {
+			log.Printf("[user-referral] startup reward recovery scanned=%d rewarded=%d failed=%d", recovered.Scanned, recovered.Rewarded, recovered.Failed)
+		}
+		if recovered.RewardFailedBacklog >= httpapi.UserReferralRewardFailureAlertThreshold {
+			log.Printf("[user-referral] WARNING reward_failed backlog=%d threshold=%d; investigate registry availability or retry from User referrals", recovered.RewardFailedBacklog, httpapi.UserReferralRewardFailureAlertThreshold)
+		}
+	}
 
 	// Mark Hub as ready for traffic. This must be called AFTER:
 	// - MaClawModule initialized (LLM provider client ready)
@@ -843,6 +925,14 @@ func (s tenantScopedSystemSettings) Get(ctx context.Context, key string) (string
 
 func (s tenantScopedSystemSettings) TenantID() string {
 	return s.tenantID
+}
+
+// GlobalSystemSettings exposes the unscoped repository to services, such as
+// mail delivery, whose credentials are intentionally shared by every tenant.
+// Tenant-specific caller identity is still resolved through the scoped
+// repository when sending.
+func (s tenantScopedSystemSettings) GlobalSystemSettings() store.SystemSettingsRepository {
+	return s.base
 }
 
 func (s tenantScopedSystemSettings) key(key string) string {

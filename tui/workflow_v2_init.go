@@ -383,11 +383,8 @@ func (app *TUIApp) tuiWorkflowV2ConfirmClassifier(phaseContext, userText string)
 	}
 }
 
-// getWorkflowV2TUI returns the V2 workflow state if available and enabled.
+// getWorkflowV2TUI returns the V2 workflow state when available.
 func (app *TUIApp) getWorkflowV2TUI() *tuiWorkflowV2State {
-	if !app.appConfig.IsWorkflowEnabled() {
-		return nil
-	}
 	return app.workflowV2
 }
 

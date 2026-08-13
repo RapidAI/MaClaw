@@ -756,6 +756,30 @@ func TestCreateRemoteCodingTaskCreatesFreshTaskAfterHiddenRemoteProject(t *testi
 	}
 }
 
+func TestRenameTaskNormalizesPathAndKeepsDisplayNameInSync(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	task := app.CreateTask("Original task name", "")
+	if task.ProjectPath == "" {
+		t.Fatal("CreateTask returned an empty project path")
+	}
+
+	aliasedPath := strings.ReplaceAll(task.ProjectPath, "/", "\\") + "\\."
+	if got := app.RenameTask(aliasedPath, "  Renamed task  "); got != "Renamed task" {
+		t.Fatalf("RenameTask display name = %q, want %q", got, "Renamed task")
+	}
+	pi := app.memoryStore.ProjectIndex()
+	if got := pi.GetDisplayName(task.ProjectPath); got != "Renamed task" {
+		t.Fatalf("task index display name = %q, want %q", got, "Renamed task")
+	}
+
+	if got := app.RenameTask(task.ProjectPath, "  "); got != "Original task name" {
+		t.Fatalf("RenameTask reset display name = %q, want original generated name", got)
+	}
+	if got := pi.CustomName(task.ProjectPath); got != "" {
+		t.Fatalf("custom name after reset = %q, want empty", got)
+	}
+}
+
 func TestDeleteTaskClearsRemoteTaskState(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	first := app.CreateRemoteCodingTask("first", "10.0.0.14", "deploy", "/srv/app", 22)
@@ -1099,6 +1123,78 @@ func TestCreateExpertTaskIsListedAndDeduplicated(t *testing.T) {
 	}
 	if found != 1 {
 		t.Fatalf("ListTasks found expert task %d times, want 1", found)
+	}
+}
+
+func TestEnsureAssistantTabTaskIsListedAndDeduplicated(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	first := app.EnsureAssistantTabTask("ve", "machine-123", "Research assistant", "")
+	if first.ProjectPath == "" {
+		t.Fatal("EnsureAssistantTabTask returned empty project path")
+	}
+	second := app.EnsureAssistantTabTask("ve", "machine-123", "Renamed assistant", "")
+	if second.ProjectPath != first.ProjectPath {
+		t.Fatalf("second assistant tab task path = %q, want %q", second.ProjectPath, first.ProjectPath)
+	}
+
+	listed := app.ListTasks(50)
+	found := false
+	for _, item := range listed {
+		if item.ProjectPath == first.ProjectPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("ListTasks missing assistant tab task %q", first.ProjectPath)
+	}
+	content, err := os.ReadFile(filepath.Join(first.ProjectPath, "task.md"))
+	if err != nil {
+		t.Fatalf("read assistant task content: %v", err)
+	}
+	if strings.Contains(string(content), "machine-123") {
+		t.Fatalf("assistant task content leaked raw tab identity: %q", content)
+	}
+}
+
+func TestEnsureAssistantTabTaskReusesVisibleProjectTask(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	projectTask := app.CreateTask("Existing project task", "")
+	got := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-1", "VS Code / ACP", projectTask.ProjectPath)
+	if got.ProjectPath != projectTask.ProjectPath {
+		t.Fatalf("EnsureAssistantTabTask project path = %q, want existing %q", got.ProjectPath, projectTask.ProjectPath)
+	}
+	count := 0
+	for _, item := range app.ListTasks(50) {
+		if item.ProjectPath == projectTask.ProjectPath {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatal("EnsureAssistantTabTask created a duplicate task for an existing project task")
+	}
+}
+
+func TestEnsureAssistantTabTaskCreatesFreshTaskAfterHiddenEntry(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.EnsureAssistantTabTask("discussion", "discussion-123", "Vendor review", "")
+	if first.ProjectPath == "" {
+		t.Fatal("first assistant task has an empty project path")
+	}
+	app.HideTask(first.ProjectPath)
+
+	second := app.EnsureAssistantTabTask("discussion", "discussion-123", "Vendor review", "")
+	if second.ProjectPath == "" {
+		t.Fatal("second assistant task has an empty project path")
+	}
+	if second.ProjectPath == first.ProjectPath {
+		t.Fatalf("assistant task reused hidden path %q", second.ProjectPath)
+	}
+	for _, item := range app.ListTasks(50) {
+		if item.ProjectPath == first.ProjectPath {
+			t.Fatalf("ListTasks resurrected hidden assistant task %q", first.ProjectPath)
+		}
 	}
 }
 
@@ -2398,6 +2494,47 @@ func TestCreateTaskWithWorkingDirSkipsSandboxReadme(t *testing.T) {
 	}
 	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); filepath.Clean(got) != filepath.Clean(custom) {
 		t.Fatalf("execution path = %q, want custom %q", got, custom)
+	}
+}
+
+func TestCreateProjectTabSessionUsesNewTaskWorkingDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "chosen-workspace")
+	created := app.CreateTask("Open in chosen workspace", workingDir)
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty project path")
+	}
+
+	tabID := "proj-new-task-working-dir"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); strings.TrimSpace(msg) == "" {
+		t.Fatal("CreateProjectTabSession returned empty context message")
+	}
+	if got := app.GetTabWorkingDir(tabID)["path"]; got != filepath.Clean(workingDir) {
+		t.Fatalf("new task tab working dir = %q, want %q", got, filepath.Clean(workingDir))
+	}
+	if got := app.EffectiveWorkingDirForOwner(projectSessionOwnerID(created.ProjectPath)); got != filepath.Clean(workingDir) {
+		t.Fatalf("new task owner working dir = %q, want %q", got, filepath.Clean(workingDir))
+	}
+
+	app.CloseProjectTabSession(tabID)
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); strings.TrimSpace(msg) == "" {
+		t.Fatal("reopened CreateProjectTabSession returned empty context message")
+	}
+	if got := app.GetTabWorkingDir(tabID)["path"]; got != filepath.Clean(workingDir) {
+		t.Fatalf("reopened new task tab working dir = %q, want %q", got, filepath.Clean(workingDir))
+	}
+}
+
+func TestHideTaskRejectsPathVariantsWhenOpeningProjectTab(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.CreateTask("Hidden task path normalization", t.TempDir())
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty project path")
+	}
+
+	app.HideTask(created.ProjectPath + string(filepath.Separator))
+	if msg := app.CreateProjectTabSession("proj-hidden-path-variant", created.ProjectPath); msg != "" {
+		t.Fatalf("CreateProjectTabSession hidden task message = %q, want empty", msg)
 	}
 }
 

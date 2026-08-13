@@ -11,6 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"image"
+	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
 	"io"
@@ -21,7 +22,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	pathpkg "path"
 	"path/filepath"
 	goruntime "runtime"
 	"runtime/debug"
@@ -38,6 +38,7 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
@@ -67,9 +68,11 @@ import (
 
 // App struct
 type App struct {
-	ctx             context.Context
-	CurrentLanguage string
-	watcher         *fsnotify.Watcher
+	ctx                    context.Context
+	CurrentLanguage        string
+	referralHandoffMu      sync.Mutex
+	pendingReferralHandoff ReferralHandoffLaunch
+	watcher                *fsnotify.Watcher
 	// llmProfileHealth holds only non-sensitive, effective-profile probe
 	// results. It is deliberately separate from AppConfig: connection health is
 	// ephemeral and must never be persisted alongside credentials.
@@ -172,45 +175,43 @@ type App struct {
 	toolDefGenerator  *ToolDefinitionGenerator
 	toolRouter        *ToolRouter
 
-	unifiedClassifier        *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
-	classifierOnce           sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
-	embeddingActivated       atomic.Bool                     // ensures activateEmbedderAsync runs at most once
-	intentEmbeddingActive    atomic.Bool                     // ensures UIC-only embedding activation runs at most once
-	embeddingMu              sync.Mutex
-	intentEmbedder           embedding.Embedder // local model held for UIC and reused when vector search is enabled
-	intentEmbedderPath       string             // absolute/loader-provided path for the shared local embedding runtime
-	usageTracker             *tool.UsageTracker
-	goalContinuation         *GoalContinuationEngine
-	experienceEvents         *lifecycle.EventTrail
-	experienceSink           lifecycle.EventSink
-	experienceExtractor      *ExperienceExtractor
-	llmEndpointFailuresOnce  sync.Once
-	llmEndpointFailures      *llmEndpointFailureGate
-	orchestrator             *Orchestrator
-	sharedContext            *SharedContextStore
-	toolSelector             *ToolSelector
-	skillHubClient           *SkillHubClient
-	capabilityGapDetector    *CapabilityGapDetector
-	agentRegistry            *agent.AgentRegistry
-	agentRegistryOnce        sync.Once
-	ohModules                openhumanModules
-	lastModelRouteMu         sync.RWMutex
-	lastModelRoute           modelRouteDecision // last turn routing decision (debug/settings)
-	stopHubTicker            chan struct{}      // signals the 24h recommendation refresh goroutine to stop
-	hubUpdCache              *hubUpdateCache
-	hubCenterCacheMu         sync.Mutex                      // guards lazy HubCenter cache/persister initialization
-	hubCenterCache           *remote.HubCenterSelectionCache // shared cache from corelib/remote
-	hubCenterPersister       *guiHubCenterPersister          // persister for HubCenter URL config
-	oauthMu                  sync.Mutex
-	oauthCancel              context.CancelFunc
-	oauthGeneration          uint64
-	xaiOAuthSession          *oauth.XAIAuthSession
-	xaiOAuthAuthorizationURL string
-	credentialStore          *oauth.FileCredentialStore  // independent OAuth credential storage (credentials.json)
-	anthropicOAuthParams     *oauth.AnthropicOAuthParams // in-progress Anthropic OAuth params
-	copilotDeviceCode        string                      // in-progress GitHub Copilot device code
-	copilotPollInterval      int                         // Copilot device code poll interval
-	copilotPollCtx           context.Context             // Copilot device code polling context
+	unifiedClassifier       *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
+	classifierOnce          sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
+	embeddingActivated      atomic.Bool                     // ensures activateEmbedderAsync runs at most once
+	intentEmbeddingActive   atomic.Bool                     // ensures UIC-only embedding activation runs at most once
+	embeddingMu             sync.Mutex
+	intentEmbedder          embedding.Embedder // local model held for UIC and reused when vector search is enabled
+	intentEmbedderPath      string             // absolute/loader-provided path for the shared local embedding runtime
+	usageTracker            *tool.UsageTracker
+	goalContinuation        *GoalContinuationEngine
+	experienceEvents        *lifecycle.EventTrail
+	experienceSink          lifecycle.EventSink
+	experienceExtractor     *ExperienceExtractor
+	llmEndpointFailuresOnce sync.Once
+	llmEndpointFailures     *llmEndpointFailureGate
+	orchestrator            *Orchestrator
+	sharedContext           *SharedContextStore
+	toolSelector            *ToolSelector
+	skillHubClient          *SkillHubClient
+	capabilityGapDetector   *CapabilityGapDetector
+	agentRegistry           *agent.AgentRegistry
+	agentRegistryOnce       sync.Once
+	ohModules               openhumanModules
+	lastModelRouteMu        sync.RWMutex
+	lastModelRoute          modelRouteDecision // last turn routing decision (debug/settings)
+	stopHubTicker           chan struct{}      // signals the 24h recommendation refresh goroutine to stop
+	hubUpdCache             *hubUpdateCache
+	hubCenterCacheMu        sync.Mutex                      // guards lazy HubCenter cache/persister initialization
+	hubCenterCache          *remote.HubCenterSelectionCache // shared cache from corelib/remote
+	hubCenterPersister      *guiHubCenterPersister          // persister for HubCenter URL config
+	oauthMu                 sync.Mutex
+	oauthCancel             context.CancelFunc
+	oauthGeneration         uint64
+	credentialStore         *oauth.FileCredentialStore  // independent OAuth credential storage (credentials.json)
+	anthropicOAuthParams    *oauth.AnthropicOAuthParams // in-progress Anthropic OAuth params
+	copilotDeviceCode       string                      // in-progress GitHub Copilot device code
+	copilotPollInterval     int                         // Copilot device code poll interval
+	copilotPollCtx          context.Context             // Copilot device code polling context
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex
@@ -333,7 +334,6 @@ type App struct {
 	workflowEngine             *workflow.WorkflowEngine        // TEST ONLY: never instantiated in production. Always nil at runtime.
 	workflowV2                 *workflowV2State                // V2 workflow engine (clean state machine)
 	workflowArtifactSaver      *deferredArtifactSaver          // shared artifact saver for OwnerID injection
-	workflowDisabled           atomic.Bool                     // true when user disables workflow in settings; checked by getWorkflowEngine()
 	steeringStore              *steering.Store                 // declarative rule injection (corelib/steering)
 	codeEventEmitter           *CodeEventEmitter               // emits code file events to frontend for code preview panel
 	codingKnowledgeStore       *knowledge.CodingKnowledgeStore // independent coding experience store (coding_knowledge.db)
@@ -797,6 +797,59 @@ func (a *App) scheduleWarmFrozenMemorySnapshot() {
 		handler.memoryStore = a.memoryStore
 	}
 	go handler.WarmFrozenMemorySnapshot(desktopUserID)
+}
+
+// refreshActiveAgentMemorySnapshots drops cached prompt memory for handlers
+// backed by the App's shared memory store. It makes a GUI-managed memory
+// mutation visible to every affected Agent on its very next prompt build.
+// Handlers with private stores (for example hardware runtimes) are excluded.
+func (a *App) refreshActiveAgentMemorySnapshots() {
+	if a == nil || a.memoryStore == nil {
+		return
+	}
+	handlers := make(map[*IMMessageHandler]struct{}, 8)
+	add := func(handler *IMMessageHandler) {
+		if handler != nil {
+			handlers[handler] = struct{}{}
+		}
+	}
+	add(a.imHandler)
+	if hub := a.hubClient(); hub != nil {
+		add(hub.currentIMHandler())
+	}
+	// Gateway handlers are separate Agent instances, so their frozen prompt
+	// snapshots must be invalidated too. Keep the shared-store guard below:
+	// hardware-bound handlers can intentionally own a private memory store.
+	if a.weixinGateway != nil {
+		add(a.weixinGateway.currentLocalHandler())
+	}
+	if a.telegramGateway != nil {
+		add(a.telegramGateway.currentLocalHandler())
+	}
+	if a.qqBotGateway != nil {
+		add(a.qqBotGateway.currentLocalHandler())
+	}
+	if a.lansengerGateways != nil && !a.lansengerGateways.isEmpty() {
+		for _, handler := range a.lansengerGateways.handlers() {
+			add(handler)
+		}
+	} else if a.lansengerGateway != nil {
+		add(a.lansengerGateway.currentLocalHandler())
+	}
+	if a.thirdPartyGateway != nil {
+		add(a.thirdPartyGateway.currentLocalHandler())
+		for _, handler := range a.thirdPartyGateway.localHardwareHandlers() {
+			add(handler)
+		}
+	}
+	for handler := range handlers {
+		if handler.memoryStore != a.memoryStore {
+			continue
+		}
+		// Refresh synchronously so the delete call does not return while a
+		// current agent still has the removed content cached in its prompt.
+		handler.RefreshAllMemorySnapshots()
+	}
 }
 
 func (a *App) beginFirstAIAssistantChatTelemetry() (readyAt int64, shouldLog bool) {
@@ -2462,6 +2515,54 @@ func (a *App) domReady(ctx context.Context) {
 	// Startup may begin maximised (low-res policy). Clamp after first paint so
 	// Win10 frameless windows do not sit under the taskbar.
 	a.scheduleClampMaximizedWindowToWorkArea(120 * time.Millisecond)
+	if handoff := a.peekPendingReferralHandoff(); handoff.Handoff != "" {
+		a.emitEvent("referral-handoff", handoff)
+	}
+}
+
+type ReferralHandoffLaunch struct {
+	Handoff string `json:"handoff"`
+	HubURL  string `json:"hub_url"`
+}
+
+func (a *App) setPendingReferralHandoff(handoff ReferralHandoffLaunch) {
+	if a == nil || strings.TrimSpace(handoff.Handoff) == "" || strings.TrimSpace(handoff.HubURL) == "" {
+		return
+	}
+	a.referralHandoffMu.Lock()
+	a.pendingReferralHandoff = ReferralHandoffLaunch{Handoff: strings.TrimSpace(handoff.Handoff), HubURL: strings.TrimRight(strings.TrimSpace(handoff.HubURL), "/")}
+	ready := a.ctx != nil && a.hasWailsEventsContext()
+	a.referralHandoffMu.Unlock()
+	if ready {
+		a.emitEvent("referral-handoff", handoff)
+	}
+}
+
+func (a *App) takePendingReferralHandoff() ReferralHandoffLaunch {
+	if a == nil {
+		return ReferralHandoffLaunch{}
+	}
+	a.referralHandoffMu.Lock()
+	defer a.referralHandoffMu.Unlock()
+	handoff := a.pendingReferralHandoff
+	a.pendingReferralHandoff = ReferralHandoffLaunch{}
+	return handoff
+}
+
+func (a *App) peekPendingReferralHandoff() ReferralHandoffLaunch {
+	if a == nil {
+		return ReferralHandoffLaunch{}
+	}
+	a.referralHandoffMu.Lock()
+	defer a.referralHandoffMu.Unlock()
+	return a.pendingReferralHandoff
+}
+
+// ConsumeReferralHandoff lets the frontend recover a deep link that arrived
+// before React installed its Wails event listener. It clears the in-memory
+// value on read and deliberately never persists the bearer handoff token.
+func (a *App) ConsumeReferralHandoff() ReferralHandoffLaunch {
+	return a.takePendingReferralHandoff()
 }
 
 // GetUIZoomFactor returns the saved UI zoom factor.
@@ -6274,11 +6375,6 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	log.Printf("[config] SaveConfig:sync_api_keys=%s", time.Since(syncStart))
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	memory.SetMemoryRecallLogEnabled(config.MemoryRecallLogEnabled)
-	// Sync workflow enabled/disabled state to the atomic flag so that
-	// getWorkflowEngine() returns nil when workflow is disabled. This is
-	// the single enforcement point -all workflow consumers go through
-	// getWorkflowEngine(), so no per-consumer guards are needed.
-	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
 	policyModeChanged := a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode
 	floatingChanged := floatingAppearanceChanged(oldConfig, config)
 	motionChanged := floatingMotionChanged(oldConfig, config)
@@ -7889,12 +7985,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LastEnvCheckTime = strings.TrimSpace(v)
-		case "workflow_enabled":
-			v, err := boolField(key, value)
-			if err != nil {
-				return corelib.AppConfig{}, err
-			}
-			cfg.SetWorkflowEnabled(v)
 		case "vector_search_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -8275,8 +8365,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	if err != nil {
 		return corelib.AppConfig{}, err
 	}
-	a.workflowDisabled.Store(!cfg.IsWorkflowEnabled())
-	workflowTurnedOff := !cfg.IsWorkflowEnabled() && current.IsWorkflowEnabled()
 	floatingChanged := petChanged && floatingAppearanceChanged(current, cfg)
 	motionChanged := petChanged && floatingMotionChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
@@ -8296,13 +8384,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	}
 	if fullControl, ok := patch["subagent_full_access"].(bool); ok {
 		recordSubAgentPermissionModeAudit(a, fullControl)
-	}
-
-	// When workflow is toggled off, dismiss the frontend workflow panel immediately.
-	// Without this, the progress board stays visible until the next user message.
-	if workflowTurnedOff {
-		emitWorkflowV2Event(a, "workflow:phase_update", nil)
-		emitWorkflowV2Event(a, "workflow:suggest_maximize_dismiss", nil)
 	}
 
 	// When LLM provider is switched, emit the same event that SaveMaclawLLMProviders
@@ -10112,6 +10193,62 @@ func (a *App) BugReportScreenshotPreviewDataURL(path string) (string, error) {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(out.Bytes()), nil
 }
 
+// AIAssistantAttachmentPreviewDataURL returns a bounded thumbnail for a local
+// image the user has explicitly attached to the assistant.  It deliberately
+// returns image data rather than a file URL, so the WebView never needs direct
+// filesystem access to render a compact attachment preview.
+func (a *App) AIAssistantAttachmentPreviewDataURL(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("attachment path is required")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() || info.Size() > 12*1024*1024 {
+		return "", fmt.Errorf("attachment must be an image file no larger than 12 MB")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	config, _, err := image.DecodeConfig(file)
+	if err != nil {
+		return "", fmt.Errorf("inspect attachment image: %w", err)
+	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 32_000_000 {
+		return "", fmt.Errorf("attachment image dimensions are not supported")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	source, _, err := image.Decode(file)
+	if err != nil {
+		return "", fmt.Errorf("decode attachment image: %w", err)
+	}
+	bounds := source.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	const maxEdge = 96
+	if width > maxEdge || height > maxEdge {
+		if width >= height {
+			height = max(1, height*maxEdge/width)
+			width = maxEdge
+		} else {
+			width = max(1, width*maxEdge/height)
+			height = maxEdge
+		}
+	}
+	thumbnail := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.CatmullRom.Scale(thumbnail, thumbnail.Bounds(), source, bounds, draw.Over, nil)
+	var out bytes.Buffer
+	if err := png.Encode(&out, thumbnail); err != nil {
+		return "", err
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(out.Bytes()), nil
+}
+
 // SubmitBugReport makes a diagnostics archive and posts it to HubCenter using
 // the existing authenticated SkillMarket session. The local archive is retained
 // for a retry if the request fails.
@@ -10938,9 +11075,9 @@ func (a *App) validateSkillZip(path string) error {
 		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
 		}
-		_, name, err := safeZipEntryTarget(os.TempDir(), f.Name)
+		name, err := archiveutil.CanonicalEntry(f.Name, skillZipArchiveLimits())
 		if err != nil {
-			return err
+			return fmt.Errorf("illegal file path: %s", f.Name)
 		}
 		parts := strings.Split(name, "/")
 		if len(parts) > 0 && (strings.HasPrefix(parts[0], "__MACOSX") || strings.HasPrefix(parts[0], ".")) {
@@ -11016,6 +11153,9 @@ func validateSkillZipResourceLimits(files []*zip.File) error {
 		if file == nil || file.FileInfo().IsDir() {
 			continue
 		}
+		if _, err := archiveutil.CanonicalEntry(file.Name, skillZipArchiveLimits()); err != nil {
+			return fmt.Errorf("illegal file path: %s", file.Name)
+		}
 		size := file.UncompressedSize64
 		if size > maxSkillZipFileBytes {
 			return fmt.Errorf("zip entry %q is too large after decompression: %d > %d bytes", file.Name, size, maxSkillZipFileBytes)
@@ -11026,6 +11166,14 @@ func validateSkillZipResourceLimits(files []*zip.File) error {
 		}
 	}
 	return nil
+}
+
+func skillZipArchiveLimits() archiveutil.Limits {
+	return archiveutil.Limits{
+		MaxFiles:      maxSkillZipEntries,
+		MaxFileBytes:  maxSkillZipFileBytes,
+		MaxTotalBytes: maxSkillZipTotalExpandedBytes,
+	}
 }
 
 type skillZipInstallScanResult struct {
@@ -11328,118 +11476,27 @@ func (a *App) InstallDefaultMarketplace() error {
 	return nil
 }
 func (a *App) unzip(src, dest string) error {
-	r, err := zip.OpenReader(src)
+	stage, err := archiveutil.PrepareMergeStage(dest)
 	if err != nil {
-		return err
+		return fmt.Errorf("create skill extraction staging directory: %w", err)
 	}
-	defer r.Close()
-	if err := validateSkillZipResourceLimits(r.File); err != nil {
-		return err
+	defer os.RemoveAll(stage)
+	result := archiveutil.ExtractToDirectory(src, stage, skillZipArchiveLimits())
+	if !result.OK {
+		return fmt.Errorf("extract skill ZIP: %s: %s", result.Code, result.Message)
 	}
-	type zipEntry struct {
-		file      *zip.File
-		target    string
-		cleanName string
+	if result.Format != archiveutil.FormatZIP {
+		return fmt.Errorf("skill package must be a ZIP archive, got %s", result.Format)
 	}
-	entries := make([]zipEntry, 0, len(r.File))
-	for _, f := range r.File {
-		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
-		}
-		target, cleanName, err := safeZipEntryTarget(dest, f.Name)
-		if err != nil {
-			return err
-		}
-		entries = append(entries, zipEntry{file: f, target: target, cleanName: cleanName})
-	}
-	// 1. Identify root directories to clean up
-	rootDirs := make(map[string]bool)
-	for _, entry := range entries {
-		parts := strings.Split(entry.cleanName, "/")
-		if len(parts) > 0 {
-			rootDir := parts[0]
-			if !strings.HasPrefix(rootDir, "__MACOSX") && !strings.HasPrefix(rootDir, ".") {
-				rootDirs[rootDir] = true
-			}
-		}
-	}
-	// 2. Remove existing directories
-	for dir := range rootDirs {
-		destPath := filepath.Join(dest, dir)
-		if err := os.RemoveAll(destPath); err != nil {
-			return fmt.Errorf("failed to remove existing skill directory %s: %v", destPath, err)
-		}
-	}
-	os.MkdirAll(dest, 0755)
-	for _, entry := range entries {
-		f := entry.file
-		fpath := entry.target
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(fpath, os.ModePerm)
-			continue
-		}
-		if err = os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-			return err
-		}
-		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			outFile.Close()
-			return err
-		}
-		written, err := io.Copy(outFile, io.LimitReader(rc, int64(maxSkillZipFileBytes)+1))
-		outFile.Close()
-		rc.Close()
-		if err != nil {
-			return err
-		}
-		if f.UncompressedSize64 > maxSkillZipFileBytes || written > maxSkillZipFileBytes {
-			return fmt.Errorf("zip entry %q is too large after decompression", f.Name)
-		}
+
+	// Preserve the established installer semantics in the common archive layer:
+	// incoming top-level directories replace their predecessors, while files at
+	// the package root merge into the existing destination. This keeps every
+	// staging-to-destination write subject to archiveutil's link checks.
+	if err := archiveutil.ReplaceValidatedTopLevelDirectories(stage, dest); err != nil {
+		return fmt.Errorf("copy extracted skill package: %w", err)
 	}
 	return nil
-}
-
-func safeZipEntryTarget(dest, name string) (string, string, error) {
-	name = strings.ToValidUTF8(name, "")
-	slashName := strings.ReplaceAll(name, "\\", "/")
-	if slashName == "" || strings.HasPrefix(slashName, "/") || zipEntryHasDrivePrefix(slashName) || zipEntryHasColonPathComponent(slashName) || filepath.IsAbs(name) || filepath.IsAbs(filepath.FromSlash(slashName)) || filepath.VolumeName(filepath.FromSlash(slashName)) != "" {
-		return "", "", fmt.Errorf("illegal file path: %s", name)
-	}
-	cleanName := pathpkg.Clean(slashName)
-	if cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, "../") {
-		return "", "", fmt.Errorf("illegal file path: %s", name)
-	}
-	destAbs, err := filepath.Abs(dest)
-	if err != nil {
-		return "", "", err
-	}
-	targetAbs, err := filepath.Abs(filepath.Join(destAbs, filepath.FromSlash(cleanName)))
-	if err != nil {
-		return "", "", err
-	}
-	rel, err := filepath.Rel(destAbs, targetAbs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", "", fmt.Errorf("illegal file path: %s", name)
-	}
-	return targetAbs, cleanName, nil
-}
-
-func zipEntryHasDrivePrefix(name string) bool {
-	return len(name) >= 2 && name[1] == ':' &&
-		((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z'))
-}
-
-func zipEntryHasColonPathComponent(name string) bool {
-	for _, part := range strings.Split(name, "/") {
-		if strings.Contains(part, ":") {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *App) InstallSkill(name, description, skillType, value, location, projectPath, toolName string) error {

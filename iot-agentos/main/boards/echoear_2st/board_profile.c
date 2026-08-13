@@ -8,15 +8,10 @@ bool board_profile_get(device_profile_t *out_profile) {
         .id = "echoear-2st-r8",
         .display_width = 360,
         .display_height = 360,
-        .capabilities = DEVICE_CAPABILITY_DISPLAY |
+        /* Required business behaviour is shared with Bread; round/touch are
+         * presentation and input adaptations, not a separate product tier. */
+        .capabilities = DEVICE_CAPABILITY_REQUIRED_BASELINE |
                         DEVICE_CAPABILITY_TOUCH_INPUT |
-                        DEVICE_CAPABILITY_PRIMARY_CONTROL |
-                        DEVICE_CAPABILITY_OUTPUT_VOLUME |
-                        DEVICE_CAPABILITY_AUDIO_CAPTURE |
-                        DEVICE_CAPABILITY_AUDIO_PLAYBACK |
-                        DEVICE_CAPABILITY_OFFLINE_WAKE_WORD |
-                        DEVICE_CAPABILITY_PERSISTENT_STORAGE |
-                        DEVICE_CAPABILITY_DISPLAY_OFF |
                         DEVICE_CAPABILITY_ROUND_DISPLAY,
         .primary_interaction_source = DEVICE_INPUT_SOURCE_TOUCH,
         .primary_interaction_label = "屏幕",

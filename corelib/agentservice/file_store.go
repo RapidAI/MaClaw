@@ -207,6 +207,17 @@ func (s *FileStore) ListAuditEvents(tenantID, userID string) ([]AuditEvent, erro
 	return s.inner.ListAuditEvents(tenantID, userID)
 }
 
+func (s *FileStore) DeleteAuditEvents(tenantID, userID string) (int, error) {
+	deleted, err := s.inner.DeleteAuditEvents(tenantID, userID)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.flush(); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
 func (s *FileStore) flush() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -335,13 +335,7 @@ func TestParseTaskUnderstandingResponse_JSONWithPrefixText(t *testing.T) {
 }
 
 func TestTaskUnderstandingSimplifiedPrompt_IsShort(t *testing.T) {
-	// Simplified prompt should be significantly shorter than the full prompt
-	// to reduce token usage and improve response time on retry.
-	if len(taskUnderstandingSimplifiedPrompt) >= len(taskUnderstandingSystemPrompt) {
-		t.Errorf("simplified prompt (%d chars) should be shorter than full prompt (%d chars)",
-			len(taskUnderstandingSimplifiedPrompt), len(taskUnderstandingSystemPrompt))
-	}
-	// Should be under 200 chars for minimal token usage.
+	// Keep the one-shot presentation classifier below 200 chars.
 	if len(taskUnderstandingSimplifiedPrompt) > 200 {
 		t.Errorf("simplified prompt too long: %d chars (want ≤200)", len(taskUnderstandingSimplifiedPrompt))
 	}

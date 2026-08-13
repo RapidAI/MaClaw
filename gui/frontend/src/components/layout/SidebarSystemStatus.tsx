@@ -87,6 +87,17 @@ const DROPDOWN_CHECK = '\u2713';
 
 const textForLang = localizeText;
 
+function VisionProviderIcon() {
+    return (
+        <svg className="sidebar-system-status__provider-vision-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <rect x="1.5" y="3" width="9.5" height="8" rx="1.4" />
+            <circle cx="4.25" cy="5.7" r="1" />
+            <path d="m2.8 9 2.5-2.35 1.75 1.55 1.25-1.05L10.1 9" />
+            <path d="M12.4 2v2.2M11.3 3.1h2.2M12.4 11.8V14M11.3 12.9h2.2" />
+        </svg>
+    );
+}
+
 const formatRetryAfter = (seconds: number, retryAfterAt: string, lang: string) => {
     let totalSeconds = Number(seconds || 0);
     if (totalSeconds <= 0 && retryAfterAt) {
@@ -174,6 +185,15 @@ export const SidebarSystemStatus = ({
         : '';
     const providerLabel = moaBadge ? `${baseProviderLabel} · ${moaBadge}` : baseProviderLabel;
     const isOfficialProvider = !!sidebarCurrentProviderTokenUsage.isHubService;
+    // The icon is a positive capability signal. Never infer it from a model
+    // name or an unknown probe result: false/undefined must stay text-only.
+    const supportsVision = sidebarCurrentProviderTokenUsage.supportsVision === true;
+    const visionCapabilityText = supportsVision
+        ? textForLang(lang, 'Supports image input', '\u652f\u6301\u56fe\u7247\u8f93\u5165', '\u652f\u63f4\u5716\u7247\u8f38\u5165')
+        : '';
+    const providerDisplayTitle = visionCapabilityText
+        ? `${providerLabel}${CREDIT_SEPARATOR}${visionCapabilityText}`
+        : providerLabel;
     const profileStatusLabel = (summary: LLMProfileStatusSummary | undefined, fallback: string) => {
         const provider = String(summary?.provider_name || '').trim();
         const model = String(summary?.model || '').trim();
@@ -377,7 +397,7 @@ export const SidebarSystemStatus = ({
     const providerTitle = isOfficialProvider
         ? textForLang(lang, 'View or redeem MaClaw Official service', '\u67e5\u770b\u6216\u5151\u6362 MaClaw \u5b98\u65b9\u670d\u52a1', '\u67e5\u770b\u6216\u514c\u63db MaClaw \u5b98\u65b9\u670d\u52d9')
         : textForLang(lang, 'Configure LLM provider', '\u914d\u7f6e LLM \u670d\u52a1\u5546', '\u914d\u7f6e LLM \u670d\u52d9\u5546');
-    const providerActionTitle = `${providerLabel}${CREDIT_SEPARATOR}${providerTitle}`;
+    const providerActionTitle = `${providerDisplayTitle}${CREDIT_SEPARATOR}${providerTitle}`;
     const openProviderTarget = isOfficialProvider ? openServiceRedeemPage : openLLMSettingsPage;
 
     const handleToggleDropdown = useCallback(() => {
@@ -607,11 +627,13 @@ export const SidebarSystemStatus = ({
                             onClick={openProviderTarget}
                             title={providerActionTitle}
                         >
-                            {providerLabel}
+                            {supportsVision && <VisionProviderIcon />}
+                            <span>{providerLabel}</span>
                         </button>
                     ) : (
-                        <span className="sidebar-system-status__provider" title={providerLabel}>
-                            {providerLabel}
+                        <span className="sidebar-system-status__provider" title={providerDisplayTitle}>
+                            {supportsVision && <VisionProviderIcon />}
+                            <span>{providerLabel}</span>
                         </span>
                     )}
                     {/* Provider switch dropdown — always render (even with single provider, for quick access to settings) */}

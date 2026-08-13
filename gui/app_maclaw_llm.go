@@ -48,13 +48,14 @@ const (
 // exposed to the model-assignment UI. Connection details and credentials stay
 // exclusively in the provider-management flow.
 type MaclawLLMProfileProviderSummary struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Model          string   `json:"model,omitempty"`
-	Models         []string `json:"models,omitempty"`
-	IsHubService   bool     `json:"is_hub_service,omitempty"`
-	SupportsVision bool     `json:"supports_vision"`
-	AuthType       string   `json:"auth_type,omitempty"`
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	Model                string   `json:"model,omitempty"`
+	Models               []string `json:"models,omitempty"`
+	ConnectionTestPassed bool     `json:"connection_test_passed"`
+	IsHubService         bool     `json:"is_hub_service,omitempty"`
+	SupportsVision       bool     `json:"supports_vision"`
+	AuthType             string   `json:"auth_type,omitempty"`
 }
 
 // MaclawLLMProfileEffectiveSummary describes the base selection that a new
@@ -65,6 +66,7 @@ type MaclawLLMProfileEffectiveSummary struct {
 	ProviderID       string `json:"provider_id,omitempty"`
 	ProviderName     string `json:"provider_name,omitempty"`
 	Model            string `json:"model,omitempty"`
+	SupportsVision   bool   `json:"supports_vision"`
 	InheritAssistant bool   `json:"inherit_assistant,omitempty"`
 	Configured       bool   `json:"configured"`
 	Health           string `json:"health"`
@@ -136,11 +138,13 @@ func maclawLLMProviderIDForRead(provider corelib.MaclawLLMProvider) string {
 func ensureMaclawLLMProviderIDs(providers []corelib.MaclawLLMProvider, previous []corelib.MaclawLLMProvider) []corelib.MaclawLLMProvider {
 	previousIDByName := make(map[string]string, len(previous))
 	previousNameSeen := make(map[string]bool, len(previous))
+	previousIDByConnection := make(map[string]string, len(previous))
 	for _, p := range previous {
 		if key := strings.ToLower(strings.TrimSpace(p.Name)); key != "" {
 			previousNameSeen[key] = true
 			if id := strings.TrimSpace(p.ID); id != "" {
 				previousIDByName[key] = id
+				previousIDByConnection[maclawLLMProviderConnectionIdentity(p)] = id
 			}
 		}
 	}
@@ -149,7 +153,14 @@ func ensureMaclawLLMProviderIDs(providers []corelib.MaclawLLMProvider, previous 
 		providers[i].ID = strings.TrimSpace(providers[i].ID)
 		if providers[i].ID == "" {
 			nameKey := strings.ToLower(strings.TrimSpace(providers[i].Name))
-			providers[i].ID = previousIDByName[nameKey]
+			// A renamed provider must retain its identity when its connection
+			// itself is unchanged. Falling back to name-only matching here would
+			// create a new ID, drop the verified state, and leave a profile
+			// pointing at a provider that can no longer be resolved.
+			providers[i].ID = previousIDByConnection[maclawLLMProviderConnectionIdentity(providers[i])]
+			if providers[i].ID == "" {
+				providers[i].ID = previousIDByName[nameKey]
+			}
 			if providers[i].ID == "" && previousNameSeen[nameKey] {
 				providers[i].ID = legacyMaclawLLMProviderID(providers[i].Name)
 			}
@@ -243,6 +254,38 @@ func normalizeLLMTimeoutSec(timeoutSec int) int {
 	return corelib.NormalizeAgentTimeoutSec(timeoutSec)
 }
 
+func normalizeVisionModelIDs(models []string) []string {
+	seen := make(map[string]struct{}, len(models))
+	normalized := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		key := strings.ToLower(model)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, model)
+	}
+	return normalized
+}
+
+func visionModelsWithResult(models []string, model string, supportsVision bool) []string {
+	model = strings.TrimSpace(model)
+	filtered := make([]string, 0, len(models)+1)
+	for _, visionModel := range models {
+		if !strings.EqualFold(strings.TrimSpace(visionModel), model) {
+			filtered = append(filtered, visionModel)
+		}
+	}
+	if supportsVision && model != "" {
+		filtered = append(filtered, model)
+	}
+	return normalizeVisionModelIDs(filtered)
+}
+
 func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
 	provider.URL = strings.TrimRight(strings.TrimSpace(provider.URL), "/")
 	provider.Key = strings.TrimSpace(provider.Key)
@@ -250,7 +293,87 @@ func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.Macl
 	provider.TimeoutSec = normalizeLLMTimeoutSec(provider.TimeoutSec)
 	provider.InputPricePerMTokensRMB = corelib.NormalizeLLMTokenPricePerMTokensRMB(provider.InputPricePerMTokensRMB, corelib.DefaultLLMInputPricePerMTokensRMB)
 	provider.OutputPricePerMTokensRMB = corelib.NormalizeLLMTokenPricePerMTokensRMB(provider.OutputPricePerMTokensRMB, corelib.DefaultLLMOutputPricePerMTokensRMB)
+	visionModels := normalizeVisionModelIDs(provider.VisionModels)
+	// Lift the legacy single-boolean result into the model-level record on the
+	// next controlled provider save. This preserves old configurations while
+	// making subsequent profile switches model-accurate.
+	if provider.SupportsVision && provider.Model != "" {
+		visionModels = visionModelsWithResult(visionModels, provider.Model, true)
+	}
+	provider.VisionModels = visionModels
+	// Keep the legacy field in sync with the provider's default model. Runtime
+	// profile resolution uses VisionModels, but older consumers still read this
+	// field directly.
+	provider.SupportsVision = false
+	for _, visionModel := range provider.VisionModels {
+		if strings.EqualFold(strings.TrimSpace(visionModel), provider.Model) {
+			provider.SupportsVision = true
+			break
+		}
+	}
 	return provider
+}
+
+// sameMaclawLLMProviderConnection reports whether a completed connection test
+// remains valid for a provider. It deliberately includes every field that
+// affects an inference request, including API credentials for API-key users.
+// Managed OAuth/SSO secrets are represented by their stored configuration
+// fields here; their dedicated refresh/login flows always clear the result.
+func sameMaclawLLMProviderConnection(a, b corelib.MaclawLLMProvider) bool {
+	return strings.EqualFold(strings.TrimRight(strings.TrimSpace(a.URL), "/"), strings.TrimRight(strings.TrimSpace(b.URL), "/")) &&
+		strings.TrimSpace(a.Key) == strings.TrimSpace(b.Key) &&
+		strings.EqualFold(strings.TrimSpace(a.Model), strings.TrimSpace(b.Model)) &&
+		strings.EqualFold(strings.TrimSpace(a.Protocol), strings.TrimSpace(b.Protocol)) &&
+		strings.EqualFold(strings.TrimSpace(a.WireAPI), strings.TrimSpace(b.WireAPI)) &&
+		strings.EqualFold(strings.TrimSpace(a.AuthType), strings.TrimSpace(b.AuthType)) &&
+		strings.EqualFold(a.UserAgent(), b.UserAgent())
+}
+
+// maclawLLMProviderConnectionIdentity is the stable shape used only to
+// preserve an existing durable ID across a display-name edit. It deliberately
+// excludes the name and ID themselves, but otherwise mirrors the fields that
+// decide whether a completed connection test is still valid.
+func maclawLLMProviderConnectionIdentity(provider corelib.MaclawLLMProvider) string {
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimRight(strings.TrimSpace(provider.URL), "/")),
+		strings.TrimSpace(provider.Key),
+		strings.ToLower(strings.TrimSpace(provider.Model)),
+		strings.ToLower(strings.TrimSpace(provider.Protocol)),
+		strings.ToLower(strings.TrimSpace(provider.WireAPI)),
+		strings.ToLower(strings.TrimSpace(provider.AuthType)),
+		strings.ToLower(strings.TrimSpace(provider.UserAgent())),
+	}, "\x00")
+}
+
+// retainTrustedMaclawLLMProviderTestResults makes ConnectionTestPassed a
+// server-owned fact rather than a client-controlled flag. Ordinary saves can
+// preserve a prior successful result only for the identical connection; only
+// the backend Test & Save workflow or a verified Hub service status can
+// establish a new successful result.
+//
+// The successful test is bound to the durable provider ID, never its display
+// name. Custom providers are allowed to share a name, and using that mutable
+// display value here would let one tested entry accidentally make every
+// same-named entry assignable.
+func retainTrustedMaclawLLMProviderTestResults(providers, previous []corelib.MaclawLLMProvider, trustedProviderID string) []corelib.MaclawLLMProvider {
+	previousByID := make(map[string]corelib.MaclawLLMProvider, len(previous))
+	previousByName := make(map[string]corelib.MaclawLLMProvider, len(previous))
+	for _, provider := range previous {
+		previousByID[maclawLLMProviderIDForRead(provider)] = provider
+		previousByName[strings.ToLower(strings.TrimSpace(provider.Name))] = provider
+	}
+	for i := range providers {
+		if trustedProviderID != "" && maclawLLMProviderIDForRead(providers[i]) == trustedProviderID {
+			providers[i].ConnectionTestPassed = true
+			continue
+		}
+		previousProvider, found := previousByID[maclawLLMProviderIDForRead(providers[i])]
+		if !found {
+			previousProvider, found = previousByName[strings.ToLower(strings.TrimSpace(providers[i].Name))]
+		}
+		providers[i].ConnectionTestPassed = found && previousProvider.ConnectionTestPassed && sameMaclawLLMProviderConnection(providers[i], previousProvider)
+	}
+	return providers
 }
 
 // normalizeXAIProvider applies Grok Build's managed-OAuth defaults. Existing
@@ -543,6 +666,15 @@ func (a *App) GetMaclawLLMPanelState() struct {
 
 // SaveMaclawLLMProviders persists the provider list and current selection.
 func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, current string) error {
+	return a.saveMaclawLLMProviders(providers, current, "", "")
+}
+
+// saveMaclawLLMProviders is the shared provider writer. A non-empty expected
+// revision makes a Test & Save operation optimistic: a test result must never
+// be applied to a provider list that changed while the request was in flight.
+// trustedProviderID is intentionally private and is set only after a real
+// Test & Save inference request or a verified Hub service-status response.
+func (a *App) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, current, expectedProviderRevision, trustedProviderID string) error {
 	current = canonicalVolcengineTokenPlanProviderName(canonicalHubServiceProviderName(current))
 	providers = normalizeMaclawLLMProviders(providers)
 	start := time.Now()
@@ -574,6 +706,7 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	// frontend saves with an empty Key (UI never shows a key field for OAuth),
 	// preserve the existing secrets so a model/settings save cannot wipe login.
 	providers = preserveManagedAuthSecrets(providers, cfg.MaclawLLMProviders)
+	hubStatusVerified := false
 	if current == hubServiceProviderName {
 		hasHubProvider := false
 		var hubStatus HubLLMServiceStatus
@@ -595,6 +728,7 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 				storeHubServiceStatusCache(syncCfg.RemoteHubURL, syncCfg.RemoteViewerToken, status)
 				a.applyHubLLMServiceStatusToConfig(&syncCfg, status)
 				providers = syncCfg.MaclawLLMProviders
+				hubStatusVerified = true
 			} else {
 				log.Printf("[LLM] SaveMaclawLLMProviders:hub_provider_sync_failed err=%v", err)
 			}
@@ -615,6 +749,21 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 		}
 	}
 	providers = ensureMaclawLLMProviderIDs(providers, cfg.MaclawLLMProviders)
+	if trustedProviderID == "" && current == hubServiceProviderName && hubStatusVerified {
+		for _, provider := range providers {
+			if provider.IsHubService && provider.ConnectionTestPassed {
+				trustedProviderID = maclawLLMProviderIDForRead(provider)
+				break
+			}
+		}
+	}
+	// A public provider save is not proof that an endpoint answered a request.
+	// Retain a passed result only when the persisted connection identity is
+	// unchanged; do not trust a client-supplied boolean. The one private escape
+	// hatch is used immediately after TestAndSaveMaclawLLMProvider has made the
+	// successful request itself. IDs are assigned first so legacy name-only
+	// entries can retain a valid result on their first controlled save.
+	providers = retainTrustedMaclawLLMProviderTestResults(providers, cfg.MaclawLLMProviders, trustedProviderID)
 	// Provider management owns connection details, credentials and model
 	// discovery. Once dual profiles exist it must not also become an implicit
 	// model-assignment writer: saving an OAuth token or editing an unrelated
@@ -668,9 +817,14 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	}
 	persistStart := time.Now()
 	profilesChangedElsewhere := false
+	providersChangedElsewhere := false
 	changed, err := a.PatchConfigIfChanged(func(currentCfg *corelib.AppConfig) bool {
 		if maclawLLMProfileRevision(*currentCfg) != expectedProfileRevision {
 			profilesChangedElsewhere = true
+			return false
+		}
+		if expectedProviderRevision != "" && maclawLLMProviderRevision(*currentCfg) != expectedProviderRevision {
+			providersChangedElsewhere = true
 			return false
 		}
 		currentCfg.MaclawLLMUrl = cfg.MaclawLLMUrl
@@ -690,6 +844,9 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	}
 	if profilesChangedElsewhere {
 		return fmt.Errorf("LLM model assignments changed elsewhere; refresh provider settings and try again")
+	}
+	if providersChangedElsewhere {
+		return fmt.Errorf("LLM providers changed while the connection test was running; refresh provider settings and try again")
 	}
 	if !changed {
 		return nil
@@ -919,6 +1076,7 @@ func (a *App) ResolveMaclawLLMProfile(profile string) (corelib.MaclawLLMConfig, 
 	}
 	resolved := a.materializeMaclawLLMProvider(provider)
 	resolved.Model = model
+	resolved.SupportsVision = providerSupportsVisionForModel(provider, model)
 	resolved.Profile = profile
 	resolved.RouteSource = "base"
 	return resolved, nil
@@ -964,6 +1122,39 @@ func validateMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, providers []c
 	return nil
 }
 
+// validateMaclawLLMProfileAssignments enforces the assignment surface's
+// eligibility contract at the persistence boundary as well as in the UI. A
+// stale window, bottom picker, or direct Wails caller must not be able to
+// attach an execution profile to an untested provider.
+//
+// Keep this separate from validateMaclawLLMProfiles: provider management must
+// still be able to save a legacy configuration whose existing profile predates
+// connection-test tracking, so the user can repair it by testing a provider.
+func validateMaclawLLMProfileAssignments(profiles, previous corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) error {
+	if err := validateMaclawLLMProfiles(profiles, providers); err != nil {
+		return err
+	}
+	requireTested := func(profile, providerID, previousProviderID string) error {
+		provider, ok := resolveMaclawLLMProviderByID(providers, providerID)
+		// Legacy profiles can retain their already-configured provider so that
+		// users can repair it, but an assignment API cannot newly select an
+		// untested provider.
+		if !ok || (!provider.ConnectionTestPassed && providerID != previousProviderID) {
+			return fmt.Errorf("%s provider has not passed a connection test; test and save it in provider management first", profile)
+		}
+		return nil
+	}
+	if err := requireTested("assistant", profiles.Assistant.ProviderID, previous.Assistant.ProviderID); err != nil {
+		return err
+	}
+	if !profiles.Coding.InheritAssistant {
+		if err := requireTested("coding", profiles.Coding.ProviderID, previous.Coding.ProviderID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // remapLegacyProfileProviderIDs translates read-only IDs handed to a legacy
 // config's UI into the durable IDs allocated during its first controlled save.
 // It only changes exact legacy aliases, never an explicit persisted ID.
@@ -997,10 +1188,11 @@ func maclawLLMProfileRevision(cfg corelib.AppConfig) string {
 	// stable provider identities. Editing an API key must not make an open
 	// assignment draft stale, while provider/model changes must.
 	type revisionProvider struct {
-		ID     string   `json:"id"`
-		Name   string   `json:"name"`
-		Model  string   `json:"model"`
-		Models []string `json:"models,omitempty"`
+		ID                   string   `json:"id"`
+		Name                 string   `json:"name"`
+		Model                string   `json:"model"`
+		Models               []string `json:"models,omitempty"`
+		ConnectionTestPassed bool     `json:"connection_test_passed"`
 	}
 	payload := struct {
 		Providers []revisionProvider         `json:"providers"`
@@ -1014,7 +1206,28 @@ func maclawLLMProfileRevision(cfg corelib.AppConfig) string {
 		payload.Providers = append(payload.Providers, revisionProvider{
 			ID: maclawLLMProviderIDForRead(provider), Name: strings.TrimSpace(provider.Name),
 			Model: strings.TrimSpace(provider.Model), Models: append([]string(nil), provider.Models...),
+			ConnectionTestPassed: provider.ConnectionTestPassed,
 		})
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:16])
+}
+
+// maclawLLMProviderRevision covers the complete provider payload and the
+// selected provider. A Test & Save receives the whole list from the UI, so a
+// narrower connection-only revision could still overwrite a concurrent model
+// catalog, capability, or selection update with its stale snapshot.
+func maclawLLMProviderRevision(cfg corelib.AppConfig) string {
+	payload := struct {
+		Providers []corelib.MaclawLLMProvider `json:"providers"`
+		Current   string                      `json:"current"`
+	}{
+		Providers: cfg.MaclawLLMProviders,
+		Current:   cfg.MaclawLLMCurrentProvider,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -1137,6 +1350,33 @@ func profileSummaryFromResolved(app *App, profile string, inherit bool, resolved
 	return summary
 }
 
+// providerSupportsVisionForModel only confirms image input for the provider's
+// model that was actually probed. A profile can select another catalog model,
+// so carrying the provider-default result forward would create a false badge.
+func providerSupportsVisionForModel(provider corelib.MaclawLLMProvider, model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	// A populated history is authoritative. Once a provider has been probed for
+	// multiple models, never fall back to its currently selected default.
+	if len(provider.VisionModels) > 0 {
+		for _, visionModel := range provider.VisionModels {
+			if strings.EqualFold(strings.TrimSpace(visionModel), model) {
+				return true
+			}
+		}
+		return false
+	}
+	// Legacy files persisted a single result tied to provider.Model.
+	return provider.SupportsVision && strings.EqualFold(strings.TrimSpace(provider.Model), model)
+}
+
+func profileSupportsVisionForModel(providers []corelib.MaclawLLMProvider, providerID, model string) bool {
+	provider, ok := resolveMaclawLLMProviderByID(providers, providerID)
+	return ok && providerSupportsVisionForModel(provider, model)
+}
+
 // GetMaclawLLMProfilePanelState returns both persistent profile drafts and
 // their effective selections. It reads the configuration once and never
 // exposes provider URLs, API keys, OAuth tokens, or raw health diagnostics.
@@ -1155,25 +1395,36 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 	}
 	state := MaclawLLMProfilePanelState{Profiles: *profiles, Revision: maclawLLMProfileRevision(cfg)}
 	for _, provider := range providers {
+		// Assigning an unverified endpoint to an execution profile can make a
+		// working assistant silently switch to a broken service. Keep provider
+		// management comprehensive, but expose only successfully tested entries
+		// in this assignment-specific read model.
+		if !provider.ConnectionTestPassed {
+			continue
+		}
 		state.Providers = append(state.Providers, MaclawLLMProfileProviderSummary{
 			ID: maclawLLMProviderIDForRead(provider), Name: strings.TrimSpace(provider.Name),
 			Model: strings.TrimSpace(provider.Model), Models: append([]string(nil), provider.Models...),
-			IsHubService: provider.IsHubService, SupportsVision: provider.SupportsVision, AuthType: provider.AuthType,
+			ConnectionTestPassed: provider.ConnectionTestPassed,
+			IsHubService:         provider.IsHubService, SupportsVision: provider.SupportsVision, AuthType: provider.AuthType,
 		})
 	}
 	assistant, assistantErr := a.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
 	state.Assistant = profileSummaryFromResolved(a, maclawLLMProfileAssistant, false, assistant, assistantErr)
+	state.Assistant.SupportsVision = profileSupportsVisionForModel(providers, state.Assistant.ProviderID, state.Assistant.Model)
 	if state.Assistant.ProviderID == "" {
 		state.Assistant.ProviderID = profiles.Assistant.ProviderID
 	}
 	coding, codingErr := a.ResolveMaclawLLMProfile(maclawLLMProfileCoding)
 	state.Coding = profileSummaryFromResolved(a, maclawLLMProfileCoding, profiles.Coding.InheritAssistant, coding, codingErr)
+	state.Coding.SupportsVision = profileSupportsVisionForModel(providers, state.Coding.ProviderID, state.Coding.Model)
 	if profiles.Coding.InheritAssistant {
 		state.Coding.ProviderID = profiles.Assistant.ProviderID
 		// Following is an alias of the assistant's effective selection, not a
 		// second health probe. Preserve coding identity while copying only the
 		// safe outcome fields.
 		state.Coding.Configured = state.Assistant.Configured
+		state.Coding.SupportsVision = state.Assistant.SupportsVision
 		state.Coding.Health = state.Assistant.Health
 		state.Coding.CheckedAt = state.Assistant.CheckedAt
 		state.Coding.ReasonCode = state.Assistant.ReasonCode
@@ -1261,6 +1512,10 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 		previous, previousErr := effectiveMaclawLLMProfiles(*cfg, providers, cfg.MaclawLLMCurrentProvider)
 		if previousErr != nil {
 			validationErr = previousErr
+			return false
+		}
+		if err := validateMaclawLLMProfileAssignments(profiles, *previous, providers); err != nil {
+			validationErr = err
 			return false
 		}
 		assistantChanged = previous == nil || previous.Assistant.ProviderID != profiles.Assistant.ProviderID || previous.Assistant.Model != profiles.Assistant.Model
@@ -1381,6 +1636,7 @@ func (a *App) TestMaclawLLMProfile(profile, providerID, model string) (MaclawLLM
 		if refreshedProvider, refreshedFound := resolveMaclawLLMProviderByID(a.GetMaclawLLMProviders().Providers, providerID); refreshedFound {
 			resolved = a.materializeMaclawLLMProvider(refreshedProvider)
 			resolved.Model = model
+			resolved.SupportsVision = providerSupportsVisionForModel(refreshedProvider, model)
 			resolved.Profile = profile
 			resolved.RouteSource = "base"
 		}
@@ -1513,19 +1769,10 @@ func (a *App) beginOAuthFlow(timeout time.Duration) (context.Context, func(), fu
 	if a.oauthCancel != nil {
 		a.oauthCancel()
 	}
-	// An xAI flow owns a loopback listener. Context cancellation unblocks its
-	// waiter, but closing the listener here releases the port immediately when a
-	// user switches providers or starts over.
-	previousXAISession := a.xaiOAuthSession
-	a.xaiOAuthSession = nil
-	a.xaiOAuthAuthorizationURL = ""
 	a.oauthGeneration++
 	generation := a.oauthGeneration
 	a.oauthCancel = cancel
 	a.oauthMu.Unlock()
-	if previousXAISession != nil {
-		previousXAISession.Close()
-	}
 
 	finish := func() {
 		cancel()
@@ -1560,13 +1807,7 @@ func (a *App) cancelOAuthFlow() {
 		a.oauthCancel()
 		a.oauthCancel = nil
 	}
-	session := a.xaiOAuthSession
-	a.xaiOAuthSession = nil
-	a.xaiOAuthAuthorizationURL = ""
 	a.oauthMu.Unlock()
-	if session != nil {
-		session.Close()
-	}
 }
 
 // StartOpenAIOAuth starts the OpenAI OAuth PKCE flow. On success, it updates
@@ -1601,6 +1842,10 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 					data.Providers[i].Model = defaultOpenAI.Model
 					data.Providers[i].WireAPI = defaultOpenAI.WireAPI
 				}
+				// A refreshed OAuth credential changes the tested connection. The
+				// post-login probe below restores this only after a real request
+				// succeeds, so a failed refresh cannot leave a stale eligible entry.
+				data.Providers[i].ConnectionTestPassed = false
 				if err := a.SaveMaclawLLMProviders(data.Providers, "OpenAI"); err != nil {
 					return fmt.Errorf("保存 OAuth 配置失败: %w", err)
 				}
@@ -1616,96 +1861,55 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 	return a.oauthLoginSuccessMessage("OpenAI", "OpenAI OAuth 登录成功")
 }
 
-// StartXAIOAuth prepares Grok Build's OAuth 2.1/OIDC Authorization Code + PKCE
-// flow and returns its authorization URL. The frontend opens this through the
-// Wails runtime, which is more reliable than a background process launching a
-// browser on managed Windows devices.
+// StartXAIOAuth runs Grok Build's OAuth 2.1/OIDC Authorization Code + PKCE
+// flow. It uses the same native system-browser launcher as OpenAI OAuth.
 func (a *App) StartXAIOAuth() (string, error) {
 	ctx, finish, claimResult := a.beginOAuthFlow(300 * time.Second)
-	session, err := oauth.PrepareXAIOAuthFlowCtx(ctx)
+	// Use the same native browser launcher as the working OpenAI flow. This
+	// avoids the Wails BrowserOpenURL bridge silently dropping xAI's long OIDC
+	// authorization URL on some Windows installations.
+	result, err := oauth.RunXAIOAuthFlowCtx(ctx)
 	if err != nil {
 		finish()
 		return "", fmt.Errorf("xAI OAuth 登录失败: %w", err)
 	}
-	authorizationURL := session.AuthorizationURL()
-	a.oauthMu.Lock()
-	if a.oauthCancel == nil || ctx.Err() != nil {
-		a.oauthMu.Unlock()
-		session.Close()
-		finish()
-		return "", fmt.Errorf("xAI OAuth 登录已取消或被新的登录请求替代")
+	defer finish()
+	if err := claimResult(func() error {
+		data := a.GetMaclawLLMProviders()
+		defaults := defaultMaclawLLMProviders()
+		var defaultXAI *corelib.MaclawLLMProvider
+		for i := range defaults {
+			if defaults[i].Name == "xAI-Grok" {
+				defaultXAI = &defaults[i]
+				break
+			}
+		}
+		for i, p := range data.Providers {
+			if p.Name != "xAI-Grok" || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+				continue
+			}
+			data.Providers[i] = oauth.ApplyTokenResult(p, result)
+			if defaultXAI != nil {
+				data.Providers[i].URL = defaultXAI.URL
+				data.Providers[i].Model = defaultXAI.Model
+				data.Providers[i].Protocol = defaultXAI.Protocol
+				data.Providers[i].AuthType = defaultXAI.AuthType
+				data.Providers[i].WireAPI = defaultXAI.WireAPI
+				data.Providers[i].ContextLength = defaultXAI.ContextLength
+			}
+			// This token/default refresh requires a fresh post-login probe.
+			data.Providers[i].ConnectionTestPassed = false
+			if err := a.SaveMaclawLLMProviders(data.Providers, "xAI-Grok"); err != nil {
+				return fmt.Errorf("保存 xAI OAuth 配置失败: %w", err)
+			}
+			a.saveOAuthResultToStore("xAI-Grok", result)
+			return nil
+		}
+		return fmt.Errorf("未找到 xAI-Grok provider")
+	}); err != nil {
+		return "", err
 	}
-	a.xaiOAuthSession = session
-	a.xaiOAuthAuthorizationURL = authorizationURL
-	a.oauthMu.Unlock()
-
-	go func() {
-		defer finish()
-		defer func() {
-			a.oauthMu.Lock()
-			if a.xaiOAuthSession == session {
-				a.xaiOAuthSession = nil
-				a.xaiOAuthAuthorizationURL = ""
-			}
-			a.oauthMu.Unlock()
-			session.Close()
-		}()
-
-		result, err := session.WaitForCompletionCtx(ctx)
-		if err != nil {
-			log.Printf("[OAuth] xAI authorization did not complete: %v", err)
-			if ctx.Err() != nil {
-				// Cancellation is already reflected in the initiating UI. Do not
-				// emit a stale failure that could overwrite a newer login attempt.
-				return
-			}
-			a.emitEvent("xai-oauth-complete", map[string]interface{}{"ok": false, "error": err.Error(), "authorization_url": authorizationURL})
-			return
-		}
-		if err := claimResult(func() error {
-			data := a.GetMaclawLLMProviders()
-			defaults := defaultMaclawLLMProviders()
-			var defaultXAI *corelib.MaclawLLMProvider
-			for i := range defaults {
-				if defaults[i].Name == "xAI-Grok" {
-					defaultXAI = &defaults[i]
-					break
-				}
-			}
-			for i, p := range data.Providers {
-				if p.Name != "xAI-Grok" || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
-					continue
-				}
-				data.Providers[i] = oauth.ApplyTokenResult(p, result)
-				if defaultXAI != nil {
-					data.Providers[i].URL = defaultXAI.URL
-					data.Providers[i].Model = defaultXAI.Model
-					data.Providers[i].Protocol = defaultXAI.Protocol
-					data.Providers[i].AuthType = defaultXAI.AuthType
-					data.Providers[i].WireAPI = defaultXAI.WireAPI
-					data.Providers[i].ContextLength = defaultXAI.ContextLength
-				}
-				if err := a.SaveMaclawLLMProviders(data.Providers, "xAI-Grok"); err != nil {
-					return fmt.Errorf("保存 xAI OAuth 配置失败: %w", err)
-				}
-				a.saveOAuthResultToStore("xAI-Grok", result)
-				return nil
-			}
-			return fmt.Errorf("未找到 xAI-Grok provider")
-		}); err != nil {
-			log.Printf("[OAuth] xAI authorization result was not saved: %v", err)
-			a.emitEvent("xai-oauth-complete", map[string]interface{}{"ok": false, "error": err.Error(), "authorization_url": authorizationURL})
-			return
-		}
-		message, err := a.oauthLoginSuccessMessage("xAI-Grok", "xAI-Grok OAuth 登录成功")
-		if err != nil {
-			log.Printf("[OAuth] xAI post-login check failed: %v", err)
-			message = "xAI-Grok OAuth 登录成功"
-		}
-		a.emitEvent("xai-oauth-complete", map[string]interface{}{"ok": true, "message": message, "authorization_url": authorizationURL})
-	}()
-
-	return authorizationURL, nil
+	return a.oauthLoginSuccessMessage("xAI-Grok", "xAI-Grok OAuth 登录成功")
 }
 
 // oauthLoginSuccessMessage verifies that the newly saved OAuth credentials can
@@ -1741,12 +1945,122 @@ func (a *App) testAndSaveOAuthProviderCapability(providerName string) (corelib.M
 	if err != nil {
 		return corelib.MaclawLLMTestResult{}, err
 	}
+	if err := a.markMaclawLLMProviderConnectionTestPassed(providerName, llmCfg); err != nil {
+		return corelib.MaclawLLMTestResult{}, err
+	}
 	if result.VisionProbeStatus != string(visionProbeInconclusive) {
-		if err := a.saveVisionProbeResultForProvider(providerName, result.SupportsVision); err != nil {
+		if err := a.saveVisionProbeResultForProvider(providerName, llmCfg.Model, result.SupportsVision); err != nil {
 			return corelib.MaclawLLMTestResult{}, err
 		}
 	}
 	return result, nil
+}
+
+// TestAndSaveMaclawLLMProviders is the authoritative provider-management
+// workflow. It tests the exact candidate configuration, then persists it only
+// if no connection-relevant provider data changed while the request was in
+// flight. The backend, rather than a frontend boolean, is the sole authority
+// that can make a provider eligible for model assignment.
+func (a *App) TestAndSaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, current, providerName string) (corelib.MaclawLLMTestResult, error) {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("provider name is required")
+	}
+	providers = normalizeMaclawLLMProviders(providers)
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("load config: %w", err)
+	}
+	for i := range providers {
+		providers[i] = markHubServiceProvider(normalizeMaclawLLMProvider(providers[i]))
+		providers[i] = corelib.NormalizeCodeGenSSOProvider(providers[i])
+	}
+	providers = preserveManagedAuthSecrets(providers, cfg.MaclawLLMProviders)
+	providers = ensureMaclawLLMProviderIDs(providers, cfg.MaclawLLMProviders)
+
+	providerIndex := -1
+	for i := range providers {
+		if strings.EqualFold(strings.TrimSpace(providers[i].Name), providerName) {
+			if providerIndex >= 0 {
+				return corelib.MaclawLLMTestResult{}, fmt.Errorf("provider name %q is ambiguous; choose or create a uniquely named provider", providerName)
+			}
+			providerIndex = i
+		}
+	}
+	if providerIndex < 0 {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("provider %q not found", providerName)
+	}
+
+	// Materialization hydrates managed credentials from their protected store,
+	// so OAuth/SSO tests exercise exactly the runtime request path.
+	tested := a.materializeMaclawLLMProvider(providers[providerIndex])
+	result, err := a.TestMaclawLLM(tested)
+	if err != nil {
+		return corelib.MaclawLLMTestResult{}, err
+	}
+	if result.VisionProbeStatus != string(visionProbeInconclusive) {
+		providers[providerIndex].VisionModels = visionModelsWithResult(providers[providerIndex].VisionModels, providers[providerIndex].Model, result.SupportsVision)
+		providers[providerIndex].SupportsVision = result.SupportsVision
+	}
+	if err := a.saveMaclawLLMProviders(providers, current, maclawLLMProviderRevision(cfg), maclawLLMProviderIDForRead(providers[providerIndex])); err != nil {
+		return corelib.MaclawLLMTestResult{}, err
+	}
+	return result, nil
+}
+
+// markMaclawLLMProviderConnectionTestPassed records that a full text request
+// succeeded for the provider's current saved connection configuration. It is
+// intentionally separate from temporary assignment health, which is not
+// persistent and can change because of a transient network failure.
+func (a *App) markMaclawLLMProviderConnectionTestPassed(providerName string, tested corelib.MaclawLLMConfig) error {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return fmt.Errorf("provider name is required")
+	}
+	testedProviderID := strings.TrimSpace(tested.ProviderID)
+	testedModel := strings.TrimSpace(tested.Model)
+	found := false
+	stale := false
+	_, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		for i := range cfg.MaclawLLMProviders {
+			if !strings.EqualFold(strings.TrimSpace(cfg.MaclawLLMProviders[i].Name), providerName) {
+				continue
+			}
+			found = true
+			// The probe ran outside the configuration transaction. Do not mark a
+			// provider eligible if a concurrent save changed any connection field
+			// that shapes the request while that probe was in flight. Credentials
+			// are deliberately excluded: managed OAuth/SSO credentials can live
+			// outside this config record and are materialized separately.
+			provider := cfg.MaclawLLMProviders[i]
+			if (testedProviderID != "" && strings.TrimSpace(provider.ID) != testedProviderID) ||
+				(testedModel != "" && !strings.EqualFold(strings.TrimSpace(provider.Model), testedModel)) ||
+				!strings.EqualFold(strings.TrimRight(strings.TrimSpace(provider.URL), "/"), strings.TrimRight(strings.TrimSpace(tested.URL), "/")) ||
+				!strings.EqualFold(strings.TrimSpace(provider.Protocol), strings.TrimSpace(tested.Protocol)) ||
+				!strings.EqualFold(strings.TrimSpace(provider.WireAPI), strings.TrimSpace(tested.WireAPI)) ||
+				!strings.EqualFold(strings.TrimSpace(provider.AuthType), strings.TrimSpace(tested.AuthType)) ||
+				!strings.EqualFold(provider.UserAgent(), tested.UserAgent()) {
+				stale = true
+				return false
+			}
+			if cfg.MaclawLLMProviders[i].ConnectionTestPassed {
+				return false
+			}
+			cfg.MaclawLLMProviders[i].ConnectionTestPassed = true
+			return true
+		}
+		return false
+	})
+	if err != nil {
+		return fmt.Errorf("save connection test result: %w", err)
+	}
+	if !found {
+		return fmt.Errorf("provider %q not found", providerName)
+	}
+	if stale {
+		return fmt.Errorf("provider %q changed while its connection test was running; test it again", providerName)
+	}
+	return nil
 }
 
 // CancelOpenAIOAuth cancels an in-progress OAuth flow, unblocking StartOpenAIOAuth.
@@ -1754,30 +2068,7 @@ func (a *App) CancelOpenAIOAuth() {
 	a.cancelOAuthFlow()
 }
 
-// CancelXAIOAuthURL cancels the in-progress xAI OAuth flow only when the
-// caller still owns the returned authorization URL. That prevents an older UI
-// surface being closed from cancelling a newer xAI flow started elsewhere.
-func (a *App) CancelXAIOAuthURL(authorizationURL string) bool {
-	a.oauthMu.Lock()
-	if authorizationURL == "" || a.xaiOAuthSession == nil || a.xaiOAuthAuthorizationURL != authorizationURL {
-		a.oauthMu.Unlock()
-		return false
-	}
-	a.oauthGeneration++
-	if a.oauthCancel != nil {
-		a.oauthCancel()
-		a.oauthCancel = nil
-	}
-	session := a.xaiOAuthSession
-	a.xaiOAuthSession = nil
-	a.xaiOAuthAuthorizationURL = ""
-	a.oauthMu.Unlock()
-	session.Close()
-	return true
-}
-
-// CancelXAIOAuth cancels any in-progress xAI OAuth flow. It remains for
-// backward compatibility; GUI callers should use CancelXAIOAuthURL.
+// CancelXAIOAuth cancels an in-progress xAI OAuth flow.
 func (a *App) CancelXAIOAuth() {
 	a.cancelOAuthFlow()
 }
@@ -2375,10 +2666,14 @@ func probeVisionResponsesAPIResult(probeCfg corelib.MaclawLLMConfig) visionProbe
 
 // saveVisionProbeResultForProvider persists a vision probe result for the
 // provider that was tested, regardless of which provider is currently selected.
-func (a *App) saveVisionProbeResultForProvider(providerName string, supportsVision bool) error {
+func (a *App) saveVisionProbeResultForProvider(providerName, model string, supportsVision bool) error {
 	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
 	if providerName == "" {
 		return fmt.Errorf("provider name is required")
+	}
+	if model == "" {
+		return fmt.Errorf("model is required")
 	}
 	providerFound := false
 	_, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
@@ -2387,10 +2682,16 @@ func (a *App) saveVisionProbeResultForProvider(providerName string, supportsVisi
 				continue
 			}
 			providerFound = true
-			if cfg.MaclawLLMProviders[i].SupportsVision == supportsVision {
+			provider := &cfg.MaclawLLMProviders[i]
+			visionModels := visionModelsWithResult(provider.VisionModels, model, supportsVision)
+			modelIsDefault := strings.EqualFold(strings.TrimSpace(provider.Model), model)
+			if reflect.DeepEqual(provider.VisionModels, visionModels) && (!modelIsDefault || provider.SupportsVision == supportsVision) {
 				return false
 			}
-			cfg.MaclawLLMProviders[i].SupportsVision = supportsVision
+			provider.VisionModels = visionModels
+			if modelIsDefault {
+				provider.SupportsVision = supportsVision
+			}
 			return true
 		}
 		return false
@@ -3648,6 +3949,10 @@ func upsertCodeGenProvider(providers []corelib.MaclawLLMProvider, result oauth.C
 		AuthType:      "sso",                     // 标识认证来源，区别于手动 API Key
 		ContextLength: result.ContextLength,
 		Models:        models,
+		// An SSO exchange proves account authentication, but not that the
+		// configured model accepts an inference request. It therefore remains
+		// ineligible for model assignment until an actual Test & Save succeeds.
+		ConnectionTestPassed: false,
 	}
 	// 遍历查找并覆盖已有 CodeGen 条目
 	for i, p := range providers {
@@ -4027,6 +4332,11 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 				codegenKey = data.Providers[i].Key
 				codegenURL = data.Providers[i].URL
 				codegenAgent = data.Providers[i].UserAgent()
+				if !strings.EqualFold(strings.TrimSpace(data.Providers[i].Model), strings.TrimSpace(maclawModel)) {
+					// The SSO credential was validated for the prior model. A
+					// different active model needs a fresh successful probe.
+					data.Providers[i].ConnectionTestPassed = false
+				}
 				data.Providers[i].Model = maclawModel
 				updated = true
 				break

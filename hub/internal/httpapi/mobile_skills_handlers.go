@@ -19,6 +19,12 @@ func MobileAgentSkillsHandler(identity *auth.IdentityService) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileKnowledgePurgeState.RLock()
+		defer mobileKnowledgePurgeState.RUnlock()
+		if !mobileOwnerWriteAllowedLocked(principal.TenantID, mobilePrincipalOwnerID(principal)) {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
 		_, svc, err := mobileEnsureCoreAgent()
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "AGENT_UNAVAILABLE", "mobile agent runtime is unavailable")

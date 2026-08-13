@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/digitalasset"
 	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
@@ -29,6 +30,9 @@ type ConfigAgentDeps struct {
 	QQBot     *qqbot.Plugin
 	IMRuntime TenantIMRuntimeReloader
 	BridgeDir string
+	// DigitalAssets gives the assistant access to the tenant-level feature and
+	// sync switches without exposing the underlying settings store directly.
+	DigitalAssets *digitalasset.Service
 }
 
 type configAgentSession struct {

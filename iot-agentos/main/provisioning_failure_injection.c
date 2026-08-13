@@ -54,9 +54,22 @@
 #ifndef CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
 #define CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE 0
 #endif
+#ifndef CONFIG_MACLAW_TASK_REGISTRY_LIFECYCLE_TEST
+#define CONFIG_MACLAW_TASK_REGISTRY_LIFECYCLE_TEST 0
+#endif
+#ifndef CONFIG_MACLAW_COMPACT_DISPLAY_ANIMATION_DEADLINE_TEST
+#define CONFIG_MACLAW_COMPACT_DISPLAY_ANIMATION_DEADLINE_TEST 0
+#endif
+#ifndef CONFIG_MACLAW_ROUND_DISPLAY_ANIMATION_DEADLINE_TEST
+#define CONFIG_MACLAW_ROUND_DISPLAY_ANIMATION_DEADLINE_TEST 0
+#endif
 
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
 static bool s_display_transfer_fence_timeout_consumed;
+#endif
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_DISPLAY_SERVICE_REQUEST_DELAY_ONCE_MS > 0
 static bool s_display_service_request_delay_consumed;
+#endif
 
 bool provisioning_failure_injection_lifecycle_primitives_unavailable(void) {
 #if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_PROVISIONING_FAILURE_LIFECYCLE_PRIMITIVES
@@ -160,6 +173,46 @@ uint32_t provisioning_failure_injection_display_service_secondary_stop_timeout_m
 #endif
 }
 
+bool provisioning_failure_injection_compact_display_animation_deadline_test_enabled(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_COMPACT_DISPLAY_ANIMATION_DEADLINE_TEST
+    return true;
+#else
+    return false;
+#endif
+}
+
+uint32_t provisioning_failure_injection_compact_display_animation_pre_completion_delay_ms(void) {
+    return provisioning_failure_injection_compact_display_animation_deadline_test_enabled()
+               ? 70u
+               : 0u;
+}
+
+uint32_t provisioning_failure_injection_compact_display_animation_post_completion_delay_ms(void) {
+    return provisioning_failure_injection_compact_display_animation_deadline_test_enabled()
+               ? 70u
+               : 0u;
+}
+
+bool provisioning_failure_injection_round_display_animation_deadline_test_enabled(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_ROUND_DISPLAY_ANIMATION_DEADLINE_TEST
+    return true;
+#else
+    return false;
+#endif
+}
+
+uint32_t provisioning_failure_injection_round_display_animation_pre_completion_delay_ms(void) {
+    return provisioning_failure_injection_round_display_animation_deadline_test_enabled()
+               ? 70u
+               : 0u;
+}
+
+uint32_t provisioning_failure_injection_round_display_animation_post_completion_delay_ms(void) {
+    return provisioning_failure_injection_round_display_animation_deadline_test_enabled()
+               ? 70u
+               : 0u;
+}
+
 bool provisioning_failure_injection_display_transfer_fence_timeout_once(void) {
 #if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
     if (!s_display_transfer_fence_timeout_consumed) {
@@ -168,4 +221,12 @@ bool provisioning_failure_injection_display_transfer_fence_timeout_once(void) {
     }
 #endif
     return false;
+}
+
+bool provisioning_failure_injection_task_registry_lifecycle_test_enabled(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_TASK_REGISTRY_LIFECYCLE_TEST
+    return true;
+#else
+    return false;
+#endif
 }

@@ -1071,7 +1071,7 @@ func coreRoutePriority(name string, condKeep, sessionTools, mustKeep map[string]
 		return 0
 	}
 	switch name {
-	case "bash", "read_file", "FileRead", "ripgrep", "Glob", "write_file", "edit_file", "list_directory":
+	case "bash", "read_file", "FileRead", "ripgrep", "Glob", "write_file", "edit_file", "list_directory", "archive":
 		return 1
 	}
 	if sessionTools[name] {
@@ -1147,7 +1147,12 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 		condKeep = make(map[string]bool)
 		condFilterOut = make(map[string]bool)
 
-		uicResult := r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
+		var uicResult intent.ClassificationResult
+		if opts.PreferEmbeddingOnly {
+			uicResult = r.unifiedClassifier.ClassifyEmbeddingOnly(intent.MessageContext{Text: userMessage})
+		} else {
+			uicResult = r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
+		}
 		skillInstallEligible = uicSkillInstallEligible(uicResult)
 		skillRequiredCapabilities, skillCapabilityConstrained = skillCapabilityConstraintForUIC(uicResult)
 

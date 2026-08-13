@@ -897,6 +897,84 @@ func TestTenantAdminRoutesRequireGlobalAdminForTenantCreate(t *testing.T) {
 	}
 }
 
+func TestDigitalAssetAdminRoutesRequireTenantAdmin(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, ctx.handler)
+
+	createResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "assets",
+		"name":                   "Assets Corp",
+		"initial_admin_username": "assets-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "owner@assets.example.com",
+	}, globalToken)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	globalDeniedRoutes := []struct {
+		method string
+		target string
+		body   any
+	}{
+		{http.MethodGet, "/api/admin/digital-assets/settings", nil},
+		{http.MethodPut, "/api/admin/digital-assets/settings", map[string]any{"enabled": true}},
+		{http.MethodGet, "/api/admin/digital-assets/libraries", nil},
+		{http.MethodPost, "/api/admin/digital-assets/libraries", map[string]any{"name": "Global Library"}},
+		{http.MethodPatch, "/api/admin/digital-assets/libraries/missing", map[string]any{"name": "Global Library"}},
+		{http.MethodDelete, "/api/admin/digital-assets/libraries/missing", nil},
+		{http.MethodGet, "/api/admin/digital-assets/libraries/missing/search?q=test", nil},
+		{http.MethodGet, "/api/admin/digital-assets/libraries/missing/sources", nil},
+		{http.MethodDelete, "/api/admin/digital-assets/libraries/missing/sources/missing", nil},
+		{http.MethodPost, "/api/admin/digital-assets/libraries/missing/sources/delete", map[string]any{"source_ids": []string{"missing"}}},
+		{http.MethodGet, "/api/admin/digital-assets/libraries/missing/import-jobs", nil},
+		{http.MethodPost, "/api/admin/digital-assets/libraries/missing/import/upload", map[string]any{}},
+		{http.MethodPost, "/api/admin/digital-assets/libraries/missing/import/archive", map[string]any{}},
+		{http.MethodPost, "/api/admin/digital-assets/libraries/missing/import/local-dir", map[string]any{"path": "/tmp"}},
+		{http.MethodPost, "/api/admin/digital-assets/libraries/missing/import/browser-dir", map[string]any{}},
+		{http.MethodPost, "/api/admin/digital-assets/libraries/missing/import/knowledge-share", map[string]any{"share_ref": "missing"}},
+		{http.MethodPost, "/api/admin/digital-assets/libraries/merge", map[string]any{"target_library_id": "missing", "source_library_ids": []string{"other"}}},
+		{http.MethodPost, "/api/admin/digital-assets/export", map[string]any{"all": true}},
+		{http.MethodGet, "/api/admin/digital-assets/export/jobs/missing/download", nil},
+		{http.MethodPost, "/api/admin/digital-assets/import/backup", nil},
+		{http.MethodGet, "/api/admin/digital-assets/import/jobs/missing", nil},
+	}
+	for _, route := range globalDeniedRoutes {
+		resp := doHubAdminJSONRequest(t, ctx.handler, route.method, route.target, route.body, globalToken)
+		if resp.Code != http.StatusForbidden {
+			t.Fatalf("global admin %s %s status = %d body=%s", route.method, route.target, resp.Code, resp.Body.String())
+		}
+	}
+	globalTenantQueryDenied := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/digital-assets/libraries?tenant_id=tenant_assets", nil, globalToken)
+	if globalTenantQueryDenied.Code != http.StatusForbidden {
+		t.Fatalf("global admin digital assets tenant query status = %d body=%s", globalTenantQueryDenied.Code, globalTenantQueryDenied.Body.String())
+	}
+
+	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "assets-owner",
+		"password": "StrongPassword123!",
+		"tenant":   "tenant_assets",
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode tenant admin login: %v", err)
+	}
+
+	tenantAllowed := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/digital-assets/settings", nil, loginPayload.AccessToken)
+	if tenantAllowed.Code != http.StatusOK {
+		t.Fatalf("tenant admin digital assets settings status = %d body=%s", tenantAllowed.Code, tenantAllowed.Body.String())
+	}
+	tenantQueryDenied := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/digital-assets/libraries?tenant_id=tenant_other", nil, loginPayload.AccessToken)
+	if tenantQueryDenied.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin cross-tenant digital assets query status = %d body=%s", tenantQueryDenied.Code, tenantQueryDenied.Body.String())
+	}
+}
+
 func TestTenantAdminLLMProviderTestKeyUsesTenantScope(t *testing.T) {
 	ctx := newAdminRouterTestContext(t)
 	globalToken := issueHubAdminToken(t, ctx.handler)
@@ -1175,10 +1253,6 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		t.Fatalf("tenant mail sender-name get status = %d body=%s", tenantSenderGet.Code, tenantSenderGet.Body.String())
 	}
 	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", mail.TenantSenderNameSettingKey, "Acme Mail")
-	globalRegistrationAuthGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/settings/registration-auth", nil, globalToken)
-	if globalRegistrationAuthGet.Code != http.StatusOK || !bytes.Contains(globalRegistrationAuthGet.Body.Bytes(), []byte(`"method":"email"`)) {
-		t.Fatalf("global registration auth get status = %d body=%s", globalRegistrationAuthGet.Code, globalRegistrationAuthGet.Body.String())
-	}
 	tenantRegistrationAuthSave := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/settings/registration-auth", map[string]any{
 		"method":                   "phone",
 		"aliyun_access_key_id":     "tenant-ak",
@@ -1244,6 +1318,12 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		target string
 		body   any
 	}{
+		{http.MethodGet, "/api/admin/settings/registration-auth", nil},
+		{http.MethodPut, "/api/admin/settings/registration-auth", map[string]any{"method": "email"}},
+		{http.MethodPost, "/api/admin/config-agent/plan", map[string]any{"message": "show registration auth"}},
+		{http.MethodPost, "/api/admin/config-agent/execute", map[string]any{"plan_id": "plan", "confirm_token": "token"}},
+		{http.MethodGet, "/api/admin/config-agent/history", nil},
+		{http.MethodGet, "/api/admin/config-agent/catalog", nil},
 		{http.MethodGet, "/api/admin/mail/sender-name", nil},
 		{http.MethodPost, "/api/admin/mail/sender-name", map[string]any{"from_name": "Global Mail"}},
 		{http.MethodGet, "/api/admin/billing/customer-account", nil},

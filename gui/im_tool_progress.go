@@ -10,17 +10,17 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// IM tool progress uses a status-card style so WeChat/QQ/Telegram bubbles
+// IM tool progress uses a compact activity label so WeChat/QQ/Telegram bubbles
 // are not confused with the final assistant reply.
 //
 // Example (zh):
 //
-//	【工具】执行命令
+//	工具 · 执行命令
 //	ls -la /tmp
 //
 // Example (en):
 //
-//	[Tool] Run command
+//	Tool · Run command
 //	ls -la /tmp
 
 // userFacingToolProgressText returns a user-visible progress message for the
@@ -29,9 +29,9 @@ func userFacingToolProgressText(lang, toolName string) string {
 	return userFacingToolProgressTextWithArgs(lang, toolName, "")
 }
 
-// userFacingToolProgressTextWithArgs generates a user-facing IM progress message
+// userFacingToolProgressTextWithArgs generates a user-facing IM activity message
 // for the given tool, extracting key context from the tool arguments.
-// The result is always styled as a tool-status card (see formatIMToolStatus).
+// The result is always styled as a compact tool activity item (see formatIMToolStatus).
 // Language follows the GUI interface language via i18n.
 func userFacingToolProgressTextWithArgs(lang, toolName, argsJSON string) string {
 	toolName = normalizeToolProgressName(toolName)
@@ -44,9 +44,9 @@ func userFacingToolProgressTextWithArgs(lang, toolName, argsJSON string) string 
 	return formatIMToolStatus(lang, i18n.T(actionKey, lang), detail)
 }
 
-// formatIMToolStatus builds a two-line (or one-line) status card for IM channels.
-// Line 1 is always tagged with a localized tool label so it never blends with
-// normal chat replies.
+// formatIMToolStatus builds a two-line (or one-line) activity item for IM channels.
+// Line 1 is tagged with a localized tool label so it never blends with a normal
+// chat reply, without using visually heavy bracket decoration.
 func formatIMToolStatus(lang, action, detail string) string {
 	action = strings.TrimSpace(action)
 	detail = strings.TrimSpace(detail)

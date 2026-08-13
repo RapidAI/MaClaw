@@ -458,63 +458,6 @@ func TestNormalizeSkillRunnerTimeoutSec(t *testing.T) {
 	}
 }
 
-// TestIsWorkflowEnabled verifies the three-state behavior of the workflow toggle:
-// nil (default) → false, explicit true → true, explicit false → false.
-// Also verifies JSON round-trip: *bool with omitempty serializes false correctly.
-func TestIsWorkflowEnabled(t *testing.T) {
-	// nil → default false
-	var cfg AppConfig
-	if cfg.IsWorkflowEnabled() {
-		t.Error("nil WorkflowEnabled should default to false")
-	}
-
-	// AppConfigDefaults → explicit default false
-	defaults := AppConfigDefaults()
-	if defaults.WorkflowEnabled == nil {
-		t.Fatal("AppConfigDefaults should set WorkflowEnabled explicitly")
-	}
-	if defaults.IsWorkflowEnabled() {
-		t.Error("AppConfigDefaults WorkflowEnabled should default to false")
-	}
-
-	// explicit true
-	cfg.SetWorkflowEnabled(true)
-	if !cfg.IsWorkflowEnabled() {
-		t.Error("explicit true should return true")
-	}
-
-	// explicit false
-	cfg.SetWorkflowEnabled(false)
-	if cfg.IsWorkflowEnabled() {
-		t.Error("explicit false should return false")
-	}
-
-	// JSON round-trip: false must survive marshal → unmarshal
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var cfg2 AppConfig
-	if err := json.Unmarshal(data, &cfg2); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if cfg2.IsWorkflowEnabled() {
-		t.Error("workflow_enabled=false should survive JSON round-trip")
-	}
-
-	// JSON round-trip: absent field → AppConfigDefaults → default false
-	var cfg3 AppConfig
-	if err := json.Unmarshal([]byte(`{}`), &cfg3); err != nil {
-		t.Fatalf("unmarshal empty: %v", err)
-	}
-	if cfg3.WorkflowEnabled == nil {
-		t.Fatal("absent workflow_enabled should be filled from AppConfigDefaults")
-	}
-	if cfg3.IsWorkflowEnabled() {
-		t.Error("absent workflow_enabled should default to false")
-	}
-}
-
 func TestAppConfig_GroupDiscussionDefaultsWhenAbsent(t *testing.T) {
 	var cfg AppConfig
 	if err := json.Unmarshal([]byte(`{}`), &cfg); err != nil {

@@ -902,6 +902,7 @@ static void pet(const char *state);
 static void apply_deferred_startup_pet_asset(void);
 static bool start_gateway_startup_task(void);
 static bool ensure_alarm_manager_started(void);
+static bool start_cached_pet_restore_task(void);
 
 static bool setup_portal_http_admission_open(void) {
     bool open;
@@ -2195,6 +2196,34 @@ static void free_pet_asset_frames(uint8_t *frames[PET_ASSET_MAX_FRAMES], size_t 
     }
 }
 
+/* The display install deliberately consumes its verified HTTP sources while it
+ * creates renderer-owned scaled copies. A persistent full animation needs a
+ * separate short-lived source set: never cache first and make a slow SPIFFS
+ * operation delay the visible install. Failure is intentionally non-fatal;
+ * the in-memory animation remains the user-visible result. */
+static bool clone_pet_asset_frames(const pet_asset_ref_t *ref,
+                                   uint8_t *const source[PET_ASSET_MAX_FRAMES],
+                                   uint8_t *copies[PET_ASSET_MAX_FRAMES]) {
+    if (!ref || !source || !copies || ref->frame_count < 1 ||
+        ref->frame_count > PET_ASSET_MAX_FRAMES) return false;
+    const size_t bytes = (size_t)ref->width * (size_t)ref->height *
+                         PET_ASSET_BYTES_PER_PIXEL;
+    if (!bytes || bytes > PET_ASSET_MAX_BYTES) return false;
+    memset(copies, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
+    for (int i = 0; i < ref->frame_count; ++i) {
+        if (!source[i]) goto fail;
+        copies[i] = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!copies[i]) copies[i] = malloc(bytes);
+        if (!copies[i]) goto fail;
+        memcpy(copies[i], source[i], bytes);
+    }
+    return true;
+fail:
+    free_pet_asset_frames(copies, PET_ASSET_MAX_FRAMES);
+    memset(copies, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
+    return false;
+}
+
 /* A full remote pack keeps every verified source frame until the renderer has
  * atomically accepted the pack. Reserve the aggregate peak up front, but
  * compare only the real one-shot allocation against heap largest: fragmented
@@ -2208,9 +2237,12 @@ static bool pet_asset_capacity_available(const pet_asset_ref_t *ref) {
     /* A display profile may decline decorative flash mutations when its panel
      * DMA and PSRAM share cache fabric. Do not reserve space for a cache that
      * HAL will never create; the verified in-memory pack remains usable. */
-    const size_t cache_storage = device_storage_allows_optional_flash_work()
-                                     ? frame_bytes + 4096u : 0u;
-    if (frame_bytes == 0 || source_external > UINT32_MAX || cache_storage > UINT32_MAX ||
+    /* A profile can support flash persistence while this boot's SPIFFS mount is
+     * unavailable (for example, preserve-on-failure recovery of an existing
+     * recording partition).  Persistence is decorative; do not reserve a
+     * nonexistent cache or reject the verified in-memory animation because of
+     * that independent storage fault. */
+    if (frame_bytes == 0 || source_external > UINT32_MAX ||
         !device_display_get_pet_asset_install_budget(
             (uint32_t)ref->width, (uint32_t)ref->height, (uint32_t)ref->frame_count,
             &install) ||
@@ -2249,20 +2281,14 @@ static bool pet_asset_capacity_available(const pet_asset_ref_t *ref) {
     if (!device_resource_pressure_get_snapshot(&snapshot) ||
         snapshot.external_free_bytes < total_peak_external ||
         snapshot.external_free_bytes - total_peak_external < 512u * 1024u ||
-        snapshot.external_largest_free_bytes < max_allocation_external ||
-        (cache_storage &&
-         (!snapshot.storage_available ||
-          snapshot.storage_free_bytes < (uint32_t)cache_storage ||
-          snapshot.storage_free_bytes - (uint32_t)cache_storage < 1024u * 1024u))) {
+        snapshot.external_largest_free_bytes < max_allocation_external) {
         ESP_LOGW(TAG, "pet asset deferred: insufficient shared optional capacity "
-                      "(source_psram=%u install_psram=%u max_alloc=%u storage=%u) "
-                      "snapshot: level=%d ext_free=%lu ext_largest=%lu storage_free=%lu",
+                      "(source_psram=%u install_psram=%u max_alloc=%u) "
+                      "snapshot: level=%d ext_free=%lu ext_largest=%lu",
                  (unsigned)source_external, (unsigned)install.total_external_bytes,
-                 (unsigned)max_allocation_external,
-                 (unsigned)cache_storage, (int)snapshot.level,
+                 (unsigned)max_allocation_external, (int)snapshot.level,
                  (unsigned long)snapshot.external_free_bytes,
-                 (unsigned long)snapshot.external_largest_free_bytes,
-                 (unsigned long)snapshot.storage_free_bytes);
+                 (unsigned long)snapshot.external_largest_free_bytes);
         return false;
     }
     return true;
@@ -2849,14 +2875,6 @@ static esp_err_t cache_pet_asset(const pet_asset_ref_t *ref,
     return ESP_OK;
 }
 
-static esp_err_t cache_pet_asset_first_frame(const pet_asset_ref_t *ref,
-                                             uint8_t *const frames[PET_ASSET_MAX_FRAMES]) {
-    if (!s_storage_mounted || !ref || !frames || !frames[0]) return ESP_ERR_INVALID_STATE;
-    pet_asset_ref_t preview = *ref;
-    preview.frame_count = 1;
-    return cache_pet_asset(&preview, frames);
-}
-
 static void clear_pet_asset_cache_direct(void);
 
 /* 过期缓存自愈：容量门禁会把注定被替换的旧 revision 缓存误算成永久占用。
@@ -2889,7 +2907,10 @@ static bool drop_pet_asset_cache_if_stale_direct(const char *new_revision) {
 }
 
 typedef enum {
-    PET_CACHE_FIRST_FRAME,
+    /* The metadata is published only after every SHA-verified source frame is
+     * durable.  A boot can therefore restore the complete animation without
+     * touching the network, or reject the whole interrupted revision. */
+    PET_CACHE_FULL_ASSET,
     PET_CACHE_CLEAR,
     PET_CACHE_DROP_STALE,
 } pet_cache_operation_t;
@@ -2900,6 +2921,10 @@ typedef struct {
     uint8_t *frames[PET_ASSET_MAX_FRAMES];
     esp_err_t result;
     bool dropped;
+    /* Synchronous callers retain borrowed sources and the descriptor until the
+     * worker exits. The background full-pack mirror transfers that ownership
+     * to this internal-stack worker so UI installation never waits for SPIFFS. */
+    bool owns_frames_and_job;
 } pet_cache_job_t;
 
 static void pet_cache_task(void *arg) {
@@ -2917,7 +2942,14 @@ static void pet_cache_task(void *arg) {
         job->dropped = drop_pet_asset_cache_if_stale_direct(job->preview.revision);
         job->result = ESP_OK;
     } else {
-        job->result = cache_pet_asset_first_frame(&job->preview, job->frames);
+        job->result = cache_pet_asset(&job->preview, job->frames);
+    }
+    if (job->owns_frames_and_job) {
+        free_pet_asset_frames(job->frames, PET_ASSET_MAX_FRAMES);
+        heap_caps_free(job);
+        /* The background submitter deliberately does not wait. Release its
+         * Flash admission only after the frame/job ownership has ended. */
+        xSemaphoreGive(s_pet_cache_flash_mutex);
     }
     taskENTER_CRITICAL(&s_task_state_lock);
     s_pet_cache_task = NULL;
@@ -2938,11 +2970,11 @@ static bool pet_cache_stop_requested(void) {
     return stop_requested;
 }
 
-/* Cache jobs borrow both their descriptor and their first RGB565 frame from
- * the requesting task. Never force-delete this worker: join its normal exit
- * before either owner can free that borrowed memory. The task only blocks at
- * page-sized writes/yields, so polling the published handle is bounded by the
- * same lifecycle deadline and does not need a completion semaphore whose
+/* Cache jobs borrow their descriptor and every verified RGB565A8 source frame
+ * from the requesting task. Never force-delete this worker: join its normal
+ * exit before either owner can free that borrowed memory. The task only blocks
+ * at page-sized writes/yields, so polling the published handle is bounded by
+ * the same lifecycle deadline and does not need a completion semaphore whose
  * lifetime could race the borrowed job. */
 static esp_err_t stop_pet_cache_task(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
@@ -2976,8 +3008,15 @@ static esp_err_t run_pet_cache_operation(
     const pet_asset_ref_t *ref,
     uint8_t *const frames[PET_ASSET_MAX_FRAMES],
     bool *dropped) {
-    if (operation == PET_CACHE_FIRST_FRAME &&
-        (!ref || !frames || !frames[0])) return ESP_ERR_INVALID_ARG;
+    if (operation == PET_CACHE_FULL_ASSET && (!ref || !frames ||
+        ref->frame_count < 1 || ref->frame_count > PET_ASSET_MAX_FRAMES)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (operation == PET_CACHE_FULL_ASSET) {
+        for (int i = 0; i < ref->frame_count; ++i) {
+            if (!frames[i]) return ESP_ERR_INVALID_ARG;
+        }
+    }
     if (operation == PET_CACHE_DROP_STALE && !ref) return ESP_ERR_INVALID_ARG;
     if (!device_storage_allows_optional_flash_work()) {
         ESP_LOGI(TAG, "pet cache skipped: board declines optional flash work");
@@ -3011,10 +3050,11 @@ static esp_err_t run_pet_cache_operation(
         return ESP_ERR_NO_MEM;
     }
     job->operation = operation;
-    if (operation == PET_CACHE_FIRST_FRAME) {
+    if (operation == PET_CACHE_FULL_ASSET) {
         job->preview = *ref;
-        job->preview.frame_count = 1;
-        job->frames[0] = frames[0];
+        for (int i = 0; i < ref->frame_count; ++i) {
+            job->frames[i] = frames[i];
+        }
     } else if (operation == PET_CACHE_DROP_STALE) {
         job->preview = *ref;
     }
@@ -3058,10 +3098,55 @@ static esp_err_t run_pet_cache_operation(
     return result;
 }
 
-static esp_err_t cache_pet_first_frame_safe(
-    const pet_asset_ref_t *ref,
-    uint8_t *const frames[PET_ASSET_MAX_FRAMES]) {
-    return run_pet_cache_operation(PET_CACHE_FIRST_FRAME, ref, frames, NULL);
+/* Full-pack persistence is useful for slow 4G boots, but never a prerequisite
+ * for showing the freshly verified animation. This submits a copy-owned job
+ * after UI installation: Flash GC cannot keep the Display Service, wake path,
+ * or the active pet sources hostage. One cache job is sufficient; a concurrent
+ * revision simply retains its in-memory result and is re-offered on the next
+ * Hub state refresh. */
+static void cache_pet_asset_in_background(const pet_asset_ref_t *ref,
+                                          uint8_t *frames[PET_ASSET_MAX_FRAMES]) {
+    if (!ref || !frames || !s_storage_mounted ||
+        !device_storage_allows_optional_flash_work() || !s_pet_cache_flash_mutex ||
+        pet_cache_stop_requested()) {
+        free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
+        return;
+    }
+    if (xSemaphoreTake(s_pet_cache_flash_mutex, 0) != pdTRUE) {
+        ESP_LOGI(TAG, "pet asset cache deferred: Flash worker busy");
+        free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
+        return;
+    }
+    pet_cache_job_t *job = heap_caps_calloc(
+        1, sizeof(*job), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!job) {
+        xSemaphoreGive(s_pet_cache_flash_mutex);
+        free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
+        ESP_LOGI(TAG, "pet asset cache deferred: no internal job memory");
+        return;
+    }
+    job->operation = PET_CACHE_FULL_ASSET;
+    job->preview = *ref;
+    job->owns_frames_and_job = true;
+    for (int i = 0; i < ref->frame_count; ++i) {
+        job->frames[i] = frames[i];
+        frames[i] = NULL;
+    }
+    TaskHandle_t task = NULL;
+    BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
+        pet_cache_task, "maclaw_pet_cache", 8192, job, 1, &task, 1,
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_pet_cache_task = created == pdPASS ? task : NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (created != pdPASS) {
+        free_pet_asset_frames(job->frames, PET_ASSET_MAX_FRAMES);
+        heap_caps_free(job);
+        xSemaphoreGive(s_pet_cache_flash_mutex);
+        ESP_LOGI(TAG, "pet asset cache deferred: cannot create Flash worker");
+        return;
+    }
+    xTaskNotifyGive(task);
 }
 
 static esp_err_t clear_pet_asset_cache_safe(void) {
@@ -3112,8 +3197,10 @@ static esp_err_t clear_applied_pet_asset(void) {
     if (err == ESP_OK) {
         s_loaded_pet_asset_revision[0] = '\0';
         s_loaded_pet_asset_frame_count = 0;
-        esp_err_t cache_err = clear_pet_asset_cache();
-        if (cache_err != ESP_OK) err = cache_err;
+        if (s_storage_mounted && device_storage_allows_optional_flash_work()) {
+            esp_err_t cache_err = clear_pet_asset_cache();
+            if (cache_err != ESP_OK) err = cache_err;
+        }
     }
     xSemaphoreGive(s_pet_asset_apply_mutex);
     return err;
@@ -3193,6 +3280,56 @@ static bool load_cached_pet_asset(void) {
     free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
     if (!loaded) (void)clear_pet_asset_cache();
     return loaded;
+}
+
+/* Cache restore reads up to eight 192 KiB frames and then asks the renderer to
+ * create retained PSRAM copies. Keep that stack and all VFS locals out of the
+ * 4 KiB main task. This worker starts only after App UI has established its
+ * single display submission owner, and before gateway connectivity begins its
+ * own large TLS allocations. */
+static void cached_pet_restore_task(void *arg) {
+    SemaphoreHandle_t completion = (SemaphoreHandle_t)arg;
+    if (s_storage_mounted && device_storage_allows_optional_flash_work() &&
+        load_cached_pet_asset()) {
+        /* A cached pack has no live Hub descriptor yet, but its saved frames
+         * were previously accepted under the then-current pet profile. Restore
+         * that profile's durable behaviour explicitly: the App UI default is
+         * deliberately conservative and must not silently turn a cached
+         * multi-frame asset into a static first pose before the handshake
+         * arrives. Runtime Hub `motionEnabled` remains authoritative and can
+         * immediately disable it later through the normal UI/HAL request. */
+        app_ui_set_pet_profile(NULL, true);
+        ESP_LOGI(TAG, "cached pet animation restored before connectivity startup");
+    }
+    if (completion) xSemaphoreGive(completion);
+    vTaskDeleteWithCaps(NULL);
+}
+
+static bool start_cached_pet_restore_task(void) {
+    SemaphoreHandle_t completion = xSemaphoreCreateBinary();
+    if (!completion) {
+        ESP_LOGW(TAG, "cached pet restore skipped: cannot allocate completion semaphore");
+        return false;
+    }
+    TaskHandle_t task = NULL;
+    /* This is a bounded boot-time operation. The task has no shared lifetime
+     * owner and completes before any network worker is started below. Its
+     * internal stack makes SPIFFS reads safe if Flash temporarily disables the
+     * PSRAM cache. */
+    if (xTaskCreatePinnedToCoreWithCaps(cached_pet_restore_task,
+                                        "maclaw_pet_restore", 8192, completion, 1,
+                                        &task, 1,
+                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
+        vSemaphoreDelete(completion);
+        ESP_LOGW(TAG, "cached pet restore skipped: cannot allocate worker");
+        return false;
+    }
+    /* The cache is local Flash only. Join before networking starts, otherwise
+     * a concurrent TLS transfer could raise PSRAM pressure midway through
+     * restore. The worker always signals before deleting its internal stack. */
+    xSemaphoreTake(completion, portMAX_DELAY);
+    vSemaphoreDelete(completion);
+    return true;
 }
 
 static esp_err_t install_pet_asset_with_fallback(const pet_asset_ref_t *ref,
@@ -3277,6 +3414,7 @@ static esp_err_t apply_pet_asset_ref(cJSON *object) {
         err = ESP_ERR_NO_MEM;
     }
     uint8_t *frames[PET_ASSET_MAX_FRAMES] = {0};
+    uint8_t *cache_frames[PET_ASSET_MAX_FRAMES] = {0};
     if (err == ESP_OK) err = download_pet_asset_frames(&ref, frames, false);
     if (err == ESP_OK) {
         if (!s_pet_asset_apply_mutex ||
@@ -3285,10 +3423,13 @@ static esp_err_t apply_pet_asset_ref(cJSON *object) {
         }
     }
     if (err == ESP_OK) {
-        // The consuming install releases the source frames; commit the preview
-        // cache first.  Frames are SHA-verified after download.
-        esp_err_t cache_err = cache_pet_first_frame_safe(&ref, frames);
-        if (cache_err != ESP_OK) ESP_LOGW(TAG, "pet asset cache failed: %s", esp_err_to_name(cache_err));
+        // The consuming install releases the source frames. Commit the complete
+        // SHA-verified pack first so a later cold boot can restore animation
+        // locally instead of repeating the slow hub download.
+        if (s_storage_mounted && device_storage_allows_optional_flash_work() &&
+            !clone_pet_asset_frames(&ref, frames, cache_frames)) {
+            ESP_LOGI(TAG, "pet asset cache skipped: cannot reserve full-pack mirror");
+        }
         int installed_frames = 0, installed_frame_ms = 0;
         err = install_pet_asset_with_fallback(&ref, frames, &installed_frames,
                                               &installed_frame_ms);
@@ -3300,9 +3441,13 @@ static esp_err_t apply_pet_asset_ref(cJSON *object) {
                      ref.revision, installed_frames, ref.frame_count, installed_frame_ms,
                      ref.width, ref.height);
         }
+        if (err == ESP_OK && installed_frames == ref.frame_count && cache_frames[0]) {
+            cache_pet_asset_in_background(&ref, cache_frames);
+        }
         xSemaphoreGive(s_pet_asset_apply_mutex);
     }
     free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
+    free_pet_asset_frames(cache_frames, PET_ASSET_MAX_FRAMES);
     finish_optional_pet_asset_memory_lease();
     return err;
 }
@@ -3335,6 +3480,7 @@ static esp_err_t apply_deferred_pet_asset(void) {
         return ESP_OK;
     }
     uint8_t *frames[PET_ASSET_MAX_FRAMES] = {0};
+    uint8_t *cache_frames[PET_ASSET_MAX_FRAMES] = {0};
     esp_err_t err = ESP_FAIL;
     // A fully installed pack is the smooth-animation target, but the first
     // verified frame has already made standby usable.  Continue the complete
@@ -3390,24 +3536,15 @@ static esp_err_t apply_deferred_pet_asset(void) {
         } else {
             ESP_LOGI(TAG, "startup pet first frame applied");
         }
-        // The consuming install releases each source frame as it is scaled, so
-        // the preview cache must be committed first.  Every downloaded frame is
-        // SHA-verified, and this same first frame is already what standby shows.
-        // EchoEar runs this transfer worker on a PSRAM stack; SPIFFS programming
-        // turns off the shared cache and cannot execute safely on that stack.
-        // Flash/VFS work must run from an internal-stack task. The startup
-        // installer itself is PSRAM-backed on EchoEar and Fangtang.
-        if (device_storage_allows_optional_flash_work()) {
-            esp_err_t cache_err = cache_pet_first_frame_safe(&ref, frames);
-            if (cache_err != ESP_OK) {
-                ESP_LOGW(TAG, "deferred pet preview cache failed: %s",
-                         esp_err_to_name(cache_err));
-            }
-        } else {
-            /* Decorative persistence is deliberately unsupported by this
-             * profile.  Avoid manufacturing a warning after the HAL made
-             * that policy decision; the verified in-memory pet is retained. */
-            ESP_LOGI(TAG, "deferred pet preview cache skipped by board policy");
+        /* Publish the verified in-memory animation before any optional Flash
+         * work. The renderer consumes source frames as it scales, which keeps
+         * the visible user outcome ahead of slow/fragmented SPIFFS writes and
+         * prevents a timed DISPLAY_OFF from making a completed download look
+         * lost. A complete cache mirror is added by a later ownership-safe
+         * phase; metadata must never describe a reduced fallback animation. */
+        if (s_storage_mounted && device_storage_allows_optional_flash_work() &&
+            !clone_pet_asset_frames(&ref, frames, cache_frames)) {
+            ESP_LOGI(TAG, "deferred pet cache skipped: cannot reserve full-pack mirror");
         }
         int installed_frames = 0, installed_frame_ms = 0;
         if (startup_pet_asset_stop_requested()) {
@@ -3425,6 +3562,9 @@ static esp_err_t apply_deferred_pet_asset(void) {
                      ref.frame_count, installed_frame_ms,
                      ref.width, ref.height);
         }
+        if (err == ESP_OK && installed_frames == ref.frame_count && cache_frames[0]) {
+            cache_pet_asset_in_background(&ref, cache_frames);
+        }
         xSemaphoreGive(s_pet_asset_apply_mutex);
     }
     // The display port retains its own scaled PSRAM copies.  The source HTTP
@@ -3434,6 +3574,7 @@ static esp_err_t apply_deferred_pet_asset(void) {
     // one-shot source set for this boot; it is bounded (8 × 192 KiB) and avoids
     // a restart that would otherwise erase the successful standby transition.
     free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
+    free_pet_asset_frames(cache_frames, PET_ASSET_MAX_FRAMES);
     // Keep pending true for the entire download/install/cache transaction so
     // a queued pet_profile mirror is ACKed without starting a competing copy.
     s_startup_pet_asset_pending = false;
@@ -10957,13 +11098,12 @@ static void cellular_recovery_task(void *arg) {
            !device_connectivity_is_provisioning_active() &&
            device_connectivity_is_active_cellular()) {
         if (!device_connectivity_is_cellular_transport_ready()) {
-            device_connectivity_set_cellular_ready(false);
             needs_gateway_restart = true;
             app_ui_set_wifi_status("4G", false);
             app_ui_set_service_ready(false);
             firmware_identity_set_service_ready(false);
             device_status_t transport_status =
-                device_connectivity_start_cellular_transport(CELLULAR_CONNECT_TIMEOUT_MS);
+                device_connectivity_establish_cellular_transport(CELLULAR_CONNECT_TIMEOUT_MS);
             if (transport_status != DEVICE_STATUS_OK) {
                 ESP_LOGW(TAG, "cellular recovery failed: device status=%d; retry in %lu ms",
                          transport_status, (unsigned long)retry_ms);
@@ -10974,7 +11114,6 @@ static void cellular_recovery_task(void *arg) {
                 }
                 continue;
             }
-            device_connectivity_set_cellular_ready(true);
             app_ui_set_wifi_status("4G", true);
             ESP_LOGI(TAG, "ML307 network recovered");
         }
@@ -11099,10 +11238,12 @@ static bool ensure_cellular_recovery_task(void) {
 }
 
 static bool start_cellular(void) {
-    /* A new start attempt invalidates any readiness observed from an older
-     * ML307 session before the adapter touches its pins or UART. */
-    device_connectivity_set_cellular_ready(false);
-    device_status_t preparation = device_connectivity_prepare_cellular_transport();
+    /* The common service owns the actual fail-closed readiness transition.
+     * Keep this capability preflight solely for the specific user-facing
+     * "module is not configured" diagnostic below. */
+    device_status_t preparation =
+        device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)
+            ? DEVICE_STATUS_OK : DEVICE_STATUS_UNAVAILABLE;
     /* A missing cellular profile is a configuration error. Other transport
      * failures are handled below after the shared status surfaces are reset. */
     if (preparation != DEVICE_STATUS_OK) {
@@ -11117,14 +11258,13 @@ static bool start_cellular(void) {
     app_ui_set_service_ready(false);
     firmware_identity_set_service_ready(false);
     preparation =
-        device_connectivity_start_cellular_transport(CELLULAR_CONNECT_TIMEOUT_MS);
+        device_connectivity_establish_cellular_transport(CELLULAR_CONNECT_TIMEOUT_MS);
     if (preparation != DEVICE_STATUS_OK) {
         ESP_LOGE(TAG, "cellular transport start failed: device status=%d", preparation);
         app_ui_show_text("4G 模块未响应", "检查 SIM、供电与天线");
         (void)ensure_cellular_recovery_task();
         return false;
     }
-    device_connectivity_set_cellular_ready(true);
     app_ui_set_wifi_status("4G", true);
     ESP_LOGI(TAG, "ML307 native network ready");
     (void)ensure_cellular_recovery_task();
@@ -12113,6 +12253,16 @@ void app_main(void) {
                                DEVICE_STATUS_RESOURCE_EXHAUSTED, "task registry");
         return;
     }
+    if (provisioning_failure_injection_task_registry_lifecycle_test_enabled()) {
+        esp_err_t registry_test_err = task_registry_run_lifecycle_test();
+        if (registry_test_err != ESP_OK) {
+            ESP_LOGE(TAG, "task registry lifecycle test failed: %s",
+                     esp_err_to_name(registry_test_err));
+            startup_enter_degraded(DEVICE_RUNTIME_PHASE_PROFILE_VALIDATED,
+                                   DEVICE_STATUS_INTERNAL_ERROR, "task registry lifecycle test");
+            return;
+        }
+    }
     operation_context_service_init();
     if (!validate_compiled_board_profile()) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_PROFILE_VALIDATED,
@@ -12376,6 +12526,13 @@ void app_main(void) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
                                input_status, "input service");
         return;
+    }
+    /* Input Service initializes the board renderer before it publishes its
+     * event path. Restore only after that renderer has created its recursive
+     * LCD mutex, but still before power/connectivity startup brings large
+     * Wi-Fi/4G allocations into contention. */
+    if (s_storage_mounted && device_storage_allows_optional_flash_work()) {
+        (void)start_cached_pet_restore_task();
     }
     device_status_t power_status = device_power_init();
     if (power_status != DEVICE_STATUS_OK) {

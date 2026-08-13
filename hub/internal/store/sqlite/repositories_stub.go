@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"golang.org/x/text/unicode/norm"
 )
 
 type tenantRepo struct {
@@ -77,6 +80,10 @@ type emailInviteRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+type userReferralRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 type llmPromptCacheRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
@@ -102,11 +109,21 @@ func NewStore(p *Provider) *store.Store {
 		LoginTokens:     &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Sessions:        &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch, coalesce: p.coalesce},
 		EmailInvites:    &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		UserReferrals:   &userReferralRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		WorkflowRepo:    &workflowRepo{db: p.Write, readDB: p.Read},
 		LLMPromptCache:  &llmPromptCacheRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		KnowledgeShares: &knowledgeShareRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		DigitalAssets:   &digitalAssetRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
+}
+
+// NewUserReferralRepository exposes the referral store to the HTTP layer when
+// the router is constructed from an existing Hub SQL connection.
+func NewUserReferralRepository(db, readDB *sql.DB) store.UserReferralRepository {
+	if readDB == nil {
+		readDB = db
+	}
+	return &userReferralRepo{db: db, readDB: readDB}
 }
 
 func normalizeAdminScope(scope string) string {
@@ -502,6 +519,94 @@ func (r *userRepo) Create(ctx context.Context, user *store.User) error {
 	return nil
 }
 
+// CreateReferralUserWithAttribution persists the new account, its verified
+// identities, and the immutable referral attribution in one SQLite
+// transaction. Referral reward grants deliberately remain outside this
+// transaction: they live in the service registry and are recovered by the
+// attributed -> rewarded/reward_failed state machine.
+func (r *userRepo) CreateReferralUserWithAttribution(ctx context.Context, user *store.User, extraIdentity *store.UserIdentity, referral *store.UserReferral) error {
+	if user == nil || referral == nil || strings.TrimSpace(user.ID) == "" || strings.TrimSpace(referral.ID) == "" {
+		return errors.New("referral user and attribution are required")
+	}
+	tenantID := normalizeTenantID(user.TenantID)
+	account := normalizeEmailLikeAccount(user.Email)
+	identityType, identityValue := normalizeUserIdentityFromAccount(account)
+	if account == "" || identityType == "" || identityValue == "" {
+		return errors.New("referral user account is required")
+	}
+	if normalizeTenantID(referral.TenantID) != tenantID {
+		return errors.New("referral tenant does not match user tenant")
+	}
+	referral.InviteeUserID = strings.TrimSpace(user.ID)
+	referral.TenantID = tenantID
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	emailVerifiedAt := ""
+	if user.EmailVerified {
+		emailVerifiedAt = user.CreatedAt.UTC().Format(time.RFC3339)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, email_verified, email_verified_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		user.ID, tenantID, account, user.SN, user.Status, user.EnrollmentStatus, boolToInt(user.EmailVerified), emailVerifiedAt,
+		user.CreatedAt.Format(time.RFC3339), user.UpdatedAt.Format(time.RFC3339)); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return fmt.Errorf("user account %s already belongs to another user", account)
+		}
+		return err
+	}
+	now := user.CreatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if err = r.upsertIdentityWithExec(ctx, tx, &store.UserIdentity{
+		ID:        user.ID + "_" + identityType,
+		TenantID:  tenantID,
+		UserID:    user.ID,
+		Type:      identityType,
+		Value:     identityValue,
+		Verified:  user.EmailVerified || identityType == "phone",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		return err
+	}
+	if extraIdentity != nil {
+		extra := *extraIdentity
+		extra.TenantID = tenantID
+		extra.UserID = user.ID
+		if err = r.upsertIdentityWithExec(ctx, tx, &extra); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx,
+		`INSERT INTO user_referrals (id, tenant_id, referral_code_id, inviter_user_id, invitee_user_id, status, registered_at, service_group_id, inviter_credits, invitee_credits, duration_days, inviter_grant_id, invitee_grant_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		referral.ID, tenantID, referral.ReferralCodeID, referral.InviterUserID, referral.InviteeUserID, referral.Status,
+		referral.RegisteredAt.UTC().Format(time.RFC3339), referral.ServiceGroupID, referral.InviterCredits, referral.InviteeCredits,
+		referral.DurationDays, referral.InviterGrantID, referral.InviteeGrantID, referral.CreatedAt.UTC().Format(time.RFC3339), referral.UpdatedAt.UTC().Format(time.RFC3339)); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return errors.New("referral attribution already exists")
+		}
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	user.TenantID = tenantID
+	user.Email = account
+	return nil
+}
+
 func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
@@ -569,7 +674,7 @@ func (r *userRepo) GetByEmail(ctx context.Context, email string) (*store.User, e
 }
 
 func (r *userRepo) GetByTenantEmail(ctx context.Context, tenantID, email string) (*store.User, error) {
-	return r.getByEmail(ctx, normalizeTenantID(tenantID), email)
+	return r.getByEmail(ctx, normalizeTenantID(tenantID), normalizeEmailLikeAccount(email))
 }
 
 func (r *userRepo) GetByTenantIdentity(ctx context.Context, tenantID, identityType, value string) (*store.User, error) {
@@ -921,12 +1026,12 @@ func normalizeUserIdentityFromAccount(account string) (string, string) {
 }
 
 func normalizeEmailLikeAccount(account string) string {
-	return strings.TrimSpace(strings.ToLower(account))
+	return strings.ToLower(norm.NFC.String(strings.TrimSpace(account)))
 }
 
 func normalizeUserIdentity(identityType, value string) (string, string) {
 	identityType = strings.ToLower(strings.TrimSpace(identityType))
-	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.ToLower(norm.NFC.String(strings.TrimSpace(value)))
 	if strings.HasPrefix(value, "phone:") {
 		identityType = "phone"
 		value = strings.TrimPrefix(value, "phone:")
@@ -951,6 +1056,7 @@ func normalizeUserIdentity(identityType, value string) (string, string) {
 }
 
 func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*store.User, error) {
+	email = normalizeEmailLikeAccount(email)
 	where := `lower(email) = lower(?)`
 	args := []any{email}
 	if tenantID != "" {
@@ -1072,7 +1178,7 @@ func (r *userRepo) DeleteByEmail(ctx context.Context, email string) error {
 }
 
 func (r *userRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) error {
-	res, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE tenant_id = ? AND lower(email) = lower(?)`, normalizeTenantID(tenantID), strings.TrimSpace(email))
+	res, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE tenant_id = ? AND lower(email) = lower(?)`, normalizeTenantID(tenantID), normalizeEmailLikeAccount(email))
 	if err != nil {
 		return err
 	}
@@ -1095,7 +1201,7 @@ func (r *userRepo) MarkEmailVerified(ctx context.Context, tenantID, email string
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE users SET email_verified = 1, email_verified_at = ? WHERE tenant_id = ? AND lower(email) = lower(?)`,
-		now, normalizeTenantID(tenantID), email)
+		now, normalizeTenantID(tenantID), normalizeEmailLikeAccount(email))
 	return err
 }
 
@@ -1257,6 +1363,719 @@ func (r *emailBlockRepo) GetByEmail(ctx context.Context, email string) (*store.E
 
 func (r *emailBlockRepo) GetByTenantEmail(ctx context.Context, tenantID string, email string) (*store.EmailBlockItem, error) {
 	return r.getEmailBlock(ctx, `tenant_id = ? AND email = ?`, normalizeTenantID(tenantID), email)
+}
+
+func (r *userReferralRepo) GetActiveCodeForInviter(ctx context.Context, tenantID, inviterUserID string) (*store.UserReferralCode, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT id, tenant_id, inviter_user_id, code_hash, encrypted_code, status, created_at, rotated_at
+		FROM user_referral_codes WHERE tenant_id = ? AND inviter_user_id = ? AND status = 'active'
+		ORDER BY created_at DESC, id DESC LIMIT 1`, normalizeTenantID(tenantID), strings.TrimSpace(inviterUserID))
+	return scanUserReferralCode(row)
+}
+
+func (r *userReferralRepo) GetCodeByHash(ctx context.Context, tenantID, codeHash string) (*store.UserReferralCode, error) {
+	row := r.readDB.QueryRowContext(ctx, `SELECT id, tenant_id, inviter_user_id, code_hash, encrypted_code, status, created_at, rotated_at
+		FROM user_referral_codes WHERE tenant_id = ? AND code_hash = ? AND status = 'active' LIMIT 1`, normalizeTenantID(tenantID), strings.TrimSpace(codeHash))
+	return scanUserReferralCode(row)
+}
+
+func scanUserReferralCode(row rowScanner) (*store.UserReferralCode, error) {
+	var item store.UserReferralCode
+	var createdAt string
+	var rotatedAt sql.NullString
+	if err := row.Scan(&item.ID, &item.TenantID, &item.InviterUserID, &item.CodeHash, &item.EncryptedCode, &item.Status, &createdAt, &rotatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	item.CreatedAt = mustParseTime(createdAt)
+	if rotatedAt.Valid && rotatedAt.String != "" {
+		t := mustParseTime(rotatedAt.String)
+		item.RotatedAt = &t
+	}
+	return &item, nil
+}
+
+func (r *userReferralRepo) CreateCode(ctx context.Context, item *store.UserReferralCode) error {
+	if item == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_referral_codes (id, tenant_id, inviter_user_id, code_hash, encrypted_code, status, created_at, rotated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, normalizeTenantID(item.TenantID), strings.TrimSpace(item.InviterUserID), item.CodeHash, item.EncryptedCode, item.Status, item.CreatedAt.UTC().Format(time.RFC3339), nullableTimeString(item.RotatedAt))
+	return err
+}
+
+func (r *userReferralRepo) RotateCode(ctx context.Context, tenantID, codeID string, rotatedAt time.Time) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE user_referral_codes SET status = 'rotated', rotated_at = ? WHERE tenant_id = ? AND id = ? AND status = 'active'`, rotatedAt.UTC().Format(time.RFC3339), normalizeTenantID(tenantID), strings.TrimSpace(codeID))
+	return err
+}
+
+func (r *userReferralRepo) ReplaceActiveCode(ctx context.Context, tenantID, inviterUserID string, item *store.UserReferralCode, rotatedAt time.Time) error {
+	if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.CodeHash) == "" || strings.TrimSpace(item.EncryptedCode) == "" {
+		return errors.New("replacement referral code is required")
+	}
+	tenantID = normalizeTenantID(tenantID)
+	inviterUserID = strings.TrimSpace(inviterUserID)
+	if inviterUserID == "" || normalizeTenantID(item.TenantID) != tenantID || strings.TrimSpace(item.InviterUserID) != inviterUserID {
+		return errors.New("replacement referral code scope is invalid")
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE user_referral_codes SET status = 'rotated', rotated_at = ?
+		WHERE tenant_id = ? AND inviter_user_id = ? AND status = 'active'`, rotatedAt.UTC().Format(time.RFC3339), tenantID, inviterUserID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_referral_codes (id, tenant_id, inviter_user_id, code_hash, encrypted_code, status, created_at, rotated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, tenantID, inviterUserID, item.CodeHash, item.EncryptedCode, "active", item.CreatedAt.UTC().Format(time.RFC3339), nullableTimeString(item.RotatedAt)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *userReferralRepo) CreateReferral(ctx context.Context, item *store.UserReferral) error {
+	if item == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_referrals (id, tenant_id, referral_code_id, inviter_user_id, invitee_user_id, status, registered_at, service_group_id, inviter_credits, invitee_credits, duration_days, inviter_grant_id, invitee_grant_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, normalizeTenantID(item.TenantID), item.ReferralCodeID, item.InviterUserID, item.InviteeUserID, item.Status, item.RegisteredAt.UTC().Format(time.RFC3339), item.ServiceGroupID, item.InviterCredits, item.InviteeCredits, item.DurationDays, item.InviterGrantID, item.InviteeGrantID, item.CreatedAt.UTC().Format(time.RFC3339), item.UpdatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (r *userReferralRepo) GetReferralForInvitee(ctx context.Context, tenantID, inviteeUserID string) (*store.UserReferral, error) {
+	row := r.readDB.QueryRowContext(ctx, `SELECT id, tenant_id, referral_code_id, inviter_user_id, invitee_user_id, status, registered_at, service_group_id, inviter_credits, invitee_credits, duration_days, inviter_grant_id, invitee_grant_id, created_at, updated_at
+		FROM user_referrals WHERE tenant_id = ? AND invitee_user_id = ? LIMIT 1`, normalizeTenantID(tenantID), strings.TrimSpace(inviteeUserID))
+	return scanUserReferral(row)
+}
+
+func (r *userReferralRepo) GetReferralByID(ctx context.Context, tenantID, referralID string) (*store.UserReferral, error) {
+	row := r.readDB.QueryRowContext(ctx, `SELECT id, tenant_id, referral_code_id, inviter_user_id, invitee_user_id, status, registered_at, service_group_id, inviter_credits, invitee_credits, duration_days, inviter_grant_id, invitee_grant_id, created_at, updated_at
+		FROM user_referrals WHERE tenant_id = ? AND id = ? LIMIT 1`, normalizeTenantID(tenantID), strings.TrimSpace(referralID))
+	return scanUserReferral(row)
+}
+
+func (r *userReferralRepo) ListReferralsForInvitees(ctx context.Context, tenantID string, inviteeUserIDs []string) (map[string]*store.UserReferral, error) {
+	result := make(map[string]*store.UserReferral)
+	ids := make([]string, 0, len(inviteeUserIDs))
+	seen := make(map[string]struct{}, len(inviteeUserIDs))
+	for _, userID := range inviteeUserIDs {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
+			continue
+		}
+		if _, ok := seen[userID]; ok {
+			continue
+		}
+		seen[userID] = struct{}{}
+		ids = append(ids, userID)
+	}
+	if len(ids) == 0 {
+		return result, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, normalizeTenantID(tenantID))
+	for _, userID := range ids {
+		args = append(args, userID)
+	}
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, tenant_id, referral_code_id, inviter_user_id, invitee_user_id, status, registered_at, service_group_id, inviter_credits, invitee_credits, duration_days, inviter_grant_id, invitee_grant_id, created_at, updated_at
+		FROM user_referrals WHERE tenant_id = ? AND invitee_user_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		item, err := scanUserReferral(rows)
+		if err != nil {
+			return nil, err
+		}
+		result[item.InviteeUserID] = item
+	}
+	return result, rows.Err()
+}
+
+func scanUserReferral(row rowScanner) (*store.UserReferral, error) {
+	var item store.UserReferral
+	var registeredAt, createdAt, updatedAt string
+	if err := row.Scan(&item.ID, &item.TenantID, &item.ReferralCodeID, &item.InviterUserID, &item.InviteeUserID, &item.Status, &registeredAt, &item.ServiceGroupID, &item.InviterCredits, &item.InviteeCredits, &item.DurationDays, &item.InviterGrantID, &item.InviteeGrantID, &createdAt, &updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	item.RegisteredAt, item.CreatedAt, item.UpdatedAt = mustParseTime(registeredAt), mustParseTime(createdAt), mustParseTime(updatedAt)
+	return &item, nil
+}
+
+func (r *userReferralRepo) UpdateRewardGrants(ctx context.Context, tenantID, referralID, status, inviterGrantID, inviteeGrantID string, updatedAt time.Time) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE user_referrals SET status = ?, inviter_grant_id = ?, invitee_grant_id = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`, status, inviterGrantID, inviteeGrantID, updatedAt.UTC().Format(time.RFC3339), normalizeTenantID(tenantID), strings.TrimSpace(referralID))
+	return err
+}
+
+func (r *userReferralRepo) TransitionReferralStatus(ctx context.Context, tenantID, referralID string, fromStatuses []string, toStatus string, updatedAt time.Time) (bool, error) {
+	if len(fromStatuses) == 0 || strings.TrimSpace(toStatus) == "" {
+		return false, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(fromStatuses)), ",")
+	args := make([]any, 0, len(fromStatuses)+4)
+	args = append(args, strings.TrimSpace(toStatus), updatedAt.UTC().Format(time.RFC3339), normalizeTenantID(tenantID), strings.TrimSpace(referralID))
+	for _, status := range fromStatuses {
+		args = append(args, strings.TrimSpace(status))
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE user_referrals SET status = ?, updated_at = ? WHERE tenant_id = ? AND id = ? AND status IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n > 0, err
+}
+
+func (r *userReferralRepo) GetRegistrationIdempotency(ctx context.Context, tenantID, keyHash string, now time.Time) (*store.UserReferralRegistrationIdempotency, error) {
+	tenantID = normalizeTenantID(tenantID)
+	keyHash = strings.TrimSpace(keyHash)
+	if keyHash == "" {
+		return nil, nil
+	}
+	row := r.readDB.QueryRowContext(ctx, `SELECT tenant_id, key_hash, fingerprint, status, payload, expires_at, created_at
+		FROM user_referral_registration_idempotency WHERE tenant_id = ? AND key_hash = ? AND expires_at > ? LIMIT 1`, tenantID, keyHash, now.UTC().Format(time.RFC3339))
+	var item store.UserReferralRegistrationIdempotency
+	var expiresAt, createdAt string
+	if err := row.Scan(&item.TenantID, &item.KeyHash, &item.Fingerprint, &item.Status, &item.Payload, &expiresAt, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	item.ExpiresAt, item.CreatedAt = mustParseTime(expiresAt), mustParseTime(createdAt)
+	return &item, nil
+}
+
+func (r *userReferralRepo) SaveRegistrationIdempotency(ctx context.Context, item *store.UserReferralRegistrationIdempotency) error {
+	if item == nil || strings.TrimSpace(item.KeyHash) == "" || strings.TrimSpace(item.Fingerprint) == "" || len(item.Payload) == 0 {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_referral_registration_idempotency (tenant_id, key_hash, fingerprint, status, payload, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, key_hash) DO UPDATE SET fingerprint = excluded.fingerprint, status = excluded.status, payload = excluded.payload, expires_at = excluded.expires_at, created_at = excluded.created_at`,
+		normalizeTenantID(item.TenantID), strings.TrimSpace(item.KeyHash), strings.TrimSpace(item.Fingerprint), item.Status, item.Payload, item.ExpiresAt.UTC().Format(time.RFC3339), item.CreatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (r *userReferralRepo) GetRegistrationSession(ctx context.Context, tenantID, tokenHash string, now time.Time) (*store.UserReferralRegistrationSession, error) {
+	tenantID = normalizeTenantID(tenantID)
+	tokenHash = strings.TrimSpace(tokenHash)
+	if tokenHash == "" {
+		return nil, nil
+	}
+	row := r.readDB.QueryRowContext(ctx, `SELECT tenant_id, token_hash, code_hash, config_epoch, user_agent_hash, invitee_user_id, referral_id, completed_at, expires_at, created_at
+		FROM user_referral_registration_sessions WHERE tenant_id = ? AND token_hash = ? AND expires_at > ? LIMIT 1`, tenantID, tokenHash, now.UTC().Format(time.RFC3339))
+	var item store.UserReferralRegistrationSession
+	var completedAt sql.NullString
+	var expiresAt, createdAt string
+	if err := row.Scan(&item.TenantID, &item.TokenHash, &item.CodeHash, &item.ConfigEpoch, &item.UserAgentHash, &item.InviteeUserID, &item.ReferralID, &completedAt, &expiresAt, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	item.ExpiresAt, item.CreatedAt = mustParseTime(expiresAt), mustParseTime(createdAt)
+	if completedAt.Valid && strings.TrimSpace(completedAt.String) != "" {
+		value := mustParseTime(completedAt.String)
+		item.CompletedAt = &value
+	}
+	return &item, nil
+}
+
+func (r *userReferralRepo) SaveRegistrationSession(ctx context.Context, item *store.UserReferralRegistrationSession) error {
+	if item == nil || strings.TrimSpace(item.TokenHash) == "" || strings.TrimSpace(item.CodeHash) == "" || strings.TrimSpace(item.UserAgentHash) == "" {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_referral_registration_sessions (tenant_id, token_hash, code_hash, config_epoch, user_agent_hash, invitee_user_id, referral_id, completed_at, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, token_hash) DO UPDATE SET code_hash = excluded.code_hash, config_epoch = excluded.config_epoch, user_agent_hash = excluded.user_agent_hash, expires_at = excluded.expires_at, created_at = excluded.created_at`,
+		normalizeTenantID(item.TenantID), strings.TrimSpace(item.TokenHash), strings.TrimSpace(item.CodeHash), strings.TrimSpace(item.ConfigEpoch), strings.TrimSpace(item.UserAgentHash), strings.TrimSpace(item.InviteeUserID), strings.TrimSpace(item.ReferralID), nullableTimeString(item.CompletedAt), item.ExpiresAt.UTC().Format(time.RFC3339), item.CreatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (r *userReferralRepo) MarkRegistrationSessionCompleted(ctx context.Context, tenantID, tokenHash, inviteeUserID, referralID string, completedAt time.Time) error {
+	if strings.TrimSpace(tokenHash) == "" || strings.TrimSpace(inviteeUserID) == "" {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `UPDATE user_referral_registration_sessions
+		SET invitee_user_id = ?, referral_id = ?, completed_at = ?
+		WHERE tenant_id = ? AND token_hash = ?`, strings.TrimSpace(inviteeUserID), strings.TrimSpace(referralID), completedAt.UTC().Format(time.RFC3339), normalizeTenantID(tenantID), strings.TrimSpace(tokenHash))
+	return err
+}
+
+func (r *userReferralRepo) ExpireReservedReferrals(ctx context.Context, tenantID string, before, updatedAt time.Time) ([]string, error) {
+	tenantID = normalizeTenantID(tenantID)
+	before = before.UTC()
+	updatedAt = updatedAt.UTC()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM user_referrals
+		WHERE tenant_id = ? AND status = 'reserved' AND registered_at < ?
+		ORDER BY registered_at ASC, id ASC`, tenantID, before.Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	expiredIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		result, err := tx.ExecContext(ctx, `UPDATE user_referrals SET status = 'expired', updated_at = ?
+			WHERE tenant_id = ? AND id = ? AND status = 'reserved'`, updatedAt.Format(time.RFC3339), tenantID, id)
+		if err != nil {
+			return nil, err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if changed == 0 {
+			continue
+		}
+		expiredIDs = append(expiredIDs, id)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO user_referral_status_history (id, tenant_id, referral_id, from_status, to_status, reason, actor_user_id, created_at)
+			VALUES (?, ?, ?, 'reserved', 'expired', 'review window expired', 'system', ?)`, newUserReferralHistoryID(), tenantID, id, updatedAt.Format(time.RFC3339)); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return expiredIDs, nil
+}
+
+func (r *userReferralRepo) CleanupExpiredRegistrationArtifacts(ctx context.Context, before time.Time) (store.UserReferralRegistrationCleanupResult, error) {
+	var cleaned store.UserReferralRegistrationCleanupResult
+	beforeText := before.UTC().Format(time.RFC3339)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return cleaned, err
+	}
+	defer tx.Rollback()
+	for _, target := range []struct {
+		query string
+		count *int
+	}{
+		{`DELETE FROM user_referral_registration_idempotency WHERE expires_at <= ?`, &cleaned.IdempotencyRecords},
+		{`DELETE FROM user_referral_registration_sessions WHERE expires_at <= ?`, &cleaned.Sessions},
+		{`DELETE FROM user_referral_identity_reservations WHERE expires_at <= ?`, &cleaned.IdentityReservations},
+		{`DELETE FROM user_referral_handoffs WHERE expires_at <= ?`, &cleaned.Handoffs},
+	} {
+		result, err := tx.ExecContext(ctx, target.query, beforeText)
+		if err != nil {
+			return cleaned, err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return cleaned, err
+		}
+		*target.count = int(count)
+	}
+	if err := tx.Commit(); err != nil {
+		return cleaned, err
+	}
+	return cleaned, nil
+}
+
+func newUserReferralHistoryID() string {
+	buf := make([]byte, 10)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("refhist_expire_%d", time.Now().UTC().UnixNano())
+	}
+	return "refhist_expire_" + hex.EncodeToString(buf)
+}
+
+func (r *userReferralRepo) CreateHandoff(ctx context.Context, item *store.UserReferralHandoff) error {
+	if item == nil || strings.TrimSpace(item.TokenHash) == "" || strings.TrimSpace(item.TenantID) == "" || strings.TrimSpace(item.CodeHash) == "" || strings.TrimSpace(item.ReferralCodeID) == "" || strings.TrimSpace(item.InviterUserID) == "" {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_referral_handoffs (token_hash, tenant_id, code_hash, referral_code_id, inviter_user_id, config_epoch, service_group_id, inviter_credits, invitee_credits, duration_days, expires_at, used_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+		strings.TrimSpace(item.TokenHash), normalizeTenantID(item.TenantID), strings.TrimSpace(item.CodeHash), strings.TrimSpace(item.ReferralCodeID), strings.TrimSpace(item.InviterUserID), strings.TrimSpace(item.ConfigEpoch), strings.TrimSpace(item.ServiceGroupID), item.InviterCredits, item.InviteeCredits, item.DurationDays, item.ExpiresAt.UTC().Format(time.RFC3339), item.CreatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (r *userReferralRepo) GetHandoff(ctx context.Context, tokenHash string, now time.Time) (*store.UserReferralHandoff, error) {
+	tokenHash = strings.TrimSpace(tokenHash)
+	if tokenHash == "" {
+		return nil, nil
+	}
+	row := r.readDB.QueryRowContext(ctx, `SELECT token_hash, tenant_id, code_hash, referral_code_id, inviter_user_id, config_epoch, service_group_id, inviter_credits, invitee_credits, duration_days, expires_at, used_at, created_at
+		FROM user_referral_handoffs WHERE token_hash = ? AND expires_at > ? AND used_at IS NULL LIMIT 1`, tokenHash, now.UTC().Format(time.RFC3339))
+	var item store.UserReferralHandoff
+	var expiresAt, createdAt string
+	var usedAt sql.NullString
+	if err := row.Scan(&item.TokenHash, &item.TenantID, &item.CodeHash, &item.ReferralCodeID, &item.InviterUserID, &item.ConfigEpoch, &item.ServiceGroupID, &item.InviterCredits, &item.InviteeCredits, &item.DurationDays, &expiresAt, &usedAt, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	item.ExpiresAt, item.CreatedAt = mustParseTime(expiresAt), mustParseTime(createdAt)
+	if usedAt.Valid && strings.TrimSpace(usedAt.String) != "" {
+		parsed := mustParseTime(usedAt.String)
+		item.UsedAt = &parsed
+	}
+	return &item, nil
+}
+
+func (r *userReferralRepo) ConsumeHandoff(ctx context.Context, tokenHash string, usedAt time.Time) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `UPDATE user_referral_handoffs SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`, usedAt.UTC().Format(time.RFC3339), strings.TrimSpace(tokenHash), usedAt.UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n > 0, err
+}
+
+func (r *userReferralRepo) ReserveIdentity(ctx context.Context, item *store.UserReferralIdentityReservation, now time.Time) (bool, error) {
+	if item == nil || strings.TrimSpace(item.IdentityHash) == "" || strings.TrimSpace(item.CodeHash) == "" || strings.TrimSpace(item.SessionHash) == "" {
+		return false, nil
+	}
+	tenantID := normalizeTenantID(item.TenantID)
+	now = now.UTC()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_referral_identity_reservations WHERE tenant_id = ? AND identity_hash = ? AND expires_at <= ?`, tenantID, strings.TrimSpace(item.IdentityHash), now.Format(time.RFC3339)); err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO user_referral_identity_reservations (tenant_id, identity_hash, code_hash, session_hash, reserved_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, identity_hash) DO UPDATE SET expires_at = excluded.expires_at
+		WHERE user_referral_identity_reservations.code_hash = excluded.code_hash AND user_referral_identity_reservations.session_hash = excluded.session_hash`,
+		tenantID, strings.TrimSpace(item.IdentityHash), strings.TrimSpace(item.CodeHash), strings.TrimSpace(item.SessionHash), item.ReservedAt.UTC().Format(time.RFC3339), item.ExpiresAt.UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows == 0 {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *userReferralRepo) GetIdentityReservation(ctx context.Context, tenantID, identityHash string, now time.Time) (*store.UserReferralIdentityReservation, error) {
+	row := r.readDB.QueryRowContext(ctx, `SELECT tenant_id, identity_hash, code_hash, session_hash, reserved_at, expires_at
+		FROM user_referral_identity_reservations WHERE tenant_id = ? AND identity_hash = ? AND expires_at > ? LIMIT 1`, normalizeTenantID(tenantID), strings.TrimSpace(identityHash), now.UTC().Format(time.RFC3339))
+	var item store.UserReferralIdentityReservation
+	var reservedAt, expiresAt string
+	if err := row.Scan(&item.TenantID, &item.IdentityHash, &item.CodeHash, &item.SessionHash, &reservedAt, &expiresAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	item.ReservedAt, item.ExpiresAt = mustParseTime(reservedAt), mustParseTime(expiresAt)
+	return &item, nil
+}
+
+func (r *userReferralRepo) ReleaseIdentityReservation(ctx context.Context, tenantID, identityHash, sessionHash string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM user_referral_identity_reservations WHERE tenant_id = ? AND identity_hash = ? AND session_hash = ?`, normalizeTenantID(tenantID), strings.TrimSpace(identityHash), strings.TrimSpace(sessionHash))
+	return err
+}
+
+func (r *userReferralRepo) CreateStatusHistory(ctx context.Context, item *store.UserReferralStatusHistory) error {
+	if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.ReferralID) == "" || strings.TrimSpace(item.ToStatus) == "" {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_referral_status_history (id, tenant_id, referral_id, from_status, to_status, reason, actor_user_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, normalizeTenantID(item.TenantID), strings.TrimSpace(item.ReferralID), strings.TrimSpace(item.FromStatus), strings.TrimSpace(item.ToStatus), strings.TrimSpace(item.Reason), strings.TrimSpace(item.ActorUserID), item.CreatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (r *userReferralRepo) ListStatusHistory(ctx context.Context, tenantID, referralID string) ([]*store.UserReferralStatusHistory, error) {
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, tenant_id, referral_id, from_status, to_status, reason, actor_user_id, created_at
+		FROM user_referral_status_history WHERE tenant_id = ? AND referral_id = ? ORDER BY created_at DESC, id DESC`, normalizeTenantID(tenantID), strings.TrimSpace(referralID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*store.UserReferralStatusHistory, 0)
+	for rows.Next() {
+		var item store.UserReferralStatusHistory
+		var createdAt string
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.ReferralID, &item.FromStatus, &item.ToStatus, &item.Reason, &item.ActorUserID, &createdAt); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = mustParseTime(createdAt)
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
+func (r *userReferralRepo) CountInviterRewardedOnOrAfter(ctx context.Context, tenantID, inviterUserID string, start time.Time) (int, error) {
+	var count int
+	err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_referrals WHERE tenant_id = ? AND inviter_user_id = ? AND status IN ('attributed', 'rewarded', 'reward_failed') AND registered_at >= ?`, normalizeTenantID(tenantID), strings.TrimSpace(inviterUserID), start.UTC().Format(time.RFC3339)).Scan(&count)
+	return count, err
+}
+
+func (r *userReferralRepo) ListRewardRecoveryCandidates(ctx context.Context, tenantID string, limit int) ([]*store.UserReferral, error) {
+	query := `SELECT id, tenant_id, referral_code_id, inviter_user_id, invitee_user_id, status, registered_at, service_group_id, inviter_credits, invitee_credits, duration_days, inviter_grant_id, invitee_grant_id, created_at, updated_at
+		FROM user_referrals WHERE tenant_id = ? AND status IN ('attributed', 'reward_failed') ORDER BY updated_at ASC, id ASC`
+	args := []any{normalizeTenantID(tenantID)}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := r.readDB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*store.UserReferral, 0)
+	for rows.Next() {
+		item, err := scanUserReferral(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *userReferralRepo) IncrementDailyMetric(ctx context.Context, tenantID, event string, occurredAt time.Time) error {
+	tenantID = normalizeTenantID(tenantID)
+	event = strings.TrimSpace(strings.ToLower(event))
+	if event == "" {
+		return nil
+	}
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_referral_daily_metrics (tenant_id, metric_date, event, count, updated_at)
+		VALUES (?, ?, ?, 1, ?)
+		ON CONFLICT(tenant_id, metric_date, event) DO UPDATE SET count = count + 1, updated_at = excluded.updated_at`,
+		tenantID, occurredAt.UTC().Format("2006-01-02"), event, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// RecordRewardMetricEvent makes reward-lifecycle aggregates safe to reconcile
+// repeatedly. The unique event row and daily counter live in one transaction:
+// an already-observed grant is a no-op rather than a second metric increment.
+func (r *userReferralRepo) RecordRewardMetricEvent(ctx context.Context, tenantID, eventKey, event string, occurredAt time.Time) (bool, error) {
+	tenantID = normalizeTenantID(tenantID)
+	eventKey = strings.TrimSpace(eventKey)
+	event = strings.TrimSpace(strings.ToLower(event))
+	if eventKey == "" || event == "" {
+		return false, nil
+	}
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	occurredAt = occurredAt.UTC()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `INSERT INTO user_referral_reward_metric_events
+		(tenant_id, event_key, event, occurred_at, created_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, event_key, event) DO NOTHING`,
+		tenantID, eventKey, event, occurredAt.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, err
+	}
+	created, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if created == 0 {
+		return false, tx.Commit()
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO user_referral_daily_metrics (tenant_id, metric_date, event, count, updated_at)
+		VALUES (?, ?, ?, 1, ?)
+		ON CONFLICT(tenant_id, metric_date, event) DO UPDATE SET count = count + 1, updated_at = excluded.updated_at`,
+		tenantID, occurredAt.Format("2006-01-02"), event, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *userReferralRepo) ListDailyMetrics(ctx context.Context, tenantID string, from, to time.Time) ([]*store.UserReferralDailyMetric, error) {
+	tenantID = normalizeTenantID(tenantID)
+	if to.IsZero() {
+		to = time.Now().UTC()
+	}
+	if from.IsZero() {
+		from = to.AddDate(0, 0, -29)
+	}
+	fromDate, toDate := from.UTC().Format("2006-01-02"), to.UTC().Format("2006-01-02")
+	rows, err := r.readDB.QueryContext(ctx, `SELECT tenant_id, metric_date, event, count
+		FROM user_referral_daily_metrics WHERE tenant_id = ? AND metric_date >= ? AND metric_date <= ?
+		ORDER BY metric_date DESC, event ASC`, tenantID, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*store.UserReferralDailyMetric, 0)
+	for rows.Next() {
+		item := &store.UserReferralDailyMetric{}
+		if err := rows.Scan(&item.TenantID, &item.Date, &item.Event, &item.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *userReferralRepo) ListReservedReferrals(ctx context.Context, tenantID string, offset, limit int) ([]*store.UserReferralInvitee, int, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 20
+	}
+	tenantID = normalizeTenantID(tenantID)
+	var total int
+	if err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_referrals WHERE tenant_id = ? AND status = 'reserved'`, tenantID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.readDB.QueryContext(ctx, `SELECT r.id, r.invitee_user_id, u.email, r.registered_at, r.status, r.inviter_credits, r.invitee_credits, r.inviter_grant_id, r.invitee_grant_id
+		FROM user_referrals r JOIN users u ON u.tenant_id = r.tenant_id AND u.id = r.invitee_user_id
+		WHERE r.tenant_id = ? AND r.status = 'reserved' ORDER BY r.registered_at ASC, r.id ASC LIMIT ? OFFSET ?`, tenantID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]*store.UserReferralInvitee, 0, limit)
+	for rows.Next() {
+		var item store.UserReferralInvitee
+		var registered string
+		if err := rows.Scan(&item.ReferralID, &item.InviteeUserID, &item.InviteeEmail, &registered, &item.Status, &item.InviterCredits, &item.InviteeCredits, &item.InviterGrantID, &item.InviteeGrantID); err != nil {
+			return nil, 0, err
+		}
+		item.RegisteredAt = mustParseTime(registered)
+		items = append(items, &item)
+	}
+	return items, total, rows.Err()
+}
+
+func (r *userReferralRepo) ListInviterSummaries(ctx context.Context, filter store.UserReferralFilter) ([]*store.UserReferralInviterSummary, int, error) {
+	tenantID := normalizeTenantID(filter.TenantID)
+	offset, limit := filter.Offset, filter.Limit
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 20
+	}
+	where, args := `r.tenant_id = ?`, []any{tenantID}
+	if q := strings.TrimSpace(filter.Search); q != "" {
+		where += ` AND (lower(u.email) LIKE lower(?) OR lower(u.id) LIKE lower(?))`
+		like := "%" + q + "%"
+		args = append(args, like, like)
+	}
+	var total int
+	// Only registrations that reached the recoverable reward pipeline belong in
+	// invitation activity. Reserved/rejected/expired/revoked records remain
+	// available through their direct admin review paths but must not be
+	// represented as successful invitations on the inviter dashboard.
+	where += ` AND r.status IN ('rewarded', 'reward_failed')`
+	if err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(DISTINCT r.inviter_user_id) FROM user_referrals r JOIN users u ON u.tenant_id = r.tenant_id AND u.id = r.inviter_user_id WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, limit, offset)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT r.inviter_user_id, u.email, COUNT(*), COALESCE(SUM(r.inviter_credits), 0), MAX(r.registered_at), GROUP_CONCAT(r.inviter_grant_id)
+		FROM user_referrals r JOIN users u ON u.tenant_id = r.tenant_id AND u.id = r.inviter_user_id WHERE `+where+` GROUP BY r.inviter_user_id, u.email ORDER BY MAX(r.registered_at) DESC, r.inviter_user_id ASC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := []*store.UserReferralInviterSummary{}
+	for rows.Next() {
+		var item store.UserReferralInviterSummary
+		var last string
+		var grantIDs string
+		if err := rows.Scan(&item.InviterUserID, &item.InviterEmail, &item.InviteeCount, &item.CreditsGranted, &last, &grantIDs); err != nil {
+			return nil, 0, err
+		}
+		if last != "" {
+			t := mustParseTime(last)
+			item.LastRegisteredAt = &t
+		}
+		for _, grantID := range strings.Split(grantIDs, ",") {
+			if grantID = strings.TrimSpace(grantID); grantID != "" {
+				item.InviterGrantIDs = append(item.InviterGrantIDs, grantID)
+			}
+		}
+		items = append(items, &item)
+	}
+	return items, total, rows.Err()
+}
+
+func (r *userReferralRepo) ListInvitees(ctx context.Context, filter store.UserReferralFilter) ([]*store.UserReferralInvitee, int, error) {
+	return r.listInvitees(ctx, filter, false)
+}
+
+func (r *userReferralRepo) ListReferralInviteesForReview(ctx context.Context, filter store.UserReferralFilter) ([]*store.UserReferralInvitee, int, error) {
+	return r.listInvitees(ctx, filter, true)
+}
+
+func (r *userReferralRepo) listInvitees(ctx context.Context, filter store.UserReferralFilter, includeReviewAndAudit bool) ([]*store.UserReferralInvitee, int, error) {
+	tenantID := normalizeTenantID(filter.TenantID)
+	offset, limit := filter.Offset, filter.Limit
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 20
+	}
+	where, args := `r.tenant_id = ? AND r.inviter_user_id = ?`, []any{tenantID, strings.TrimSpace(filter.InviterUserID)}
+	if !includeReviewAndAudit {
+		// The user-facing invitation history is an expansion of the successful
+		// invitation metric, so retain failed-but-retryable rewards and omit
+		// records that never became a successful registration attribution.
+		where += ` AND r.status IN ('rewarded', 'reward_failed')`
+	}
+	var total int
+	if err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_referrals r WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, limit, offset)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT r.id, r.invitee_user_id, u.email, r.registered_at, r.status, r.inviter_credits, r.invitee_credits, r.inviter_grant_id, r.invitee_grant_id FROM user_referrals r JOIN users u ON u.tenant_id = r.tenant_id AND u.id = r.invitee_user_id WHERE `+where+` ORDER BY r.registered_at DESC, r.id ASC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := []*store.UserReferralInvitee{}
+	for rows.Next() {
+		var item store.UserReferralInvitee
+		var registered string
+		if err := rows.Scan(&item.ReferralID, &item.InviteeUserID, &item.InviteeEmail, &registered, &item.Status, &item.InviterCredits, &item.InviteeCredits, &item.InviterGrantID, &item.InviteeGrantID); err != nil {
+			return nil, 0, err
+		}
+		item.RegisteredAt = mustParseTime(registered)
+		items = append(items, &item)
+	}
+	return items, total, rows.Err()
 }
 
 func (r *emailBlockRepo) getEmailBlock(ctx context.Context, where string, args ...any) (*store.EmailBlockItem, error) {

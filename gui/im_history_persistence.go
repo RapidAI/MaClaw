@@ -449,10 +449,9 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 		h.pendingUserReply.Delete(userID)
 		return
 	}
-	// Run the LLM classification in a background goroutine to avoid blocking
-	// the response return. The pending reply state is consumed on the NEXT
-	// user message, so there's no urgency - it just needs to be ready before
-	// the next message arrives (typically seconds to minutes later).
+	// Run classification in the background after returning the visible answer.
+	// The state is only consumed on the next turn, so it must never compete with
+	// the foreground Agent or linger for a 30-second timeout.
 	historyCopy := cloneConversationEntries(history)
 	go func() {
 		if !h.classifyPendingUserReplyPrompt(userID, assistantText) {
@@ -499,24 +498,25 @@ func (h *IMMessageHandler) classifyPendingUserReplyPrompt(userID, assistantText 
 		}
 		log.Printf("[PendingUserReply] prompt test classifier failed: %v", err)
 	}
-	if h != nil {
-		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "pending-reply-prompt", OwnerID: userID})
-		result, err := h.LLMClassify(ctx, LLMClassifyRequest{
-			SystemPrompt: `You classify whether the assistant's last message is waiting for the user's next reply inside the same task.
-
-Reply with exactly one word:
-- pending: the assistant asks the user to choose, confirm, provide details, approve starting, or otherwise answer before continuing.
-- done: the assistant is simply closing, reporting completion, or making a statement that does not require the next user message to be bound to this task.`,
-			UserMessage: "Assistant message:\n" + assistantText,
-			TimeoutSec:  30,
-			Tag:         "pending-reply-prompt",
-		})
-		if err == nil {
-			intent, ok := parsePendingReplyPromptIntent(result.Text)
-			return ok && intent == pendingReplyPromptIntentPending
-		}
-		log.Printf("[PendingUserReply] prompt intent classification failed: %v", err)
+	// This runs out of band, but it still shares the endpoint and scheduler with
+	// user work. Use the fast model and a bounded request so a stale auxiliary
+	// call cannot occupy a background slot for thirty seconds.
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "pending-reply-prompt", OwnerID: userID})
+	result, err := h.LLMClassify(ctx, LLMClassifyRequest{
+		SystemPrompt: `Classify whether the assistant message requires the next user reply for the same task.
+Reply with exactly one word: pending or done. If uncertain, reply done.`,
+		UserMessage:       "Assistant message:\n" + truncateRunes(assistantText, 500),
+		TimeoutSec:        2,
+		Tag:               "pending-reply-prompt",
+		PreferLightweight: true,
+	})
+	if err == nil {
+		intent, ok := parsePendingReplyPromptIntent(result.Text)
+		return ok && intent == pendingReplyPromptIntentPending
 	}
+	log.Printf("[PendingUserReply] prompt intent classification unavailable: %v", err)
 	return false
 }
 
@@ -533,29 +533,35 @@ func (h *IMMessageHandler) classifyPendingUserReplyAnswer(userID, question, answ
 		}
 		log.Printf("[PendingUserReply] answer test classifier failed: %v", err)
 	}
-
-	if h != nil {
-		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "pending-reply-answer", OwnerID: userID})
-		result, err := h.LLMClassify(ctx, LLMClassifyRequest{
-			SystemPrompt: `You classify whether the user's next message answers the assistant's pending question or starts a new task.
-
-Reply with exactly one word:
-- answer: the user is choosing, confirming, approving, refusing, or otherwise answering the pending question.
-- new: the user is asking for a different task, especially deployment, coding, server work, file work, or a new request.`,
-			UserMessage: fmt.Sprintf("Assistant question:\n%s\n\nUser message:\n%s", question, answer),
-			TimeoutSec:  30,
-			Tag:         "pending-reply-answer",
-		})
-		if err == nil {
-			intent, ok := parsePendingReplyAnswerIntent(result.Text)
-			if !ok {
-				return false, false
-			}
+	// This runs synchronously at the beginning of a turn, so use the dedicated
+	// fast model route and a small deadline. We want semantic interpretation of
+	// an answer, not a brittle keyword list, but an unavailable/slow auxiliary
+	// model must never delay the main Agent's first response.
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	// This is a foreground entry decision. Do not label it as background: the
+	// scheduler otherwise waits for all foreground work to drain and can consume
+	// the entire deadline before the request is even sent.
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "pending-reply-answer-fast", OwnerID: userID})
+	result, err := h.LLMClassify(ctx, LLMClassifyRequest{
+		SystemPrompt: `Classify whether the user message answers the assistant's pending question or starts a new task.
+Reply with exactly one word: answer or new. If uncertain, reply new.`,
+		UserMessage:       fmt.Sprintf("Assistant question:\n%s\n\nUser message:\n%s", truncateRunes(question, 500), truncateRunes(answer, 500)),
+		TimeoutSec:        2,
+		Tag:               "pending-reply-answer",
+		PreferLightweight: true,
+	})
+	if err == nil {
+		if intent, ok := parsePendingReplyAnswerIntent(result.Text); ok {
 			return intent == pendingReplyAnswerIntentAnswer, true
 		}
-		log.Printf("[PendingUserReply] answer intent classification failed: %v", err)
+		log.Printf("[PendingUserReply] answer intent classifier returned invalid result")
+	} else {
+		log.Printf("[PendingUserReply] answer intent classification unavailable: %v", err)
 	}
 
+	// Fail open to the new-task path: retaining old task context is more
+	// surprising than asking the main Agent to interpret an ambiguous reply.
 	return false, false
 }
 

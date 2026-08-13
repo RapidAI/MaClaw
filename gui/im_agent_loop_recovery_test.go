@@ -84,6 +84,20 @@ func TestStripTrailingBrokenConversationToolGroupRemovesPartialToolResults(t *te
 	}
 }
 
+func TestStripTrailingBrokenConversationToolGroupRejectsMismatchedToolResultID(t *testing.T) {
+	call := llm.ToolCall{ID: "call_expected", Type: "function", Function: llm.ToolCallFunction{Name: "bash", Arguments: `{}`}}
+	conversation := []interface{}{
+		map[string]interface{}{"role": "user", "content": "do it"},
+		map[string]interface{}{"role": "assistant", "content": "", "tool_calls": []llm.ToolCall{call}},
+		map[string]interface{}{"role": "tool", "tool_call_id": "call_wrong", "content": "wrong result"},
+	}
+
+	stripped := stripTrailingBrokenConversationToolGroup(conversation)
+	if len(stripped) != 2 || msgHasToolCalls(stripped[1]) {
+		t.Fatalf("mismatched result left a valid-looking tool group: %#v", stripped)
+	}
+}
+
 func TestStripTrailingBrokenToolGroupDoesNotMutateInput(t *testing.T) {
 	call := llm.ToolCall{ID: "call_1", Type: "function", Function: llm.ToolCallFunction{Name: "bash", Arguments: `{}`}}
 	history := []agent.ConversationEntry{
@@ -100,5 +114,21 @@ func TestStripTrailingBrokenToolGroupDoesNotMutateInput(t *testing.T) {
 	}
 	if history[1].ToolCalls == nil {
 		t.Fatal("original history was mutated")
+	}
+}
+
+func TestStripTrailingBrokenToolGroupRejectsDuplicateToolResultID(t *testing.T) {
+	call1 := llm.ToolCall{ID: "call_1", Type: "function", Function: llm.ToolCallFunction{Name: "read_file", Arguments: `{}`}}
+	call2 := llm.ToolCall{ID: "call_2", Type: "function", Function: llm.ToolCallFunction{Name: "bash", Arguments: `{}`}}
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "do it"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{call1, call2}},
+		{Role: "tool", ToolCallID: "call_1", Content: "first result"},
+		{Role: "tool", ToolCallID: "call_1", Content: "duplicate result"},
+	}
+
+	stripped := stripTrailingBrokenToolGroup(history)
+	if len(stripped) != 2 || stripped[1].ToolCalls != nil {
+		t.Fatalf("duplicate result left a valid-looking tool group: %#v", stripped)
 	}
 }

@@ -346,6 +346,172 @@ type EmailInvite struct {
 	UpdatedAt time.Time
 }
 
+// UserReferralCode is a durable, tenant-scoped personal invitation link. The
+// plaintext code is never persisted: CodeHash is used for lookup and
+// EncryptedCode only exists so the owner can retrieve their own link again.
+type UserReferralCode struct {
+	ID            string
+	TenantID      string
+	InviterUserID string
+	CodeHash      string
+	EncryptedCode string
+	Status        string
+	CreatedAt     time.Time
+	RotatedAt     *time.Time
+}
+
+// UserReferral is the immutable attribution snapshot created after an invitee
+// has completed registration. Credits and duration are copied from the rule at
+// this point so later rule changes never alter historical rewards.
+type UserReferral struct {
+	ID             string
+	TenantID       string
+	ReferralCodeID string
+	InviterUserID  string
+	InviteeUserID  string
+	Status         string
+	RegisteredAt   time.Time
+	ServiceGroupID string
+	InviterCredits float64
+	InviteeCredits float64
+	DurationDays   int
+	InviterGrantID string
+	InviteeGrantID string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// UserReferralRegistrationIdempotency retains the completed public
+// registration response long enough for network retries to be safe across Hub
+// restarts and multiple Hub processes. KeyHash is deliberately opaque: raw
+// Idempotency-Key header values are never stored.
+type UserReferralRegistrationIdempotency struct {
+	TenantID    string
+	KeyHash     string
+	Fingerprint string
+	Status      int
+	Payload     []byte
+	ExpiresAt   time.Time
+	CreatedAt   time.Time
+}
+
+// UserReferralRegistrationSession is a short-lived, browser-bound admission
+// token for public referral registration. TokenHash, rather than the browser
+// cookie value, is persisted so a database leak cannot replay a session.
+type UserReferralRegistrationSession struct {
+	TenantID      string
+	TokenHash     string
+	CodeHash      string
+	ConfigEpoch   string
+	UserAgentHash string
+	// InviteeUserID and ReferralID are written only after the session has
+	// completed a new-user registration. They make a short browser/desktop
+	// retry recoverable without retaining a raw email or phone number.
+	InviteeUserID string
+	ReferralID    string
+	CompletedAt   *time.Time
+	ExpiresAt     time.Time
+	CreatedAt     time.Time
+}
+
+// UserReferralRegistrationCleanupResult reports only short-lived public
+// registration artifacts removed after their expiry. Referral attributions,
+// their status history, and reward grants are deliberately never removed by
+// this cleanup path because they are part of the tenant audit ledger.
+type UserReferralRegistrationCleanupResult struct {
+	IdempotencyRecords   int
+	Sessions             int
+	IdentityReservations int
+	Handoffs             int
+}
+
+// UserReferralIdentityReservation pins an in-progress new-user identity to
+// one referral code. It prevents two invitation flows from racing to attribute
+// the same verified email or phone to different inviters.
+type UserReferralIdentityReservation struct {
+	TenantID     string
+	IdentityHash string
+	CodeHash     string
+	SessionHash  string
+	ReservedAt   time.Time
+	ExpiresAt    time.Time
+}
+
+// UserReferralHandoff is an opaque, short-lived bridge from the browser
+// invitation landing page to an installed desktop client. TokenHash is the
+// only representation of the bearer token kept by Hub. The referral rule is
+// snapshotted here so a later settings edit cannot change a registration that
+// has already been handed off to the desktop application.
+type UserReferralHandoff struct {
+	TokenHash      string
+	TenantID       string
+	CodeHash       string
+	ReferralCodeID string
+	InviterUserID  string
+	ConfigEpoch    string
+	ServiceGroupID string
+	InviterCredits float64
+	InviteeCredits float64
+	DurationDays   int
+	ExpiresAt      time.Time
+	UsedAt         *time.Time
+	CreatedAt      time.Time
+}
+
+// UserReferralStatusHistory is an append-only audit trail for attribution,
+// reward delivery and administrator moderation. Reasons are captured only for
+// actions which need an operator explanation.
+type UserReferralStatusHistory struct {
+	ID          string
+	TenantID    string
+	ReferralID  string
+	FromStatus  string
+	ToStatus    string
+	Reason      string
+	ActorUserID string
+	CreatedAt   time.Time
+}
+
+type UserReferralInviterSummary struct {
+	InviterUserID    string
+	InviterEmail     string
+	InviteeCount     int
+	CreditsGranted   float64
+	CreditsConsumed  float64
+	LastRegisteredAt *time.Time
+	InviterGrantIDs  []string
+}
+
+type UserReferralInvitee struct {
+	ReferralID     string
+	InviteeUserID  string
+	InviteeEmail   string
+	RegisteredAt   time.Time
+	Status         string
+	InviterCredits float64
+	InviteeCredits float64
+	InviterGrantID string
+	InviteeGrantID string
+}
+
+type UserReferralFilter struct {
+	TenantID      string
+	InviterUserID string
+	Search        string
+	Offset        int
+	Limit         int
+}
+
+// UserReferralDailyMetric is an aggregate operational counter. It deliberately
+// contains no referral code, user, contact, IP, browser or device identifiers.
+// The day is always stored as a UTC ISO-8601 date.
+type UserReferralDailyMetric struct {
+	TenantID string
+	Date     string
+	Event    string
+	Count    int64
+}
+
 type Machine struct {
 	ID               string
 	TenantID         string
@@ -554,6 +720,70 @@ type EmailInviteRepository interface {
 	DeleteByID(ctx context.Context, id string) error
 }
 
+type UserReferralRepository interface {
+	GetActiveCodeForInviter(ctx context.Context, tenantID, inviterUserID string) (*UserReferralCode, error)
+	GetCodeByHash(ctx context.Context, tenantID, codeHash string) (*UserReferralCode, error)
+	CreateCode(ctx context.Context, code *UserReferralCode) error
+	RotateCode(ctx context.Context, tenantID, codeID string, rotatedAt time.Time) error
+	// ReplaceActiveCode atomically retires the current active link and stores
+	// replacement. It prevents a failed create from leaving an inviter without
+	// a shareable link after they choose to rotate it.
+	ReplaceActiveCode(ctx context.Context, tenantID, inviterUserID string, code *UserReferralCode, rotatedAt time.Time) error
+	CreateReferral(ctx context.Context, referral *UserReferral) error
+	GetReferralForInvitee(ctx context.Context, tenantID, inviteeUserID string) (*UserReferral, error)
+	GetReferralByID(ctx context.Context, tenantID, referralID string) (*UserReferral, error)
+	// ListReferralsForInvitees returns referral attributions for the supplied
+	// users in one tenant. It is used by user-management lists to avoid one
+	// database query per rendered user.
+	ListReferralsForInvitees(ctx context.Context, tenantID string, inviteeUserIDs []string) (map[string]*UserReferral, error)
+	UpdateRewardGrants(ctx context.Context, tenantID, referralID, status, inviterGrantID, inviteeGrantID string, updatedAt time.Time) error
+	TransitionReferralStatus(ctx context.Context, tenantID string, referralID string, fromStatuses []string, toStatus string, updatedAt time.Time) (bool, error)
+	GetRegistrationIdempotency(ctx context.Context, tenantID, keyHash string, now time.Time) (*UserReferralRegistrationIdempotency, error)
+	SaveRegistrationIdempotency(ctx context.Context, item *UserReferralRegistrationIdempotency) error
+	GetRegistrationSession(ctx context.Context, tenantID, tokenHash string, now time.Time) (*UserReferralRegistrationSession, error)
+	SaveRegistrationSession(ctx context.Context, item *UserReferralRegistrationSession) error
+	MarkRegistrationSessionCompleted(ctx context.Context, tenantID, tokenHash, inviteeUserID, referralID string, completedAt time.Time) error
+	// ExpireReservedReferrals atomically transitions overdue review records to
+	// expired and appends their reserved -> expired audit history. It returns
+	// the affected IDs so callers can emit operational metrics without reading
+	// a second time. Terminal and reward-pipeline statuses are never touched.
+	ExpireReservedReferrals(ctx context.Context, tenantID string, before, updatedAt time.Time) ([]string, error)
+	// CleanupExpiredRegistrationArtifacts removes only expired, hash-only,
+	// short-lived public-registration state. It never removes referrals,
+	// status history, referral codes, or reward grants.
+	CleanupExpiredRegistrationArtifacts(ctx context.Context, before time.Time) (UserReferralRegistrationCleanupResult, error)
+	ReserveIdentity(ctx context.Context, item *UserReferralIdentityReservation, now time.Time) (bool, error)
+	GetIdentityReservation(ctx context.Context, tenantID, identityHash string, now time.Time) (*UserReferralIdentityReservation, error)
+	ReleaseIdentityReservation(ctx context.Context, tenantID, identityHash, sessionHash string) error
+	CreateHandoff(ctx context.Context, item *UserReferralHandoff) error
+	GetHandoff(ctx context.Context, tokenHash string, now time.Time) (*UserReferralHandoff, error)
+	ConsumeHandoff(ctx context.Context, tokenHash string, usedAt time.Time) (bool, error)
+	CreateStatusHistory(ctx context.Context, item *UserReferralStatusHistory) error
+	ListStatusHistory(ctx context.Context, tenantID, referralID string) ([]*UserReferralStatusHistory, error)
+	CountInviterRewardedOnOrAfter(ctx context.Context, tenantID, inviterUserID string, start time.Time) (int, error)
+	// ListRewardRecoveryCandidates returns durable referral attributions whose
+	// reward grants can be safely replayed after a transient registry failure.
+	// An empty limit requests the complete tenant-scoped recovery set.
+	ListRewardRecoveryCandidates(ctx context.Context, tenantID string, limit int) ([]*UserReferral, error)
+	IncrementDailyMetric(ctx context.Context, tenantID, event string, occurredAt time.Time) error
+	// RecordRewardMetricEvent records a grant lifecycle observation exactly once
+	// for the supplied event key. It also increments the matching daily metric
+	// in the same durable operation, so retries and process restarts cannot
+	// inflate referral-reward usage or expiry reporting.
+	RecordRewardMetricEvent(ctx context.Context, tenantID, eventKey, event string, occurredAt time.Time) (bool, error)
+	ListDailyMetrics(ctx context.Context, tenantID string, from, to time.Time) ([]*UserReferralDailyMetric, error)
+	// ListReservedReferrals returns risk-reviewed referrals for the tenant in a
+	// stable order. It powers the tenant administrator's approval work queue.
+	ListReservedReferrals(ctx context.Context, tenantID string, offset, limit int) ([]*UserReferralInvitee, int, error)
+	// ListReferralInviteesForReview returns all registrations associated with an
+	// inviter, including referrals awaiting risk review and terminal audit
+	// records. It is deliberately separate from ListInvitees, whose narrower
+	// contract powers the user-facing successful-invitation history.
+	ListReferralInviteesForReview(ctx context.Context, filter UserReferralFilter) ([]*UserReferralInvitee, int, error)
+	ListInviterSummaries(ctx context.Context, filter UserReferralFilter) ([]*UserReferralInviterSummary, int, error)
+	ListInvitees(ctx context.Context, filter UserReferralFilter) ([]*UserReferralInvitee, int, error)
+}
+
 type MachineRepository interface {
 	Create(ctx context.Context, machine *Machine) error
 	GetByID(ctx context.Context, id string) (*Machine, error)
@@ -701,6 +931,7 @@ type Store struct {
 	EmailBlocks     EmailBlocklistRepository
 	InvitationCodes InvitationCodeRepository
 	EmailInvites    EmailInviteRepository
+	UserReferrals   UserReferralRepository
 	Machines        MachineRepository
 	ViewerTokens    ViewerTokenRepository
 	LoginTokens     LoginTokenRepository

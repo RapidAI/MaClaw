@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestAIAssistantUIStatePersistsUnderDataDir(t *testing.T) {
@@ -52,6 +54,71 @@ func TestAIAssistantUIStatePersistsUnderDataDir(t *testing.T) {
 	}
 	if _, err := os.Stat(wantPath); !os.IsNotExist(err) {
 		t.Fatalf("state file still exists after clear, stat err = %v", err)
+	}
+}
+
+func TestAIAssistantUIStateInjectsStartupCrashRecoveryCard(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	app.aiConversationMemory = mem
+	mem.UpsertUnfinishedSlot(desktopUserID, &agent.UnfinishedTaskSlot{
+		SlotID:          "crash-slot",
+		Status:          agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask:        "finish implementation",
+		Source:          agent.UnfinishedTaskSlotSourceInFlightRecovery,
+		SideEffectState: "external_uncertain",
+		RecoveryMode:    "requires_review",
+	})
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatalf("LoadAIAssistantUIState() error = %v", err)
+	}
+	if len(loaded.Messages) != 1 {
+		t.Fatalf("messages=%#v", loaded.Messages)
+	}
+	raw, ok := loaded.Messages[0]["unfinishedSlot"].(map[string]interface{})
+	if !ok || raw["slotID"] != "crash-slot" || raw["recoveryMode"] != "requires_review" {
+		t.Fatalf("startup recovery payload=%#v", raw)
+	}
+}
+
+func TestAIAssistantUIStateInjectsEveryPendingStartupRecoveryCard(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	app.aiConversationMemory = mem
+	mem.UpsertUnfinishedSlot(desktopUserID, &agent.UnfinishedTaskSlot{
+		SlotID: "desktop-recovery", Status: agent.UnfinishedTaskSlotStatusInterrupted,
+		Source: agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	})
+	mem.UpsertUnfinishedSlot(desktopUserID+":project", &agent.UnfinishedTaskSlot{
+		SlotID: "project-recovery", Status: agent.UnfinishedTaskSlotStatusInterrupted,
+		Source: agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	})
+	// A completed recovery is historical evidence, not an actionable startup card.
+	mem.UpsertUnfinishedSlot("completed-user", &agent.UnfinishedTaskSlot{
+		SlotID: "completed-recovery", Status: agent.UnfinishedTaskSlotStatusCompleted,
+		Source: agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	})
+
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatalf("LoadAIAssistantUIState() error = %v", err)
+	}
+	if len(loaded.Messages) != 2 {
+		t.Fatalf("messages=%#v, want two pending recovery cards", loaded.Messages)
+	}
+	got := map[string]string{}
+	for _, message := range loaded.Messages {
+		raw, ok := message["unfinishedSlot"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("missing unfinishedSlot payload: %#v", message)
+		}
+		got[raw["slotID"].(string)] = message["sessionKey"].(string)
+	}
+	if got["desktop-recovery"] != desktopUserID || got["project-recovery"] != desktopUserID+":project" {
+		t.Fatalf("recovery cards were not projected to their sessions: %#v", got)
 	}
 }
 

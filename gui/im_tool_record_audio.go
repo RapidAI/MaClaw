@@ -91,6 +91,7 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 	history []agent.ConversationEntry,
 	toolResults []string,
 	recordToolResult func(string, interface{}, string, string),
+	persistHistory ...bool,
 ) agentLoopRecordAudioToolResult {
 	out := agentLoopRecordAudioToolResult{
 		Result:       result,
@@ -148,16 +149,11 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 		ToolName:    "record_audio",
 		ToolOutcome: "paused",
 	})
-	h.saveConversationHistoryTimed(userID, out.History, nil)
-	// A new recording session supersedes any unfinished post-recording choice
-	// (minutes/transcribe/keep) from a previous save.
-	h.clearPendingPostRecording(userID)
-	h.pendingRecordAudio.Store(userID, &pendingRecordAudioState{
-		Title:     req.Title,
-		Purpose:   req.Purpose,
-		History:   cloneConversationEntries(out.History),
-		Timestamp: time.Now(),
-	})
+	shouldPersistHistory := len(persistHistory) == 0 || persistHistory[0]
+	if shouldPersistHistory {
+		h.saveConversationHistoryTimed(userID, out.History, nil)
+		h.commitPendingRecordAudio(userID, req, out.History)
+	}
 	if recordDetailEnabled() {
 		log.Printf("[record-audio] session opened user=%s platform=%s title=%q purpose=%q history_len=%d tc=%s",
 			userID, platform, req.Title, req.Purpose, len(out.History), tcID)
@@ -175,6 +171,26 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 	}
 	out.Response = resp
 	return out
+}
+
+// commitPendingRecordAudio publishes the desktop-only interactive state only
+// after the matching conversation history is durable. In the shared loop the
+// caller invokes this after SaveAndCompleteInFlightCheckpointForRun succeeds;
+// publishing it sooner would discard a prior post-recording choice even when
+// the new recording card must be failed closed.
+func (h *IMMessageHandler) commitPendingRecordAudio(userID string, req *agent.RecordAudioRequest, history []agent.ConversationEntry) {
+	if h == nil || req == nil {
+		return
+	}
+	// A successfully opened new recording supersedes any unfinished
+	// post-recording choice (minutes/transcribe/keep) from a previous save.
+	h.clearPendingPostRecording(userID)
+	h.pendingRecordAudio.Store(userID, &pendingRecordAudioState{
+		Title:     req.Title,
+		Purpose:   req.Purpose,
+		History:   cloneConversationEntries(history),
+		Timestamp: time.Now(),
+	})
 }
 
 func truncateRecordLog(s string, maxRunes int) string {

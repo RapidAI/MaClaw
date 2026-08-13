@@ -8,13 +8,11 @@
 #include "display_service.h"
 #include "input_service.h"
 #include "lifecycle_service.h"
+#include "motion_service.h"
 #include "power_service.h"
 #include "power_lease_service.h"
-#include "platform_connectivity.h"
-#include "platform_power.h"
-#include "platform_sensor.h"
-#include "platform_storage.h"
 #include "resource_pressure_service.h"
+#include "storage_service.h"
 
 /* A public shutdown budget is owned by the composition root.  Child services
  * must consume the same deadline rather than each starting an independent
@@ -69,7 +67,7 @@ bool device_display_get_pet_asset_install_budget(
 }
 
 bool device_storage_allows_optional_flash_work(void) {
-    return platform_storage_allows_optional_flash_work();
+    return storage_service_allows_optional_flash_work();
 }
 
 bool device_profile_get(device_profile_t *out_profile) {
@@ -117,17 +115,7 @@ bool device_profile_has_capability(device_capability_flags_t capability) {
 }
 
 device_status_t device_motion_get_sample(device_motion_sample_t *out_sample) {
-    if (!out_sample) return DEVICE_STATUS_INVALID_ARGUMENT;
-    if (!device_profile_has_capability(DEVICE_CAPABILITY_MOTION_SENSOR)) {
-        return DEVICE_STATUS_UNAVAILABLE;
-    }
-    device_motion_sample_t sample = {
-        .struct_size = sizeof(sample),
-        .abi_version = DEVICE_MOTION_SAMPLE_ABI_VERSION,
-    };
-    device_status_t status = platform_sensor_get_motion_sample(&sample);
-    if (status == DEVICE_STATUS_OK) *out_sample = sample;
-    return status;
+    return motion_service_get_sample(out_sample);
 }
 
 device_status_t device_audio_set_output_volume(uint8_t percent) {
@@ -280,7 +268,7 @@ bool device_power_get_snapshot(device_power_snapshot_t *out_snapshot) {
 }
 
 bool device_power_get_telemetry(device_power_telemetry_t *out_telemetry) {
-    return platform_power_get_telemetry(out_telemetry);
+    return power_service_get_telemetry(out_telemetry);
 }
 
 bool device_battery_policy_get_snapshot(device_battery_policy_snapshot_t *out_snapshot) {
@@ -372,7 +360,7 @@ device_status_t device_connectivity_prepare_cellular_transport(void) {
     if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
         return DEVICE_STATUS_UNAVAILABLE;
     }
-    return platform_connectivity_prepare_cellular_transport();
+    return connectivity_service_prepare_cellular_transport();
 }
 
 device_status_t device_connectivity_start_cellular_transport(uint32_t timeout_ms) {
@@ -380,12 +368,20 @@ device_status_t device_connectivity_start_cellular_transport(uint32_t timeout_ms
     if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
         return DEVICE_STATUS_UNAVAILABLE;
     }
-    return platform_connectivity_start_cellular_transport(timeout_ms);
+    return connectivity_service_start_cellular_transport(timeout_ms);
+}
+
+device_status_t device_connectivity_establish_cellular_transport(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    return connectivity_service_establish_cellular_transport(timeout_ms);
 }
 
 bool device_connectivity_is_cellular_transport_ready(void) {
     return device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT) &&
-           platform_connectivity_is_cellular_transport_ready();
+           connectivity_service_is_cellular_transport_ready();
 }
 
 device_status_t device_connectivity_quiesce_cellular_transport(uint32_t timeout_ms) {
@@ -393,54 +389,37 @@ device_status_t device_connectivity_quiesce_cellular_transport(uint32_t timeout_
     if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
         return DEVICE_STATUS_UNAVAILABLE;
     }
-    return platform_connectivity_quiesce_cellular_transport(timeout_ms);
-}
-
-static bool cellular_http_request_is_valid(
-    const device_connectivity_http_request_t *request) {
-    return request && request->method && request->method[0] && request->url &&
-           request->url[0] && request->response && request->response_capacity >= 2 &&
-           request->response_len && request->status_code && request->truncated &&
-           request->timeout_ms > 0;
+    return connectivity_service_quiesce_cellular_transport(timeout_ms);
 }
 
 device_status_t device_connectivity_cellular_http_request(
     const device_connectivity_http_request_t *request) {
-    if (!cellular_http_request_is_valid(request)) return DEVICE_STATUS_INVALID_ARGUMENT;
     if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
         return DEVICE_STATUS_UNAVAILABLE;
     }
-    return platform_connectivity_cellular_http_request(request);
+    return connectivity_service_cellular_http_request(request);
 }
 
 device_status_t device_connectivity_cellular_http_stream_request(
     const device_connectivity_stream_request_t *request) {
-    if (!request || !cellular_http_request_is_valid(&request->request) ||
-        !request->body_reader || !request->stream_buffer || request->stream_buffer_size == 0) {
-        return DEVICE_STATUS_INVALID_ARGUMENT;
-    }
     if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
         return DEVICE_STATUS_UNAVAILABLE;
     }
-    return platform_connectivity_cellular_http_stream_request(request);
+    return connectivity_service_cellular_http_stream_request(request);
 }
 
 bool device_connectivity_cancel_cellular_foreground_request(void) {
     if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
         return false;
     }
-    return platform_connectivity_cancel_cellular_foreground_request();
+    return connectivity_service_cancel_cellular_foreground_request();
 }
 
 bool device_connectivity_cancel_cellular_requests_for_owner(const void *owner) {
     if (!owner || !device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
         return false;
     }
-    return platform_connectivity_cancel_cellular_requests_for_owner(owner);
-}
-
-bool device_connectivity_take_startup_transport_toggle(uint32_t window_ms) {
-    return connectivity_service_take_startup_transport_toggle(window_ms);
+    return connectivity_service_cancel_cellular_requests_for_owner(owner);
 }
 
 void device_connectivity_restore_selected_uplink(void) {
@@ -453,9 +432,7 @@ bool device_connectivity_apply_startup_transport_toggle(uint32_t window_ms) {
 
 void device_connectivity_adapt_gateway_url(char *gateway_url,
                                            uint32_t gateway_url_capacity) {
-    if (!gateway_url || gateway_url_capacity == 0) return;
-    platform_connectivity_adapt_gateway_url(gateway_url, gateway_url_capacity,
-                                            device_connectivity_is_active_cellular());
+    connectivity_service_adapt_gateway_url(gateway_url, gateway_url_capacity);
 }
 
 void device_display_set_command_lock(bool locked) {
@@ -476,10 +453,6 @@ void device_display_set_pet_state(const char *state) {
 
 void device_display_set_command_stage(const char *stage) {
     display_service_set_command_stage(stage);
-}
-
-void device_display_set_command_cancel_enabled(bool enabled) {
-    display_service_set_command_cancel_enabled(enabled);
 }
 
 void device_display_set_pet_profile(const char *skin, bool motion_enabled) {
@@ -598,6 +571,10 @@ device_status_t device_input_start(device_input_cb_t on_input, void *context) {
 
 device_status_t device_input_stop(uint32_t timeout_ms) {
     return input_service_stop(timeout_ms);
+}
+
+void device_input_set_command_cancel_enabled(bool enabled) {
+    input_service_set_command_cancel_enabled(enabled);
 }
 
 bool device_input_is_primary_interaction_source(device_input_source_t source) {

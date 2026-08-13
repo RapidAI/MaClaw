@@ -105,7 +105,7 @@ func TestUserFacingToolProgressText_EnglishUILanguage(t *testing.T) {
 	if !strings.Contains(got, i18n.T(i18n.MsgToolActionRunCommand, "en")) {
 		t.Fatalf("got %q, want English action", got)
 	}
-	if strings.Contains(got, "【工具】") || strings.Contains(got, "执行命令") {
+	if strings.Contains(got, "工具 ·") || strings.Contains(got, "执行命令") {
 		t.Fatalf("English UI should not contain Chinese tool labels, got %q", got)
 	}
 	if !strings.Contains(got, "ls -la") {
@@ -115,7 +115,7 @@ func TestUserFacingToolProgressText_EnglishUILanguage(t *testing.T) {
 
 func TestUserFacingToolProgressText_ChineseUILanguage(t *testing.T) {
 	got := userFacingToolProgressTextWithArgs("zh-Hans", "read_file", `{"path":"main.go"}`)
-	if !strings.HasPrefix(got, "【工具】") {
+	if !strings.HasPrefix(got, "工具 · ") {
 		t.Fatalf("got %q, want Chinese status label", got)
 	}
 	if !strings.Contains(got, "读取文件") {
@@ -132,7 +132,7 @@ func TestUserFacingToolProgressText_StatusCardStyle(t *testing.T) {
 		if got == tool {
 			t.Fatalf("userFacingToolProgressText(%q) returned bare name", tool)
 		}
-		if !strings.HasPrefix(got, "【工具】") {
+		if !strings.HasPrefix(got, "工具 · ") {
 			t.Fatalf("userFacingToolProgressText(%q) = %q, want status-card prefix", tool, got)
 		}
 	}
@@ -140,12 +140,12 @@ func TestUserFacingToolProgressText_StatusCardStyle(t *testing.T) {
 
 func TestFormatIMToolStatus_TwoLineCard(t *testing.T) {
 	got := formatIMToolStatus("zh", "执行命令", "ls -la /tmp")
-	want := "【工具】执行命令\nls -la /tmp"
+	want := "工具 · 执行命令\nls -la /tmp"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 	gotEN := formatIMToolStatus("en", "Run command", "ls -la /tmp")
-	wantEN := "[Tool] Run command\nls -la /tmp"
+	wantEN := "Tool · Run command\nls -la /tmp"
 	if gotEN != wantEN {
 		t.Fatalf("got %q, want %q", gotEN, wantEN)
 	}
@@ -153,21 +153,21 @@ func TestFormatIMToolStatus_TwoLineCard(t *testing.T) {
 
 func TestFormatIMToolStatus_NoDetail(t *testing.T) {
 	got := formatIMToolStatus("zh", "截取屏幕", "")
-	if got != "【工具】截取屏幕" {
+	if got != "工具 · 截取屏幕" {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestFormatIMToolStatus_NoDoubleWrap(t *testing.T) {
-	got := formatIMToolStatus("zh", "【工具】执行命令", "echo hi")
-	if got != "【工具】执行命令\necho hi" {
+	got := formatIMToolStatus("zh", "工具 · 执行命令", "echo hi")
+	if got != "工具 · 执行命令\necho hi" {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestFilterUserFacingToolProgress_RestylesInternal(t *testing.T) {
 	got := filterUserFacingToolProgress("zh", "bash", "正在执行长时间任务...")
-	if !strings.HasPrefix(got, "【工具】") {
+	if !strings.HasPrefix(got, "工具 · ") {
 		t.Fatalf("expected restyled status card, got %q", got)
 	}
 	if !strings.Contains(got, "命令进度") {
@@ -181,7 +181,7 @@ func TestFilterUserFacingToolProgress_RestylesInternal(t *testing.T) {
 		t.Fatalf("expected useful detail body, got %q", got)
 	}
 	gotEN := filterUserFacingToolProgress("en", "bash", "Running long task...")
-	if !strings.HasPrefix(gotEN, "[Tool] ") {
+	if !strings.HasPrefix(gotEN, "Tool · ") {
 		t.Fatalf("expected English restyled status card, got %q", gotEN)
 	}
 	if !strings.Contains(gotEN, "long task") {
@@ -200,7 +200,7 @@ func TestStyleIMIntermediateProgress(t *testing.T) {
 		t.Fatalf("got %q, want progress label", got)
 	}
 	// Tool cards must not be double-wrapped.
-	tool := "【工具】执行命令\nls"
+	tool := "工具 · 执行命令\nls"
 	if styleIMIntermediateProgress("zh", tool) != tool {
 		t.Fatalf("tool card should pass through, got %q", styleIMIntermediateProgress("zh", tool))
 	}
@@ -232,7 +232,7 @@ func TestFilteredToolProgressCallback_DropsNoise(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %#v, want 1 filtered message", got)
 	}
-	if !strings.HasPrefix(got[0], "【工具】") {
+	if !strings.HasPrefix(got[0], "工具 · ") {
 		t.Fatalf("filtered message not styled: %q", got[0])
 	}
 

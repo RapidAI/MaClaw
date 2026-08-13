@@ -1,5 +1,19 @@
 set(BOARD_PORT_SOURCE "board_port.c")
 set(BOARD_PROFILE_SOURCE "boards/echoear_2st/board_profile.c")
+set(ROUND_INPUT_SERVICE_SOURCE)
+set(ROUND_INPUT_PROFILE_SERVICE_SOURCE)
+set(ROUND_AUDIO_SERVICE_SOURCE)
+set(ROUND_WAKE_SERVICE_SOURCE)
+set(ROUND_DISPLAY_SERVICE_SOURCE)
+set(ROUND_VISUAL_PROFILE_SERVICE_SOURCE)
+set(ROUND_PERIPHERAL_SERVICE_SOURCE)
+set(COMPACT_DISPLAY_SERVICE_SOURCE)
+set(COMPACT_AUDIO_SERVICE_SOURCE)
+set(COMPACT_WAKE_SERVICE_SOURCE)
+set(COMPACT_INPUT_SERVICE_SOURCE)
+set(COMPACT_CONNECTIVITY_SERVICE_SOURCE)
+set(COMPACT_PERIPHERAL_SERVICE_SOURCE)
+set(COMPACT_VISUAL_PROFILE_SERVICE_SOURCE)
 # ESP-IDF performs an early component-requirement expansion in a separate
 # `cmake -P` process. Command-line cache variables from the top-level build
 # are not forwarded to that process, whereas the profile wrapper's environment
@@ -14,6 +28,13 @@ if(CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD)
     # The selected profile owns all physical display, audio, input and
     # connectivity adapters below that renderer boundary.
     set(BOARD_PORT_SOURCE "compact_renderer.c")
+    set(COMPACT_DISPLAY_SERVICE_SOURCE "compact_display_service.c")
+    set(COMPACT_AUDIO_SERVICE_SOURCE "compact_audio_service.c")
+    set(COMPACT_WAKE_SERVICE_SOURCE "compact_wake_service.c")
+    set(COMPACT_INPUT_SERVICE_SOURCE "compact_input_service.c")
+    set(COMPACT_CONNECTIVITY_SERVICE_SOURCE "compact_connectivity_service.c")
+    set(COMPACT_PERIPHERAL_SERVICE_SOURCE "compact_peripheral_service.c")
+    set(COMPACT_VISUAL_PROFILE_SERVICE_SOURCE "compact_visual_profile_service.c")
     set(BOARD_PROFILE_SOURCE "boards/bread_compact/board_profile.c")
     # Kconfig is authoritative once configured; avoid stale profile-specific
     # component requirements from a reused build directory.
@@ -23,6 +44,13 @@ elseif(CONFIG_MACLAW_BOARD_FANGTANG_4G)
     # renderer. Fangtang identity composition is a separate profile-private
     # source; it must not include Bread's board-port translation unit.
     set(BOARD_PORT_SOURCE "compact_renderer.c")
+    set(COMPACT_DISPLAY_SERVICE_SOURCE "compact_display_service.c")
+    set(COMPACT_AUDIO_SERVICE_SOURCE "compact_audio_service.c")
+    set(COMPACT_WAKE_SERVICE_SOURCE "compact_wake_service.c")
+    set(COMPACT_INPUT_SERVICE_SOURCE "compact_input_service.c")
+    set(COMPACT_CONNECTIVITY_SERVICE_SOURCE "compact_connectivity_service.c")
+    set(COMPACT_PERIPHERAL_SERVICE_SOURCE "compact_peripheral_service.c")
+    set(COMPACT_VISUAL_PROFILE_SERVICE_SOURCE "compact_visual_profile_service.c")
     set(BOARD_PROFILE_SOURCE "boards/fangtang_4g/board_profile.c")
     set(MACLAW_PROFILE "fangtang-4g")
 elseif(CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C)
@@ -32,9 +60,23 @@ elseif(CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C)
     # treated as a reskinned rectangular Bread display.
     set(BOARD_PORT_SOURCE "board_port.c")
     set(BOARD_PROFILE_SOURCE "boards/waveshare_amoled_1_75c/board_profile.c")
+    set(ROUND_INPUT_SERVICE_SOURCE "round_input_service.c")
+    set(ROUND_INPUT_PROFILE_SERVICE_SOURCE "round_input_profile_service.c")
+    set(ROUND_AUDIO_SERVICE_SOURCE "round_audio_service.c")
+    set(ROUND_WAKE_SERVICE_SOURCE "round_wake_service.c")
+    set(ROUND_DISPLAY_SERVICE_SOURCE "round_display_service.c")
+    set(ROUND_VISUAL_PROFILE_SERVICE_SOURCE "round_visual_profile_service.c")
+    set(ROUND_PERIPHERAL_SERVICE_SOURCE "round_peripheral_service.c")
     set(MACLAW_PROFILE "waveshare-amoled-1.75c")
 elseif(CONFIG_MACLAW_BOARD_ECHOEAR_2ST)
     set(MACLAW_PROFILE "echoear-2st")
+    set(ROUND_INPUT_SERVICE_SOURCE "round_input_service.c")
+    set(ROUND_INPUT_PROFILE_SERVICE_SOURCE "round_input_profile_service.c")
+    set(ROUND_AUDIO_SERVICE_SOURCE "round_audio_service.c")
+    set(ROUND_WAKE_SERVICE_SOURCE "round_wake_service.c")
+    set(ROUND_DISPLAY_SERVICE_SOURCE "round_display_service.c")
+    set(ROUND_VISUAL_PROFILE_SERVICE_SOURCE "round_visual_profile_service.c")
+    set(ROUND_PERIPHERAL_SERVICE_SOURCE "round_peripheral_service.c")
 endif()
 
 # Keep the cellular implementation entirely out of the established EchoEar and
@@ -76,14 +118,12 @@ endif()
 
 if(MACLAW_PROFILE STREQUAL "fangtang-4g" OR CONFIG_MACLAW_BOARD_FANGTANG_4G)
     list(APPEND MACLAW_BOARD_SRCS
-         "ml307_transport.cpp"
-         "boards/fangtang_4g/fangtang_peripheral_adapter.c"
-         "boards/fangtang_4g/fangtang_input_selector.c"
+         "boards/fangtang_4g/fangtang_ml307_transport.cpp"
          "boards/fangtang_4g/fangtang_network_identity.c"
          "boards/fangtang_4g/fangtang_identity_art_renderer.c"
          "boards/fangtang_4g/fangtang_identity_composer.c"
          "boards/fangtang_4g/fangtang_identity_network_renderer.c"
-         "boards/fangtang_4g/board_port_fangtang_4g.c")
+         "boards/fangtang_4g/fangtang_visual_profile.c")
 endif()
 
 set(MACLAW_EMBED_FILES)
@@ -107,7 +147,7 @@ if(CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C)
 endif()
 
 idf_component_register(
-    SRCS "main.c" "app_ui.c" "app_intent_service.c" "operation_context.c" "alarm_manager.c" "fall_detection_service.c" "sleep_schedule_service.c" "wake_deadline_service.c" "resource_pressure_service.c" "battery_policy_service.c" "persistence_service.c" "task_registry.c" "weather_cache_service.c" "meeting_recovery_service.c" "configuration_service.c" "device_tool_registry.c" "update_service.c" "provisioning_failure_injection.c" "mp3_player.c" "firmware_identity.c" "device_api.c" "audio_service.c" "display_service.c" "connectivity_service.c" "input_service.c" "lifecycle_service.c" "platform_audio.c" "platform_connectivity.c" "platform_display.c" "platform_input.c" "platform_lifecycle.c" "platform_power.c" "platform_resource.c" "platform_sensor.c" "platform_storage.c" "power_service.c" "power_lease_service.c" "${BOARD_PROFILE_SOURCE}" "${BOARD_PORT_SOURCE}" ${MACLAW_BOARD_SRCS}
+    SRCS "main.c" "app_ui.c" "app_intent_service.c" "operation_context.c" "alarm_manager.c" "fall_detection_service.c" "sleep_schedule_service.c" "wake_deadline_service.c" "resource_pressure_service.c" "battery_policy_service.c" "persistence_service.c" "task_registry.c" "weather_cache_service.c" "meeting_recovery_service.c" "configuration_service.c" "device_tool_registry.c" "update_service.c" "provisioning_failure_injection.c" "mp3_player.c" "firmware_identity.c" "device_api.c" "audio_service.c" "display_service.c" "connectivity_service.c" "input_service.c" "lifecycle_service.c" "motion_service.c" "storage_service.c" "platform_audio.c" "platform_connectivity.c" "platform_display.c" "platform_input.c" "platform_lifecycle.c" "platform_power.c" "platform_resource.c" "platform_sensor.c" "platform_storage.c" "power_service.c" "power_lease_service.c" ${ROUND_INPUT_SERVICE_SOURCE} ${ROUND_INPUT_PROFILE_SERVICE_SOURCE} ${ROUND_AUDIO_SERVICE_SOURCE} ${ROUND_WAKE_SERVICE_SOURCE} ${ROUND_DISPLAY_SERVICE_SOURCE} ${ROUND_VISUAL_PROFILE_SERVICE_SOURCE} ${ROUND_PERIPHERAL_SERVICE_SOURCE} ${COMPACT_DISPLAY_SERVICE_SOURCE} ${COMPACT_AUDIO_SERVICE_SOURCE} ${COMPACT_WAKE_SERVICE_SOURCE} ${COMPACT_INPUT_SERVICE_SOURCE} ${COMPACT_CONNECTIVITY_SERVICE_SOURCE} ${COMPACT_PERIPHERAL_SERVICE_SOURCE} ${COMPACT_VISUAL_PROFILE_SERVICE_SOURCE} "${BOARD_PROFILE_SOURCE}" "${BOARD_PORT_SOURCE}" ${MACLAW_BOARD_SRCS}
     INCLUDE_DIRS "."
     EMBED_FILES ${MACLAW_EMBED_FILES}
     REQUIRES ${MACLAW_COMPONENT_REQUIRES}

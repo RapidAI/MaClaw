@@ -59,15 +59,17 @@
     var tenantAdmin = isTenantAdminProfile(profile);
     var tasks = tenantAdmin
       ? ['loadOverviewTenantInfo', 'loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadTenantMailSenderName', 'loadTenantMigrationSettings', 'loadTenantDigitalAssetsSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
-      : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants', 'loadTenantDigitalAssetsSettings'];
+      : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants'];
     var results = await Promise.allSettled(tasks.map(callIfAvailable));
     reportRefreshFailures(results);
-    // After login/refresh: soft-block when system-free is not ready.
-    if (typeof global.maybeShowSystemFreeGate === 'function') {
-      try { await global.maybeShowSystemFreeGate(false); } catch (_) {}
-    }
-    if (typeof global.applyConfigAgentI18n === 'function') {
-      try { global.applyConfigAgentI18n(); } catch (_) {}
+    // system-free guidance and the Config Assistant are tenant-admin only.
+    if (tenantAdmin) {
+      if (typeof global.maybeShowSystemFreeGate === 'function') {
+        try { await global.maybeShowSystemFreeGate(false); } catch (_) {}
+      }
+      if (typeof global.initConfigAgent === 'function') {
+        try { global.initConfigAgent(); } catch (_) {}
+      }
     }
   };
 

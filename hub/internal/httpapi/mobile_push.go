@@ -191,6 +191,11 @@ func mobileNormalizePushPlatform(p string) string {
 }
 
 func mobilePushUpsertDevice(tenantID, userID string, dev mobilePushDevice) {
+	mobileKnowledgePurgeState.RLock()
+	if !mobileOwnerWriteAllowedLocked(tenantID, userID) {
+		mobileKnowledgePurgeState.RUnlock()
+		return
+	}
 	key := mobilePushUserKey(tenantID, userID)
 	dev.Platform = mobileNormalizePushPlatform(dev.Platform)
 	dev.Token = strings.TrimSpace(dev.Token)
@@ -214,6 +219,7 @@ func mobilePushUpsertDevice(tenantID, userID string, dev mobilePushDevice) {
 	}
 	mobilePushState.devices[key] = out
 	mobilePushState.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 	mobilePushSchedulePersist()
 }
 
@@ -263,6 +269,11 @@ func mobilePushListDevices(tenantID, userID string) []mobilePushDevice {
 }
 
 func mobilePushEnqueue(tenantID, userID string, item mobilePushPendingItem) mobilePushPendingItem {
+	mobileKnowledgePurgeState.RLock()
+	if !mobileOwnerWriteAllowedLocked(tenantID, userID) {
+		mobileKnowledgePurgeState.RUnlock()
+		return item
+	}
 	key := mobilePushUserKey(tenantID, userID)
 	if item.ID == "" {
 		item.ID = mobileNewPushID()
@@ -298,6 +309,7 @@ func mobilePushEnqueue(tenantID, userID string, item mobilePushPendingItem) mobi
 	}
 	mobilePushState.pending[key] = kept
 	mobilePushState.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 	mobilePushSchedulePersist()
 	return item
 }
@@ -538,7 +550,7 @@ func mobilePushNonEmpty(parts ...string) []string {
 // mobilePushOnRealtimeEvent enqueues pending + optionally delivers remote push
 // when the viewer has no live realtime socket (or remote is always preferred for terminal).
 func mobilePushOnRealtimeEvent(tenantID, userID string, event map[string]any, realtimeClients int) {
-	if event == nil || strings.TrimSpace(userID) == "" {
+	if event == nil || !mobileOwnerWriteAllowed(tenantID, userID) {
 		return
 	}
 	typ, _ := event["type"].(string)
@@ -565,8 +577,8 @@ func mobilePushOnRealtimeEvent(tenantID, userID string, event map[string]any, re
 		TaskID:    taskID,
 		DedupeKey: dedupe,
 		Data: map[string]any{
-			"type":   typ,
-			"status": status,
+			"type":    typ,
+			"status":  status,
 			"task_id": taskID,
 		},
 	})
@@ -583,7 +595,9 @@ func mobilePushOnRealtimeEvent(tenantID, userID string, event map[string]any, re
 }
 
 func mobilePushDeliverRemote(tenantID, userID string, item mobilePushPendingItem) {
-	if !mobilePushRemoteConfigured() {
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	if !mobileOwnerWriteAllowedLocked(tenantID, userID) || !mobilePushRemoteConfigured() {
 		return
 	}
 	// Throttle identical remote pushes (5s).
@@ -631,16 +645,16 @@ func mobilePushDeliverRemote(tenantID, userID string, item mobilePushPendingItem
 		}
 		if url := mobilePushWebhookURL(); url != "" {
 			_ = mobilePushPostWebhook(url, map[string]any{
-				"tenant_id":  tenantID,
-				"user_id":    userID,
-				"platform":   d.Platform,
-				"token":      d.Token,
-				"device_id":  d.DeviceID,
-				"title":      item.Title,
-				"body":       item.Body,
-				"payload":    item.Payload,
-				"data":       item.Data,
-				"push_id":    item.ID,
+				"tenant_id": tenantID,
+				"user_id":   userID,
+				"platform":  d.Platform,
+				"token":     d.Token,
+				"device_id": d.DeviceID,
+				"title":     item.Title,
+				"body":      item.Body,
+				"payload":   item.Payload,
+				"data":      item.Data,
+				"push_id":   item.ID,
 			})
 		}
 		if mobilePushLogOnlyEnabled() {

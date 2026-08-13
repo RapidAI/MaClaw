@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -68,14 +69,23 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	}
 	// Rule-based turn routing: cheap tasks → aux/fast routes; coding → primary/reasoning.
 	// Decision is applied onto runState in the dispatcher after startState returns.
-	routedCfg, routeDecision := h.applyTurnModelRoute(cfg, opts.UserText, ctx, opts.Attachments)
+	allowLocalAttachmentStaging := ctx == nil || ctx.LansengerGroupPermissions == nil
+	userText := opts.UserText
+	attachments := append([]MessageAttachment(nil), opts.Attachments...)
+	if allowLocalAttachmentStaging {
+		localImages, notes := selectedLocalImageAttachments(userText)
+		attachments = append(attachments, localImages...)
+		if len(notes) > 0 {
+			userText = strings.TrimSpace(userText + "\n\n" + strings.Join(notes, "\n"))
+		}
+	}
+	routedCfg, routeDecision := h.applyTurnModelRoute(cfg, userText, ctx, attachments)
 	cfg = routedCfg
-	phase := h.initialAgentLoopPhase(opts.UserText, ctx)
+	phase := h.initialAgentLoopPhase(userText, ctx)
 
-	// Attachments are only staged when the conversation is built below. Use the
-	// same current-turn marker here so Computer Use cannot be surfaced in the
-	// gap between tool routing and local attachment staging.
-	toolRoutingText := computerUseRoutingText(opts.UserText, opts.Attachments)
+	// Desktop image paths are materialized above before routing. Reuse that
+	// same current-turn attachment set for tool routing as well.
+	toolRoutingText := computerUseRoutingText(userText, attachments)
 	if ctx != nil {
 		ctx.ComputerUseBlockedForLocalFileWork = localFileWorkBlocksComputerUse(toolRoutingText)
 	}
@@ -97,8 +107,11 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		systemPrompt += extra
 	}
 
-	allowLocalAttachmentStaging := ctx == nil || ctx.LansengerGroupPermissions == nil
-	conversationStart := h.buildAgentLoopConversationStart(ctx.ID, opts.UserID, opts.UserText, systemPrompt, opts.Platform, opts.Attachments, cfg, opts.History, opts.PriorReplanCount, recorderBundle.Recorder, tools, opts.SendProgress, allowLocalAttachmentStaging)
+	loopID := ""
+	if ctx != nil {
+		loopID = ctx.ID
+	}
+	conversationStart := h.buildAgentLoopConversationStart(loopID, opts.UserID, userText, systemPrompt, opts.Platform, attachments, cfg, opts.History, opts.PriorReplanCount, recorderBundle.Recorder, tools, opts.SendProgress, allowLocalAttachmentStaging)
 	if telemetry != nil {
 		telemetry.PreLLMConversationElapsed = conversationStart.Elapsed
 	}
@@ -106,9 +119,13 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	BrowserDiagCP4_FinalToolList(tools, 0, len(tools))
 
 	limits := computeAgentLoopIterationLimits(ctx, configStart.MaxIterations, opts.MinIterations)
+	loopKind := LoopKind(0)
+	if ctx != nil {
+		loopKind = ctx.Kind
+	}
 	log.Printf("[AgentLoop] start loop=%s kind=%d maxIter=%d effectiveMax=%d minIterations=%d configCap=%d grace=%d user=%q task=%q",
-		ctx.ID, ctx.Kind, configStart.MaxIterations, limits.EffectiveMax, opts.MinIterations, config.MaxAgentIterationsCap, limits.ChatFinalizeGrace, opts.UserID, truncateRunes(opts.UserText, 80))
-	if ctx.Runtime.Execution.Layer != "" {
+		loopID, loopKind, configStart.MaxIterations, limits.EffectiveMax, opts.MinIterations, config.MaxAgentIterationsCap, limits.ChatFinalizeGrace, opts.UserID, truncateRunes(userText, 80))
+	if ctx != nil && ctx.Runtime.Execution.Layer != "" {
 		log.Printf("[exec-router] request_id=%q user=%q layer=%s task=%s prompt=%s confidence=%.2f reason=%q tool_budget=%d iteration_budget=%d",
 			ctx.Runtime.RequestID, opts.UserID, ctx.Runtime.Execution.Layer, ctx.Runtime.Execution.TaskType, ctx.Runtime.Execution.PromptProfile, ctx.Runtime.Execution.Confidence, ctx.Runtime.Execution.Reason, ctx.Runtime.Execution.ToolBudget, ctx.Runtime.Execution.IterationBudget)
 	}

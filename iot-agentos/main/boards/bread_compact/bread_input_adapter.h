@@ -12,6 +12,10 @@
 #error "Bread input adapter may only be included by the Bread Compact profile"
 #endif
 
+#ifndef MACLAW_COMPACT_INPUT_ADAPTER_IMPLEMENTATION
+#error "Bread input adapter is owned exclusively by compact_input_service.c"
+#endif
+
 #include "driver/gpio.h"
 #include "esp_err.h"
 
@@ -45,12 +49,6 @@ static inline esp_err_t bread_input_init(void) {
  * must not learn the number, polarity or GPIO identity of this enclosure's
  * controls.  Keep raw sampling and the one physical initialization contract
  * in the profile adapter. */
-typedef struct {
-    bool activate_released;
-    bool volume_up_released;
-    bool volume_down_released;
-} compact_input_raw_state_t;
-
 static inline esp_err_t compact_input_adapter_init(void) {
     return bread_input_init();
 }
@@ -65,6 +63,10 @@ static inline void compact_input_adapter_read_raw(compact_input_raw_state_t *out
 
 static inline bool compact_input_adapter_has_volume_keys(void) {
     return true;
+}
+
+static inline bool compact_input_adapter_activate_is_released_now(void) {
+    return bread_input_activate_is_released(gpio_get_level(BREAD_INPUT_ACTIVATE_GPIO));
 }
 
 static inline int64_t compact_input_adapter_activate_debounce_us(void) {
@@ -100,12 +102,8 @@ static inline BaseType_t compact_input_adapter_start_scan_task(
 /* Bread has no boot-time alternate transport selector.  The common startup
  * sequence still invokes this neutral adapter hook so it never needs a board
  * model conditional merely to preserve Fangtang's bounded GPIO0 window. */
-static inline void compact_input_adapter_run_startup_selector(void) {}
-
-static inline bool compact_input_adapter_consume_startup_selector_result(
-    uint32_t window_ms) {
-    (void)window_ms;
-    return false;
+static inline uint32_t compact_input_adapter_startup_selector_window_ms(void) {
+    return 0;
 }
 
 /* Response paging is an input-capability fact. Shared response policy chooses

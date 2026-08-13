@@ -8,7 +8,9 @@ package agent
 // import and alias these types.
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -118,6 +120,12 @@ type UnfinishedTaskSlot struct {
 	ResumePrompt     string                   `json:"resume_prompt,omitempty"`
 	Source           UnfinishedTaskSlotSource `json:"source,omitempty"`
 	EvidenceScopeKey string                   `json:"evidence_scope_key,omitempty"`
+	// Recovery metadata is diagnostic evidence only. It must never be used to
+	// replay an interrupted tool call automatically.
+	LastCheckpointAt time.Time `json:"last_checkpoint_at,omitempty"`
+	LastToolName     string    `json:"last_tool_name,omitempty"`
+	SideEffectState  string    `json:"side_effect_state,omitempty"`
+	RecoveryMode     string    `json:"recovery_mode,omitempty"`
 	// RuntimeTaskID links UI-facing recovery state to the durable coding
 	// execution ledger. It is an opaque identifier only—never a command,
 	// tool payload, prompt, credential, or replay plan.
@@ -169,6 +177,9 @@ type conversationSession struct {
 	inFlightProjectPath string // project path when the in-flight task was set
 	inFlightSetAt       time.Time
 	inFlightRunID       string
+	inFlightSequence    uint64
+	inFlightLastTool    string
+	inFlightSideEffect  string
 }
 
 type persistedSession struct {
@@ -181,7 +192,23 @@ type persistedSession struct {
 	InFlightProjectPath string              `json:"in_flight_project_path,omitempty"`
 	InFlightSetAt       time.Time           `json:"in_flight_set_at,omitempty"`
 	InFlightRunID       string              `json:"in_flight_run_id,omitempty"`
+	InFlightSequence    uint64              `json:"in_flight_sequence,omitempty"`
+	InFlightLastTool    string              `json:"in_flight_last_tool,omitempty"`
+	InFlightSideEffect  string              `json:"in_flight_side_effect,omitempty"`
 }
+
+// InFlightCheckpoint is evidence for a durable conversation checkpoint. It
+// intentionally contains no tool arguments or result payloads.
+type InFlightCheckpoint struct {
+	Sequence        uint64
+	LastToolName    string
+	SideEffectState string
+}
+
+// ErrInFlightCheckpointRunConflict means an older loop attempted to overwrite
+// recovery evidence that is now owned by a different run. Callers must stop
+// automatic execution rather than guessing which task owns the session.
+var ErrInFlightCheckpointRunConflict = errors.New("in-flight checkpoint run conflict")
 
 type memorySnapshot struct {
 	Sessions map[string]persistedSession `json:"sessions"`
@@ -197,9 +224,20 @@ type memoryShard struct {
 // name, it is not Maclaw long-term memory; durable user/agent memories,
 // recall, audit, and surgery are owned by corelib/memory.Store.
 type ConversationMemory struct {
-	shards         [MemoryShardCount]*memoryShard
-	Archiver       ConversationArchiver
-	persistMu      sync.Mutex
+	shards    [MemoryShardCount]*memoryShard
+	Archiver  ConversationArchiver
+	persistMu sync.Mutex
+	// flushMu serializes the dirty-state check with the complete disk write.
+	// Without it, a second FlushNow could observe dirty=false after another
+	// goroutine claimed the pending write, then return before that write has
+	// reached disk. Recovery checkpoints rely on FlushNow being a completion
+	// barrier, not merely a request to start a flush.
+	flushMu sync.Mutex
+	// checkpointMu keeps a synchronous checkpoint snapshot and the following
+	// same-run clear serialised. Without it a newer mutation can otherwise be
+	// captured by saveToDisk while FlushNow is still reporting an older
+	// checkpoint as durable.
+	checkpointMu   sync.Mutex
 	storePath      string
 	evictionStopCh chan struct{}
 	persistStopCh  chan struct{}
@@ -235,7 +273,17 @@ func NewConversationMemory() *ConversationMemory {
 func NewPersistentConversationMemory(storePath string) *ConversationMemory {
 	cm := NewConversationMemory()
 	cm.storePath = storePath
-	_ = cm.loadFromDisk()
+	if err := cm.loadFromDisk(); err != nil {
+		// Do not let the startup rewrite below replace an unreadable store with an
+		// empty snapshot. The caller can still use an empty in-memory instance,
+		// but the on-disk evidence remains available for diagnosis/recovery.
+		log.Printf("[ConversationMemory] load persistent store failed path=%q err=%v", storePath, err)
+		return cm
+	}
+	// loadFromDisk may have atomically promoted a crash marker to a visible
+	// recovery slot. Persist that transition before returning so a second crash
+	// during startup cannot re-promote the same marker.
+	_ = cm.FlushNow()
 	return cm
 }
 
@@ -276,26 +324,28 @@ func (cm *ConversationMemory) EvictExpired() {
 	var toArchive []expiredEntry
 	changed := false
 
-	for _, sh := range cm.shards {
-		sh.mu.Lock()
-		for uid, s := range sh.sessions {
-			if now.Sub(s.lastAccess) > MemoryTTL {
-				if conversationSessionEvictExempt(uid, s) {
-					continue
+	cm.checkpointLockedMutation(func() {
+		for _, sh := range cm.shards {
+			sh.mu.Lock()
+			for uid, s := range sh.sessions {
+				if now.Sub(s.lastAccess) > MemoryTTL {
+					if conversationSessionEvictExempt(uid, s) {
+						continue
+					}
+					if cm.Archiver != nil {
+						toArchive = append(toArchive, expiredEntry{uid, s.entries})
+					}
+					delete(sh.sessions, uid)
+					changed = true
 				}
-				if cm.Archiver != nil {
-					toArchive = append(toArchive, expiredEntry{uid, s.entries})
-				}
-				delete(sh.sessions, uid)
-				changed = true
 			}
+			sh.mu.Unlock()
 		}
-		sh.mu.Unlock()
-	}
 
-	if changed {
-		cm.markDirtyAndScheduleFlush()
-	}
+		if changed {
+			cm.markDirtyAndScheduleFlush()
+		}
+	})
 
 	for _, e := range toArchive {
 		if err := cm.Archiver.Archive(e.userID, e.entries); err != nil {
@@ -381,6 +431,8 @@ func (cm *ConversationMemory) flushDirty() error {
 	if cm.storePath == "" {
 		return nil
 	}
+	cm.flushMu.Lock()
+	defer cm.flushMu.Unlock()
 	cm.persistStateMu.Lock()
 	if !cm.dirty {
 		cm.persistStateMu.Unlock()
@@ -461,21 +513,29 @@ func (cm *ConversationMemory) ActiveBranchTipID(userID string) string {
 // active branch tip. Existing inactive branches are preserved when entries carry
 // branch metadata.
 func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
-	entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
-	now := time.Now()
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	s := sh.sessions[userID]
-	if s == nil {
-		s = &conversationSession{}
-		sh.sessions[userID] = s
-	}
+	cm.checkpointLockedMutation(func() {
+		entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
+		now := time.Now()
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			s = &conversationSession{}
+			sh.sessions[userID] = s
+		}
+		cm.saveEntriesLocked(s, entries, now)
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
+}
+
+// saveEntriesLocked is Save's branch-preserving mutation. The caller must
+// hold the owning user shard write lock.
+func (cm *ConversationMemory) saveEntriesLocked(s *conversationSession, entries []ConversationEntry, now time.Time) {
 	if len(entries) == 0 {
 		s.entries = nil
 		s.activeBranchTipID = ""
 		s.lastAccess = now
-		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
 		return
 	}
 	hasBranchMetadata := false
@@ -490,16 +550,12 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 			s.activeBranchTipID = tip
 			s.entries = all
 			s.lastAccess = now
-			sh.mu.Unlock()
-			cm.markDirtyAndScheduleFlush()
 			return
 		}
 		tree := NewConversationTree(entries)
 		s.activeBranchTipID = tree.TipID()
 		s.entries = tree.AllConversationEntries()
 		s.lastAccess = now
-		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
 		return
 	}
 	tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
@@ -521,8 +577,6 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 	s.activeBranchTipID = tree.TipID()
 	s.entries = tree.AllConversationEntries()
 	s.lastAccess = now
-	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
 }
 
 // Append atomically appends entries to a user's conversation history.
@@ -533,47 +587,53 @@ func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry
 	if len(entries) == 0 {
 		return
 	}
-	entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
-	if len(entries) == 0 {
-		return
-	}
-	now := time.Now()
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	s := sh.sessions[userID]
-	if s == nil {
-		s = &conversationSession{}
-		sh.sessions[userID] = s
-	}
-	tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
-	for _, entry := range entries {
-		tree.Append(entry)
-	}
-	s.activeBranchTipID = tree.TipID()
-	s.entries = tree.AllConversationEntries()
-	s.lastAccess = now
-	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
+	cm.checkpointLockedMutation(func() {
+		entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
+		if len(entries) == 0 {
+			return
+		}
+		now := time.Now()
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			s = &conversationSession{}
+			sh.sessions[userID] = s
+		}
+		tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
+		for _, entry := range entries {
+			tree.Append(entry)
+		}
+		s.activeBranchTipID = tree.TipID()
+		s.entries = tree.AllConversationEntries()
+		s.lastAccess = now
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
 }
 
 // SetActiveBranchTip rewinds or switches the visible conversation branch while
 // keeping every node in the tree.
 func (cm *ConversationMemory) SetActiveBranchTip(userID, tipID string) bool {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	s := sh.sessions[userID]
-	if s == nil {
-		return false
-	}
-	tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
-	if !tree.BranchAt(tipID) {
-		return false
-	}
-	s.activeBranchTipID = tree.TipID()
-	s.lastAccess = time.Now()
-	cm.markDirtyAndScheduleFlush()
-	return true
+	changed := false
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		defer sh.mu.Unlock()
+		s := sh.sessions[userID]
+		if s == nil {
+			return
+		}
+		tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
+		if !tree.BranchAt(tipID) {
+			return
+		}
+		s.activeBranchTipID = tree.TipID()
+		s.lastAccess = time.Now()
+		cm.markDirtyAndScheduleFlush()
+		changed = true
+	})
+	return changed
 }
 
 // DeduplicateAdjacentAssistantEntries removes exact adjacent assistant text
@@ -669,11 +729,13 @@ func containsString(values []string, target string) bool {
 
 // Clear removes all conversation data for a user.
 func (cm *ConversationMemory) Clear(userID string) {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	delete(sh.sessions, userID)
-	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		delete(sh.sessions, userID)
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
 }
 
 // LastAccessTime returns the last access time for a user's session.
@@ -698,6 +760,22 @@ func (cm *ConversationMemory) GetUnfinishedSlot(userID string) *UnfinishedTaskSl
 		return nil
 	}
 	return CloneUnfinishedTaskSlot(s.unfinishedSlot)
+}
+
+// UnfinishedSlots returns a stable snapshot of recovery slots for startup UI
+// projection. It never binds or resumes a slot.
+func (cm *ConversationMemory) UnfinishedSlots() []*UnfinishedTaskSlot {
+	slots := make([]*UnfinishedTaskSlot, 0)
+	for _, sh := range cm.shards {
+		sh.mu.RLock()
+		for _, s := range sh.sessions {
+			if s != nil && s.unfinishedSlot != nil {
+				slots = append(slots, CloneUnfinishedTaskSlot(s.unfinishedSlot))
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	return slots
 }
 
 func (cm *ConversationMemory) ActiveUnfinishedSlot(userID string) *UnfinishedTaskSlot {
@@ -726,19 +804,67 @@ func (cm *ConversationMemory) UpsertUnfinishedSlot(userID string, slot *Unfinish
 		clone.CreatedAt = time.Now()
 	}
 	clone.UpdatedAt = time.Now()
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	s := sh.sessions[userID]
-	if s == nil {
-		s = &conversationSession{}
-		sh.sessions[userID] = s
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			s = &conversationSession{}
+			sh.sessions[userID] = s
+		}
+		s.unfinishedSlot = clone
+		if s.lastAccess.IsZero() {
+			s.lastAccess = time.Now()
+		}
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
+}
+
+// ReplaceInFlightWithUnfinishedSlot atomically records a recovery slot and
+// clears the marker. It refuses to overwrite a pending user-facing slot, but
+// replaces an already resolved slot with the newer interrupted-loop snapshot.
+func (cm *ConversationMemory) ReplaceInFlightWithUnfinishedSlot(userID string, slot *UnfinishedTaskSlot) bool {
+	if slot == nil {
+		return false
 	}
-	s.unfinishedSlot = clone
-	if s.lastAccess.IsZero() {
-		s.lastAccess = time.Now()
+	clone := CloneUnfinishedTaskSlot(slot)
+	if strings.TrimSpace(clone.UserID) == "" {
+		clone.UserID = userID
 	}
-	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
+	now := time.Now()
+	if clone.CreatedAt.IsZero() {
+		clone.CreatedAt = now
+	}
+	clone.UpdatedAt = now
+	replaced := false
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			s = &conversationSession{}
+			sh.sessions[userID] = s
+		}
+		if unfinishedSlotIsPendingDecision(s.unfinishedSlot) {
+			sh.mu.Unlock()
+			return
+		}
+		s.unfinishedSlot = clone
+		s.activeSlotID = ""
+		s.inFlightTask = ""
+		s.inFlightProjectPath = ""
+		s.inFlightSetAt = time.Time{}
+		s.inFlightRunID = ""
+		s.inFlightSequence = 0
+		s.inFlightLastTool = ""
+		s.inFlightSideEffect = ""
+		s.lastAccess = now
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+		replaced = true
+	})
+	return replaced
 }
 
 func (cm *ConversationMemory) BindUnfinishedSlot(userID, slotID string) bool {
@@ -746,91 +872,110 @@ func (cm *ConversationMemory) BindUnfinishedSlot(userID, slotID string) bool {
 	if slotID == "" {
 		return false
 	}
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	s := sh.sessions[userID]
-	if s == nil || s.unfinishedSlot == nil || s.unfinishedSlot.SlotID != slotID {
-		return false
-	}
-	s.activeSlotID = slotID
-	s.unfinishedSlot.Status = UnfinishedTaskSlotStatusResumed
-	s.unfinishedSlot.BoundAt = time.Now()
-	s.unfinishedSlot.UpdatedAt = time.Now()
-	s.lastAccess = time.Now()
-	cm.markDirtyAndScheduleFlush()
-	return true
+	bound := false
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil || s.unfinishedSlot == nil || s.unfinishedSlot.SlotID != slotID {
+			sh.mu.Unlock()
+			return
+		}
+		now := time.Now()
+		s.activeSlotID = slotID
+		s.unfinishedSlot.Status = UnfinishedTaskSlotStatusResumed
+		s.unfinishedSlot.BoundAt = now
+		s.unfinishedSlot.UpdatedAt = now
+		s.lastAccess = now
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+		bound = true
+	})
+	return bound
 }
 
 func (cm *ConversationMemory) ClearActiveSlot(userID string) {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	if s := sh.sessions[userID]; s != nil {
-		s.activeSlotID = ""
-		s.lastAccess = time.Now()
-	}
-	cm.markDirtyAndScheduleFlush()
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		if s := sh.sessions[userID]; s != nil {
+			s.activeSlotID = ""
+			s.lastAccess = time.Now()
+		}
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
 }
 
 func (cm *ConversationMemory) DismissUnfinishedSlot(userID, slotID string) {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	if s := sh.sessions[userID]; s != nil && s.unfinishedSlot != nil {
-		if slotID == "" || s.unfinishedSlot.SlotID == strings.TrimSpace(slotID) {
-			s.unfinishedSlot = nil
-			s.activeSlotID = ""
-			s.lastAccess = time.Now()
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		if s := sh.sessions[userID]; s != nil && s.unfinishedSlot != nil {
+			if slotID == "" || s.unfinishedSlot.SlotID == strings.TrimSpace(slotID) {
+				s.unfinishedSlot = nil
+				s.activeSlotID = ""
+				s.lastAccess = time.Now()
+			}
 		}
-	}
-	cm.markDirtyAndScheduleFlush()
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
 }
 
 func (cm *ConversationMemory) CompleteUnfinishedSlot(userID, slotID string) {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	if s := sh.sessions[userID]; s != nil && s.unfinishedSlot != nil {
-		if slotID == "" || s.unfinishedSlot.SlotID == strings.TrimSpace(slotID) {
-			s.unfinishedSlot.Status = UnfinishedTaskSlotStatusCompleted
-			s.unfinishedSlot.UpdatedAt = time.Now()
-			s.activeSlotID = ""
-			s.lastAccess = time.Now()
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		if s := sh.sessions[userID]; s != nil && s.unfinishedSlot != nil {
+			if slotID == "" || s.unfinishedSlot.SlotID == strings.TrimSpace(slotID) {
+				now := time.Now()
+				s.unfinishedSlot.Status = UnfinishedTaskSlotStatusCompleted
+				s.unfinishedSlot.UpdatedAt = now
+				s.activeSlotID = ""
+				s.lastAccess = now
+			}
 		}
-	}
-	cm.markDirtyAndScheduleFlush()
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
 }
 
 func (cm *ConversationMemory) ClearConversationButKeepSlot(userID string) {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	s := sh.sessions[userID]
-	if s == nil {
-		return
-	}
-	s.entries = nil
-	s.activeBranchTipID = ""
-	s.activeSlotID = ""
-	s.lastAccess = time.Now()
-	cm.markDirtyAndScheduleFlush()
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			sh.mu.Unlock()
+			return
+		}
+		s.entries = nil
+		s.activeBranchTipID = ""
+		s.activeSlotID = ""
+		s.lastAccess = time.Now()
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
 }
 
 func (cm *ConversationMemory) ClearConversationAndDismissSlot(userID string) {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	s := sh.sessions[userID]
-	if s == nil {
-		return
-	}
-	s.entries = nil
-	s.activeBranchTipID = ""
-	s.unfinishedSlot = nil
-	s.activeSlotID = ""
-	s.lastAccess = time.Now()
-	cm.markDirtyAndScheduleFlush()
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			sh.mu.Unlock()
+			return
+		}
+		s.entries = nil
+		s.activeBranchTipID = ""
+		s.unfinishedSlot = nil
+		s.activeSlotID = ""
+		s.lastAccess = time.Now()
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
 }
 
 // --- In-flight task marker ---
@@ -865,93 +1010,361 @@ func (cm *ConversationMemory) SetInFlightTask(userID, task string, projectPath .
 }
 
 func (cm *ConversationMemory) SetInFlightTaskForRun(userID, task, projectPath, runID string) {
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			s = &conversationSession{}
+			sh.sessions[userID] = s
+		}
+		now := time.Now()
+		s.inFlightTask = task
+		s.inFlightSetAt = now
+		s.inFlightProjectPath = projectPath
+		s.inFlightRunID = strings.TrimSpace(runID)
+		s.inFlightSequence = 0
+		s.inFlightLastTool = ""
+		s.inFlightSideEffect = ""
+		s.lastAccess = now
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
+}
+
+// PersistInFlightCheckpoint writes the complete conversation and recovery
+// marker under a single user-shard lock, then synchronously persists that
+// snapshot. This prevents intentionally creating a marker-only recovery state.
+func (cm *ConversationMemory) PersistInFlightCheckpoint(userID string, entries []ConversationEntry, task, projectPath, runID string, checkpoint InFlightCheckpoint) error {
+	cm.checkpointMu.Lock()
+	defer cm.checkpointMu.Unlock()
+	return cm.persistInFlightCheckpointLocked(userID, entries, task, projectPath, runID, checkpoint)
+}
+
+func (cm *ConversationMemory) persistInFlightCheckpointLocked(userID string, entries []ConversationEntry, task, projectPath, runID string, checkpoint InFlightCheckpoint) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return fmt.Errorf("%w: empty run ID", ErrInFlightCheckpointRunConflict)
+	}
+	entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
+	createdSession := false
 	if s == nil {
 		s = &conversationSession{}
 		sh.sessions[userID] = s
+		createdSession = true
 	}
+	if unfinishedSlotIsPendingDecision(s.unfinishedSlot) {
+		slotID := s.unfinishedSlot.SlotID
+		if createdSession {
+			delete(sh.sessions, userID)
+		}
+		sh.mu.Unlock()
+		return fmt.Errorf("%w: user=%q pending_slot=%q", ErrInFlightCheckpointRunConflict, userID, slotID)
+	}
+	if existingTask := strings.TrimSpace(s.inFlightTask); existingTask != "" && strings.TrimSpace(s.inFlightRunID) != runID {
+		ownerRunID := strings.TrimSpace(s.inFlightRunID)
+		if createdSession {
+			delete(sh.sessions, userID)
+		}
+		sh.mu.Unlock()
+		return fmt.Errorf("%w: user=%q checkpoint_run=%q owner_run=%q", ErrInFlightCheckpointRunConflict, userID, runID, ownerRunID)
+	}
+	before := cloneConversationSession(s)
 	now := time.Now()
+	cm.saveEntriesLocked(s, entries, now)
 	s.inFlightTask = task
-	s.inFlightSetAt = now
 	s.inFlightProjectPath = projectPath
-	s.inFlightRunID = strings.TrimSpace(runID)
-	s.lastAccess = now
+	s.inFlightSetAt = now
+	s.inFlightRunID = runID
+	s.inFlightSequence = checkpoint.Sequence
+	s.inFlightLastTool = strings.TrimSpace(checkpoint.LastToolName)
+	s.inFlightSideEffect = strings.TrimSpace(checkpoint.SideEffectState)
+	candidate := cloneConversationSession(s)
 	sh.mu.Unlock()
 	cm.markDirtyAndScheduleFlush()
+	if err := cm.FlushNow(); err != nil {
+		cm.restoreCheckpointMutation(userID, before, candidate, createdSession)
+		return err
+	}
+	return nil
+}
+
+// CompleteInFlightCheckpointForRun clears the marker only when the same run
+// still owns it, then durably flushes the transition. It closes the window
+// where a normal completion could otherwise leave a stale marker on disk.
+func (cm *ConversationMemory) CompleteInFlightCheckpointForRun(userID, runID string) error {
+	cm.checkpointMu.Lock()
+	defer cm.checkpointMu.Unlock()
+	runID = strings.TrimSpace(runID)
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	s := sh.sessions[userID]
+	if s == nil || (runID != "" && s.inFlightRunID != runID) {
+		sh.mu.Unlock()
+		return cm.FlushNow()
+	}
+	if s.inFlightTask == "" && s.inFlightProjectPath == "" && s.inFlightSetAt.IsZero() && s.inFlightRunID == "" {
+		sh.mu.Unlock()
+		return cm.FlushNow()
+	}
+	before := cloneConversationSession(s)
+	s.inFlightTask = ""
+	s.inFlightProjectPath = ""
+	s.inFlightSetAt = time.Time{}
+	s.inFlightRunID = ""
+	s.inFlightSequence = 0
+	s.inFlightLastTool = ""
+	s.inFlightSideEffect = ""
+	candidate := cloneConversationSession(s)
+	sh.mu.Unlock()
+	cm.markDirtyAndScheduleFlush()
+	if err := cm.FlushNow(); err != nil {
+		cm.restoreCheckpointMutation(userID, before, candidate, false)
+		return err
+	}
+	return nil
+}
+
+// SaveAndCompleteInFlightCheckpointForRun atomically replaces a run's
+// conversation history and retires that same run's in-flight marker before
+// synchronously writing the snapshot. It is for interactive pauses whose
+// paired tool result becomes the durable continuation state; writing history
+// and clearing the pre-tool marker as separate transitions can otherwise
+// resurrect a duplicate crash-recovery card after restart.
+func (cm *ConversationMemory) SaveAndCompleteInFlightCheckpointForRun(userID, runID string, entries []ConversationEntry) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return fmt.Errorf("%w: empty run ID", ErrInFlightCheckpointRunConflict)
+	}
+	entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
+	cm.checkpointMu.Lock()
+	defer cm.checkpointMu.Unlock()
+
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	s := sh.sessions[userID]
+	createdSession := false
+	if s == nil {
+		s = &conversationSession{}
+		sh.sessions[userID] = s
+		createdSession = true
+	}
+	if unfinishedSlotIsPendingDecision(s.unfinishedSlot) &&
+		!(s.unfinishedSlot.Source == UnfinishedTaskSlotSourceInFlightLeaseExpired &&
+			s.unfinishedSlot.EvidenceScopeKey == inFlightRunScopeKey(runID)) {
+		slotID := s.unfinishedSlot.SlotID
+		if createdSession {
+			delete(sh.sessions, userID)
+		}
+		sh.mu.Unlock()
+		return fmt.Errorf("%w: user=%q pending_slot=%q", ErrInFlightCheckpointRunConflict, userID, slotID)
+	}
+	if existingTask := strings.TrimSpace(s.inFlightTask); existingTask != "" && strings.TrimSpace(s.inFlightRunID) != runID {
+		ownerRunID := strings.TrimSpace(s.inFlightRunID)
+		if createdSession {
+			delete(sh.sessions, userID)
+		}
+		sh.mu.Unlock()
+		return fmt.Errorf("%w: user=%q completion_run=%q owner_run=%q", ErrInFlightCheckpointRunConflict, userID, runID, ownerRunID)
+	}
+	before := cloneConversationSession(s)
+	now := time.Now()
+	cm.saveEntriesLocked(s, entries, now)
+	if s.inFlightRunID == runID {
+		s.inFlightTask = ""
+		s.inFlightProjectPath = ""
+		s.inFlightSetAt = time.Time{}
+		s.inFlightRunID = ""
+		s.inFlightSequence = 0
+		s.inFlightLastTool = ""
+		s.inFlightSideEffect = ""
+	}
+	// A lease-expired slot for this exact run is synthetic recovery evidence;
+	// the durable interactive state supersedes it. Do not touch any other slot.
+	if s.unfinishedSlot != nil &&
+		s.unfinishedSlot.Source == UnfinishedTaskSlotSourceInFlightLeaseExpired &&
+		s.unfinishedSlot.EvidenceScopeKey == inFlightRunScopeKey(runID) {
+		s.unfinishedSlot = nil
+		s.activeSlotID = ""
+	}
+	s.lastAccess = now
+	candidate := cloneConversationSession(s)
+	sh.mu.Unlock()
+	cm.markDirtyAndScheduleFlush()
+	if err := cm.FlushNow(); err != nil {
+		cm.restoreCheckpointMutation(userID, before, candidate, createdSession)
+		return err
+	}
+	return nil
+}
+
+// cloneConversationSession snapshots the mutable state touched by a checkpoint
+// operation. It is used only while checkpointMu serializes durable mutations.
+func cloneConversationSession(s *conversationSession) *conversationSession {
+	if s == nil {
+		return nil
+	}
+	copy := *s
+	copy.entries = append([]ConversationEntry(nil), s.entries...)
+	copy.unfinishedSlot = CloneUnfinishedTaskSlot(s.unfinishedSlot)
+	return &copy
+}
+
+// restoreCheckpointMutation rolls back only the parts that still match the
+// failed candidate. Other mutations are allowed while FlushNow writes; blindly
+// restoring the whole session here would erase a newer user turn, slot action,
+// or lease update that happened during that write.
+func (cm *ConversationMemory) restoreCheckpointMutation(userID string, before, candidate *conversationSession, createdSession bool) {
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	current := sh.sessions[userID]
+	if current == nil || candidate == nil {
+		sh.mu.Unlock()
+		return
+	}
+	if createdSession && reflect.DeepEqual(current, candidate) {
+		delete(sh.sessions, userID)
+		sh.mu.Unlock()
+		return
+	}
+	if before != nil {
+		if reflect.DeepEqual(current.entries, candidate.entries) && current.activeBranchTipID == candidate.activeBranchTipID {
+			current.entries = append([]ConversationEntry(nil), before.entries...)
+			current.activeBranchTipID = before.activeBranchTipID
+		}
+		if sameInFlightCheckpointState(current, candidate) {
+			current.inFlightTask = before.inFlightTask
+			current.inFlightProjectPath = before.inFlightProjectPath
+			current.inFlightSetAt = before.inFlightSetAt
+			current.inFlightRunID = before.inFlightRunID
+			current.inFlightSequence = before.inFlightSequence
+			current.inFlightLastTool = before.inFlightLastTool
+			current.inFlightSideEffect = before.inFlightSideEffect
+		}
+		if reflect.DeepEqual(current.unfinishedSlot, candidate.unfinishedSlot) && current.activeSlotID == candidate.activeSlotID {
+			current.unfinishedSlot = CloneUnfinishedTaskSlot(before.unfinishedSlot)
+			current.activeSlotID = before.activeSlotID
+		}
+	}
+	sh.mu.Unlock()
+	// flushDirty marks the store dirty again when saveToDisk fails. Do not clear
+	// that retry signal: unrelated concurrent mutations may also be pending and
+	// the restored durable state still needs a later successful snapshot.
+}
+
+func sameInFlightCheckpointState(a, b *conversationSession) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.inFlightTask == b.inFlightTask &&
+		a.inFlightProjectPath == b.inFlightProjectPath &&
+		a.inFlightSetAt.Equal(b.inFlightSetAt) &&
+		a.inFlightRunID == b.inFlightRunID &&
+		a.inFlightSequence == b.inFlightSequence &&
+		a.inFlightLastTool == b.inFlightLastTool &&
+		a.inFlightSideEffect == b.inFlightSideEffect
+}
+
+// checkpointLockedMutation serializes a non-checkpoint session mutation with
+// checkpoint snapshotting. A tool-progress checkpoint must not restore an old
+// session after a concurrent normal Save/Append/slot update committed while
+// its FlushNow was in progress.
+func (cm *ConversationMemory) checkpointLockedMutation(mutate func()) {
+	if cm == nil || mutate == nil {
+		return
+	}
+	cm.checkpointMu.Lock()
+	defer cm.checkpointMu.Unlock()
+	mutate()
 }
 
 // RefreshInFlightTask extends the activity lease for an existing in-flight
 // marker. It returns false when there is no active marker for userID.
 func (cm *ConversationMemory) RefreshInFlightTask(userID string) bool {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	s := sh.sessions[userID]
-	if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
+	found := false
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
+			sh.mu.Unlock()
+			return
+		}
+		found = true
+		now := time.Now()
+		if !s.inFlightSetAt.IsZero() && now.Sub(s.inFlightSetAt) < InFlightTaskRenewInterval {
+			sh.mu.Unlock()
+			return
+		}
+		s.inFlightSetAt = now
+		s.lastAccess = now
 		sh.mu.Unlock()
-		return false
-	}
-	now := time.Now()
-	if !s.inFlightSetAt.IsZero() && now.Sub(s.inFlightSetAt) < InFlightTaskRenewInterval {
-		sh.mu.Unlock()
-		return true
-	}
-	s.inFlightSetAt = now
-	s.lastAccess = now
-	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
-	return true
+		cm.markDirtyAndScheduleFlush()
+	})
+	return found
 }
 
 // ClearInFlightTask removes the in-flight marker, indicating the agent
 // loop completed normally.
 func (cm *ConversationMemory) ClearInFlightTask(userID string) {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
 	changed := false
-	if s := sh.sessions[userID]; s != nil {
-		if s.inFlightTask != "" || s.inFlightProjectPath != "" || !s.inFlightSetAt.IsZero() || s.inFlightRunID != "" {
-			s.inFlightTask = ""
-			s.inFlightProjectPath = ""
-			s.inFlightSetAt = time.Time{}
-			s.inFlightRunID = ""
-			changed = true
-		}
-	}
-	sh.mu.Unlock()
-	if changed {
-		cm.markDirtyAndScheduleFlush()
-	}
-}
-
-func (cm *ConversationMemory) ClearInFlightTaskForRun(userID, runID string) {
-	runID = strings.TrimSpace(runID)
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	changed := false
-	if s := sh.sessions[userID]; s != nil {
-		if runID == "" || s.inFlightRunID == runID {
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		if s := sh.sessions[userID]; s != nil {
 			if s.inFlightTask != "" || s.inFlightProjectPath != "" || !s.inFlightSetAt.IsZero() || s.inFlightRunID != "" {
 				s.inFlightTask = ""
 				s.inFlightProjectPath = ""
 				s.inFlightSetAt = time.Time{}
 				s.inFlightRunID = ""
+				s.inFlightSequence = 0
+				s.inFlightLastTool = ""
+				s.inFlightSideEffect = ""
 				changed = true
 			}
 		}
-		if s.unfinishedSlot != nil &&
-			s.unfinishedSlot.Source == UnfinishedTaskSlotSourceInFlightLeaseExpired &&
-			s.unfinishedSlot.EvidenceScopeKey == inFlightRunScopeKey(runID) {
-			s.unfinishedSlot = nil
-			s.activeSlotID = ""
-			changed = true
+		sh.mu.Unlock()
+		if changed {
+			cm.markDirtyAndScheduleFlush()
 		}
-	}
-	sh.mu.Unlock()
-	if changed {
-		cm.markDirtyAndScheduleFlush()
-	}
+	})
+}
+
+func (cm *ConversationMemory) ClearInFlightTaskForRun(userID, runID string) {
+	runID = strings.TrimSpace(runID)
+	changed := false
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		if s := sh.sessions[userID]; s != nil {
+			if runID == "" || s.inFlightRunID == runID {
+				if s.inFlightTask != "" || s.inFlightProjectPath != "" || !s.inFlightSetAt.IsZero() || s.inFlightRunID != "" {
+					s.inFlightTask = ""
+					s.inFlightProjectPath = ""
+					s.inFlightSetAt = time.Time{}
+					s.inFlightRunID = ""
+					s.inFlightSequence = 0
+					s.inFlightLastTool = ""
+					s.inFlightSideEffect = ""
+					changed = true
+				}
+			}
+			if s.unfinishedSlot != nil &&
+				s.unfinishedSlot.Source == UnfinishedTaskSlotSourceInFlightLeaseExpired &&
+				s.unfinishedSlot.EvidenceScopeKey == inFlightRunScopeKey(runID) {
+				s.unfinishedSlot = nil
+				s.activeSlotID = ""
+				changed = true
+			}
+		}
+		sh.mu.Unlock()
+		if changed {
+			cm.markDirtyAndScheduleFlush()
+		}
+	})
 }
 
 // ExpireStaleInFlightTasks converts stale in-flight markers into unfinished
@@ -965,27 +1378,29 @@ func (cm *ConversationMemory) ExpireStaleInFlightTasks(now time.Time, lease time
 		lease = InFlightTaskLease
 	}
 	expired := 0
-	for _, sh := range cm.shards {
-		sh.mu.Lock()
-		for userID, s := range sh.sessions {
-			if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
-				continue
+	cm.checkpointLockedMutation(func() {
+		for _, sh := range cm.shards {
+			sh.mu.Lock()
+			for userID, s := range sh.sessions {
+				if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
+					continue
+				}
+				setAt := s.inFlightSetAt
+				if setAt.IsZero() {
+					setAt = s.lastAccess
+				}
+				if setAt.IsZero() || now.Sub(setAt) <= lease {
+					continue
+				}
+				cm.convertExpiredInFlightLocked(userID, s, now)
+				expired++
 			}
-			setAt := s.inFlightSetAt
-			if setAt.IsZero() {
-				setAt = s.lastAccess
-			}
-			if setAt.IsZero() || now.Sub(setAt) <= lease {
-				continue
-			}
-			cm.convertExpiredInFlightLocked(userID, s, now)
-			expired++
+			sh.mu.Unlock()
 		}
-		sh.mu.Unlock()
-	}
-	if expired > 0 {
-		cm.markDirtyAndScheduleFlush()
-	}
+		if expired > 0 {
+			cm.markDirtyAndScheduleFlush()
+		}
+	})
 	return expired
 }
 
@@ -993,8 +1408,11 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 	task := s.inFlightTask
 	projectPath := s.inFlightProjectPath
 	runID := s.inFlightRunID
-	if s.unfinishedSlot == nil {
-		slotID := fmt.Sprintf("inflight-expired-%d", now.UnixMilli())
+	// A pending slot is deliberate user state and wins. A resumed/completed
+	// slot is historical state, so a newer stalled run must replace it just as
+	// startup promotion and graceful shutdown snapshots do.
+	if s.unfinishedSlot == nil || !unfinishedSlotIsPendingDecision(s.unfinishedSlot) {
+		slotID := newRecoverySlotID("inflight-expired", now)
 		s.unfinishedSlot = &UnfinishedTaskSlot{
 			SlotID:           slotID,
 			UserID:           userID,
@@ -1006,6 +1424,10 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 			ResumePrompt:     "The previous task stopped making progress. Continue from the saved conversation history and avoid repeating completed work.\n",
 			Source:           UnfinishedTaskSlotSourceInFlightLeaseExpired,
 			EvidenceScopeKey: inFlightRunScopeKey(runID),
+			LastCheckpointAt: s.inFlightSetAt,
+			LastToolName:     s.inFlightLastTool,
+			SideEffectState:  s.inFlightSideEffect,
+			RecoveryMode:     recoveryModeForSideEffect(s.inFlightSideEffect),
 			CreatedAt:        now,
 			UpdatedAt:        now,
 		}
@@ -1014,7 +1436,101 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 	s.inFlightProjectPath = ""
 	s.inFlightSetAt = time.Time{}
 	s.inFlightRunID = ""
+	s.inFlightSequence = 0
+	s.inFlightLastTool = ""
+	s.inFlightSideEffect = ""
 	s.lastAccess = now
+}
+
+func recoveryModeForSideEffect(sideEffect string) string {
+	switch strings.TrimSpace(sideEffect) {
+	case "none":
+		return "resume_context"
+	default:
+		// A local mutation may already be visible in the workspace, just as an
+		// external mutation may already have reached its destination. Neither is
+		// safe for blind continuation; the UI must require an explicit review.
+		return "requires_review"
+	}
+}
+
+// newRecoverySlotID keeps independently interrupted sessions distinguishable
+// even when they are promoted or snapshotted during the same millisecond.
+// The timestamp is useful in diagnostics; the random suffix prevents a UI
+// action for one slot from accidentally addressing another user's slot.
+func newRecoverySlotID(prefix string, now time.Time) string {
+	var entropy [8]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		// crypto/rand failure is extraordinarily rare; preserve uniqueness across
+		// the normal process lifetime rather than returning an empty identifier.
+		return fmt.Sprintf("%s-%d-%d", prefix, now.UnixNano(), time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s-%d-%x", prefix, now.UnixMilli(), entropy[:])
+}
+
+// PromoteRecoverableCheckpoints turns markers loaded from a prior process into
+// explicit recovery slots immediately. A fresh process has no active owner, so
+// this intentionally does not wait for the normal in-flight lease. The slot and
+// marker transition is atomic per user and idempotent on later launches.
+func (cm *ConversationMemory) PromoteRecoverableCheckpoints(now time.Time) int {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	promoted, changed := 0, false
+	cm.checkpointLockedMutation(func() {
+		for _, sh := range cm.shards {
+			sh.mu.Lock()
+			for userID, s := range sh.sessions {
+				if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
+					continue
+				}
+				if s.unfinishedSlot == nil || !unfinishedSlotIsPendingDecision(s.unfinishedSlot) {
+					s.unfinishedSlot = &UnfinishedTaskSlot{
+						SlotID:           newRecoverySlotID("inflight-recovery", now),
+						UserID:           userID,
+						ProjectPath:      s.inFlightProjectPath,
+						Tool:             "agent",
+						Status:           UnfinishedTaskSlotStatusInterrupted,
+						Summary:          "Previous task was interrupted after a durable tool-progress checkpoint.",
+						LastTask:         s.inFlightTask,
+						ResumePrompt:     "Resume from saved context. Do not repeat a previously executed tool call; review its side effects first.",
+						Source:           UnfinishedTaskSlotSourceInFlightRecovery,
+						EvidenceScopeKey: inFlightRunScopeKey(s.inFlightRunID),
+						LastCheckpointAt: s.inFlightSetAt,
+						LastToolName:     s.inFlightLastTool,
+						SideEffectState:  s.inFlightSideEffect,
+						RecoveryMode:     recoveryModeForSideEffect(s.inFlightSideEffect),
+						CreatedAt:        now,
+						UpdatedAt:        now,
+					}
+					promoted++
+				}
+				// An existing pending slot is deliberate user state. Preserve it but
+				// consume the marker to prevent duplicate promotion on next launch.
+				s.inFlightTask = ""
+				s.inFlightProjectPath = ""
+				s.inFlightSetAt = time.Time{}
+				s.inFlightRunID = ""
+				s.inFlightSequence = 0
+				s.inFlightLastTool = ""
+				s.inFlightSideEffect = ""
+				s.lastAccess = now
+				changed = true
+			}
+			sh.mu.Unlock()
+		}
+		if changed {
+			cm.markDirtyAndScheduleFlush()
+		}
+	})
+	return promoted
+}
+
+func unfinishedSlotIsPendingDecision(slot *UnfinishedTaskSlot) bool {
+	if slot == nil {
+		return false
+	}
+	return slot.Status != UnfinishedTaskSlotStatusResumed && slot.Status != UnfinishedTaskSlotStatusCompleted
 }
 
 func inFlightRunScopeKey(runID string) string {
@@ -1032,20 +1548,27 @@ func inFlightRunScopeKey(runID string) string {
 // This is a one-shot operation — calling it twice returns empty on the
 // second call.
 func (cm *ConversationMemory) ConsumeInFlightTask(userID string) (string, string) {
-	sh := cm.shard(userID)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	s := sh.sessions[userID]
-	if s == nil || s.inFlightTask == "" {
-		return "", ""
-	}
-	task := s.inFlightTask
-	projectPath := s.inFlightProjectPath
-	s.inFlightTask = ""
-	s.inFlightProjectPath = ""
-	s.inFlightSetAt = time.Time{}
-	s.inFlightRunID = ""
-	cm.markDirtyAndScheduleFlush()
+	var task, projectPath string
+	cm.checkpointLockedMutation(func() {
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil || s.inFlightTask == "" {
+			sh.mu.Unlock()
+			return
+		}
+		task = s.inFlightTask
+		projectPath = s.inFlightProjectPath
+		s.inFlightTask = ""
+		s.inFlightProjectPath = ""
+		s.inFlightSetAt = time.Time{}
+		s.inFlightRunID = ""
+		s.inFlightSequence = 0
+		s.inFlightLastTool = ""
+		s.inFlightSideEffect = ""
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+	})
 	return task, projectPath
 }
 
@@ -1057,7 +1580,6 @@ func (cm *ConversationMemory) saveToDisk() error {
 	}
 	cm.persistMu.Lock()
 	defer cm.persistMu.Unlock()
-
 	snapshot := memorySnapshot{Sessions: make(map[string]persistedSession)}
 	for _, sh := range cm.shards {
 		sh.mu.RLock()
@@ -1076,6 +1598,9 @@ func (cm *ConversationMemory) saveToDisk() error {
 				InFlightProjectPath: session.inFlightProjectPath,
 				InFlightSetAt:       session.inFlightSetAt,
 				InFlightRunID:       session.inFlightRunID,
+				InFlightSequence:    session.inFlightSequence,
+				InFlightLastTool:    session.inFlightLastTool,
+				InFlightSideEffect:  session.inFlightSideEffect,
 			}
 		}
 		sh.mu.RUnlock()
@@ -1173,10 +1698,15 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			inFlightProjectPath: session.InFlightProjectPath,
 			inFlightSetAt:       inFlightSetAt,
 			inFlightRunID:       session.InFlightRunID,
+			inFlightSequence:    session.InFlightSequence,
+			inFlightLastTool:    session.InFlightLastTool,
+			inFlightSideEffect:  session.InFlightSideEffect,
 		}
 		sh.mu.Unlock()
 	}
-	if cm.ExpireStaleInFlightTasks(time.Now(), InFlightTaskLease) > 0 {
+	if cm.PromoteRecoverableCheckpoints(time.Now()) > 0 {
+		needsRewrite = true
+	} else if cm.ExpireStaleInFlightTasks(time.Now(), InFlightTaskLease) > 0 {
 		needsRewrite = true
 	}
 	if needsRewrite {

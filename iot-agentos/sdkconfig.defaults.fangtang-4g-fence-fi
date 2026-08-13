@@ -1,3 +1,6 @@
 # Dedicated non-release configuration for panel DMA fence ownership HIL.
+# Match the released eight-row NV3023 transport so the injected in-flight DMA
+# contract covers the production source size and fence sequence.
 CONFIG_MACLAW_TEST_BUILD=y
 CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE=y
+CONFIG_MACLAW_FANGTANG_DISPLAY_TEST_TRANSFER_ROWS=8

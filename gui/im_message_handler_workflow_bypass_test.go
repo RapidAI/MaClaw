@@ -1,10 +1,32 @@
 package main
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
+
+func TestShouldBypassWorkflowForIntentDoesNotCallTreeLLM(t *testing.T) {
+	var llmCalls atomic.Int32
+	h := &IMMessageHandler{unifiedClassifier: intent.New(intent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(_, _ string) (string, error) {
+			llmCalls.Add(1)
+			return `{"top":[{"skill":"search","score":0.96}]}`, nil
+		},
+		LLMTimeout: time.Second,
+	})}
+
+	if h.shouldBypassWorkflowForIntent("desktop-user:test", "find recent Go concurrency guidance", false) {
+		t.Fatal("unavailable embedding must fall through instead of using an L3 workflow bypass")
+	}
+	if got := llmCalls.Load(); got != 0 {
+		t.Fatalf("workflow bypass must not block on L3, got %d calls", got)
+	}
+}
 
 func TestShouldBypassWorkflowForClassification_DirectExecutionIntents(t *testing.T) {
 	cases := []intent.IntentLabel{

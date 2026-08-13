@@ -53,6 +53,41 @@ func TestMobileAgentJobActiveCountIsTenantScoped(t *testing.T) {
 	}
 }
 
+func TestMobileRunAgentJobSkipsPurgedOwnerBeforeExternalWork(t *testing.T) {
+	resetMobilePurgeState(t)
+	const tenantID = "tenant-agent-job-purged"
+	const ownerID = "owner-agent-job-purged"
+	const jobID = "agent-job-purged"
+	mobileMarkOwnersPurged(tenantID, map[string]struct{}{ownerID: {}})
+	t.Cleanup(mobileResetKnowledgePurgeStateForTest)
+
+	mobileAgentJobs.Lock()
+	mobileAgentJobs.jobs[jobID] = mobileAgentJobRecord{
+		JobID:    jobID,
+		TenantID: tenantID,
+		OwnerID:  ownerID,
+		Query:    "private query",
+		Status:   mobileAgentJobStatusQueued,
+	}
+	mobileAgentJobs.Unlock()
+
+	previousSearch := mobileWebSearch
+	mobileWebSearch = func(context.Context, string, int) ([]websearch.SearchResult, error) {
+		t.Fatal("purged owner job invoked web search")
+		return nil, nil
+	}
+	t.Cleanup(func() { mobileWebSearch = previousSearch })
+
+	mobileRunAgentJob(jobID, nil, nil)
+
+	mobileAgentJobs.Lock()
+	_, found := mobileAgentJobs.jobs[jobID]
+	mobileAgentJobs.Unlock()
+	if !found {
+		t.Fatal("background job was unexpectedly recreated or removed")
+	}
+}
+
 func TestMobileAgentJobsCreateAndGetWithoutLLM(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "mobile-agent-job@example.com")

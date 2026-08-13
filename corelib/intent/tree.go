@@ -1,6 +1,7 @@
 package intent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -214,7 +215,13 @@ func tryParseTreeJSON(s string) []TreeCandidate {
 // The treeText parameter should be pre-built via BuildIntentTreeText
 // to avoid rebuilding on every call.
 func ClassifyByTree(llmFunc LLMClassifyFunc, treeText, message string) ([]TreeCandidate, error) {
-	if llmFunc == nil {
+	return ClassifyByTreeContext(context.Background(), nil, llmFunc, treeText, message)
+}
+
+// ClassifyByTreeContext runs tree reasoning with a caller-owned cancellation
+// context. The original callback remains supported for compatibility.
+func ClassifyByTreeContext(ctx context.Context, llmContextFunc LLMClassifyContextFunc, llmFunc LLMClassifyFunc, treeText, message string) ([]TreeCandidate, error) {
+	if llmContextFunc == nil && llmFunc == nil {
 		return nil, fmt.Errorf("LLM classify function is nil")
 	}
 
@@ -225,7 +232,13 @@ func ClassifyByTree(llmFunc LLMClassifyFunc, treeText, message string) ([]TreeCa
 	// a [system, user] message pair. The tree prompt contains the intent
 	// tree, instructions, and the quoted user message for CoT reasoning;
 	// the user role carries the raw message for the LLM's attention.
-	response, err := llmFunc(prompt, message)
+	var response string
+	var err error
+	if llmContextFunc != nil {
+		response, err = llmContextFunc(ctx, prompt, message)
+	} else {
+		response, err = llmFunc(prompt, message)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("tree reasoning LLM call failed: %w", err)
 	}

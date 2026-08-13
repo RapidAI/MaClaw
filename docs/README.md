@@ -2,6 +2,10 @@
 
 This directory contains architecture notes, design records, and operational guides.
 
+## Hub 用户邀请与奖励
+
+- [用户邀请与奖励机制设计](hub-user-invitation-design-zh.md)：桌面端排名按钮下的邀请入口、Hub 设置、双向 Credits 奖励、归因、统计与验收方案。
+
 ## Adaptive prompt & shared agent loop (cost / ops)
 
 - [Ops cheat sheet](adaptive-prompt-and-shared-loop-ops.md): light/full prompt, shared loop strangler, light tools, misroute upgrade, quality A/B, CLI export/merge, Hub metrics.

@@ -5,6 +5,16 @@
  * compile-time branch in the shared renderer or Device Motion HAL facade. */
 #pragma once
 
+#include "sdkconfig.h"
+
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+#error "Fangtang peripheral adapter may only be included by the Fangtang profile"
+#endif
+
+#ifndef MACLAW_COMPACT_PERIPHERAL_ADAPTER_IMPLEMENTATION
+#error "Fangtang peripheral adapter is owned exclusively by compact_peripheral_service.c"
+#endif
+
 #include "device_api.h"
 #include "esp_err.h"
 

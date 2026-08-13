@@ -29,7 +29,6 @@ bool platform_display_is_off(void);
 void platform_display_show_startup(void);
 void platform_display_set_pet_state(const char *state);
 void platform_display_set_command_stage(const char *stage);
-void platform_display_set_command_cancel_enabled(bool enabled);
 void platform_display_set_pet_profile(const char *skin, bool motion_enabled);
 device_status_t platform_display_set_pet_asset(const uint8_t *const *frames,
                                                 uint32_t frame_count,

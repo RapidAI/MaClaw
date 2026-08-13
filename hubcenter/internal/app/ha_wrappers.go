@@ -98,6 +98,10 @@ func (r *haLLMAuthorizationRepo) ListAll(ctx context.Context) ([]*llmservice.Ten
 	return r.inner.ListAll(ctx)
 }
 
+func (r *haLLMAuthorizationRepo) GetByCardOrderID(ctx context.Context, orderNo string) (*llmservice.TenantAuthorization, error) {
+	return r.inner.GetByCardOrderID(ctx, orderNo)
+}
+
 func (r *haLLMAuthorizationRepo) ListByHub(ctx context.Context, hubID string) ([]*llmservice.TenantAuthorization, error) {
 	if lister, ok := r.inner.(interface {
 		ListByHub(context.Context, string) ([]*llmservice.TenantAuthorization, error)

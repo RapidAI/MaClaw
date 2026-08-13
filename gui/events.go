@@ -34,6 +34,11 @@ const (
 	// without sending a CloseProjectTabSession write back to the backend.
 	EventProjectTaskDeleted = "project-task:deleted"
 
+	// EventProjectTaskRenamed is emitted after a task display name changes.
+	// Payload contains project_path and name so open project tabs can update
+	// without waiting for a full task-index reload.
+	EventProjectTaskRenamed = "project-task:renamed"
+
 	// EventExpertTaskDeleted is emitted with the expert id when a durable
 	// expert task is permanently removed. Expert conversation state is keyed
 	// by expert id (not the task workspace path), so the frontend needs this

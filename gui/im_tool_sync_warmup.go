@@ -18,7 +18,8 @@ import (
 func (h *IMMessageHandler) WarmupTools() {
 	allTools := h.getTools()
 	if h.toolRouter != nil {
-		_ = h.routeTools("warmup", allTools)
+		// Warmup must stay local: startup should never consume an LLM slot.
+		_ = h.routeToolsForUser("", "warmup", allTools, true)
 		log.Println("[WarmupTools] tool routing cache pre-warmed")
 	}
 }

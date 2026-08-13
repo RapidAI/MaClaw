@@ -88,6 +88,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	}
 
 	registerCurrentDateTimeTool(registry, ToolCategoryBuiltin, "builtin")
+	registerArchiveBuiltinTool(registry, h)
 
 	// --- Session management tools ---
 	reg("list_sessions", "列出当前所有远程会话及其状态",

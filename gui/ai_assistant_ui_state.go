@@ -6,10 +6,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
@@ -44,6 +46,7 @@ func (a *App) LoadAIAssistantUIState() (AIAssistantUIState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			a.injectStartupRecoveryCard(&state)
 			log.Printf("[paths] ai_assistant_ui_state load missing path=%q", path)
 			return state, nil
 		}
@@ -61,8 +64,88 @@ func (a *App) LoadAIAssistantUIState() (AIAssistantUIState, error) {
 		log.Printf("[paths] ai_assistant_ui_state sanitized path=%q messages=%d prompts=%d boundary=%q", path, len(state.Messages), len(state.Prompts), state.ContextBoundaryMessageID)
 	}
 	state.StoragePath = path
+	a.injectStartupRecoveryCard(&state)
 	log.Printf("[paths] ai_assistant_ui_state load path=%q messages=%d prompts=%d boundary=%q", path, len(state.Messages), len(state.Prompts), state.ContextBoundaryMessageID)
 	return state, nil
+}
+
+// injectStartupRecoveryCard projects a durable crash-recovery slot into the
+// existing unfinished-task card UI. It never sends an LLM request and never
+// replays a tool call; the user must explicitly choose a card action.
+func (a *App) injectStartupRecoveryCard(state *AIAssistantUIState) {
+	if a == nil || state == nil {
+		return
+	}
+	mem := a.ensureConversationMemory()
+	if mem == nil {
+		return
+	}
+	slots := make([]*agent.UnfinishedTaskSlot, 0)
+	for _, candidate := range mem.UnfinishedSlots() {
+		if candidate == nil || !candidate.Source.IsInFlightRecovery() || strings.TrimSpace(candidate.SlotID) == "" {
+			continue
+		}
+		status := candidate.Status
+		if status == agent.UnfinishedTaskSlotStatusResumed || status == agent.UnfinishedTaskSlotStatusCompleted {
+			continue
+		}
+		slots = append(slots, candidate)
+	}
+	if len(slots) == 0 {
+		return
+	}
+	// UnfinishedSlots traverses sharded maps, so impose a stable order before
+	// projecting cards into the persisted UI timeline.
+	sort.Slice(slots, func(i, j int) bool {
+		if slots[i].CreatedAt.Equal(slots[j].CreatedAt) {
+			if slots[i].UserID == slots[j].UserID {
+				return slots[i].SlotID < slots[j].SlotID
+			}
+			return slots[i].UserID < slots[j].UserID
+		}
+		return slots[i].CreatedAt.Before(slots[j].CreatedAt)
+	})
+	existing := make(map[string]struct{}, len(state.Messages))
+	for _, message := range state.Messages {
+		if raw, ok := message["unfinishedSlot"].(map[string]interface{}); ok {
+			if slotID, ok := raw["slotID"].(string); ok {
+				existing[slotID] = struct{}{}
+			}
+		}
+	}
+	for _, slot := range slots {
+		if _, alreadyProjected := existing[slot.SlotID]; alreadyProjected {
+			continue
+		}
+		payload := startupRecoverySlotPayload(slot)
+		state.Messages = append(state.Messages, map[string]interface{}{
+			"id":             "startup-recovery-" + slot.SlotID,
+			"role":           "assistant",
+			"content":        buildUnfinishedSlotHint(slot),
+			"sessionKey":     strings.TrimSpace(slot.UserID),
+			"unfinishedSlot": payload,
+			"timestamp":      time.Now().UnixMilli(),
+		})
+	}
+	normalizeAIAssistantUIState(state)
+}
+
+func startupRecoverySlotPayload(slot *agent.UnfinishedTaskSlot) map[string]interface{} {
+	payload := buildUnfinishedTaskPayload(slot)
+	if payload == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"slotID":          payload.SlotID,
+		"title":           payload.Title,
+		"summary":         payload.Summary,
+		"projectPath":     payload.ProjectPath,
+		"status":          payload.Status,
+		"lastToolName":    payload.LastToolName,
+		"sideEffectState": payload.SideEffectState,
+		"recoveryMode":    payload.RecoveryMode,
+		"actions":         payload.Actions,
+	}
 }
 
 func (a *App) SaveAIAssistantUIState(state AIAssistantUIState) error {

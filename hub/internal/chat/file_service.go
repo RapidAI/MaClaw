@@ -23,6 +23,14 @@ func NewFileService(store *Store, dataDir string) *FileService {
 	return &FileService{store: store, dataDir: dataDir}
 }
 
+// DataDir returns the directory that contains chat upload files.
+func (s *FileService) DataDir() string {
+	if s == nil {
+		return ""
+	}
+	return s.dataDir
+}
+
 // Upload stores a file and returns its metadata.
 func (s *FileService) Upload(uploaderID, channelID, filename, mimeType string, size int64, reader io.Reader) (*FileRecord, error) {
 	tenantID := store.DefaultTenantID

@@ -23,3 +23,7 @@ device_status_t platform_input_stop(uint32_t timeout_ms) {
     if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
     return status_from_esp_err(board_port_stop_input(timeout_ms));
 }
+
+void platform_input_set_command_cancel_enabled(bool enabled) {
+    board_port_set_command_cancel_enabled(enabled);
+}

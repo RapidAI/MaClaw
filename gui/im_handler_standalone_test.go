@@ -1113,6 +1113,95 @@ func TestPendingUserReplyIntentClassifiersDriveBinding(t *testing.T) {
 	}
 }
 
+func TestClassifyPendingUserReplyAnswerUsesFastLLMWithBoundedDeadline(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+
+	startedAt := time.Now()
+	if answer, classified := h.classifyPendingUserReplyAnswer("desktop-user", "Which model should I deploy?", "use your recommendation"); !answer || !classified {
+		t.Fatalf("unhooked pending-reply answer = (%v, %v), want (true, true)", answer, classified)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 1500*time.Millisecond {
+		t.Fatalf("fast pending-reply classification took %s", elapsed)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("pending-reply entry classification made %d LLM calls, want 1", got)
+	}
+}
+
+func TestClassifyPendingUserReplyAnswerTimeoutDoesNotBlockEntryPath(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+
+	startedAt := time.Now()
+	answer, classified := h.classifyPendingUserReplyAnswer("desktop-user", "Which model should I deploy?", "use your recommendation")
+	if answer || classified {
+		t.Fatalf("timed-out pending-reply answer = (%v, %v), want (false, false)", answer, classified)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 2*time.Second {
+		t.Fatalf("pending-reply timeout blocked entry for %s", elapsed)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("expected fast classifier request to start")
+	}
+}
+
+func TestClassifyPendingUserReplyPromptUsesFastLLMWithBoundedDeadline(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"pending"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+
+	startedAt := time.Now()
+	if !h.classifyPendingUserReplyPrompt("desktop-user", "Which model should I deploy?") {
+		t.Fatal("fast prompt classifier did not recognize pending reply")
+	}
+	if elapsed := time.Since(startedAt); elapsed > 1500*time.Millisecond {
+		t.Fatalf("fast pending-reply prompt classification took %s", elapsed)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("pending-reply prompt classification made %d LLM calls, want 1", got)
+	}
+}
+
 func TestPendingUserReplyPromptCandidateFiltersClosingStatements(t *testing.T) {
 	if looksLikePendingUserReplyPromptCandidate("Task completed. Let me know if you need anything else.") {
 		t.Fatal("generic closing statement should not require pending reply classification")

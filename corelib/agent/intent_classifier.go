@@ -76,14 +76,14 @@ Routes:
 
 Classify by the action required, not by isolated words. Return only JSON matching the schema.`
 
-// ClassifyTaskIntent classifies a user message into a task intent using the
-// UIC. When semantic classification is unavailable, it returns unknown so the
-// normal agent path can handle the request. Safety confirmation belongs to
-// decisive high-risk routes and tool/action execution, not to the absence of a
-// workflow classification.
+// ClassifyTaskIntent classifies a user message into a task intent using only
+// the local UIC embedding layer. It is used for auxiliary routing checks, so it
+// must never occupy an LLM scheduler slot or delay the main agent response.
+// When semantic classification is unavailable, it returns unknown and callers
+// keep the conservative path.
 func ClassifyTaskIntent(text string) TaskIntentResult {
 	if uic := GetUnifiedClassifier(); uic != nil {
-		result := uic.Classify(intent.MessageContext{Text: text})
+		result := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text})
 		intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
 		return TaskIntentResult{
 			Intent:     TaskIntent(intentStr),

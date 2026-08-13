@@ -1,7 +1,8 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAITabManager } from '../useAITabManager';
 import { usePendingAssistantTabOpen } from '../usePendingAssistantTabOpen';
+import { AITabBar } from '../AITabBar';
 import type { PendingHistoryDiscussionOpen } from '../usePendingAssistantTabOpen';
 import { createInitialTabState, DEFAULT_MAX_VE_TABS, LOCAL_TAB } from '../AITabTypes';
 import type { AITab } from '../AITabTypes';
@@ -86,9 +87,67 @@ describe('useAITabManager', () => {
         expect(result.current.activeTab.executionProfile).toBe('none');
     });
 
+    it('persists a custom title for the fixed local AI assistant tab', () => {
+        const { result, unmount } = renderHook(() => useAITabManager());
+
+        act(() => {
+            result.current.renameLocalTab('Research assistant');
+        });
+        expect(result.current.activeTab.customTitle).toBe('Research assistant');
+        expect(localStorage.getItem('ai_assistant_local_tab_custom_title')).toBe('Research assistant');
+
+        unmount();
+        const restored = renderHook(() => useAITabManager());
+        expect(restored.result.current.tabState.tabs[0].customTitle).toBe('Research assistant');
+
+        act(() => {
+            restored.result.current.renameLocalTab('');
+        });
+        expect(restored.result.current.tabState.tabs[0].customTitle).toBeUndefined();
+        expect(localStorage.getItem('ai_assistant_local_tab_custom_title')).toBeNull();
+    });
+
+    it('keeps a lone local tab visible when it can be renamed', () => {
+        const { getByTestId } = render(<AITabBar
+            tabs={[LOCAL_TAB]}
+            activeTabId="local"
+            theme={{ bg: '#fff', text: '#111', textMuted: '#666', btnColor: '#2563eb', divider: '#ddd' } as any}
+            onActivate={vi.fn()}
+            onClose={vi.fn()}
+            onRenameLocalTab={vi.fn()}
+        />);
+
+        expect(getByTestId('ai-tab-bar')).toBeTruthy();
+    });
+
+    it('updates an open project tab after its task is renamed elsewhere', () => {
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createProjectTab('D:/tasks/rename-target', 'Old task');
+        });
+
+        act(() => {
+            runtimeEvents.handlers.get('project-task:renamed')?.({ project_path: 'D:/tasks/rename-target', name: 'Renamed task' });
+        });
+        expect(result.current.activeTab.title).toBe('Renamed task');
+    });
+
+    it('accepts a wrapped project-task rename event payload', () => {
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createProjectTab('D:/tasks/wrapped-rename', 'Old task');
+        });
+
+        act(() => {
+            runtimeEvents.handlers.get('project-task:renamed')?.({ payload: { project_path: 'D:/tasks/wrapped-rename', name: 'Renamed task' } });
+        });
+        expect(result.current.activeTab.title).toBe('Renamed task');
+    });
+
     it('opens pending digital employees by machine id when available', async () => {
         const createVETab = vi.fn().mockReturnValue(null);
         const onHandled = vi.fn();
+        const onEnsureAssistantTabTask = vi.fn().mockResolvedValue(undefined);
 
         renderHook(() => usePendingAssistantTabOpen({
             createVETab,
@@ -105,10 +164,64 @@ describe('useAITabManager', () => {
                 online_status: 'online',
             },
             onPendingVEOpenHandled: onHandled,
+            onEnsureAssistantTabTask,
         }));
 
         await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+        expect(onEnsureAssistantTabTask).toHaveBeenCalledWith('ve', 'machine-ve', 'Machine VE');
         expect(createVETab).toHaveBeenCalledWith('machine-ve', 'Machine VE', undefined, 'online', 'data:image/jpeg;base64,/9j/', '');
+    });
+
+    it('registers a continuable one-to-one discussion before opening its VE tab', async () => {
+        const createGroupTab = vi.fn().mockReturnValue({ id: 'history-disc-1', type: 'group' });
+        const createVETab = vi.fn().mockReturnValue(null);
+        const onEnsureAssistantTabTask = vi.fn().mockResolvedValue(undefined);
+
+        renderHook(() => usePendingAssistantTabOpen({
+            createVETab,
+            createGroupTab,
+            createProjectTab: vi.fn(),
+            pendingHistoryDiscussionOpen: { id: 'disc-1', topic: 'Vendor review', local_relation: 'initiated_by_me', participant_ids: ['ve-a'] },
+            onEnsureAssistantTabTask,
+        }));
+
+        await waitFor(() => expect(onEnsureAssistantTabTask).toHaveBeenCalledWith('discussion', 'disc-1', 'Vendor review'));
+        await waitFor(() => expect(createVETab).toHaveBeenCalledWith('ve-a', 'Vendor review', 'disc-1', undefined, undefined, undefined, { allowIdentityReuse: false }));
+        await waitFor(() => expect(createGroupTab).toHaveBeenCalled());
+    });
+
+    it('registers a read-only discussion before opening its group tab', async () => {
+        const createGroupTab = vi.fn().mockReturnValue({ id: 'history-disc-1', type: 'group' });
+        const onEnsureAssistantTabTask = vi.fn().mockResolvedValue(undefined);
+
+        renderHook(() => usePendingAssistantTabOpen({
+            createVETab: vi.fn(),
+            createGroupTab,
+            createProjectTab: vi.fn(),
+            pendingHistoryDiscussionOpen: { id: 'disc-1', topic: 'Archived review', readonly: true, participant_ids: ['ve-a'] },
+            onEnsureAssistantTabTask,
+        }));
+
+        await waitFor(() => expect(onEnsureAssistantTabTask).toHaveBeenCalledWith('discussion', 'disc-1', 'Archived review'));
+        await waitFor(() => expect(createGroupTab).toHaveBeenCalled());
+    });
+
+    it('does not open a pending VE tab when task registration fails', async () => {
+        const createVETab = vi.fn();
+        const onHandled = vi.fn();
+        renderHook(() => usePendingAssistantTabOpen({
+            createVETab,
+            createGroupTab: vi.fn(),
+            createProjectTab: vi.fn(),
+            pendingVEOpen: {
+                id: 've-failing', name: 'Failing VE', skill_description: '', access_policy: 'public', status: 'active', online_status: 'online',
+            },
+            onPendingVEOpenHandled: onHandled,
+            onEnsureAssistantTabTask: vi.fn().mockRejectedValue(new Error('task store unavailable')),
+        }));
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+        expect(createVETab).not.toHaveBeenCalled();
     });
 
     it('registers a pending expert before opening its tab', async () => {
@@ -206,10 +319,34 @@ describe('useAITabManager', () => {
 
         rerender({ pending: launch });
         await waitFor(() => expect(history.filter(message => message.kind === 'taskContext')).toHaveLength(1));
+        expect(onHandled).toHaveBeenLastCalledWith({ outcome: 'opened', launchId: undefined });
         rerender({ pending: null });
         rerender({ pending: { ...launch } });
         await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(2));
         expect(history.filter(message => message.kind === 'taskContext')).toHaveLength(1);
+    });
+
+    it('returns the launch correlation ID when a project tab is opened or rejected', async () => {
+        const onHandled = vi.fn();
+        const createProjectTab = vi.fn<(...args: any[]) => AITab | null>(() => null);
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab,
+                pendingProjectTabOpen: pending,
+                onPendingProjectTabOpenHandled: onHandled,
+            }),
+            { initialProps: { pending: null as any } },
+        );
+
+        rerender({ pending: { launchId: 'skill-run-1', projectPath: 'D:/tasks/rejected', taskTitle: 'Rejected' } });
+        await waitFor(() => expect(onHandled).toHaveBeenLastCalledWith({ outcome: 'rejected', launchId: 'skill-run-1' }));
+
+        createProjectTab.mockReturnValue({ id: 'proj-opened', type: 'project' } as AITab);
+        rerender({ pending: null });
+        rerender({ pending: { launchId: 'skill-run-2', projectPath: 'D:/tasks/opened', taskTitle: 'Opened' } });
+        await waitFor(() => expect(onHandled).toHaveBeenLastCalledWith({ outcome: 'opened', launchId: 'skill-run-2' }));
     });
 
     it('does not attach deferred send or IM delivery state to a new task', async () => {

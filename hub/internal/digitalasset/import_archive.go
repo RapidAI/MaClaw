@@ -1,7 +1,6 @@
 package digitalasset
 
 import (
-	"archive/zip"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -24,88 +24,26 @@ func ExtractZipSafely(zipPath, destDir string, maxFiles int, maxTotalBytes, maxS
 	if maxSingleBytes <= 0 {
 		maxSingleBytes = 50 * 1024 * 1024
 	}
-	deny := map[string]struct{}{}
-	for _, e := range denyExts {
-		deny[strings.ToLower(e)] = struct{}{}
+	deny := make(map[string]struct{}, len(denyExts))
+	for _, ext := range denyExts {
+		deny[strings.ToLower(strings.TrimSpace(ext))] = struct{}{}
 	}
-
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return 0, 0, fmt.Errorf("open zip: %w", err)
+	result := archiveutil.ExtractToDirectoryWithPolicy(zipPath, destDir, archiveutil.Limits{
+		MaxFiles:            maxFiles,
+		MaxTotalBytes:       maxTotalBytes,
+		MaxFileBytes:        maxSingleBytes,
+		MaxCompressionRatio: 0,
+	}, archiveutil.ExtractionPolicy{Filter: func(entry archiveutil.Entry) (bool, error) {
+		if entry.Dir || strings.Contains(entry.Path, "__MACOSX/") || strings.HasSuffix(entry.Path, ".DS_Store") {
+			return !strings.Contains(entry.Path, "__MACOSX/") && !strings.HasSuffix(entry.Path, ".DS_Store"), nil
+		}
+		_, denied := deny[strings.ToLower(filepath.Ext(entry.Path))]
+		return !denied, nil
+	}})
+	if !result.OK {
+		return 0, 0, fmt.Errorf("extract zip: %s: %s", result.Code, result.Message)
 	}
-	defer r.Close()
-
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return 0, 0, err
-	}
-	destAbs, err := filepath.Abs(destDir)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	for _, f := range r.File {
-		name := f.Name
-		if strings.Contains(name, "__MACOSX/") || strings.HasSuffix(name, ".DS_Store") {
-			continue
-		}
-		if f.Mode()&os.ModeSymlink != 0 {
-			return 0, 0, fmt.Errorf("symlink not allowed: %s", name)
-		}
-		cleaned := filepath.Clean(filepath.FromSlash(name))
-		if cleaned == "." || cleaned == "" {
-			continue
-		}
-		if strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) || cleaned == ".." || filepath.IsAbs(cleaned) {
-			return 0, 0, fmt.Errorf("zip slip rejected: %s", name)
-		}
-		target := filepath.Join(destAbs, cleaned)
-		if !strings.HasPrefix(target, destAbs+string(filepath.Separator)) && target != destAbs {
-			return 0, 0, fmt.Errorf("zip slip rejected: %s", name)
-		}
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return 0, 0, err
-			}
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(cleaned))
-		if _, bad := deny[ext]; bad {
-			continue
-		}
-		if int64(f.UncompressedSize64) > maxSingleBytes {
-			return 0, 0, fmt.Errorf("file too large: %s", name)
-		}
-		if fileCount+1 > maxFiles {
-			return 0, 0, fmt.Errorf("too many files in archive")
-		}
-		if totalBytes+int64(f.UncompressedSize64) > maxTotalBytes {
-			return 0, 0, fmt.Errorf("extracted size exceeds limit")
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return 0, 0, err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return 0, 0, err
-		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			rc.Close()
-			return 0, 0, err
-		}
-		written, copyErr := io.Copy(out, io.LimitReader(rc, maxSingleBytes+1))
-		_ = out.Close()
-		_ = rc.Close()
-		if copyErr != nil {
-			return 0, 0, copyErr
-		}
-		if written > maxSingleBytes {
-			return 0, 0, fmt.Errorf("file too large while extracting: %s", name)
-		}
-		fileCount++
-		totalBytes += written
-	}
-	return fileCount, totalBytes, nil
+	return result.Files, result.WrittenBytes, nil
 }
 
 // ImportArchiveZip starts an async job: extract zip then import the tree (with progress polling).

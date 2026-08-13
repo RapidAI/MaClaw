@@ -14,17 +14,20 @@
 #error "Fangtang cellular adapter may only be included by the Fangtang profile"
 #endif
 
+#ifndef MACLAW_COMPACT_CONNECTIVITY_ADAPTER_IMPLEMENTATION
+#error "Fangtang cellular adapter is owned exclusively by compact_connectivity_service.c"
+#endif
+
 #include "driver/gpio.h"
 #include "esp_err.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "ml307_transport.h"
+#include "boards/fangtang_4g/fangtang_ml307_transport.h"
 #include <limits.h>
 
 #include "configuration_service.h"
 #include "device_api.h"
-#include "fangtang_input_adapter.h"
 #include "persistence_service.h"
 
 #include <string.h>
@@ -191,13 +194,14 @@ static inline bool compact_connectivity_adapter_load_transport_selection(
     return true;
 }
 
-/* The input adapter captures its bounded, pre-scanner selector window.  This
- * adapter alone persists that physical intent as the selected uplink. */
+/* Input HAL has already classified the bounded pre-scanner gesture before it
+ * reaches this adapter. This adapter persists that normalized intent as the
+ * selected uplink; it must not include or query the Input service directly. */
 static inline bool compact_connectivity_adapter_apply_startup_transport_toggle(
-    uint32_t window_ms, bool current_cellular, bool *out_cellular) {
+    bool toggle_requested, bool current_cellular, bool *out_cellular) {
     if (!out_cellular) return false;
     *out_cellular = current_cellular;
-    if (!compact_input_adapter_consume_startup_selector_result(window_ms)) return false;
+    if (!toggle_requested) return false;
     const bool selected = !current_cellular;
     if (configuration_service_set_transport_selection(selected) != ESP_OK) return false;
     *out_cellular = selected;

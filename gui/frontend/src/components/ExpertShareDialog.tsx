@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { SubmitExpertMarketListing } from '../../wailsjs/go/main/App';
+import { SubmitExpertMarketListing, SubmitExpertMarketListingWithDistribution } from '../../wailsjs/go/main/App';
 import { useDialog } from './CustomDialog';
 import type { ExpertDefinition } from './ai/expertTypes';
 
@@ -28,6 +28,7 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
     const [version, setVersion] = useState('1.0.0');
     const [price, setPrice] = useState('0');
     const [visibility, setVisibility] = useState<'public' | 'private'>('public');
+    const [platformDistribution, setPlatformDistribution] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const dialogRef = useRef<HTMLElement | null>(null);
     const closeRef = useRef(onClose);
@@ -70,7 +71,9 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
         }
         setSubmitting(true);
         try {
-            const listing = await SubmitExpertMarketListing(expert.id, version.trim() || '1.0.0', parsedPrice, visibility);
+            const listing = platformDistribution
+                ? await SubmitExpertMarketListingWithDistribution(expert.id, version.trim() || '1.0.0', parsedPrice, visibility, true)
+                : await SubmitExpertMarketListing(expert.id, version.trim() || '1.0.0', parsedPrice, visibility);
             onSubmitted?.(listing || {});
             onClose();
             if (visibility === 'private') {
@@ -106,6 +109,7 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
                         <label><input type="radio" name="expert-visibility" checked={visibility === 'public'} onChange={() => setVisibility('public')} />{t(lang, '公开（默认，需审核）', 'Public (default, review required)')}</label>
                         <label><input type="radio" name="expert-visibility" checked={visibility === 'private'} onChange={() => setVisibility('private')} />{t(lang, '私有（无需审核，仅自己可见）', 'Private (no review, only you can see it)')}</label>
                     </fieldset>
+                    <label title={t(lang, '允许 HubCenter 将审核通过的公开版本获取为行业默认专家资产；不会替用户购买或授予收费专家。', 'Allow HubCenter to acquire an approved public version as an industry-default expert asset. This never purchases or grants a paid expert to users.')}><input type="checkbox" checked={platformDistribution} disabled={visibility !== 'public'} onChange={event => setPlatformDistribution(event.target.checked)} /> {t(lang, '允许平台按行业分发此专家', 'Allow platform distribution by industry')}</label>
                     <label>{t(lang, '版本', 'Version')}<input aria-label={t(lang, '版本', 'Version')} value={version} onChange={event => setVersion(event.target.value)} /></label>
                     <label>{t(lang, '价格（Credits，0 为免费）', 'Price (Credits, 0 is free)')}<input aria-label={t(lang, '价格（Credits，0 为免费）', 'Price (Credits, 0 is free)')} inputMode="numeric" value={price} onChange={event => setPrice(event.target.value)} /></label>
                 </div>

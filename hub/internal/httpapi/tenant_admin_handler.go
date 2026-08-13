@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,6 +48,8 @@ type tenantCreateRequest struct {
 	PrimaryDomain         string   `json:"primary_domain"`
 	Domains               []string `json:"domains"`
 	AllowUserRegistration *bool    `json:"allow_user_registration"`
+	RestrictEmailDomains  *bool    `json:"restrict_email_domains"`
+	LogoURL               *string  `json:"logo_url"`
 	InitialAdminUsername  string   `json:"initial_admin_username"`
 	InitialAdminPassword  string   `json:"initial_admin_password"`
 	InitialAdminEmail     string   `json:"initial_admin_email"`
@@ -58,6 +61,8 @@ type tenantDomainsUpdateRequest struct {
 	PrimaryDomain         string   `json:"primary_domain"`
 	Domains               []string `json:"domains"`
 	AllowUserRegistration *bool    `json:"allow_user_registration"`
+	RestrictEmailDomains  *bool    `json:"restrict_email_domains"`
+	LogoURL               *string  `json:"logo_url"`
 }
 
 var tenantIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{2,63}$`)
@@ -226,6 +231,10 @@ func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants sto
 			writeError(w, http.StatusBadRequest, "INVALID_TENANT_DOMAIN", "Tenant email domain is invalid: "+invalidDomain)
 			return
 		}
+		if req.RestrictEmailDomains != nil && *req.RestrictEmailDomains && len(domains) == 0 {
+			writeError(w, http.StatusBadRequest, "EMAIL_DOMAIN_RESTRICTION_REQUIRES_DOMAIN", "At least one email domain is required when domain-restricted registration is enabled")
+			return
+		}
 		if conflictDomain, conflictTenantID, err := conflictingTenantDomain(r.Context(), tenants, tenantID, domains); err != nil {
 			writeError(w, http.StatusInternalServerError, "TENANT_DOMAIN_CHECK_FAILED", err.Error())
 			return
@@ -237,7 +246,11 @@ func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants sto
 		if len(domains) > 0 {
 			primaryDomain = domains[0]
 		}
-		settingsJSON := tenantSettingsJSONWithDomainsAndRegistration("{}", domains, req.AllowUserRegistration)
+		if req.LogoURL != nil && !isValidTenantLogoURL(*req.LogoURL) {
+			writeError(w, http.StatusBadRequest, "INVALID_TENANT_LOGO_URL", "Tenant logo URL must be an HTTPS URL no longer than 2048 characters")
+			return
+		}
+		settingsJSON := tenantSettingsJSONWithDomainsAndRegistrationAndLogo("{}", domains, req.AllowUserRegistration, req.RestrictEmailDomains, req.LogoURL)
 		now := time.Now()
 		tenant := &store.Tenant{ID: tenantID, Slug: slug, Name: name, Status: "active", PrimaryDomain: primaryDomain, SettingsJSON: settingsJSON, CreatedByAdminID: actor.ID, CreatedAt: now, UpdatedAt: now}
 		if err := tenants.Create(r.Context(), tenant); err != nil {
@@ -256,7 +269,7 @@ func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants sto
 			}
 			syncTenantAdminRoute(r.Context(), routeSyncer, tenant.ID, admin.Email)
 		}
-		auditPayload := map[string]any{"tenant_id": tenant.ID, "tenant_slug": tenant.Slug}
+		auditPayload := map[string]any{"tenant_id": tenant.ID, "tenant_slug": tenant.Slug, "restrict_email_domains": tenantRestrictsEmailDomains(tenant)}
 		if admin != nil {
 			auditPayload["initial_admin_id"] = admin.ID
 		}
@@ -366,6 +379,14 @@ func adminTenantDomainsUpdateHandler(system store.SystemSettingsRepository, tena
 			writeError(w, http.StatusBadRequest, "INVALID_TENANT_DOMAIN", "Tenant email domain is invalid: "+invalidDomain)
 			return
 		}
+		restrictEmailDomains := tenantRestrictsEmailDomains(tenant)
+		if req.RestrictEmailDomains != nil {
+			restrictEmailDomains = *req.RestrictEmailDomains
+		}
+		if restrictEmailDomains && len(domains) == 0 {
+			writeError(w, http.StatusBadRequest, "EMAIL_DOMAIN_RESTRICTION_REQUIRES_DOMAIN", "At least one email domain is required when domain-restricted registration is enabled")
+			return
+		}
 		if conflictDomain, conflictTenantID, err := conflictingTenantDomain(r.Context(), tenants, tenantID, domains); err != nil {
 			writeError(w, http.StatusInternalServerError, "TENANT_DOMAIN_CHECK_FAILED", err.Error())
 			return
@@ -377,7 +398,11 @@ func adminTenantDomainsUpdateHandler(system store.SystemSettingsRepository, tena
 		if len(domains) > 0 {
 			primaryDomain = domains[0]
 		}
-		settingsJSON := tenantSettingsJSONWithDomainsAndRegistration(tenant.SettingsJSON, domains, req.AllowUserRegistration)
+		if req.LogoURL != nil && !isValidTenantLogoURL(*req.LogoURL) {
+			writeError(w, http.StatusBadRequest, "INVALID_TENANT_LOGO_URL", "Tenant logo URL must be an HTTPS URL no longer than 2048 characters")
+			return
+		}
+		settingsJSON := tenantSettingsJSONWithDomainsAndRegistrationAndLogo(tenant.SettingsJSON, domains, req.AllowUserRegistration, req.RestrictEmailDomains, req.LogoURL)
 		var updateErr error
 		if hasSettingsUpdater {
 			updateErr = settingsUpdater.UpdateSettings(r.Context(), tenantID, name, primaryDomain, settingsJSON)
@@ -392,7 +417,7 @@ func adminTenantDomainsUpdateHandler(system store.SystemSettingsRepository, tena
 			return
 		}
 		updated, _ := tenants.GetByID(r.Context(), tenantID)
-		writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.settings_updated", map[string]any{"tenant_id": tenantID, "name": name, "domains": domains, "allow_user_registration": tenantAllowsUserRegistration(updated)})
+		writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.settings_updated", map[string]any{"tenant_id": tenantID, "name": name, "domains": domains, "allow_user_registration": tenantAllowsUserRegistration(updated), "restrict_email_domains": tenantRestrictsEmailDomains(updated), "has_logo_url": tenantLogoURL(updated) != ""})
 		postPlatformTenantCallbacks(r.Context(), system, updated, "")
 		writeJSON(w, http.StatusOK, map[string]any{"tenant": tenantDTO(updated)})
 	}
@@ -963,10 +988,14 @@ func tenantEmailDomains(t *store.Tenant) []string {
 }
 
 func tenantSettingsJSONWithDomains(settingsJSON string, domains []string) string {
-	return tenantSettingsJSONWithDomainsAndRegistration(settingsJSON, domains, nil)
+	return tenantSettingsJSONWithDomainsAndRegistration(settingsJSON, domains, nil, nil)
 }
 
-func tenantSettingsJSONWithDomainsAndRegistration(settingsJSON string, domains []string, allowUserRegistration *bool) string {
+func tenantSettingsJSONWithDomainsAndRegistration(settingsJSON string, domains []string, allowUserRegistration *bool, restrictEmailDomains *bool) string {
+	return tenantSettingsJSONWithDomainsAndRegistrationAndLogo(settingsJSON, domains, allowUserRegistration, restrictEmailDomains, nil)
+}
+
+func tenantSettingsJSONWithDomainsAndRegistrationAndLogo(settingsJSON string, domains []string, allowUserRegistration *bool, restrictEmailDomains *bool, logoURL *string) string {
 	settings := tenantSettingsMap(settingsJSON)
 	settings["email_domains"] = domains
 	delete(settings, "domains")
@@ -974,11 +1003,52 @@ func tenantSettingsJSONWithDomainsAndRegistration(settingsJSON string, domains [
 		settings["allow_user_registration"] = *allowUserRegistration
 		delete(settings, "registration_enabled")
 	}
+	if restrictEmailDomains != nil {
+		settings["restrict_email_domains"] = *restrictEmailDomains
+	}
+	if logoURL != nil {
+		if value := strings.TrimSpace(*logoURL); value != "" {
+			settings["logo_url"] = value
+		} else {
+			delete(settings, "logo_url")
+		}
+	}
 	data, err := json.Marshal(settings)
 	if err != nil {
 		return "{}"
 	}
 	return string(data)
+}
+
+func isValidTenantLogoURL(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	if len(value) > 2048 || strings.ContainsAny(value, "\r\n\t") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil
+}
+
+func tenantLogoURL(t *store.Tenant) string {
+	if t == nil {
+		return ""
+	}
+	value, _ := tenantSettingsMap(t.SettingsJSON)["logo_url"].(string)
+	if !isValidTenantLogoURL(value) {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func tenantRestrictsEmailDomains(t *store.Tenant) bool {
+	if t == nil {
+		return false
+	}
+	value, _ := tenantSettingsMap(t.SettingsJSON)["restrict_email_domains"].(bool)
+	return value
 }
 
 func tenantAllowsUserRegistration(t *store.Tenant) bool {
@@ -1009,14 +1079,14 @@ func tenantLoginOptionDTO(t *store.Tenant) map[string]any {
 	if t == nil {
 		return map[string]any{}
 	}
-	return map[string]any{"id": t.ID, "slug": t.Slug, "name": t.Name, "primary_domain": t.PrimaryDomain, "domains": tenantEmailDomains(t), "allow_user_registration": tenantAllowsUserRegistration(t)}
+	return map[string]any{"id": t.ID, "slug": t.Slug, "name": t.Name, "primary_domain": t.PrimaryDomain, "domains": tenantEmailDomains(t), "allow_user_registration": tenantAllowsUserRegistration(t), "restrict_email_domains": tenantRestrictsEmailDomains(t)}
 }
 
 func tenantDTO(t *store.Tenant) map[string]any {
 	if t == nil {
 		return map[string]any{}
 	}
-	out := map[string]any{"id": t.ID, "slug": t.Slug, "name": t.Name, "status": t.Status, "primary_domain": t.PrimaryDomain, "domains": tenantEmailDomains(t), "allow_user_registration": tenantAllowsUserRegistration(t), "settings_json": t.SettingsJSON, "created_at": t.CreatedAt.Format(time.RFC3339), "updated_at": t.UpdatedAt.Format(time.RFC3339)}
+	out := map[string]any{"id": t.ID, "slug": t.Slug, "name": t.Name, "status": t.Status, "primary_domain": t.PrimaryDomain, "domains": tenantEmailDomains(t), "allow_user_registration": tenantAllowsUserRegistration(t), "restrict_email_domains": tenantRestrictsEmailDomains(t), "logo_url": tenantLogoURL(t), "settings_json": t.SettingsJSON, "created_at": t.CreatedAt.Format(time.RFC3339), "updated_at": t.UpdatedAt.Format(time.RFC3339)}
 	if t.DeletedAt != nil {
 		out["deleted_at"] = t.DeletedAt.Format(time.RFC3339)
 	}

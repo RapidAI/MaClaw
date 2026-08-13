@@ -342,6 +342,7 @@ export const UtilitiesPage = ({
     const [textAnswerQuery, setTextAnswerQuery] = useState('');
     const [showHelp, setShowHelp] = useState(false);
     const [experts, setExperts] = useState<ExpertDefinition[]>([]);
+	const [managedIndustryExperts, setManagedIndustryExperts] = useState<ExpertDefinition[]>([]);
     const [expertEditor, setExpertEditor] = useState<{ mode: 'new' } | { mode: 'edit'; expert: ExpertDefinition } | null>(null);
     const [expertDeleteTarget, setExpertDeleteTarget] = useState<ExpertDefinition | null>(null);
     const [expertResetTarget, setExpertResetTarget] = useState<ExpertDefinition | null>(null);
@@ -438,16 +439,52 @@ export const UtilitiesPage = ({
             if (!mod?.ListExperts) return;
             const raw = await mod.ListExperts();
             if (!mountedRef.current || !activeRef.current || requestID !== expertsRequestRef.current) return;
-            setExperts(parseExpertListJSON(raw));
+			setExperts(parseExpertListJSON(raw));
+			if (mod?.ListManagedIndustryExperts) {
+				const managedRaw = await mod.ListManagedIndustryExperts();
+				const parsed = JSON.parse(managedRaw || '[]');
+				const items: ExpertDefinition[] = Array.isArray(parsed) ? parsed.map((item: any) => ({
+					id: String(item?.installed && item?.local_expert_id || `industry-${String(item?.asset_id || '')}`),
+					name: String(item?.name || ''), description: String(item?.description || ''), icon: String(item?.icon || ''),
+					system_prompt: '', tools: [], skills: [], builtin: false, created_at: '', updated_at: '',
+					managed_industry: true, industry_asset_id: String(item?.asset_id || ''), industry_listing_id: String(item?.listing_id || ''),
+					industry_version: String(item?.version || ''), industry_names: Array.isArray(item?.industry_names) ? item.industry_names.map(String) : [],
+					industry_price: Number(item?.price || 0), industry_installed: !!item?.installed,
+					industry_auto_installing: !!item?.auto_installing, industry_auto_install_failed: !!item?.auto_install_failed,
+					industry_purchase_required: !!item?.purchase_required,
+				})).filter(item => !!item.industry_asset_id && !!item.name) : [];
+				setManagedIndustryExperts(items);
+			}
         } catch {
             // Backend unavailable (tests / pre-wails) — keep the section empty.
         }
     }, []);
 
+	const handlePurchaseAndInstallManagedIndustryExpert = useCallback(async (expert: ExpertDefinition) => {
+		if (!expert.industry_asset_id || !expert.industry_listing_id || expertActionBusy) return;
+		setExpertActionBusy(true);
+		try {
+			const mod = await getApp();
+			if (!mod?.PurchaseAndInstallManagedIndustryExpert) throw new Error(isZh ? '当前版本不支持购买行业专家' : 'This build cannot purchase industry experts');
+			await mod.PurchaseAndInstallManagedIndustryExpert(expert.industry_asset_id, expert.industry_listing_id);
+			await loadExperts();
+		} catch (e: any) { if (mountedRef.current) setError(String(e?.message || e)); }
+		finally { if (mountedRef.current) setExpertActionBusy(false); }
+	}, [expertActionBusy, isZh, loadExperts]);
+
     useEffect(() => {
         if (!active || view !== 'home') return;
         void loadExperts();
     }, [active, view, loadExperts]);
+
+	// Installation is started by the backend so the initial directory load is
+	// non-blocking. Poll briefly while an automatic install is in progress and
+	// replace the placeholder with its usable read-only card as soon as it lands.
+	useEffect(() => {
+		if (!active || view !== 'home' || !managedIndustryExperts.some(expert => expert.industry_auto_installing)) return;
+		const timer = window.setTimeout(() => { void loadExperts(); }, 1200);
+		return () => window.clearTimeout(timer);
+	}, [active, view, managedIndustryExperts, loadExperts]);
 
     /** id → name lookup for the "优化自" lineage line on expert cards. */
     const expertNameById = useMemo(() => {
@@ -1820,6 +1857,25 @@ export const UtilitiesPage = ({
                         <p className="utilities-experts__exchange-hint">{t.expertExchangeHint}</p>
                     </div>
                     <div className="utilities-experts__grid">
+						{managedIndustryExperts.map((expert) => {
+							const installed = !!expert.industry_installed;
+							const autoInstalling = !!expert.industry_auto_installing;
+							const autoInstallFailed = !!expert.industry_auto_install_failed;
+							const purchaseRequired = !!expert.industry_purchase_required;
+							return (
+								<div key={`managed-${expert.industry_asset_id}`} className={`utilities-expert-card utilities-expert-card--industry${installed ? '' : ' utilities-expert-card--industry-placeholder'}`} data-testid={`utilities-industry-expert-card-${expert.industry_asset_id}`}>
+									{installed ? <button type="button" className="utilities-expert-card__main" aria-label={expert.name} title={t.expertOpenHint} onClick={() => onOpenExpert?.(expert)}>
+										<div className="utilities-expert-card__icon" aria-hidden>{expert.icon || DEFAULT_EXPERT_ICON}</div>
+										<div className="utilities-expert-card__body"><div className="utilities-expert-card__title">{expert.name}</div><div className="utilities-expert-card__desc">{expert.description}</div><div className="utilities-expert-card__industry">{isZh ? '系统默认 · ' : 'System default · '}{(expert.industry_names || []).join('、')}</div></div>
+										<span className="utilities-expert-card__cta">{t.expertOpen}</span>
+									</button> : <div className="utilities-expert-card__main utilities-expert-card__main--disabled">
+										<div className="utilities-expert-card__icon" aria-hidden>{expert.icon || DEFAULT_EXPERT_ICON}</div>
+										<div className="utilities-expert-card__body"><div className="utilities-expert-card__title">{expert.name}</div><div className="utilities-expert-card__desc">{expert.description}</div><div className="utilities-expert-card__industry">{isZh ? '行业默认 · ' : 'Industry default · '}{(expert.industry_names || []).join('、')}</div></div>
+									</div>}
+									{installed ? null : autoInstalling ? <div className="utilities-expert-card__industry-install utilities-expert-card__industry-install--pending" role="status">{isZh ? '正在自动安装…' : 'Installing automatically…'}</div> : autoInstallFailed ? <button type="button" className="utilities-expert-card__industry-install" disabled={expertActionBusy} onClick={() => { void handlePurchaseAndInstallManagedIndustryExpert(expert); }}>{expertActionBusy ? (isZh ? '处理中…' : 'Working…') : (isZh ? '重新安装' : 'Retry install')}</button> : purchaseRequired ? <button type="button" className="utilities-expert-card__industry-install" disabled={expertActionBusy} onClick={() => { void handlePurchaseAndInstallManagedIndustryExpert(expert); }}>{expertActionBusy ? (isZh ? '处理中…' : 'Working…') : (isZh ? `购买并安装 (${Number(expert.industry_price || 0)} Credits)` : `Buy & install (${Number(expert.industry_price || 0)} Credits)`)}</button> : null}
+								</div>
+							);
+						})}
                         {experts.map((expert) => (
                             <div key={expert.id} className="utilities-expert-card" data-testid={`utilities-expert-card-${expert.id}`}>
                                 <button

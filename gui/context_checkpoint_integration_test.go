@@ -31,7 +31,7 @@ func TestCompactAgentLoopConversationCreatesLosslessCheckpoint(t *testing.T) {
 		conversation = append(conversation, map[string]string{"role": "user", "content": strings.Repeat("important requirement ", 120)})
 	}
 	tools := []map[string]interface{}{tooldef.BuildToolDef("read_tool_result", "read", map[string]interface{}{"type": "object"})}
-	got := (&IMMessageHandler{}).compactAgentLoopConversation(nil, "owner-a", conversation, tools, 5000, agent.EstimateToolsTokens(tools))
+	got := (&IMMessageHandler{}).compactAgentLoopConversation(nil, "owner-a", conversation, tools, 5000, agent.EstimateToolsTokens(tools), false)
 	if len(got) >= len(conversation) || len(got) < 3 {
 		t.Fatalf("unexpected checkpoint length before=%d after=%d", len(conversation), len(got))
 	}
@@ -61,7 +61,7 @@ func TestContextCheckpointShadowKeepsLegacyConversation(t *testing.T) {
 	tools := []map[string]interface{}{tooldef.BuildToolDef("read_tool_result", "read", map[string]interface{}{"type": "object"})}
 	toolsTokens := agent.EstimateToolsTokens(tools)
 	want := trimConversation(conversation, 5000, toolsTokens, nil)
-	got := (&IMMessageHandler{}).compactAgentLoopConversation(nil, "owner-a", conversation, tools, 5000, toolsTokens)
+	got := (&IMMessageHandler{}).compactAgentLoopConversation(nil, "owner-a", conversation, tools, 5000, toolsTokens, false)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("shadow mode diverged from legacy trimming: got=%d want=%d", len(got), len(want))
 	}

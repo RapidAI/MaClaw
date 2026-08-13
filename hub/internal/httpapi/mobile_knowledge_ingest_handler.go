@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -25,6 +26,12 @@ func MobileAgentKnowledgeIngestHandler(identity *auth.IdentityService) http.Hand
 		}
 		principal, err := authenticateViewerRequest(r, identity)
 		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		mobileKnowledgePurgeState.RLock()
+		defer mobileKnowledgePurgeState.RUnlock()
+		if !mobileOwnerWriteAllowedLocked(principal.TenantID, mobilePrincipalOwnerID(principal)) {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
@@ -70,7 +77,7 @@ func MobileAgentKnowledgeIngestHandler(identity *auth.IdentityService) http.Hand
 
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
-		src, err := mobileKnowledgeStore.SaveText(ctx, knowledge.TextSaveRequest{
+		src, err := mobileSaveKnowledgeForOwner(ctx, tenantID, ownerID, knowledge.TextSaveRequest{
 			Text:      text,
 			Title:     title,
 			Kind:      "mobile_note",
@@ -80,6 +87,10 @@ func MobileAgentKnowledgeIngestHandler(identity *auth.IdentityService) http.Hand
 			Labels:    []string{"mobile", "note", "user_ingest"},
 		})
 		if err != nil {
+			if errors.Is(err, errMobileOwnerPurged) {
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "INGEST_FAILED", "failed to index note into knowledge store")
 			return
 		}

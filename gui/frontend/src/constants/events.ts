@@ -26,6 +26,9 @@ export const EVENT_PROJECT_TASK_CLOSED = "project-task:closed";
 /** Emitted before task-close when the task was permanently deleted. */
 export const EVENT_PROJECT_TASK_DELETED = "project-task:deleted";
 
+/** Emitted after a task display name changes; matching open project tabs update immediately. */
+export const EVENT_PROJECT_TASK_RENAMED = "project-task:renamed";
+
 /**
  * Emitted when an AI-expert durable task is permanently deleted.
  * Payload is the expert id string. Frontend uses it to drop expert tab

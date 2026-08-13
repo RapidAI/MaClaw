@@ -8,15 +8,10 @@ bool board_profile_get(device_profile_t *out_profile) {
         .id = "fangtang-4g-v1",
         .display_width = 240,
         .display_height = 240,
-        .capabilities = DEVICE_CAPABILITY_DISPLAY |
-                        DEVICE_CAPABILITY_PRIMARY_CONTROL |
-                        DEVICE_CAPABILITY_OUTPUT_VOLUME |
-                        DEVICE_CAPABILITY_AUDIO_CAPTURE |
-                        DEVICE_CAPABILITY_AUDIO_PLAYBACK |
-                        DEVICE_CAPABILITY_OFFLINE_WAKE_WORD |
-                        DEVICE_CAPABILITY_PERSISTENT_STORAGE |
+        /* Required business behaviour is shared with Bread; only physical
+         * transport/power facts belong in this profile-specific suffix. */
+        .capabilities = DEVICE_CAPABILITY_REQUIRED_BASELINE |
                         DEVICE_CAPABILITY_BATTERY_TELEMETRY |
-                        DEVICE_CAPABILITY_DISPLAY_OFF |
                         DEVICE_CAPABILITY_CELLULAR_TRANSPORT,
         .primary_interaction_source = DEVICE_INPUT_SOURCE_PRIMARY_CONTROL,
         .primary_interaction_label = "激活键",

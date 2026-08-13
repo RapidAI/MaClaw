@@ -89,26 +89,14 @@ func RegistrationEmailSendCodeHandler(identity *auth.IdentityService, mailer *ma
 		}
 		ctx := auth.WithTenant(r.Context(), tenantID)
 		if err := identity.ValidateEmailEnrollment(ctx, email); err != nil {
-			code := "EMAIL_VALIDATION_FAILED"
-			status := http.StatusInternalServerError
-			switch {
-			case errors.Is(err, auth.ErrEmailBlocked):
-				code = "EMAIL_BLOCKED"
-				status = http.StatusForbidden
-			case errors.Is(err, auth.ErrEmailDomainNotAllowed):
-				code = "EMAIL_DOMAIN_NOT_ALLOWED"
-				status = http.StatusForbidden
-			case errors.Is(err, auth.ErrRoutedToAnotherHub):
-				code = "EMAIL_ROUTED_TO_ANOTHER_HUB"
-				status = http.StatusConflict
-			}
+			status, code := registrationEmailEnrollmentValidationError(err)
 			log.Printf("[onboarding-email] send_code_rejected email=%s domain=%s tenant_id=%s tenant_source=%s method=%s code=%s err=%v elapsed=%s", emailLog, domainLog, tenantID, tenantSource, authMethod, code, err, time.Since(startedAt))
 			writeError(w, status, code, err.Error())
 			return
 		}
 		if mailer == nil {
 			log.Printf("[onboarding-email] send_code_rejected email=%s domain=%s tenant_id=%s method=%s code=MAIL_NOT_CONFIGURED elapsed=%s", emailLog, domainLog, tenantID, authMethod, time.Since(startedAt))
-			writeError(w, http.StatusInternalServerError, "MAIL_NOT_CONFIGURED", "Mail delivery is not configured")
+			writeError(w, http.StatusServiceUnavailable, "MAIL_NOT_CONFIGURED", "Mail delivery is not configured")
 			return
 		}
 		code, err := generateVerifyCode()
@@ -126,11 +114,12 @@ func RegistrationEmailSendCodeHandler(identity *auth.IdentityService, mailer *ma
 		}
 		body := fmt.Sprintf("您的登录验证码是: %s\r\n\r\n验证码 %d 分钟内有效。如非本人操作，请忽略此消息。", code, int(verifyCodeTTL.Minutes()))
 		if err := mailer.Send(ctx, []string{email}, "MaClaw 登录验证码", body); err != nil {
+			status, deliveryCode := registrationEmailDeliveryError(err)
 			log.Printf("[onboarding-email] send_code_failed email=%s domain=%s tenant_id=%s method=%s elapsed=%s err=%v", emailLog, domainLog, tenantID, authMethod, time.Since(startedAt), err)
 			if !rollbackVerifyCode(tenantID, key, code, previousCode) {
 				log.Printf("[onboarding-email] send_code_rollback_skipped email=%s tenant_id=%s reason=code_replaced", emailLog, tenantID)
 			}
-			writeError(w, http.StatusBadGateway, "MAIL_SEND_FAILED", err.Error())
+			writeError(w, status, deliveryCode, err.Error())
 			return
 		}
 		log.Printf("[onboarding-email] send_code_succeeded email=%s domain=%s tenant_id=%s tenant_source=%s method=%s elapsed=%s expires_min=%d", emailLog, domainLog, tenantID, tenantSource, authMethod, time.Since(startedAt), int(verifyCodeTTL.Minutes()))
@@ -194,6 +183,18 @@ func RegistrationEmailVerifyAndStartHandler(identity *auth.IdentityService, invS
 				return
 			}
 		}
+		// Do this before consuming the one-time code. Tenant policy or routing can
+		// change after a code is sent; the user must be able to retry with the
+		// same valid code once that recoverable server-side issue is corrected.
+		if identity != nil {
+			ctx := auth.WithTenant(r.Context(), tenantID)
+			if err := identity.ValidateEmailEnrollment(ctx, email); err != nil {
+				status, code := registrationEmailEnrollmentValidationError(err)
+				log.Printf("[onboarding-email] verify_rejected email=%s domain=%s tenant_id=%s tenant_source=%s method=%s code=%s err=%v elapsed=%s", emailLog, domainLog, tenantID, tenantSource, authMethod, code, err, time.Since(startedAt))
+				writeError(w, status, code, err.Error())
+				return
+			}
+		}
 		key := "enroll:" + email
 		valid, locked := consumeVerifyCode(tenantID, key, strings.TrimSpace(req.VerifyCode))
 		if !valid {
@@ -228,7 +229,109 @@ func RegistrationEmailVerifyAndStartHandler(identity *auth.IdentityService, invS
 	}
 }
 
+// RegistrationEmailStartWithInvitationHandler supports the deliberately
+// narrow no-email-OTP policy: the tenant must turn the policy on and the
+// client must present an invitation code. The invitation is the alternate
+// enrollment proof for this narrow flow; it suppresses the registration email
+// check without claiming that the email address itself was verified.
+func RegistrationEmailStartWithInvitationHandler(identity *auth.IdentityService, invSvc *invitation.Service, securitySvc *security.SecurityService, systems ...store.SystemSettingsRepository) http.HandlerFunc {
+	var system store.SystemSettingsRepository
+	if len(systems) > 0 {
+		system = systems[0]
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if identity == nil || invSvc == nil {
+			writeError(w, http.StatusInternalServerError, "IDENTITY_UNAVAILABLE", "Invitation registration is unavailable")
+			return
+		}
+		var req EnrollStartRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		email := strings.TrimSpace(strings.ToLower(req.Email))
+		if !looksLikeRegistrationContactEmail(email) || strings.TrimSpace(req.InvitationCode) == "" {
+			writeError(w, http.StatusBadRequest, "INVITATION_CODE_REQUIRED", "A valid email and invitation code are required")
+			return
+		}
+		tenantID := strings.TrimSpace(req.TenantID)
+		if tenantID == "" {
+			var err error
+			tenantID, err = tenantIDForEmailRequest(r, identity, email)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+				return
+			}
+		}
+		cfg, err := loadRegistrationAuthConfigForTenant(r, system, tenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
+			return
+		}
+		if (cfg.Method != registrationAuthMethodEmail && cfg.Method != registrationAuthMethodMixed) || cfg.EmailVerificationRequired() {
+			writeError(w, http.StatusForbidden, "EMAIL_VERIFICATION_REQUIRED", "Email verification is required for this tenant")
+			return
+		}
+		if err := identity.ValidateEmailEnrollment(auth.WithTenant(r.Context(), tenantID), email); err != nil {
+			status, code := registrationEmailEnrollmentValidationError(err)
+			writeError(w, status, code, err.Error())
+			return
+		}
+		// StartEnrollment only consumes invitation codes for new users. This
+		// endpoint must also validate them for re-enrollment: otherwise anyone
+		// knowing an existing email could bypass its email proof and add a device.
+		// The second validation inside StartEnrollment is idempotent for the same
+		// email, so preserving the normal enrollment flow remains safe.
+		if err := invSvc.ValidateAndConsumeForTenant(auth.WithTenant(r.Context(), tenantID), tenantID, req.InvitationCode, email); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_INVITATION_CODE", "Invitation code is invalid or already used")
+			return
+		}
+		req.Email = email
+		req.TenantID = tenantID
+		data, err := json.Marshal(req)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ENROLL_FAILED", err.Error())
+			return
+		}
+		next := r.Clone(withInvitationAuthorizedEmailEnrollment(r.Context(), tenantID))
+		next.Body = io.NopCloser(bytes.NewReader(data))
+		next.ContentLength = int64(len(data))
+		next.Header = r.Header.Clone()
+		next.Header.Set("Content-Type", "application/json")
+		EnrollStartHandler(identity, invSvc, securitySvc)(w, next)
+	}
+}
+
+func registrationEmailDeliveryError(err error) (int, string) {
+	if errors.Is(err, mail.ErrDeliveryNotConfigured) {
+		return http.StatusServiceUnavailable, "MAIL_NOT_CONFIGURED"
+	}
+	return http.StatusBadGateway, "MAIL_SEND_FAILED"
+}
+
+func registrationEmailEnrollmentValidationError(err error) (int, string) {
+	switch {
+	case errors.Is(err, auth.ErrEmailBlocked):
+		return http.StatusForbidden, "EMAIL_BLOCKED"
+	case errors.Is(err, auth.ErrEmailDomainNotAllowed):
+		return http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED"
+	case errors.Is(err, auth.ErrTenantNotFound):
+		return http.StatusNotFound, "TENANT_NOT_FOUND"
+	case errors.Is(err, auth.ErrTenantInactive):
+		return http.StatusForbidden, "TENANT_INACTIVE"
+	case errors.Is(err, auth.ErrRoutedToAnotherHub):
+		return http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB"
+	default:
+		return http.StatusInternalServerError, "EMAIL_VALIDATION_FAILED"
+	}
+}
+
 func withEmailVerifiedEnrollment(ctx context.Context, tenantID string) context.Context {
 	ctx = context.WithValue(ctx, emailVerifiedEnrollmentContextKey{}, true)
+	return context.WithValue(ctx, verifiedEnrollmentTenantContextKey{}, strings.TrimSpace(tenantID))
+}
+
+func withInvitationAuthorizedEmailEnrollment(ctx context.Context, tenantID string) context.Context {
+	ctx = context.WithValue(ctx, emailVerificationSkippedEnrollmentContextKey{}, true)
 	return context.WithValue(ctx, verifiedEnrollmentTenantContextKey{}, strings.TrimSpace(tenantID))
 }

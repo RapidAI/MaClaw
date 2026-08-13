@@ -65,6 +65,20 @@ var configAgentAllowedTools = map[string]struct{}{
 	"feishu.auto_enroll.update":        {},
 	"card_store.config.get":            {},
 	"card_store.config.update":         {},
+	"digital_assets.settings.get":      {},
+	"digital_assets.settings.update":   {},
+	"ve.config.get":                    {},
+	"ve.config.update":                 {},
+	"security.settings.get":            {},
+	"security.settings.update":         {},
+	"security.default_group.get":       {},
+	"security.default_group.update":    {},
+	"security.approval_roles.get":      {},
+	"security.approval_roles.update":   {},
+	"referrals.config.get":             {},
+	"referrals.config.update":          {},
+	"capability_market.policy.get":     {},
+	"capability_market.policy.update":  {},
 }
 
 type llmPlanDraft struct {
@@ -139,6 +153,20 @@ func configAgentToolCatalogJSON(providerReg *im.LLMProviderRegistry) string {
 			{"name": "feishu.auto_enroll.update", "mode": "write", "desc": "Update Feishu auto-enroll", "args": []string{"enabled", "department_id", "use_lark", "employee_type"}},
 			{"name": "card_store.config.get", "mode": "read", "desc": "Get card store config (secrets masked)"},
 			{"name": "card_store.config.update", "mode": "write", "desc": "Toggle card store enabled / payment_mode", "args": []string{"enabled", "payment_mode"}},
+			{"name": "digital_assets.settings.get", "mode": "read", "desc": "Get this tenant's digital-assets feature settings"},
+			{"name": "digital_assets.settings.update", "mode": "write", "desc": "Enable/disable digital assets or sync for this tenant", "args": []string{"enabled", "sync_enabled"}},
+			{"name": "ve.config.get", "mode": "read", "desc": "Get this tenant's virtual-employee group settings"},
+			{"name": "ve.config.update", "mode": "write", "desc": "Set virtual-employee auto approval or group size", "args": []string{"auto_approve", "max_group_participants"}},
+			{"name": "security.settings.get", "mode": "read", "desc": "Get tenant security and organization settings"},
+			{"name": "security.settings.update", "mode": "write", "desc": "Update tenant security and organization settings", "args": []string{"centralized_security_enabled", "org_structure_enabled"}},
+			{"name": "security.default_group.get", "mode": "read", "desc": "Get the default group for new tenant users"},
+			{"name": "security.default_group.update", "mode": "write", "desc": "Set the default group for new tenant users", "args": []string{"group_id"}},
+			{"name": "security.approval_roles.get", "mode": "read", "desc": "Get tenant approval role assignments"},
+			{"name": "security.approval_roles.update", "mode": "write", "desc": "Replace tenant approval role assignments", "args": []string{"roles", "function_scopes"}},
+			{"name": "referrals.config.get", "mode": "read", "desc": "Get tenant user-referral policy"},
+			{"name": "referrals.config.update", "mode": "write", "desc": "Update tenant user-referral policy", "args": []string{"enabled", "inviter_credits", "invitee_credits", "duration_days", "daily_reward_cap", "daily_network_client_review_cap", "service_group_id"}},
+			{"name": "capability_market.policy.get", "mode": "read", "desc": "Get tenant capability-market policy"},
+			{"name": "capability_market.policy.update", "mode": "write", "desc": "Replace tenant capability-market policy", "args": []string{"policy"}},
 		},
 		"known_provider_ids": providers,
 		"rules": []string{
@@ -266,6 +294,7 @@ func validateAndNormalizeLLMPlan(draft *llmPlanDraft) (*configAgentPlan, error) 
 		risk = "medium"
 	}
 	steps := make([]configAgentStep, 0, len(draft.Steps))
+	stepIDs := make(map[string]struct{}, len(draft.Steps))
 	for i, s := range draft.Steps {
 		tool := strings.TrimSpace(s.Tool)
 		if tool == "" {
@@ -274,23 +303,15 @@ func validateAndNormalizeLLMPlan(draft *llmPlanDraft) (*configAgentPlan, error) 
 		if _, ok := configAgentAllowedTools[tool]; !ok {
 			return nil, fmt.Errorf("disallowed tool %q", tool)
 		}
-		mode := strings.ToLower(strings.TrimSpace(s.Mode))
-		switch mode {
-		case "read", "write", "probe":
-		default:
-			// Infer mode from tool name.
-			if strings.HasSuffix(tool, ".get") {
-				mode = "read"
-			} else if strings.HasSuffix(tool, ".test") {
-				mode = "probe"
-			} else {
-				mode = "write"
-			}
-		}
+		mode := configAgentToolMode(tool)
 		stepID := strings.TrimSpace(s.StepID)
 		if stepID == "" {
 			stepID = fmt.Sprintf("s%d", i+1)
 		}
+		if _, exists := stepIDs[stepID]; exists {
+			return nil, fmt.Errorf("duplicate step_id %q", stepID)
+		}
+		stepIDs[stepID] = struct{}{}
 		args := s.Args
 		if args == nil {
 			args = map[string]any{}
@@ -314,6 +335,12 @@ func validateAndNormalizeLLMPlan(draft *llmPlanDraft) (*configAgentPlan, error) 
 	if len(steps) == 0 {
 		return nil, fmt.Errorf("LLM plan has no valid steps")
 	}
+	if err := validateConfigAgentStepDependencies(steps); err != nil {
+		return nil, err
+	}
+	if configAgentPlanHasWrite(steps) && risk != "high" {
+		risk = "high"
+	}
 	return &configAgentPlan{
 		Intent:        intent,
 		Summary:       summary,
@@ -324,6 +351,42 @@ func validateAndNormalizeLLMPlan(draft *llmPlanDraft) (*configAgentPlan, error) 
 		Simulated:     draft.Simulated,
 		Planner:       "llm",
 	}, nil
+}
+
+func configAgentPlanHasWrite(steps []configAgentStep) bool {
+	for _, step := range steps {
+		if step.Mode == "write" {
+			return true
+		}
+	}
+	return false
+}
+
+func validateConfigAgentStepDependencies(steps []configAgentStep) error {
+	known := make(map[string]struct{}, len(steps))
+	positions := make(map[string]int, len(steps))
+	for index, step := range steps {
+		known[step.StepID] = struct{}{}
+		positions[step.StepID] = index
+	}
+	for index, step := range steps {
+		for _, dependency := range step.DependsOn {
+			dependency = strings.TrimSpace(dependency)
+			if dependency == "" {
+				continue
+			}
+			if dependency == step.StepID {
+				return fmt.Errorf("step %q cannot depend on itself", step.StepID)
+			}
+			if _, ok := known[dependency]; !ok {
+				return fmt.Errorf("step %q depends on unknown step %q", step.StepID, dependency)
+			}
+			if positions[dependency] >= index {
+				return fmt.Errorf("step %q depends on %q, which must appear earlier in the plan", step.StepID, dependency)
+			}
+		}
+	}
+	return nil
 }
 
 func defaultAPIPreviewForTool(tool string) map[string]any {
@@ -428,6 +491,34 @@ func defaultAPIPreviewForTool(tool string) map[string]any {
 		return map[string]any{"method": "GET", "path": "/api/admin/card-store/config"}
 	case "card_store.config.update":
 		return map[string]any{"method": "PUT", "path": "/api/admin/card-store/config", "note": "partial: enabled/payment_mode"}
+	case "digital_assets.settings.get":
+		return map[string]any{"method": "GET", "path": "/api/admin/digital-assets/settings"}
+	case "digital_assets.settings.update":
+		return map[string]any{"method": "PUT", "path": "/api/admin/digital-assets/settings"}
+	case "ve.config.get":
+		return map[string]any{"method": "GET", "path": "/api/ve/config"}
+	case "ve.config.update":
+		return map[string]any{"method": "PUT", "path": "/api/ve/config"}
+	case "security.settings.get":
+		return map[string]any{"method": "GET", "path": "/api/admin/security/settings"}
+	case "security.settings.update":
+		return map[string]any{"method": "PUT", "path": "/api/admin/security/settings"}
+	case "security.default_group.get":
+		return map[string]any{"method": "GET", "path": "/api/admin/security/settings"}
+	case "security.default_group.update":
+		return map[string]any{"method": "PUT", "path": "/api/admin/security/settings/default-group"}
+	case "security.approval_roles.get":
+		return map[string]any{"method": "GET", "path": "/api/admin/security/approval-roles"}
+	case "security.approval_roles.update":
+		return map[string]any{"method": "PUT", "path": "/api/admin/security/approval-roles"}
+	case "referrals.config.get":
+		return map[string]any{"method": "GET", "path": "/api/admin/user-referrals/config"}
+	case "referrals.config.update":
+		return map[string]any{"method": "PUT", "path": "/api/admin/user-referrals/config"}
+	case "capability_market.policy.get":
+		return map[string]any{"method": "GET", "path": "/api/admin/capability-market/policy"}
+	case "capability_market.policy.update":
+		return map[string]any{"method": "PUT", "path": "/api/admin/capability-market/policy"}
 	default:
 		return nil
 	}

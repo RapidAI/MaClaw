@@ -52,7 +52,7 @@ func TestSafeUnzip_TooManyFiles(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for too many files")
 	}
-	if err != nil && !strings.Contains(err.Error(), "too many files") {
+	if err != nil && !strings.Contains(err.Error(), "LIMIT_EXCEEDED") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

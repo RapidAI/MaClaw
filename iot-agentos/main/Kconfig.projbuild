@@ -326,16 +326,17 @@ config MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION
         production-release path.
 
 config MACLAW_COMPACT_RENDERER_FAILURE_STAGE
-    int "Compact-renderer fault stage (1=input, 2=audio, 3=peripheral, 4=scanner semaphore, 5=before scanner task)"
-    range 1 5
+    int "Compact-renderer fault stage (1=input, 2=audio, 3=peripheral, 4=scanner semaphore, 5=before scanner task, 6=after scanner task)"
+    range 1 6
     default 1
     depends on MACLAW_COMPACT_RENDERER_FAILURE_INITIALIZATION
     help
         The shared compact renderer returns a synthetic failure immediately
         after completing the selected acquisition step. Stage 5 fails before
         publishing the scanner task, matching a task-create failure without
-        leaving a synthetic task alive. The stage numbers describe a
-        renderer-local lifecycle test seam; they are not Device, Platform or
+        leaving a synthetic task alive. Stage 6 fails after publication and
+        verifies the normal cooperative scanner stop/join path. The stage
+        numbers describe a renderer-local lifecycle test seam; they are not Device, Platform or
         profile-adapter API.
 
 config MACLAW_DISPLAY_SERVICE_FAIL_AFTER_INIT
@@ -406,6 +407,57 @@ config MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
         draw must drain that old transaction before it can submit new pixels.
         This validates late-DMA completion ownership without exposing a
         runtime setter, console, Hub, input, HTTP, Device API or release path.
+
+config MACLAW_FANGTANG_DISPLAY_TEST_TRANSFER_ROWS
+    int "Fangtang display rows per DMA transaction (test only)"
+    range 1 32
+    default 1
+    depends on MACLAW_BOARD_FANGTANG_4G
+    help
+        Selects the maximum number of adjacent NV3023 rows in one colour-DMA
+        transaction for a dedicated Fangtang hardware test artifact. Production
+        firmware remains fixed at 32 rows, the electrically qualified setting.
+        The test range intentionally includes that production bound so COM5
+        qualification can reproduce it exactly as well as compare smaller
+        blocks. This value is unavailable outside MACLAW_TEST_BUILD and never
+        creates a runtime setter, Hub command, Device/Platform API, business
+        branch, or display-layout policy.
+
+config MACLAW_TASK_REGISTRY_LIFECYCLE_TEST
+    bool "Run Task Registry lifecycle boundary test at boot (test only)"
+    default n
+    help
+        Runs one compile-time-selected, boot-only Task Registry test before
+        profile drivers initialize. It covers registry-mutex contention, a
+        shared parent deadline, reverse-order multi-owner stop, and mixed
+        success/error/timeout callbacks. The test has no runtime setter,
+        Hub message, HTTP route, console command, or release-firmware path.
+        It is intended only for a dedicated hardware-in-the-loop image and
+         never for a production configuration.
+
+config MACLAW_COMPACT_DISPLAY_ANIMATION_DEADLINE_TEST
+    bool "Run compact animation stop-deadline test at boot (test only)"
+    default n
+    depends on MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD || MACLAW_BOARD_FANGTANG_4G
+    help
+        Runs a service-private decorative-worker lifecycle test after the
+        selected compact renderer has initialized. The test deliberately holds
+        the animation lifecycle mutex before and after completion publication,
+        proving a stopper does not reset its parent timeout for cleanup. It has
+        no runtime setter, Hub message, HTTP route, console command, or release
+         firmware path.
+
+config MACLAW_ROUND_DISPLAY_ANIMATION_DEADLINE_TEST
+    bool "Run round animation stop-deadline test at boot (test only)"
+    default n
+    depends on MACLAW_BOARD_ECHOEAR_2ST || MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    help
+        Runs a service-private decorative-worker lifecycle test after the
+        selected round input/display initialization has completed. The test
+        deliberately holds the animation lifecycle mutex before and after
+        completion publication, proving a stopper does not reset its parent
+        timeout for cleanup. It has no runtime setter, Hub message, HTTP route,
+        console command, or release firmware path.
 
 endif
 

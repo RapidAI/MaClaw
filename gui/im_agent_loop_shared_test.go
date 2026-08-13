@@ -615,6 +615,126 @@ func TestSharedAgentLoopCallbacks_SteerSuppressesPostToolFileMaterialization(t *
 	}
 }
 
+func TestSharedAgentLoopPreToolCheckpointKeepsPersistedHistoryProviderValid(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	callback := &sharedAgentLoopCallbacks{
+		handler:  &IMMessageHandler{memory: memory},
+		userID:   "desktop-user:pre-tool-checkpoint",
+		userText: "inspect the project",
+		checkpointHistory: []agent.ConversationEntry{
+			{Role: "user", Content: "inspect the project"},
+		},
+		checkpointRunID: "run-1",
+	}
+	delta := []agent.ConversationEntry{{
+		Role: "assistant", Content: "", ToolCalls: []map[string]string{{"id": "call-1", "name": "write_file"}},
+	}}
+	if err := callback.OnToolBatchStarting(delta, agent.ToolBatchMetadata{Sequence: 1, LastToolName: "write_file", SideEffectState: "external_uncertain"}); err != nil {
+		t.Fatalf("OnToolBatchStarting() error = %v", err)
+	}
+	history := memory.Load(callback.userID)
+	if len(history) != 1 || history[0].Role != "user" {
+		t.Fatalf("pre-tool checkpoint persisted unpaired tool declaration: %#v", history)
+	}
+	if task, _ := memory.ConsumeInFlightTask(callback.userID); task == "" {
+		t.Fatal("pre-tool checkpoint did not persist recovery marker")
+	}
+}
+
+func TestSharedPreToolCheckpointTracksPendingBatchUntilCommit(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	callback := &sharedAgentLoopCallbacks{
+		handler:  &IMMessageHandler{memory: memory},
+		userID:   "desktop-user:pending-checkpoint",
+		userText: "update the project",
+		checkpointHistory: []agent.ConversationEntry{
+			{Role: "user", Content: "update the project"},
+		},
+		checkpointRunID: "run-1",
+	}
+	preTool := []agent.ConversationEntry{{
+		Role: "assistant", ToolCalls: []map[string]string{{"id": "call-1", "name": "write_file"}},
+	}}
+	if err := callback.OnToolBatchStarting(preTool, agent.ToolBatchMetadata{Sequence: 1, LastToolName: "write_file", SideEffectState: "external_uncertain"}); err != nil {
+		t.Fatalf("OnToolBatchStarting() error = %v", err)
+	}
+	if !callback.hasPendingToolBatch {
+		t.Fatal("pre-tool checkpoint must mark the in-memory delta unsafe to save")
+	}
+	committed := append(append([]agent.ConversationEntry(nil), preTool...), agent.ConversationEntry{
+		Role: "tool", Content: "written", ToolCallID: "call-1", ToolName: "write_file",
+	})
+	if err := callback.OnToolBatchCommitted(committed, agent.ToolBatchMetadata{Sequence: 1, LastToolName: "write_file", SideEffectState: "local_committed"}); err != nil {
+		t.Fatalf("OnToolBatchCommitted() error = %v", err)
+	}
+	if callback.hasPendingToolBatch {
+		t.Fatal("complete durable batch must allow normal terminal history saving")
+	}
+}
+
+func TestInterruptedSharedLoopExitResponseDoesNotWritePartialHistory(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	h := &IMMessageHandler{memory: memory}
+	const userID, runID = "desktop-user:partial-shared-exit", "run-1"
+	durable := []agent.ConversationEntry{{Role: "user", Content: "update the project"}}
+	if err := memory.PersistInFlightCheckpoint(userID, durable, "update the project", "/project", runID, agent.InFlightCheckpoint{
+		Sequence: 1, LastToolName: "write_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatalf("PersistInFlightCheckpoint() error = %v", err)
+	}
+	partial := append(append([]agent.ConversationEntry(nil), durable...), agent.ConversationEntry{
+		Role: "assistant", ToolCalls: []map[string]string{{"id": "call-1", "name": "write_file"}},
+	})
+	resp := h.interruptedSharedLoopExitResponse("update the project")
+	if resp == nil || !strings.Contains(resp.Text, "interrupted") {
+		t.Fatalf("response = %#v", resp)
+	}
+	if got := memory.Load(userID); len(got) != 1 || got[0].Role != "user" || got[0].Content != "update the project" {
+		t.Fatalf("partial history overwrote durable provider-valid prefix: %#v", got)
+	}
+	if len(partial) != 2 { // Keep the test's partial shape explicit and intentional.
+		t.Fatalf("partial history setup changed: %#v", partial)
+	}
+	if task, _ := memory.ConsumeInFlightTask(userID); task == "" {
+		t.Fatal("interrupted exit must preserve the recovery marker")
+	}
+}
+
+func TestShouldSaveSharedLoopTerminalHistoryRejectsPendingToolBatch(t *testing.T) {
+	result := agent.LoopResult{HistoryDelta: []agent.ConversationEntry{
+		{Role: "user", Content: "update"},
+		{Role: "assistant", ToolCalls: []map[string]string{{"id": "call-1", "name": "write_file"}}},
+	}}
+	if shouldSaveSharedLoopTerminalHistory(result, &sharedAgentLoopCallbacks{hasPendingToolBatch: true}) {
+		t.Fatal("partial tool batch must not be written by the generic terminal save")
+	}
+	if !shouldSaveSharedLoopTerminalHistory(result, &sharedAgentLoopCallbacks{}) {
+		t.Fatal("without a pending batch the complete terminal history remains saveable")
+	}
+	result.Error = "recovery_checkpoint_failed"
+	if shouldSaveSharedLoopTerminalHistory(result, &sharedAgentLoopCallbacks{}) {
+		t.Fatal("checkpoint failure must not fall back to an asynchronous history save")
+	}
+}
+
+func TestInterruptedSharedLoopResultResponseKeepsRecoverySemantics(t *testing.T) {
+	h := &IMMessageHandler{}
+	callback := &sharedAgentLoopCallbacks{userID: "desktop-user:result-interrupt"}
+	resp := h.interruptedSharedLoopResultResponse(
+		"update the project", agent.LoopResult{Usage: agent.TurnUsage{InputTokens: 4, OutputTokens: 6}},
+		"request-1", nil, nil, callback,
+	)
+	if resp == nil || !resp.HardExit || resp.Error != "" || resp.RequestID != "request-1" || resp.SessionKey != callback.userID {
+		t.Fatalf("response = %#v", resp)
+	}
+	if !strings.Contains(resp.Text, "interrupted") || resp.InputTokens != 4 || resp.OutputTokens != 6 {
+		t.Fatalf("response did not preserve recovery messaging/usage: %#v", resp)
+	}
+}
+
 func TestSameConversationElementsDetectsSameLengthReplacement(t *testing.T) {
 	first := map[string]interface{}{"role": "system", "content": "sys"}
 	oldUser := map[string]string{"role": "user", "content": "old"}

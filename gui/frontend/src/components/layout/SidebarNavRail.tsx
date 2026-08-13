@@ -8,6 +8,7 @@ import { IconRankBadge } from '../ai/WorkbenchIcons';
 import { GetHubUserRanking } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
+import { HubInvitationDialog } from '../HubInvitationDialog';
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -36,6 +37,10 @@ type SidebarNavRailProps = {
 
 const HUB_RANKING_REFRESH_INTERVAL_MS = 30 * 60_000;
 const HUB_RANKING_STARTUP_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 8 * 60_000] as const;
+
+function InviteGiftIcon() {
+    return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"/><path d="M2 8h20v4H2z"/><path d="M12 8v12"/><path d="M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8"/><path d="M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8"/></svg>;
+}
 
 const zhHans = {
     aiAssistant: 'AI \u52a9\u624b',
@@ -89,6 +94,8 @@ export const SidebarNavRail = ({
     utilitiesLabel,
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
+    const [invitationEnabled, setInvitationEnabled] = useState(false);
+    const [invitationDialogOpen, setInvitationDialogOpen] = useState(false);
 
     const showRanking = config?.show_hub_ranking !== false; // default: show
     const trophyThreshold = config?.ranking_trophy_threshold || 10; // hub-configured: top N use trophy
@@ -192,6 +199,16 @@ export const SidebarNavRail = ({
             if (typeof unsubscribe === 'function') unsubscribe();
         };
     }, [showRanking]);
+    // The server is authoritative: a disabled tenant deliberately renders no
+    // invitation button or separator, rather than a disabled-looking control.
+    useEffect(() => {
+        if (!remoteActivationStatus?.activated) { setInvitationEnabled(false); return; }
+        let cancelled = false;
+        import('../../../wailsjs/go/main/App').then(({ GetHubUserInvitations }) => GetHubUserInvitations()).then((result: any) => {
+            if (!cancelled) setInvitationEnabled(!!result?.enabled && !result?.error);
+        }).catch(() => { if (!cancelled) setInvitationEnabled(false); });
+        return () => { cancelled = true; };
+    }, [remoteActivationStatus?.activated, config?.remote_hub_url, config?.remote_viewer_token, config?.remote_tenant_id]);
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = miniAppShortLabel(lang);
     const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflow';
@@ -287,6 +304,22 @@ export const SidebarNavRail = ({
                     </span>
                 </div>
             )}
+            {invitationEnabled && (
+                <>
+                    <div aria-hidden="true" style={{ width: '60%', height: 1, margin: '3px 0', background: 'var(--theme-border)', opacity: .7 }} />
+                    <button
+                        type="button"
+                        className="sidebar-item left-nav-item"
+                        onClick={() => setInvitationDialogOpen(true)}
+                        title={lang === 'zh-Hans' ? '邀请好友' : lang === 'zh-Hant' ? '邀請好友' : 'Invite friends'}
+                        style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '2px', border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', position: 'relative' }}
+                    >
+                        <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex' }}><InviteGiftIcon /></span>
+                        <span style={{ fontSize: '.66rem', lineHeight: 1, fontWeight: 800 }}>{lang === 'en' ? 'Invite' : '邀请'}</span>
+                        <span aria-hidden="true" style={{ position: 'absolute', top: 5, right: '25%', width: 5, height: 5, borderRadius: '50%', background: '#ef5d6c' }} />
+                    </button>
+                </>
+            )}
             {systemMenuOpen && (
                 <SystemPopupMenu
                     items={systemMenuItems}
@@ -294,6 +327,7 @@ export const SidebarNavRail = ({
                     onClose={() => setSystemMenuOpen(false)}
                 />
             )}
+            <HubInvitationDialog open={invitationDialogOpen} onClose={() => setInvitationDialogOpen(false)} lang={lang} />
         </div>
     );
 };

@@ -20,3 +20,6 @@ typedef void (*platform_input_publish_cb_t)(device_input_action_t action,
 device_status_t platform_input_start(platform_input_publish_cb_t on_input,
                                      void *context);
 device_status_t platform_input_stop(uint32_t timeout_ms);
+/* A normalized, transient input-policy intent.  Touch/key implementation and
+ * timing stay below this boundary. */
+void platform_input_set_command_cancel_enabled(bool enabled);

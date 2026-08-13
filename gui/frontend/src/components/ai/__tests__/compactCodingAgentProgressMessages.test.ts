@@ -93,7 +93,7 @@ describe("compactCodingAgentProgressMessages", () => {
         expect(coalesceCodingAgentToolLifecycle(messages).map(m => m.id)).toEqual(["f1", "f2"]);
     });
 
-    it("caps tool trail after coalesce while keeping failed tools outside the window", () => {
+    it("caps the tool trail after coalesce without retaining older failures", () => {
         const messages = Array.from({ length: 15 }, (_, i) =>
             message(
                 `ok-${i}`,
@@ -107,13 +107,12 @@ describe("compactCodingAgentProgressMessages", () => {
             ),
         );
         const ids = compactCodingAgentProgressMessages(messages).map((m) => m.id);
-        expect(ids).toContain("old-fail");
-        // 8 recent successes + the preserved failure (old-fail is outside the last-8 window).
-        expect(ids.filter((id) => id.startsWith("ok-")).length).toBe(8);
-        expect(ids).toContain("old-fail");
+        // The live tray only retains the latest three operations.
+        expect(ids).not.toContain("old-fail");
+        expect(ids.filter((id) => id.startsWith("ok-")).length).toBe(3);
     });
 
-    it("bounds how many older critical tool failures are preserved", () => {
+    it("does not retain older critical tool failures", () => {
         const fails = Array.from({ length: 10 }, (_, i) =>
             message(
                 `fail-${i}`,
@@ -128,15 +127,12 @@ describe("compactCodingAgentProgressMessages", () => {
         );
         const ids = compactCodingAgentProgressMessages([...fails, ...oks]).map((m) => m.id);
         const keptFails = ids.filter((id) => id.startsWith("fail-"));
-        // Window is the last 8 oks; older fails are capped at MAX_PRESERVED_CRITICAL_TOOLS (4).
-        expect(keptFails.length).toBe(4);
-        expect(ids.filter((id) => id.startsWith("ok-")).length).toBe(8);
-        // Prefer more recent failures among the older ones.
-        expect(keptFails).toContain("fail-9");
-        expect(keptFails).not.toContain("fail-0");
+        // Older failures do not expand the compact live tray.
+        expect(keptFails.length).toBe(0);
+        expect(ids.filter((id) => id.startsWith("ok-")).length).toBe(3);
     });
 
-    it("does not let diagnostic env probes consume the older-failure preserve budget", () => {
+    it("does not retain older diagnostic probes", () => {
         const probes = Array.from({ length: 8 }, (_, i) =>
             message(
                 `probe-${i}`,
@@ -154,9 +150,28 @@ describe("compactCodingAgentProgressMessages", () => {
             ),
         );
         const ids = compactCodingAgentProgressMessages([...probes, realFail, ...oks]).map((m) => m.id);
-        expect(ids).toContain("real-fail");
+        // Nothing outside the newest three rows is retained, including failures.
+        expect(ids).not.toContain("real-fail");
         // Probes outside the recent window are not force-preserved as "critical".
         expect(ids.filter((id) => id.startsWith("probe-")).length).toBe(0);
+    });
+
+    it("caps summaries and tools together at three visible activity rows", () => {
+        const messages = [
+            message("tool-1", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"read_file","outcome":"success"}'),
+            message("summary-1", 'Coding Agent Event: {"version":1,"agent":"coding","event":"exploration_summary","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","outcome":"missing"}'),
+            message("tool-2", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"write_file","outcome":"success"}'),
+            message("summary-2", 'Coding Agent Event: {"version":1,"agent":"coding","event":"quality_summary","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","outcome":"failed"}'),
+            message("tool-3", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success"}'),
+            message("done", 'Coding Agent Event: {"version":1,"agent":"coding","event":"task_status","phase":"completed","task_id":"T1","title":"Fix","turn_id":"turn-1"}'),
+        ];
+
+        expect(compactCodingAgentProgressMessages(messages).map((m) => m.id)).toEqual([
+            "tool-2",
+            "summary-2",
+            "tool-3",
+            "done",
+        ]);
     });
 
     it("groups consecutive coding progress into a feed item (including singles)", () => {

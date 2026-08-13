@@ -237,6 +237,22 @@ func TestLocalCodingRouteTurnKeepsCodingProfileSnapshot(t *testing.T) {
 	}
 }
 
+func TestCodingRouteDoesNotInheritVisionFromReplacedModel(t *testing.T) {
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskReasoning): {Model: "text-only-route"},
+	})
+	h := &IMMessageHandler{app: app}
+	base := corelib.MaclawLLMConfig{
+		URL: "https://coding.example/v1", Model: "vision-base", SupportsVision: true,
+		ProviderName: "Coding", ProviderID: "coding-id", Profile: "coding",
+	}
+	routed := h.routeCodingLLMConfig(llm.TaskReasoning, base)
+	if routed.SupportsVision {
+		t.Fatalf("routed model inherited unverified vision capability: %+v", routed)
+	}
+}
+
 func TestRemoteCodingRouteTurnKeepsCodingProfileSnapshot(t *testing.T) {
 	app := &App{}
 	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{

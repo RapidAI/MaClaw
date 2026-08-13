@@ -226,6 +226,20 @@ device_status_t input_service_start(device_input_cb_t on_input, void *context) {
 
     device_status_t status = platform_input_start(input_service_publish_from_board, NULL);
     if (status != DEVICE_STATUS_OK) {
+        /* A board adapter may publish its scanner before returning an error.
+         * Close the publisher and join it before freeing this service's queues.
+         * This remains a boot-lifetime adapter contract, not board deinit. */
+        device_status_t board_stop_status = platform_input_stop(500);
+        if (board_stop_status != DEVICE_STATUS_OK) {
+            /* The scanner can still reference this generation's publisher and
+             * queues. Retain all state fail-closed until a future lifecycle
+             * pass can complete its stop/join transaction. */
+            s_board_scanner_initialized = true;
+            return board_stop_status;
+        }
+        /* The selected adapter is boot-lifetime even after its scanner exits.
+         * Do not permit a second board initialization in this boot generation. */
+        s_board_scanner_initialized = true;
         vTaskDelete(s_input_service.task);
         vQueueDelete(s_input_service.queue_set);
         vQueueDelete(s_input_service.auxiliary_queue);
@@ -344,4 +358,8 @@ device_status_t input_service_stop(uint32_t timeout_ms) {
     taskEXIT_CRITICAL(&s_input_service_lock);
     ESP_LOGI(TAG, "input service and board scanner stopped");
     return DEVICE_STATUS_OK;
+}
+
+void input_service_set_command_cancel_enabled(bool enabled) {
+    platform_input_set_command_cancel_enabled(enabled);
 }

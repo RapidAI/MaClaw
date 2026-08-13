@@ -6,7 +6,6 @@
  * the shared selected-pet scene. */
 static inline const compact_standby_layout_t *bread_standby_layout_adapter(void) {
     static const compact_standby_layout_t layout = {
-        .transfer_stripe_rows = 16,
         .weather_text_y = 66,
         .weather_scale_num = 1,
         .weather_scale_den = 1,

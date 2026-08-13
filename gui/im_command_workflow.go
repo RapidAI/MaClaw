@@ -82,7 +82,7 @@ func (h *IMMessageHandler) handleWorkflowCommand(msg IMUserMessage, trimmed, lan
 		return &IMAgentResponse{Text: text}, true
 	}
 
-	// Force-start the workflow (bypasses workflow_enabled toggle)
+	// Force-start the explicitly selected workflow.
 	return h.forceStartWorkflow(msg, workflowType, lang), true
 }
 
@@ -107,7 +107,7 @@ func resolveWorkflowType(input string, h *IMMessageHandler) string {
 	return ""
 }
 
-// forceStartWorkflow starts a workflow directly, bypassing the workflow_enabled toggle.
+// forceStartWorkflow starts an explicitly selected workflow directly.
 // Reuses the same pendingWorkflowChoice mechanism as StartWorkflowTemplate.
 //
 // For desktop platform: sends a synthetic choice command through SendAIAssistantMessage

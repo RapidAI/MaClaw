@@ -4,6 +4,7 @@ import {
     SaveMemory,
     UpdateMemory,
     DeleteMemory,
+    DeleteMemories,
     CompressMemories,
     ListMemoryBackups,
     RestoreMemoryBackup,
@@ -518,6 +519,11 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
     const [formTags, setFormTags] = useState("");
     const [saving, setSaving] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+    const [selectedIDs, setSelectedIDs] = useState<Set<string>>(() => new Set());
+    const [batchDeleteConfirmOpen, setBatchDeleteConfirmOpen] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+    const listRequestRef = useRef(0);
+    const deleteInFlightRef = useRef(false);
 
     // Debounce keyword input — 300ms delay to avoid excessive API calls.
     const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -527,16 +533,29 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
     }, [keyword]);
 
     const loadEntries = useCallback(async () => {
+        const requestID = ++listRequestRef.current;
         setLoading(true); setError("");
         try {
             const list = await ListMemories(filterCat, debouncedKeyword);
-            setEntries(Array.isArray(list) ? list : []);
-        } catch (e) { setError(String(e)); }
-        setLoading(false);
+            if (requestID === listRequestRef.current) setEntries(Array.isArray(list) ? list : []);
+        } catch (e) {
+            if (requestID === listRequestRef.current) setError(String(e));
+        } finally {
+            if (requestID === listRequestRef.current) setLoading(false);
+        }
     }, [filterCat, debouncedKeyword]);
 
     // Re-fetch when filters change OR when external revision bumps.
     useEffect(() => { loadEntries(); }, [loadEntries, revision]);
+
+    // A filter change must never leave hidden entries selected.
+    useEffect(() => {
+        const visibleIDs = new Set(entries.map((entry) => entry.id));
+        setSelectedIDs((current) => {
+            const next = new Set([...current].filter((id) => visibleIDs.has(id)));
+            return next.size === current.size ? current : next;
+        });
+    }, [entries]);
 
     // Report entry count to parent for tab-bar display.
     useEffect(() => { onCountChange(entries.length); }, [entries.length, onCountChange]);
@@ -565,32 +584,128 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
     };
 
     const handleDelete = async (id: string) => {
-        setError("");
-        try { await DeleteMemory(id); setDeleteTarget(null); await loadEntries(); }
-        catch (e) { setError(String(e)); }
+        if (deleteInFlightRef.current) return;
+        deleteInFlightRef.current = true;
+        // Ignore a stale list response that was started before this delete.
+        listRequestRef.current++;
+        setDeleting(true); setError("");
+        setEntries((current) => current.filter((entry) => entry.id !== id));
+        setDeleteTarget(null);
+        try { await DeleteMemory(id); await loadEntries(); }
+        catch (e) {
+            // Reconcile from storage on failure too. Restoring a captured row
+            // could otherwise overwrite a concurrent change or lose ordering.
+            try {
+                await loadEntries();
+            } finally {
+                setError(String(e));
+            }
+        }
+        finally {
+            deleteInFlightRef.current = false;
+            setDeleting(false);
+        }
+    };
+
+    const toggleSelected = (id: string) => {
+        setSelectedIDs((current) => {
+            const next = new Set(current);
+            next.has(id) ? next.delete(id) : next.add(id);
+            return next;
+        });
+    };
+
+    const toggleSelectAll = () => {
+        setSelectedIDs((current) => current.size === entries.length ? new Set() : new Set(entries.map((entry) => entry.id)));
+    };
+
+    const closeBatchDeleteConfirm = () => {
+        if (!deleting) setBatchDeleteConfirmOpen(false);
+    };
+
+    const handleBatchDelete = async () => {
+        const ids = [...selectedIDs];
+        if (ids.length === 0 || deleteInFlightRef.current) return;
+        deleteInFlightRef.current = true;
+        // Ignore a stale list response that was started before this delete.
+        listRequestRef.current++;
+        setDeleting(true); setError("");
+        // Remove the selected content from the visible result immediately.
+        // loadEntries below reconciles the list if any individual delete fails.
+        setEntries((current) => current.filter((entry) => !selectedIDs.has(entry.id)));
+        setBatchDeleteConfirmOpen(false);
+        setSelectedIDs(new Set());
+        try {
+            await DeleteMemories(ids);
+            await loadEntries();
+        } catch (e) {
+            // The batch is atomic: refresh restores the unchanged list, then
+            // surface the original deletion error instead of clearing it.
+            try {
+                await loadEntries();
+            } finally {
+                setError(String(e));
+            }
+        } finally {
+            deleteInFlightRef.current = false;
+            setDeleting(false);
+        }
     };
 
     return (
         <>
             {/* Filters */}
+            <fieldset disabled={deleting} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-                <select value={filterCat} onChange={e => setFilterCat(e.target.value)} aria-label={t("Filter by category", "分类筛选")} style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: "0.76rem" }}>
+                <select value={filterCat} onChange={e => { setFilterCat(e.target.value); setSelectedIDs(new Set()); }} aria-label={t("Filter by category", "分类筛选")} style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: "0.76rem" }}>
                     {CATEGORIES.map(c => (<option key={c.value} value={c.value}>{catLabel(c.value, lang)}</option>))}
                 </select>
-                <input placeholder={t("Search keyword…", "搜索关键词…")} value={keyword} onChange={e => setKeyword(e.target.value)} aria-label={t("Search keyword", "搜索关键词")} style={{ ...inputStyle, width: "180px", padding: "4px 8px", fontSize: "0.76rem" }} />
+                <input placeholder={t("Search keyword…", "搜索关键词…")} value={keyword} onChange={e => { setKeyword(e.target.value); setSelectedIDs(new Set()); }} aria-label={t("Search keyword", "搜索关键词")} style={{ ...inputStyle, width: "180px", padding: "4px 8px", fontSize: "0.76rem" }} />
+            </div>
+            </fieldset>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "0.74rem", color: colors.textSecondary, cursor: entries.length === 0 || deleting ? "default" : "pointer" }}>
+                    <input
+                        type="checkbox"
+                        checked={entries.length > 0 && selectedIDs.size === entries.length}
+                        disabled={entries.length === 0 || deleting}
+                        onChange={toggleSelectAll}
+                        aria-label={t("Select all filtered memories", "全选当前筛选结果")}
+                    />
+                    {selectedIDs.size === entries.length && entries.length > 0 ? t("Clear selection", "取消选择") : t("Select all", "全选")}
+                </label>
+                <button
+                    type="button"
+                    disabled={selectedIDs.size === 0 || deleting}
+                    onClick={() => setBatchDeleteConfirmOpen(true)}
+                    style={{ ...dangerBtnStyle, opacity: selectedIDs.size === 0 || deleting ? 0.55 : 1, cursor: selectedIDs.size === 0 || deleting ? "not-allowed" : "pointer" }}
+                >
+                    {deleting && <span style={{ ...buttonSpinnerStyle, marginRight: 6 }} />}
+                    {t(`Delete selected (${selectedIDs.size})`, `批量删除 (${selectedIDs.size})`)}
+                </button>
             </div>
 
             {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.76rem", marginBottom: 8 }}>{error}</div>}
             {loading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("Loading…", "加载中…")}</div>}
 
             {/* Entry list */}
+            <fieldset disabled={deleting} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "calc(100vh - 310px)", overflowY: "auto", border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 6 }}>
                 {entries.length === 0 && !loading && (
                     <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>{t("No memory entries", "暂无记忆条目")}</div>
                 )}
                 {entries.map(entry => (
-                    <div key={entry.id} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "8px 10px", background: colors.surface }}>
+                    <div key={entry.id} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "8px 10px", background: selectedIDs.has(entry.id) ? colors.primaryLight : colors.surface }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                            <input
+                                type="checkbox"
+                                checked={selectedIDs.has(entry.id)}
+                                disabled={deleting}
+                                onChange={() => toggleSelected(entry.id)}
+                                aria-label={t(`Select memory: ${entry.content}`, `选择记忆：${entry.content}`)}
+                                style={{ marginTop: 3, flexShrink: 0 }}
+                            />
                             <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap", justifyContent: "flex-start" }}>
                                     <span style={{ fontSize: "0.66rem", fontWeight: 600, padding: "1px 6px", borderRadius: radius.sm, color: colors.onPrimary, background: CATEGORY_COLORS[entry.category] || colors.textMuted }}>{catLabel(entry.category, lang)}</span>
@@ -609,14 +724,27 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                     </div>
                 ))}
             </div>
+            </fieldset>
 
             {/* Delete confirmation */}
             {deleteTarget && (
                 <ModalOverlay onClose={() => setDeleteTarget(null)}>
                     <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this memory? This cannot be undone.", "确定删除这条记忆？此操作不可撤销。")}</p>
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                        <button onClick={() => setDeleteTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
-                        <button onClick={() => handleDelete(deleteTarget)} style={dangerBtnStyle}>{t("Delete", "删除")}</button>
+                        <button disabled={deleting} onClick={() => setDeleteTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
+                        <button disabled={deleting} onClick={() => handleDelete(deleteTarget)} style={dangerBtnStyle}>{deleting && <span style={{ ...buttonSpinnerStyle, marginRight: 6 }} />}{t("Delete", "删除")}</button>
+                    </div>
+                </ModalOverlay>
+            )}
+
+            {batchDeleteConfirmOpen && (
+                <ModalOverlay onClose={closeBatchDeleteConfirm}>
+                    <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>
+                        {t(`Delete ${selectedIDs.size} selected memories? This cannot be undone.`, `确定删除选中的 ${selectedIDs.size} 条记忆？此操作不可撤销。`)}
+                    </p>
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                        <button disabled={deleting} onClick={() => setBatchDeleteConfirmOpen(false)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
+                        <button disabled={deleting} onClick={handleBatchDelete} style={dangerBtnStyle}>{deleting && <span style={{ ...buttonSpinnerStyle, marginRight: 6 }} />}{t("Delete selected", "批量删除")}</button>
                     </div>
                 </ModalOverlay>
             )}

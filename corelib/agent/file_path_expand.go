@@ -694,13 +694,13 @@ func isLikelyLocalPathLine(s string) bool {
 
 // filterLegacyPathInstructions drops host/frontend tool-call instruction blocks.
 // Backend AutoExtractNotice already covers document paging guidance.
-// Image-path guidance from the frontend is preserved (short form).
+// Image-path guidance is normalized to the host's attachment-first policy.
 func filterLegacyPathInstructions(rest string) string {
 	rest = strings.TrimSpace(rest)
 	if rest == "" {
 		return ""
 	}
-	const imageHint = "For image files, use the paths directly (vision / read_file); do not re-capture via screenshot."
+	const imageHint = "For image files, the host sends them directly to a vision-capable model when available. Analyze attached images first; do not re-capture them or use read_file on image bytes. Use OCR only for exact text when needed."
 	hasImageHint := strings.Contains(rest, "For image files") ||
 		strings.Contains(rest, "do not re-capture via screenshot") ||
 		strings.Contains(rest, "do not call screenshot")

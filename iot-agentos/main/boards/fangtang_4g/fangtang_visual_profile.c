@@ -1,7 +1,8 @@
-/* Fangtang-4G transition board-port.
+/* Fangtang-4G visual profile implementation.
  *
- * It remains the single owner bridge for legacy shared compact mechanics.
- * Product rendering itself lives in profile-private independent sources.
+ * This is product artwork/layout composition only.  Hardware panel ownership
+ * remains in compact_display_service and business scenes remain in the shared
+ * compact renderer.
  */
 
 #include "sdkconfig.h"
@@ -19,12 +20,12 @@ extern const uint8_t _binary_fangtang_sugar_a8_start[];
 extern const uint8_t _binary_fangtang_sugar_a8_end[];
 
 #if !CONFIG_MACLAW_BOARD_FANGTANG_4G
-#error "Fangtang adapter may only be compiled for CONFIG_MACLAW_BOARD_FANGTANG_4G"
+#error "Fangtang visual profile may only be compiled for CONFIG_MACLAW_BOARD_FANGTANG_4G"
 #endif
 
 static compact_profile_render_bridge_t s_fangtang_renderer;
 
-void compact_profile_bind_renderer(const compact_profile_render_bridge_t *bridge) {
+void fangtang_visual_profile_bind_renderer(const compact_profile_render_bridge_t *bridge) {
     if (bridge) s_fangtang_renderer = *bridge;
     else memset(&s_fangtang_renderer, 0, sizeof(s_fangtang_renderer));
 }
@@ -77,20 +78,20 @@ static fangtang_identity_composer_t fangtang_identity_composer(void) {
     };
 }
 
-bool compact_profile_render_startup_art(void) {
+bool fangtang_visual_profile_render_startup_art(void) {
     const fangtang_identity_composer_t composer = fangtang_identity_composer();
     return fangtang_identity_compose_startup(&composer);
 }
 
-bool compact_profile_render_state_identity(const compact_profile_identity_state_t *identity,
-                                           bool ambient, uint16_t background) {
+bool fangtang_visual_profile_render_state_identity(const compact_profile_identity_state_t *identity,
+                                                    bool ambient, uint16_t background) {
     const fangtang_identity_composer_t composer = fangtang_identity_composer();
     return fangtang_identity_compose_state(&composer, identity, ambient, background);
 }
 
-bool compact_profile_render_status_identity(const compact_profile_identity_state_t *identity,
-                                            const char *title, const char *line,
-                                            uint16_t background) {
+bool fangtang_visual_profile_render_status_identity(const compact_profile_identity_state_t *identity,
+                                                     const char *title, const char *line,
+                                                     uint16_t background) {
     const fangtang_identity_composer_t composer = fangtang_identity_composer();
     return fangtang_identity_compose_status(&composer, identity, title, line, background);
 }

@@ -35,11 +35,14 @@ type LLMModule struct {
 
 // InitLLMModule initializes the LLM service module and registers routes.
 // Call this after the SQLite provider and system settings are available.
-func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsRepository, nodeID string, entrySvc *entry.Service, haSvc *ha.Service) *LLMModule {
+//
+// LLM persistence is a required dependency when HA is enabled: a node must
+// never begin pulling compute-market operations until its local repositories
+// can durably apply them.
+func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsRepository, nodeID string, entrySvc *entry.Service, haSvc *ha.Service) (*LLMModule, error) {
 	// 1. Ensure database tables
 	if err := sqlite.EnsureLLMTables(provider.Write); err != nil {
-		log.Printf("[llm-init] failed to create LLM tables: %v", err)
-		return nil
+		return nil, fmt.Errorf("ensure LLM tables: %w", err)
 	}
 
 	// 2. Create repositories
@@ -67,8 +70,6 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	bindingMgr := ha.NewLLMBindingManager(nodeID, bindingRepo)
 	if haSvc != nil {
 		bindingMgr.SetSyncBinding(haSvc.AppendLLMNodeBinding)
-		seedLLMAuthorizationHAOps(context.Background(), haSvc, baseAuthRepo)
-		seedLLMCardOrderHAOps(context.Background(), haSvc, baseOrderRepo)
 	}
 
 	// 4. Create proxy config
@@ -138,6 +139,14 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	if err := ensureDefaultComputeCardTypes(context.Background(), cardStoreSvc, llmSvc); err != nil {
 		log.Printf("[llm-init] failed to seed default compute card types: %v", err)
 	}
+	if haSvc != nil {
+		// Seed only after defaults and policy repairs have completed. Otherwise a
+		// fresh cluster can create its local catalog after the HA seed pass and
+		// never publish those card types to the other HubCenter nodes.
+		seedLLMCardTypeHAOps(context.Background(), haSvc, baseCardTypeRepo)
+		seedLLMAuthorizationHAOps(context.Background(), haSvc, baseAuthRepo)
+		seedLLMCardOrderHAOps(context.Background(), haSvc, baseOrderRepo)
+	}
 
 	// Load payment config from system settings (admin configures via API)
 	if raw, err := system.Get(context.Background(), "llm_cardstore_payment_config"); err == nil && raw != "" {
@@ -171,36 +180,72 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		CardStoreSvc:   cardStoreSvc,
 		BindingManager: bindingMgr,
 		UsageRecorder:  usageRecorder,
-	}
+	}, nil
 }
 
 func seedLLMCardOrderHAOps(ctx context.Context, haSvc *ha.Service, repo cardstore.PurchaseOrderRepository) {
 	if haSvc == nil || repo == nil {
 		return
 	}
-	orders, _, err := repo.List(ctx, cardstore.OrderFilter{IncludeArchived: true, Limit: 10000})
+	seeded := 0
+	for offset := 0; ; {
+		orders, total, err := repo.List(ctx, cardstore.OrderFilter{IncludeArchived: true, Limit: haSeedPageSize, Offset: offset})
+		if err != nil {
+			log.Printf("[llm-init] seed llm card order HA ops failed: %v", err)
+			break
+		}
+		for _, order := range orders {
+			if order == nil {
+				continue
+			}
+			exists, err := haSvc.HasEntityVersion(ctx, ha.EntityLLMCardOrder, order.OrderNo)
+			if err != nil {
+				log.Printf("[llm-init] inspect llm card order HA entity version failed: order=%s err=%v", order.OrderNo, err)
+				continue
+			}
+			if exists {
+				continue
+			}
+			haSvc.AppendLLMCardOrder(ctx, order)
+			seeded++
+		}
+		offset += len(orders)
+		if len(orders) == 0 || offset >= total {
+			break
+		}
+	}
+	if seeded > 0 {
+		log.Printf("[llm-init] seeded llm card order HA ops: count=%d", seeded)
+	}
+}
+
+func seedLLMCardTypeHAOps(ctx context.Context, haSvc *ha.Service, repo cardstore.CardTypeRepository) {
+	if haSvc == nil || repo == nil {
+		return
+	}
+	items, err := repo.ListAll(ctx)
 	if err != nil {
-		log.Printf("[llm-init] seed llm card order HA ops failed: %v", err)
+		log.Printf("[llm-init] seed llm card type HA ops failed: %v", err)
 		return
 	}
 	seeded := 0
-	for _, order := range orders {
-		if order == nil {
+	for _, item := range items {
+		if item == nil {
 			continue
 		}
-		exists, err := haSvc.HasEntityVersion(ctx, ha.EntityLLMCardOrder, order.OrderNo)
+		exists, err := haSvc.HasEntityVersion(ctx, ha.EntityLLMCardType, item.ID)
 		if err != nil {
-			log.Printf("[llm-init] inspect llm card order HA entity version failed: order=%s err=%v", order.OrderNo, err)
+			log.Printf("[llm-init] inspect llm card type HA entity version failed: card_type=%s err=%v", item.ID, err)
 			continue
 		}
 		if exists {
 			continue
 		}
-		haSvc.AppendLLMCardOrder(ctx, order)
+		haSvc.AppendLLMCardType(ctx, item)
 		seeded++
 	}
 	if seeded > 0 {
-		log.Printf("[llm-init] seeded llm card order HA ops: count=%d", seeded)
+		log.Printf("[llm-init] seeded llm card type HA ops: count=%d", seeded)
 	}
 }
 
@@ -208,24 +253,29 @@ func seedLLMAuthorizationHAOps(ctx context.Context, haSvc *ha.Service, repo llms
 	if haSvc == nil || repo == nil {
 		return
 	}
-	seeded, err := haSvc.HasEntityTypeOps(ctx, ha.EntityLLMTenantAuth)
-	if err != nil {
-		log.Printf("[llm-init] inspect llm authorization HA seed state failed: %v", err)
-		return
-	}
-	if seeded {
-		return
-	}
 	auths, err := repo.ListAll(ctx)
 	if err != nil {
 		log.Printf("[llm-init] seed llm authorization HA ops failed: %v", err)
 		return
 	}
+	seeded := 0
 	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		exists, err := haSvc.HasEntityVersion(ctx, ha.EntityLLMTenantAuth, auth.ID)
+		if err != nil {
+			log.Printf("[llm-init] inspect llm authorization HA entity version failed: authorization=%s err=%v", auth.ID, err)
+			continue
+		}
+		if exists {
+			continue
+		}
 		haSvc.AppendLLMAuthorization(ctx, auth)
+		seeded++
 	}
-	if len(auths) > 0 {
-		log.Printf("[llm-init] seeded llm authorization HA ops: count=%d", len(auths))
+	if seeded > 0 {
+		log.Printf("[llm-init] seeded llm authorization HA ops: count=%d", seeded)
 	}
 }
 

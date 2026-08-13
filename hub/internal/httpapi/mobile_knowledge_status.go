@@ -18,12 +18,19 @@ func MobileAgentKnowledgeStatusHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 			return
 		}
-		if _, err := authenticateViewerRequest(r, identity); err != nil {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		mobileKnowledgePurgeState.RLock()
+		defer mobileKnowledgePurgeState.RUnlock()
+		if !mobileOwnerWriteAllowedLocked(principal.TenantID, mobilePrincipalOwnerID(principal)) {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
 		// Ensure runtime (and knowledge store) is up.
-		_, _, err := mobileEnsureCoreAgent()
+		_, _, err = mobileEnsureCoreAgent()
 		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"available": false,

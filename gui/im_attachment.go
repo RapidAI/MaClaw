@@ -41,8 +41,26 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 // for normal conversations while allowing a restricted group turn to keep
 // attachments in memory. The caller must opt in explicitly to local staging.
 func buildUserContentWithLocalStaging(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string), allowLocalStaging bool) interface{} {
+	return buildUserContentWithPreparedLocalAttachments(userText, attachments, protocol, supportsVision, app, onProgress, allowLocalStaging, false)
+}
+
+// buildUserContentWithPreparedLocalAttachments lets the agent-loop materialize
+// desktop image paths before model routing, while retaining the old standalone
+// helper behavior for callers that have not prepared those attachments.
+func buildUserContentWithPreparedLocalAttachments(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string), allowLocalStaging bool, localImagesAlreadyPrepared bool) interface{} {
 	// Always expand GUI file-picker document paths (no-op when already expanded / no marker).
 	userText = agent.ExpandUserSelectedFilePaths(userText)
+	// The desktop composer currently sends selected files as paths in text, not
+	// as MessageAttachment values. Materialize selected images here so a vision
+	// provider receives actual image blocks instead of a path that would tempt
+	// the model to call OCR/read_file first.
+	if supportsVision && allowLocalStaging && !localImagesAlreadyPrepared {
+		localImages, notes := selectedLocalImageAttachments(userText)
+		attachments = append(attachments, localImages...)
+		if len(notes) > 0 {
+			userText = strings.TrimSpace(userText + "\n\n" + strings.Join(notes, "\n"))
+		}
+	}
 	if len(attachments) == 0 {
 		return userText
 	}
@@ -149,6 +167,16 @@ func buildUserContentWithLocalStaging(userText string, attachments []MessageAtta
 	if len(imageAttachments) == 0 {
 		return fullText
 	}
+
+	// This host-authored note is intentionally placed alongside the image
+	// blocks. It keeps the agent from treating a local file path as an
+	// instruction to read raw JPEG bytes, and makes OCR a precision fallback
+	// rather than the default first step for a vision-capable model.
+	const visionFirstInstruction = "[Host note: image(s) are attached as vision input. Analyze the image directly before calling tools. Use OCR only for exact transcription, tables, or when direct visual reading is insufficient; do not use read_file to inspect image bytes.]"
+	if fullText != "" {
+		fullText += "\n\n"
+	}
+	fullText += visionFirstInstruction
 
 	// Build multimodal content blocks for vision API.
 	if protocol == "anthropic" {

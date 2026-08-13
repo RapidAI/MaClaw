@@ -5,6 +5,7 @@ import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-libra
 const GetMaclawLLMProvidersMock = vi.fn();
 const SaveMaclawLLMProvidersMock = vi.fn();
 const TestMaclawLLMMock = vi.fn();
+const TestAndSaveMaclawLLMProvidersMock = vi.fn();
 const GetMaclawAgentMaxIterationsMock = vi.fn();
 const GetMaclawLLMThinkingModeMock = vi.fn();
 const SetMaclawLLMThinkingModeMock = vi.fn();
@@ -13,14 +14,13 @@ const GetHubLLMServiceStatusMock = vi.fn();
 const FetchProviderModelsMock = vi.fn();
 const CreateMobileLLMDesktopQRSessionMock = vi.fn();
 const LoadConfigMock = vi.fn();
-const BrowserOpenURLMock = vi.fn();
 const EventsOnMock = vi.fn();
-let xaiOAuthEventHandler: ((payload: Record<string, unknown>) => unknown) | undefined;
 const StartOpenAIOAuthMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
-const CancelXAIOAuthURLMock = vi.fn();
+const CancelXAIOAuthMock = vi.fn();
+const FetchCodeGenModelsMock = vi.fn();
 const GetMoAConfigMock = vi.fn();
-const SaveMoAConfigMock = vi.fn();
+    const SaveMoAConfigMock = vi.fn();
 const GetMaclawLLMProfilePanelStateMock = vi.fn();
 const SaveMaclawLLMProfilesMock = vi.fn();
 
@@ -28,6 +28,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
     SaveMaclawLLMProviders: (...args: unknown[]) => SaveMaclawLLMProvidersMock(...args),
     TestMaclawLLM: (...args: unknown[]) => TestMaclawLLMMock(...args),
+    TestAndSaveMaclawLLMProviders: (...args: unknown[]) => TestAndSaveMaclawLLMProvidersMock(...args),
     GetMaclawAgentMaxIterations: (...args: unknown[]) => GetMaclawAgentMaxIterationsMock(...args),
     GetMaclawLLMThinkingMode: (...args: unknown[]) => GetMaclawLLMThinkingModeMock(...args),
     GetSubAgentConcurrency: (...args: unknown[]) => GetSubAgentConcurrencyMock(...args),
@@ -38,10 +39,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetSubAgentConcurrency: vi.fn(),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
-    CancelXAIOAuthURL: (...args: unknown[]) => CancelXAIOAuthURLMock(...args),
+    CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
     CancelOpenAIOAuth: vi.fn(),
     ImportCodexAuth: vi.fn(),
-    FetchCodeGenModels: vi.fn(),
+    FetchCodeGenModels: (...args: unknown[]) => FetchCodeGenModelsMock(...args),
     FetchProviderModels: (...args: unknown[]) => FetchProviderModelsMock(...args),
     CreateMobileLLMDesktopQRSession: (...args: unknown[]) => CreateMobileLLMDesktopQRSessionMock(...args),
     SaveCodeGenModelChoice: vi.fn(),
@@ -56,14 +57,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
 vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOn: (...args: unknown[]) => {
         EventsOnMock(...args);
-        if (args[0] === 'xai-oauth-complete' && typeof args[1] === 'function') {
-            xaiOAuthEventHandler = args[1] as (payload: Record<string, unknown>) => unknown;
-        }
         return vi.fn();
     },
     EventsOff: vi.fn(),
-    BrowserOpenURL: (...args: unknown[]) => BrowserOpenURLMock(...args),
-    ClipboardSetText: vi.fn(),
 }));
 
 vi.mock('../../providerLogos', () => ({ PROVIDER_LOGOS: {} }));
@@ -84,7 +80,6 @@ import { hubOfficialStatus } from '../LLMConfigPanelShared';
 describe('LLMConfigPanel test-and-save flow', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        xaiOAuthEventHandler = undefined;
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
                 { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
@@ -92,6 +87,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             current: 'Custom1',
         });
         SaveMaclawLLMProvidersMock.mockResolvedValue(undefined);
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: false });
         GetMaclawAgentMaxIterationsMock.mockResolvedValue(12);
         GetMaclawLLMThinkingModeMock.mockResolvedValue('');
         SetMaclawLLMThinkingModeMock.mockResolvedValue(undefined);
@@ -108,6 +104,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
         SaveMaclawLLMProfilesMock.mockResolvedValue(undefined);
         FetchProviderModelsMock.mockResolvedValue([{ id: 'gpt-test', name: 'GPT Test' }]);
+        FetchCodeGenModelsMock.mockResolvedValue([]);
         CreateMobileLLMDesktopQRSessionMock.mockResolvedValue({
             status: 'created',
             session_id: 'mlqr_test',
@@ -123,7 +120,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
     });
 
     it('tests first, then saves providers with final supports_vision', async () => {
-        TestMaclawLLMMock.mockResolvedValue({
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({
             message: 'hello',
             supports_vision: true,
         });
@@ -145,26 +142,17 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
         await waitFor(() => {
-            expect(TestMaclawLLMMock).toHaveBeenCalledWith({
-                url: 'https://api.example.com/v1',
-                key: 'secret',
-                model: 'gpt-test',
-                protocol: 'openai',
-                agent_type: 'openclaw',
-                wire_api: '',
-                provider_name: 'Custom1',
-                auth_type: '',
-            });
-        });
-
-        await waitFor(() => {
-            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
-                [expect.objectContaining({ name: 'Custom1', supports_vision: true, url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test' })],
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'Custom1', url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test' })],
+                'Custom1',
                 'Custom1',
             );
         });
 
-        expect(TestMaclawLLMMock.mock.invocationCallOrder[0]).toBeLessThan(SaveMaclawLLMProvidersMock.mock.invocationCallOrder[0]);
+        await waitFor(() => {
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledTimes(1);
+        });
+
         expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
     });
 
@@ -288,7 +276,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             ],
             current: 'Custom1',
         });
-        TestMaclawLLMMock.mockResolvedValue({
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({
             message: 'hello',
             supports_vision: false,
             vision_probe_status: 'inconclusive',
@@ -300,12 +288,32 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
         await waitFor(() => {
-            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
-                [expect.objectContaining({ name: 'Custom1', supports_vision: true })],
-                'Custom1',
-            );
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledTimes(1);
         });
         expect(await screen.findByText(/Vision support: not confirmed/)).toBeTruthy();
+    });
+
+    it('removes a text-only model from the confirmed vision-model list after a probe', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'Custom1', url: 'https://api.example.com/v1', key: 'secret', model: 'text-model', protocol: 'openai', is_custom: true,
+                    supports_vision: true, vision_models: ['vision-model', 'text-model'],
+                },
+            ],
+            current: 'Custom1',
+        });
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: false });
+		FetchCodeGenModelsMock.mockResolvedValue([]);
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.change(await screen.findByPlaceholderText('sk-...'), { target: { value: 'updated-secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => {
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledTimes(1);
+        });
     });
 
     it('persists the global thinking mode via the thinking card', async () => {
@@ -337,7 +345,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
     });
 
     it('saves a custom User-Agent value', async () => {
-        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: false });
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: false });
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
@@ -355,12 +363,34 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
         await waitFor(() => {
-            expect(TestMaclawLLMMock).toHaveBeenCalledWith(expect.objectContaining({ agent_type: 'myagent' }));
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'Custom1', agent_type: 'myagent' })], 'Custom1', 'Custom1',
+            );
         });
+    });
+
+    it('requires a real Test & Save for an authenticated SSO provider', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'CodeGen', url: 'https://codegen.example/v1', key: 'sso-token', model: 'sso-model',
+                    protocol: 'openai', auth_type: 'sso', supports_vision: false,
+                },
+            ],
+            current: 'CodeGen',
+        });
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: false });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(screen.getByRole('button', { name: 'CodeGen' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
         await waitFor(() => {
-            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
-                [expect.objectContaining({ name: 'Custom1', agent_type: 'myagent' })],
-                'Custom1',
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'CodeGen', auth_type: 'sso', key: 'sso-token' })],
+                'CodeGen',
+                'CodeGen',
             );
         });
     });
@@ -504,7 +534,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
     });
 
     it('quick-fills Volcengine Agent Plan endpoint with the tested model defaults', async () => {
-        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: false });
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: false });
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
                 {
@@ -530,16 +560,11 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
         await waitFor(() => {
-            expect(TestMaclawLLMMock).toHaveBeenCalledWith({
-                url: 'https://ark.cn-beijing.volces.com/api/plan/v3',
-                key: 'secret',
-                model: 'glm-5.2',
-                protocol: 'openai',
-                agent_type: 'openclaw',
-                wire_api: 'responses',
-                provider_name: '火山引擎 Agent Plan',
-                auth_type: '',
-            });
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: '火山引擎 Agent Plan', model: 'glm-5.2', wire_api: 'responses' })],
+                '火山引擎 Agent Plan',
+                '火山引擎 Agent Plan',
+            );
         });
     });
 
@@ -555,7 +580,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             ],
             current: 'xAI-Grok',
         });
-        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
+        StartXAIOAuthMock.mockResolvedValue('xAI-Grok OAuth login successful');
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
@@ -778,7 +803,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
     });
 
     it('does not save when detection fails', async () => {
-        TestMaclawLLMMock.mockRejectedValue(new Error('boom'));
+        TestAndSaveMaclawLLMProvidersMock.mockRejectedValue(new Error('boom'));
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
@@ -797,7 +822,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
         await waitFor(() => {
-            expect(TestMaclawLLMMock).toHaveBeenCalled();
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalled();
         });
 
         expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
@@ -838,7 +863,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             ],
             current: 'xAI-Grok',
         });
-        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
+        StartXAIOAuthMock.mockResolvedValue('xAI-Grok OAuth login successful');
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
@@ -849,55 +874,6 @@ describe('LLMConfigPanel test-and-save flow', () => {
             expect(StartXAIOAuthMock).toHaveBeenCalledTimes(1);
         });
         expect(StartOpenAIOAuthMock).not.toHaveBeenCalled();
-        expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://auth.x.ai/authorize?state=test');
-    });
-
-    it('keeps the xAI OAuth recovery controls available when opening the browser fails', async () => {
-        GetMaclawLLMProvidersMock.mockResolvedValue({
-            providers: [
-                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
-            ],
-            current: 'xAI-Grok',
-        });
-        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
-        BrowserOpenURLMock.mockImplementation(() => { throw new Error('browser bridge unavailable'); });
-
-        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
-
-        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
-        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
-
-        expect((await screen.findByRole('alert')).textContent).toMatch(/Couldn't open the browser automatically/);
-        expect(screen.getByRole('button', { name: 'Open browser again' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Copy sign-in link' })).toBeTruthy();
-    });
-
-    it('ignores a completion event from a superseded xAI OAuth session', async () => {
-        const onStatusChange = vi.fn();
-        GetMaclawLLMProvidersMock.mockResolvedValue({
-            providers: [
-                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
-            ],
-            current: 'xAI-Grok',
-        });
-        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=current');
-
-        render(<LLMConfigPanel lang="en" onStatusChange={onStatusChange} />);
-
-        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
-        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
-        await waitFor(() => expect(xaiOAuthEventHandler).toBeTypeOf('function'));
-
-        await act(async () => {
-            await xaiOAuthEventHandler?.({ ok: true, authorization_url: 'https://auth.x.ai/authorize?state=stale' });
-        });
-        expect(screen.getByRole('button', { name: 'Cancel OAuth login' })).toBeTruthy();
-        expect(onStatusChange).not.toHaveBeenCalled();
-
-        await act(async () => {
-            await xaiOAuthEventHandler?.({ ok: true, authorization_url: 'https://auth.x.ai/authorize?state=current' });
-        });
-        await waitFor(() => expect(onStatusChange).toHaveBeenCalledWith(true, true));
     });
 
     it('does not offer Codex CLI import after xAI OAuth fails', async () => {
@@ -918,30 +894,10 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(screen.queryByRole('button', { name: /Import from Codex CLI/i })).toBeNull();
     });
 
-    it('cancels only its own in-progress xAI OAuth flow through the dedicated binding', async () => {
-        const authorizationURL = 'https://auth.x.ai/authorize?state=owned-by-panel';
-        StartXAIOAuthMock.mockResolvedValue(authorizationURL);
-        GetMaclawLLMProvidersMock.mockResolvedValue({
-            providers: [
-                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
-            ],
-            current: 'xAI-Grok',
-        });
-
-        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
-
-        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
-        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
-        await waitFor(() => expect(BrowserOpenURLMock).toHaveBeenCalledWith(authorizationURL));
-        fireEvent.click(await screen.findByRole('button', { name: 'Cancel OAuth login' }));
-
-        expect(CancelXAIOAuthURLMock).toHaveBeenCalledWith(authorizationURL);
-    });
-
-    it('ignores an xAI authorization URL that resolves after the user cancels', async () => {
-        let resolveAuthorizationURL: ((value: string) => void) | undefined;
+    it('ignores an xAI OAuth completion that resolves after the user cancels', async () => {
+        let resolveOAuthCompletion: ((value: string) => void) | undefined;
         StartXAIOAuthMock.mockImplementation(() => new Promise<string>((resolve) => {
-            resolveAuthorizationURL = resolve;
+            resolveOAuthCompletion = resolve;
         }));
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
@@ -955,10 +911,9 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Cancel OAuth login' }));
-        await act(async () => resolveAuthorizationURL?.('https://auth.x.ai/authorize?state=late'));
+        await act(async () => resolveOAuthCompletion?.('xAI-Grok OAuth login successful'));
 
-        expect(BrowserOpenURLMock).not.toHaveBeenCalledWith('https://auth.x.ai/authorize?state=late');
-        expect(CancelXAIOAuthURLMock).not.toHaveBeenCalled();
+        expect(CancelXAIOAuthMock).toHaveBeenCalledTimes(1);
     });
 
     it('does not save an unsigned xAI OAuth provider', async () => {

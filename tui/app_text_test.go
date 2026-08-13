@@ -315,6 +315,15 @@ func TestTUITextCoversAppKeys(t *testing.T) {
 	}
 }
 
+func TestTUIRegistrationMethodMismatchTextsFollowLanguage(t *testing.T) {
+	if got := tuiText("en", "regRequiresPhone"); !strings.Contains(strings.ToLower(got), "phone") {
+		t.Fatalf("English phone-registration guidance = %q", got)
+	}
+	if got := tuiText("zh", "regRequiresPhone"); !strings.Contains(got, "手机") {
+		t.Fatalf("Chinese phone-registration guidance = %q", got)
+	}
+}
+
 func TestTUIConfigNavigationTextsFollowLanguage(t *testing.T) {
 	enSetup := tuiText("en", "configOpenSetup")
 	if !strings.Contains(enSetup, "Opened Setup") {

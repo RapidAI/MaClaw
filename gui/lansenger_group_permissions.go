@@ -216,7 +216,7 @@ func (p lansengerGroupPermissionPolicy) allowsTool(name string) bool {
 		}
 	}
 	switch name {
-	case "read_file", "list_directory", "search_files", "send_file", "send_to_im":
+	case "read_file", "list_directory", "search_files", "send_file", "send_to_im", "archive":
 		return p.AllowAllDirectories || len(p.AllowedDirectories) > 0
 	case "current_datetime":
 		return true
@@ -551,6 +551,31 @@ func (p lansengerGroupPermissionPolicy) validateFileToolArgs(name string, args m
 	case "read_file", "send_file", "send_to_im":
 		_, err := ValidateVEFilePath(path, p.AllowedDirectories)
 		return err
+	case "archive":
+		for _, key := range []string{"archive_path"} {
+			value, _ := args[key].(string)
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			if _, err := ValidateVEFilePath(value, p.AllowedDirectories); err != nil {
+				return err
+			}
+		}
+		for _, value := range archivePermissionPaths(args["source_paths"]) {
+			if _, err := ValidateVEFilePath(value, p.AllowedDirectories); err != nil {
+				return err
+			}
+		}
+		for _, key := range []string{"destination", "output_path"} {
+			value, _ := args[key].(string)
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			if _, err := IsWithinAllowedDirs(value, p.AllowedDirectories); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "list_directory", "search_files":
 		_, err := IsWithinAllowedDirs(path, p.AllowedDirectories)
 		return err
@@ -571,6 +596,32 @@ func (p lansengerGroupPermissionPolicy) resolveAndValidateFileToolArgs(name stri
 	if resolvePath == nil {
 		return fmt.Errorf("群聊权限无法解析本地路径")
 	}
+	if strings.TrimSpace(name) == "archive" {
+		for _, key := range []string{"archive_path", "destination", "output_path"} {
+			raw, _ := args[key].(string)
+			if strings.TrimSpace(raw) == "" {
+				continue
+			}
+			resolved, err := resolvePath(raw)
+			if err != nil {
+				return err
+			}
+			args[key] = resolved
+		}
+		if rawSources, ok := args["source_paths"]; ok {
+			sources := archivePermissionPaths(rawSources)
+			resolved := make([]interface{}, 0, len(sources))
+			for _, raw := range sources {
+				value, err := resolvePath(raw)
+				if err != nil {
+					return err
+				}
+				resolved = append(resolved, value)
+			}
+			args["source_paths"] = resolved
+		}
+		return p.validateFileToolArgs(name, args)
+	}
 	key := "path"
 	if strings.TrimSpace(name) == "search_files" {
 		key = "project_path"
@@ -584,6 +635,26 @@ func (p lansengerGroupPermissionPolicy) resolveAndValidateFileToolArgs(name stri
 	// validation step, eliminating a check/use base-directory mismatch.
 	args[key] = resolved
 	return p.validateFileToolArgs(name, args)
+}
+
+func archivePermissionPaths(value interface{}) []string {
+	var raw []interface{}
+	switch typed := value.(type) {
+	case []interface{}:
+		raw = typed
+	case []string:
+		raw = make([]interface{}, len(typed))
+		for i := range typed {
+			raw[i] = typed[i]
+		}
+	}
+	out := make([]string, 0, len(raw))
+	for _, value := range raw {
+		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 func stringFromLansengerGroupFileArgs(args map[string]interface{}, name string) string {

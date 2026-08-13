@@ -26,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
+	"github.com/RapidAI/CodeClaw/hub/internal/industryexpert"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -233,14 +234,23 @@ type Service struct {
 	admins   TenantAdminLister
 	sessions UserUsageSummarizer
 
-	mu                 sync.Mutex
-	heartbeatStarted   bool
-	heartbeatCancel    context.CancelFunc
-	usageBackfills     int
-	recorder           *diagnostics.FailureEventRecorder
-	credentialRecovery func(context.Context)
-	credentialMu       sync.Mutex
-	configPath         string
+	mu                     sync.Mutex
+	heartbeatStarted       bool
+	heartbeatCancel        context.CancelFunc
+	usageBackfills         int
+	recorder               *diagnostics.FailureEventRecorder
+	credentialRecovery     func(context.Context)
+	credentialMu           sync.Mutex
+	configPath             string
+	managedIndustryExperts *industryexpert.SyncService
+}
+
+// SetManagedIndustryExpertSync installs the optional managed catalogue puller.
+// It is called after the Hub database and tenant repository are ready.
+func (s *Service) SetManagedIndustryExpertSync(sync *industryexpert.SyncService) {
+	s.mu.Lock()
+	s.managedIndustryExperts = sync
+	s.mu.Unlock()
 }
 
 func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service {
@@ -2238,6 +2248,12 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 
 			if err := s.syncUserUsage(ctx, baseURL, record); err != nil {
 				log.Printf("[center] user usage sync failed: %v", err)
+			}
+			s.mu.Lock()
+			managedIndustryExperts := s.managedIndustryExperts
+			s.mu.Unlock()
+			if managedIndustryExperts != nil {
+				managedIndustryExperts.SyncAll(ctx)
 			}
 			return s.saveRegistration(context.Background(), record)
 		}

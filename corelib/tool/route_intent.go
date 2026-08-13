@@ -30,6 +30,11 @@ type RouteOptions struct {
 	// SkipUnifiedClassifier skips full UIC fusion (tree/LLM channels, multi-second).
 	// Used by ACP Mode B so editor turns stay responsive; BM25/hybrid still run.
 	SkipUnifiedClassifier bool
+	// PreferEmbeddingOnly uses L2 only for optional tool affinity. It is for the
+	// first-response path: an unavailable or inconclusive embedder simply keeps
+	// conditional tools filtered instead of delaying the main agent with L3.
+	// Explicit execution gates retain their own stronger classification policy.
+	PreferEmbeddingOnly bool
 }
 
 // MinRouteIntentConfidence is the floor below which a rewrite is ignored.

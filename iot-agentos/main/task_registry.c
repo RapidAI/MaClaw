@@ -4,6 +4,10 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
+
+#include "esp_log.h"
+#include "sdkconfig.h"
 
 #define TASK_REGISTRY_MAX_ENTRIES 24u
 
@@ -11,6 +15,34 @@ static SemaphoreHandle_t s_lock;
 static task_registry_entry_t s_entries[TASK_REGISTRY_MAX_ENTRIES];
 static uint32_t s_count;
 static uint32_t s_stop_failures;
+
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_TASK_REGISTRY_LIFECYCLE_TEST
+#define TASK_REGISTRY_TEST_TAG "task_registry_test"
+#define TASK_REGISTRY_TEST_CONTENTION_TIMEOUT_MS 40u
+#define TASK_REGISTRY_TEST_CONTENTION_HOLD_MS 120u
+#define TASK_REGISTRY_TEST_MIXED_TIMEOUT_MS 100u
+#define TASK_REGISTRY_TEST_SETTLE_MS 300u
+
+typedef enum {
+    TASK_REGISTRY_TEST_STOP_OK = 0,
+    TASK_REGISTRY_TEST_STOP_ERROR_ONCE,
+    TASK_REGISTRY_TEST_STOP_TIMEOUT_ONCE,
+} task_registry_test_stop_behavior_t;
+
+typedef struct {
+    task_registry_test_stop_behavior_t behavior;
+    uint32_t calls;
+    uint32_t first_timeout_ms;
+} task_registry_test_stop_context_t;
+
+static StaticSemaphore_t s_test_lock_acquired_storage;
+static StaticSemaphore_t s_test_lock_released_storage;
+static SemaphoreHandle_t s_test_lock_acquired;
+static SemaphoreHandle_t s_test_lock_released;
+static StaticTask_t s_test_lock_holder_storage;
+static StackType_t s_test_lock_holder_stack[2048u];
+static bool s_lifecycle_test_has_run;
+#endif
 
 /* Lifecycle callers pass one owner-wide deadline to the registry.  The
  * registry itself must obey that deadline as well: using portMAX_DELAY while
@@ -192,3 +224,146 @@ bool task_registry_get_snapshot(task_registry_snapshot_t *out_snapshot) {
     xSemaphoreGive(s_lock);
     return true;
 }
+
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_TASK_REGISTRY_LIFECYCLE_TEST
+/* The test task owns the same mutex as a concurrent register/unregister
+ * caller would. It deliberately avoids touching registry entries: the test
+ * validates that a caller-owned stop deadline remains bounded before a
+ * snapshot can even be taken. */
+static void task_registry_test_lock_holder(void *unused) {
+    (void)unused;
+    if (s_lock && xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
+        (void)xSemaphoreGive(s_test_lock_acquired);
+        TickType_t hold_ticks = pdMS_TO_TICKS(TASK_REGISTRY_TEST_CONTENTION_HOLD_MS);
+        if (hold_ticks == 0) hold_ticks = 1;
+        vTaskDelay(hold_ticks);
+        xSemaphoreGive(s_lock);
+    }
+    (void)xSemaphoreGive(s_test_lock_released);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t task_registry_test_stop(void *context, uint32_t timeout_ms) {
+    task_registry_test_stop_context_t *test = context;
+    if (!test || timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    ++test->calls;
+    if (test->calls == 1u) test->first_timeout_ms = timeout_ms;
+    if (test->behavior == TASK_REGISTRY_TEST_STOP_TIMEOUT_ONCE && test->calls == 1u) {
+        /* Consume a known fraction of the passed residual budget. This proves
+         * subsequent callbacks receive the parent transaction remainder,
+         * without intentionally exceeding it (a child that ignores its own
+         * deadline cannot be forcibly interrupted by this registry). */
+        TickType_t delay_ticks = pdMS_TO_TICKS(20u);
+        if (delay_ticks == 0) delay_ticks = 1;
+        vTaskDelay(delay_ticks);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (test->behavior == TASK_REGISTRY_TEST_STOP_ERROR_ONCE && test->calls == 1u) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static bool task_registry_test_register(task_registry_owner_t owner, const char *name,
+                                        task_registry_test_stop_context_t *context) {
+    return task_registry_register(&(task_registry_entry_t){
+        .struct_size = sizeof(task_registry_entry_t),
+        .owner = owner,
+        .name = name,
+        .context = context,
+        .stop = task_registry_test_stop,
+    }) == ESP_OK;
+}
+
+esp_err_t task_registry_run_lifecycle_test(void) {
+    if (!s_lock || s_lifecycle_test_has_run) return ESP_ERR_INVALID_STATE;
+    s_lifecycle_test_has_run = true;
+
+    s_test_lock_acquired = xSemaphoreCreateBinaryStatic(&s_test_lock_acquired_storage);
+    s_test_lock_released = xSemaphoreCreateBinaryStatic(&s_test_lock_released_storage);
+    if (!s_test_lock_acquired || !s_test_lock_released) return ESP_ERR_NO_MEM;
+    (void)xSemaphoreTake(s_test_lock_acquired, 0);
+    (void)xSemaphoreTake(s_test_lock_released, 0);
+    TaskHandle_t holder = xTaskCreateStatic(task_registry_test_lock_holder,
+                                             "registry_lock_test",
+                                             sizeof(s_test_lock_holder_stack) /
+                                                 sizeof(s_test_lock_holder_stack[0]),
+                                             NULL, tskIDLE_PRIORITY + 1u,
+                                             s_test_lock_holder_stack,
+                                             &s_test_lock_holder_storage);
+    if (!holder || xSemaphoreTake(s_test_lock_acquired,
+                                  ticks_for_timeout_ms(TASK_REGISTRY_TEST_SETTLE_MS)) != pdTRUE) {
+        ESP_LOGE(TASK_REGISTRY_TEST_TAG, "FAIL contention holder did not acquire registry mutex");
+        return ESP_FAIL;
+    }
+    const TickType_t contention_started = xTaskGetTickCount();
+    const esp_err_t contention_result =
+        task_registry_stop_all(TASK_REGISTRY_TEST_CONTENTION_TIMEOUT_MS);
+    const TickType_t contention_elapsed = xTaskGetTickCount() - contention_started;
+    const TickType_t contention_budget =
+        ticks_for_timeout_ms(TASK_REGISTRY_TEST_CONTENTION_TIMEOUT_MS);
+    const bool bounded_contention = contention_result == ESP_ERR_TIMEOUT &&
+        contention_elapsed <= contention_budget + 1u;
+    if (xSemaphoreTake(s_test_lock_released,
+                       ticks_for_timeout_ms(TASK_REGISTRY_TEST_SETTLE_MS)) != pdTRUE) {
+        ESP_LOGE(TASK_REGISTRY_TEST_TAG, "FAIL contention holder did not release registry mutex");
+        return ESP_FAIL;
+    }
+    if (!bounded_contention) {
+        ESP_LOGE(TASK_REGISTRY_TEST_TAG,
+                 "FAIL contention result=%s elapsed_ticks=%lu budget_ticks=%lu",
+                 esp_err_to_name(contention_result), (unsigned long)contention_elapsed,
+                 (unsigned long)contention_budget);
+        return ESP_FAIL;
+    }
+
+    task_registry_test_stop_context_t success = {.behavior = TASK_REGISTRY_TEST_STOP_OK};
+    task_registry_test_stop_context_t error = {.behavior = TASK_REGISTRY_TEST_STOP_ERROR_ONCE};
+    task_registry_test_stop_context_t timeout = {.behavior = TASK_REGISTRY_TEST_STOP_TIMEOUT_ONCE};
+    if (!task_registry_test_register(TASK_REGISTRY_OWNER_AUDIO, "test_success", &success) ||
+        !task_registry_test_register(TASK_REGISTRY_OWNER_POWER, "test_error", &error) ||
+        !task_registry_test_register(TASK_REGISTRY_OWNER_BOARD, "test_timeout", &timeout)) {
+        ESP_LOGE(TASK_REGISTRY_TEST_TAG, "FAIL could not register multi-owner test entries");
+        return ESP_FAIL;
+    }
+    const TickType_t mixed_started = xTaskGetTickCount();
+    const esp_err_t mixed_result = task_registry_stop_all(TASK_REGISTRY_TEST_MIXED_TIMEOUT_MS);
+    const TickType_t mixed_elapsed = xTaskGetTickCount() - mixed_started;
+    const TickType_t mixed_budget = ticks_for_timeout_ms(TASK_REGISTRY_TEST_MIXED_TIMEOUT_MS);
+    task_registry_snapshot_t snapshot = {0};
+    const bool got_snapshot = task_registry_get_snapshot(&snapshot);
+    const bool mixed_contract = mixed_result == ESP_ERR_TIMEOUT &&
+        timeout.calls == 1u && error.calls == 1u && success.calls == 1u &&
+        timeout.first_timeout_ms >= error.first_timeout_ms &&
+        error.first_timeout_ms >= success.first_timeout_ms &&
+        mixed_elapsed <= mixed_budget + 1u && got_snapshot &&
+        snapshot.registered_count == 2u && snapshot.stop_failures == 2u;
+    if (!mixed_contract) {
+        ESP_LOGE(TASK_REGISTRY_TEST_TAG,
+                 "FAIL mixed result=%s calls=%lu/%lu/%lu budgets=%lu/%lu/%lu elapsed=%lu/%lu entries=%lu failures=%lu",
+                 esp_err_to_name(mixed_result), (unsigned long)timeout.calls,
+                 (unsigned long)error.calls, (unsigned long)success.calls,
+                 (unsigned long)timeout.first_timeout_ms, (unsigned long)error.first_timeout_ms,
+                 (unsigned long)success.first_timeout_ms, (unsigned long)mixed_elapsed,
+                 (unsigned long)mixed_budget, (unsigned long)snapshot.registered_count,
+                 (unsigned long)snapshot.stop_failures);
+        return ESP_FAIL;
+    }
+    if (task_registry_stop_all(TASK_REGISTRY_TEST_MIXED_TIMEOUT_MS) != ESP_OK ||
+        !task_registry_get_snapshot(&snapshot) || snapshot.registered_count != 0u ||
+        snapshot.stop_failures != 2u) {
+        ESP_LOGE(TASK_REGISTRY_TEST_TAG, "FAIL retained entries did not clean up safely");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TASK_REGISTRY_TEST_TAG,
+             "PASS mutex contention + multi-owner mixed stop; elapsed_ticks=%lu/%lu budgets=%lu/%lu/%lu",
+             (unsigned long)mixed_elapsed, (unsigned long)mixed_budget,
+             (unsigned long)timeout.first_timeout_ms, (unsigned long)error.first_timeout_ms,
+             (unsigned long)success.first_timeout_ms);
+    return ESP_OK;
+}
+#else
+esp_err_t task_registry_run_lifecycle_test(void) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+#endif

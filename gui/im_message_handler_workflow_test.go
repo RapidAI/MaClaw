@@ -127,10 +127,9 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 	return handler, cb
 }
 
-func TestResolveIMEntryContextRoutesPendingRemoteTemplateWhenWorkflowToggleDisabled(t *testing.T) {
+func TestResolveIMEntryContextRoutesPendingRemoteTemplate(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "test-remote-template-disabled-toggle"
-	handler.app.workflowDisabled.Store(true)
 	handler.pendingV2SubAgentExecution.Store(userID, true)
 	handler.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
 		SessionID:  "ssh-test",
@@ -148,14 +147,14 @@ func TestResolveIMEntryContextRoutesPendingRemoteTemplateWhenWorkflowToggleDisab
 		t.Fatalf("pending remote template should route to workflow loop, got response %#v", result.Response)
 	}
 	if !result.WorkflowAgentLoop {
-		t.Fatalf("WorkflowAgentLoop = false, want true so remote CodingSubAgent executes despite disabled cold-start routing: %#v", result)
+		t.Fatalf("WorkflowAgentLoop = false, want true so remote CodingSubAgent executes: %#v", result)
 	}
 	if result.WorkflowDocPhase {
 		t.Fatalf("WorkflowDocPhase = true, want false for remote coding execution")
 	}
 }
 
-func TestResolveIMEntryContextRoutesActiveWorkflowWhenWorkflowToggleDisabled(t *testing.T) {
+func TestResolveIMEntryContextRoutesActiveWorkflow(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{Response: "other"})
 	engine := handler.app.workflowEngine
 	userID := "test-active-workflow-disabled-toggle"
@@ -178,9 +177,8 @@ func TestResolveIMEntryContextRoutesActiveWorkflowWhenWorkflowToggleDisabled(t *
 		t.Fatalf("SavePhaseOutputAndMaybeAdvance phase=%q err=%v", phaseID, err)
 	}
 	if !engine.IsAwaitingReview(userID) {
-		t.Fatal("workflow should be awaiting review before disabled-toggle confirmation")
+		t.Fatal("workflow should be awaiting review before confirmation")
 	}
-	handler.app.workflowDisabled.Store(true)
 
 	trimmed := "ok"
 	result := handler.resolveIMEntryContext(imEntryContextOptions{
@@ -189,14 +187,14 @@ func TestResolveIMEntryContextRoutesActiveWorkflowWhenWorkflowToggleDisabled(t *
 	})
 
 	if result.Response != nil || !result.WorkflowAgentLoop {
-		t.Fatalf("active workflow should continue despite disabled cold-start routing, got %#v", result)
+		t.Fatalf("active workflow should continue, got %#v", result)
 	}
 	if ws := engine.GetActiveWorkflow(userID); ws == nil || ws.CurrentPhase != "execute" || engine.IsAwaitingReview(userID) {
 		t.Fatalf("workflow should advance to execute, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
 	}
 }
 
-func TestResolveIMEntryContextRoutesEngineOnlyActiveWorkflowWhenWorkflowToggleDisabled(t *testing.T) {
+func TestResolveIMEntryContextRoutesEngineOnlyActiveWorkflow(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{Response: "other"})
 	engine := handler.app.workflowEngine
 	userID := "test-engine-only-workflow-disabled-toggle"
@@ -226,7 +224,6 @@ func TestResolveIMEntryContextRoutesEngineOnlyActiveWorkflowWhenWorkflowToggleDi
 	if !engine.IsAwaitingReview(userID) {
 		t.Fatal("engine workflow should remain awaiting review after machine state is absent")
 	}
-	handler.app.workflowDisabled.Store(true)
 
 	trimmed := "ok"
 	result := handler.resolveIMEntryContext(imEntryContextOptions{
@@ -235,7 +232,7 @@ func TestResolveIMEntryContextRoutesEngineOnlyActiveWorkflowWhenWorkflowToggleDi
 	})
 
 	if result.Response != nil || !result.WorkflowAgentLoop {
-		t.Fatalf("engine-only active workflow should continue despite disabled cold-start routing, got %#v", result)
+		t.Fatalf("engine-only active workflow should continue, got %#v", result)
 	}
 	if ws := engine.GetActiveWorkflow(userID); ws == nil || ws.CurrentPhase != "execute" || engine.IsAwaitingReview(userID) {
 		t.Fatalf("engine workflow should advance to execute, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))

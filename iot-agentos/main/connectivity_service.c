@@ -308,11 +308,6 @@ bool connectivity_service_is_active_cellular(void) {
     return cellular;
 }
 
-bool connectivity_service_take_startup_transport_toggle(uint32_t window_ms) {
-    if (window_ms == 0) return false;
-    return platform_connectivity_take_startup_transport_toggle(window_ms);
-}
-
 void connectivity_service_restore_selected_uplink(void) {
     bool cellular = false;
     if (!platform_connectivity_load_transport_selection(&cellular)) cellular = false;
@@ -416,4 +411,106 @@ bool connectivity_service_is_pairing_recovery_provisioning(void) {
                             s_provisioning_active && s_provisioning_pairing_recovery;
     taskEXIT_CRITICAL(&s_connectivity_lock);
     return pairing_recovery;
+}
+
+static bool cellular_http_request_is_valid(
+    const device_connectivity_http_request_t *request) {
+    return request && request->method && request->method[0] && request->url &&
+           request->url[0] && request->response && request->response_capacity >= 2 &&
+           request->response_len && request->status_code && request->truncated &&
+           request->timeout_ms > 0;
+}
+
+device_status_t connectivity_service_prepare_cellular_transport(void) {
+    return platform_connectivity_prepare_cellular_transport();
+}
+
+device_status_t connectivity_service_start_cellular_transport(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    return platform_connectivity_start_cellular_transport(timeout_ms);
+}
+
+device_status_t connectivity_service_establish_cellular_transport(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+
+    /* Fail closed before the adapter touches UART, power or the modem. This
+     * readiness predicate belongs to the bounded service generation, not to a
+     * particular recovery task in the composition root. */
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool available = s_connectivity_initialized && !s_connectivity_stopping;
+    const bool cellular_selected = s_active_uplink == DEVICE_UPLINK_CELLULAR;
+    if (available && cellular_selected) s_cellular_ready = false;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (!available) return DEVICE_STATUS_UNAVAILABLE;
+    if (!cellular_selected) return DEVICE_STATUS_BUSY;
+
+    device_status_t status = platform_connectivity_prepare_cellular_transport();
+    if (status != DEVICE_STATUS_OK) return status;
+    status = platform_connectivity_start_cellular_transport(timeout_ms);
+    if (status != DEVICE_STATUS_OK) return status;
+
+    /* A physical start can finish after lifecycle rollback or uplink selection
+     * changes. Revalidate the same logical generation before publishing it. */
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool still_current = s_connectivity_initialized && !s_connectivity_stopping &&
+                               s_active_uplink == DEVICE_UPLINK_CELLULAR;
+    if (still_current) s_cellular_ready = true;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return still_current ? DEVICE_STATUS_OK : DEVICE_STATUS_BUSY;
+}
+
+bool connectivity_service_is_cellular_transport_ready(void) {
+    /* The adapter's physical indication alone is insufficient: it can still
+     * describe the previous ML307 session while a new service-owned start has
+     * already failed closed.  Conversely, a published service readiness must
+     * still reflect a later physical link loss.  Require both observations so
+     * callers cannot bypass the bounded session transition above. */
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool published_ready = s_connectivity_initialized && !s_connectivity_stopping &&
+                                 s_active_uplink == DEVICE_UPLINK_CELLULAR &&
+                                 s_cellular_ready;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return published_ready && platform_connectivity_is_cellular_transport_ready();
+}
+
+device_status_t connectivity_service_quiesce_cellular_transport(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    /* Close the service-side observation before asking the profile to drain
+     * ML307 work. A timeout leaves the physical adapter to finish its own
+     * bounded quiesce, but callers must already see this session as offline. */
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_active_uplink == DEVICE_UPLINK_CELLULAR) s_cellular_ready = false;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return platform_connectivity_quiesce_cellular_transport(timeout_ms);
+}
+
+device_status_t connectivity_service_cellular_http_request(
+    const device_connectivity_http_request_t *request) {
+    if (!cellular_http_request_is_valid(request)) return DEVICE_STATUS_INVALID_ARGUMENT;
+    return platform_connectivity_cellular_http_request(request);
+}
+
+device_status_t connectivity_service_cellular_http_stream_request(
+    const device_connectivity_stream_request_t *request) {
+    if (!request || !cellular_http_request_is_valid(&request->request) ||
+        !request->body_reader || !request->stream_buffer ||
+        request->stream_buffer_size == 0) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    return platform_connectivity_cellular_http_stream_request(request);
+}
+
+bool connectivity_service_cancel_cellular_foreground_request(void) {
+    return platform_connectivity_cancel_cellular_foreground_request();
+}
+
+bool connectivity_service_cancel_cellular_requests_for_owner(const void *owner) {
+    return owner && platform_connectivity_cancel_cellular_requests_for_owner(owner);
+}
+
+void connectivity_service_adapt_gateway_url(char *gateway_url,
+                                             uint32_t gateway_url_capacity) {
+    if (!gateway_url || gateway_url_capacity == 0) return;
+    platform_connectivity_adapt_gateway_url(gateway_url, gateway_url_capacity,
+                                            connectivity_service_is_active_cellular());
 }

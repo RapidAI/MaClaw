@@ -5682,16 +5682,17 @@ describe('AppsPage', () => {
     });
 
     it('installs HubCenter skillmarket maclaw apps via InstallMixedSkill instead of enterprise package API', async () => {
+        listSkillAppManifestsMock.mockResolvedValueOnce([]);
         searchMixedSkillsMock.mockResolvedValueOnce([{
-            id: 'skill-hc-invoice-app',
-            install_ref: 'skill-hc-invoice-app',
+            id: 'market-paper-pdf-translator-wrapper',
+            install_ref: 'market-paper-pdf-translator-wrapper',
             name: 'HubCenter Invoice App',
             description: 'Published from HubCenter skill market',
             source: 'skillmarket',
             source_label: 'Hub / HubCenter',
             product_kind: 'maclaw_app_skill',
             is_maclaw_app: true,
-            maclaw_app_id: 'hc-invoice-app',
+            maclaw_app_id: 'skill-app-paper_pdf_translator-app-pdf',
             maclaw_app_name: 'HubCenter Invoice App',
             maclaw_app_description: 'Published from HubCenter skill market',
             maclaw_app_kind: 'tool_app',
@@ -5701,26 +5702,41 @@ describe('AppsPage', () => {
         installMixedSkillMock.mockResolvedValue(undefined);
         // Page mount also calls ListSkillAppManifests — use sticky mock, not Once.
         listSkillAppManifestsMock.mockResolvedValue([{
-            id: 'hc-invoice-app',
+            id: 'skill-app-paper_pdf_translator-app-pdf',
             name: 'HubCenter Invoice App',
             description: 'Published from HubCenter skill market',
             category: 'Finance',
             icon: 'receipt',
-            skill_id: 'skill-hc-invoice-app',
+            skill_id: 'skill-app-paper_pdf_translator-app-pdf',
             app_definition_file: 'maclaw.app.json',
             input_mode: 'file',
             app_definition: {
                 schema: 'maclaw.app.v1',
                 privateMarker: 'x_maclaw_apps',
+                bundled_dependencies: {
+                    schema: 'maclaw.app.bundled_dependencies.v1',
+                    skills: [{
+                        id: 'paper_pdf_translator',
+                        name: 'paper_pdf_translator',
+                        files: { 'SKILL.md': 'IyBQYXBlciBQREYgVHJhbnNsYXRvcgo=' },
+                    }],
+                },
                 app: {
-                    id: 'hc-invoice-app',
+                    id: 'skill-app-paper_pdf_translator-app-pdf',
                     name: 'HubCenter Invoice App',
                     description: 'Published from HubCenter skill market',
                     category: 'Finance',
                     kind: 'tool_app',
                     icon: 'receipt',
                     binding: {
-                        skill: { id: 'skill-hc-invoice-app', appDefinitionFile: 'maclaw.app.json', inputMode: 'file' },
+                        // Older clients could persist the synthetic fallback
+                        // itself. It is the panel container, not a second
+                        // executable dependency, and must be migrated away.
+                        appSkill: { id: 'skill-app-paper_pdf_translator-app-pdf', version: '1.0.0', source: 'local' },
+                        // Legacy publishers could vary casing and '-'/'_' in
+                        // this binding while the panel and bundle used the
+                        // canonical underscore identity.
+                        skill: { id: 'Paper-PDF-Translator', appDefinitionFile: 'maclaw.app.json', inputMode: 'file' },
                         // Legacy SkillMarket app definitions can retain `local`
                         // for a public runtime skill. The reconstructed install
                         // manifest must preserve that declaration while carrying
@@ -5735,14 +5751,14 @@ describe('AppsPage', () => {
         }]);
         installMaclawAppDependenciesMock.mockResolvedValue({
             schema: 'maclaw.app.install_plan.v1',
-            apps: [{ id: 'hc-invoice-app', name: 'HubCenter Invoice App', kind: 'tool_app' }],
+            apps: [{ id: 'skill-app-paper_pdf_translator-app-pdf', name: 'HubCenter Invoice App', kind: 'tool_app' }],
             dependencies: [],
             has_missing_required: false,
             has_blocking_dependency: false,
         });
         recordMaclawAppInstallMock.mockResolvedValue({
             schema: 'maclaw.app.install_record.v1',
-            app_id: 'hc-invoice-app',
+            app_id: 'skill-app-paper_pdf_translator-app-pdf',
             source: 'skillmarket',
         });
 
@@ -5755,17 +5771,30 @@ describe('AppsPage', () => {
         expect(marketRow).toBeTruthy();
         fireEvent.click(within(marketRow).getByRole('button', { name: 'Add: HubCenter Invoice App' }));
 
-        await waitFor(() => expect(installMixedSkillMock).toHaveBeenCalledWith('skillmarket', 'skill-hc-invoice-app', 'skill-hc-invoice-app'));
+        await waitFor(() => expect(installMixedSkillMock).toHaveBeenCalledWith('skillmarket', 'market-paper-pdf-translator-wrapper', 'market-paper-pdf-translator-wrapper'));
         expect(installSelectedMaclawAppPackageFromHubMock).not.toHaveBeenCalled();
         expect(installMaclawAppPackageFromHubMock).not.toHaveBeenCalled();
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalled());
         const plannedManifest = JSON.parse(String(installMaclawAppDependenciesMock.mock.calls[0][0]));
+        expect(plannedManifest.app.id).toBe('skill-app-paper_pdf_translator-app-pdf');
         expect(plannedManifest.app.dependency_source).toBeUndefined();
         expect(plannedManifest.app.market_install_source).toBeUndefined();
         expect(plannedManifest.app.binding.dependency_source).toBeUndefined();
         expect(plannedManifest.app.dependencies.skills).toEqual([
             expect.objectContaining({ id: 'paper_pdf_translator', source: 'local' }),
         ]);
+        // The marketplace wrapper is only the container for this app.  Its
+        // ID must not be emitted as a synthetic app_skill dependency when the
+        // definition already binds the executable runtime Skill; otherwise
+        // install attempts to download the wrapper ID instead of restoring the
+        // declared/bundled runtime Skill.
+        expect(plannedManifest.app.appSkill).toBeUndefined();
+        expect(plannedManifest.bundled_dependencies).toEqual(expect.objectContaining({
+            skills: [expect.objectContaining({
+                id: 'paper_pdf_translator',
+                files: { 'SKILL.md': 'IyBQYXBlciBQREYgVHJhbnNsYXRvcgo=' },
+            })],
+        }));
         await waitFor(() => expect(recordMaclawAppInstallMock).toHaveBeenCalled());
         const recordArgs = recordMaclawAppInstallMock.mock.calls[0];
         expect(recordArgs[1]).toBe('skillmarket');

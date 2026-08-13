@@ -197,6 +197,44 @@ func TestExpertMarketSubmitReviewPurchaseAndDownload(t *testing.T) {
 	}
 }
 
+func TestExpertMarketOwnerPurchaseIsIdempotentOwned(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "owner-purchase", "owner-purchase@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, seller.ID, seller.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	archive := expertMarketArchive(t, "pkgexp-owner-purchase", "Owner purchase")
+	path := filepath.Join(h.expertMarketDir(), "owner-purchase.zip")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := expertMarketNow()
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "owner-purchase-listing", seller.ID, seller.Email, "pkgexp-owner-purchase", "Owner purchase", "", "", "1", 0, "public", "listed", path, len(archive), now, now); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts/owner-purchase-listing/purchase", nil)
+	req.SetPathValue("id", "owner-purchase-listing")
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	rec := httptest.NewRecorder()
+	h.PurchaseExpertMarketListing(rec, req)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"status":"owned"`)) {
+		t.Fatalf("owner purchase=%d %s", rec.Code, rec.Body.String())
+	}
+	var purchases int
+	if err := h.store.DB().QueryRow(`SELECT COUNT(*) FROM sm_expert_market_purchases WHERE listing_id='owner-purchase-listing'`).Scan(&purchases); err != nil || purchases != 0 {
+		t.Fatalf("owner must not receive a redundant purchase row: count=%d err=%v", purchases, err)
+	}
+}
+
 func TestExpertMarketSubmissionRollsBackWhenAuditWriteFails(t *testing.T) {
 	h, users, auth, _ := newExpertMarketTestHandler(t)
 	ctx := context.Background()

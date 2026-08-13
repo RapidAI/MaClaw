@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/digitalasset"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
@@ -37,6 +38,8 @@ type configAgentExecuteRequest struct {
 // ConfigAgentPlanHandler builds a proposed plan from natural language.
 func ConfigAgentPlanHandler(deps ConfigAgentDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Registry-backed LLM tools use their repository directly, while several
+		// configuration tools apply request scoping internally.
 		system := scopedSystemSettingsForRequest(r, deps.System)
 		var req configAgentPlanRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
@@ -115,6 +118,12 @@ func ConfigAgentPlanHandler(deps ConfigAgentDeps) http.HandlerFunc {
 					"Show feishu auto enroll",
 					"Enable feishu auto enroll",
 					"Show card store config",
+					"Show all tenant configurations",
+					"Show digital assets settings",
+					"Show virtual employee settings",
+					"Show security settings",
+					"Show referral settings",
+					"Show capability market policy",
 					"List invitation codes",
 					"Show invitation code required status",
 					"List service groups",
@@ -228,7 +237,10 @@ func appendConfigAgentSessionTurn(turns []string, msg string) []string {
 // ConfigAgentExecuteHandler runs a previously planned config change after confirm.
 func ConfigAgentExecuteHandler(deps ConfigAgentDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Registry-backed LLM tools expect a tenant-scoped repository; other
+		// settings tools unwrap and scope at their own service boundary.
 		system := scopedSystemSettingsForRequest(r, deps.System)
+		baseSystem := globalSystemSettings(deps.System)
 		audit := deps.Audit
 		if audit == nil {
 			audit = firstAdminAuditRepo()
@@ -238,7 +250,7 @@ func ConfigAgentExecuteHandler(deps ConfigAgentDeps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		plan, err := globalConfigAgentStore.consume(strings.TrimSpace(req.PlanID), strings.TrimSpace(req.ConfirmToken), adminAuditUserID(r))
+		plan, err := globalConfigAgentStore.consume(strings.TrimSpace(req.PlanID), strings.TrimSpace(req.ConfirmToken), adminAuditUserID(r), RequestTenantID(r))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "PLAN_CONFIRM_FAILED", err.Error())
 			return
@@ -248,16 +260,41 @@ func ConfigAgentExecuteHandler(deps ConfigAgentDeps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "PLAN_INCOMPLETE", "plan has missing fields: "+strings.Join(plan.MissingFields, ", "))
 			return
 		}
+		// Make a confirmed plan one-shot only after it has passed validation.
+		// A plan rejected above remains available for the multi-turn follow-up.
+		globalConfigAgentStore.discard(plan.PlanID)
 
 		results := make([]map[string]any, 0, len(plan.Steps))
+		completed := make(map[string]bool, len(plan.Steps))
 		for _, step := range plan.Steps {
+			if unmet := configAgentUnmetDependencies(step, completed); len(unmet) > 0 {
+				dependencyErr := "unmet dependencies: " + strings.Join(unmet, ", ")
+				entry := map[string]any{
+					"step_id": step.StepID,
+					"tool":    step.Tool,
+					"ok":      false,
+					"skipped": true,
+					"error":   dependencyErr,
+				}
+				results = append(results, entry)
+				writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "config_agent.execute", map[string]any{
+					"plan_id": plan.PlanID, "intent": plan.Intent, "summary": plan.Summary,
+					"source_message": plan.SourceMessage, "session_id": strings.TrimSpace(req.SessionID),
+					"ok": false, "results": results, "error": dependencyErr,
+				})
+				writeJSON(w, http.StatusOK, map[string]any{
+					"ok": false, "plan_id": plan.PlanID, "intent": plan.Intent, "results": results,
+					"error": "stopped on step " + step.StepID + ": " + dependencyErr,
+				})
+				return
+			}
 			if step.Optional && !req.RunOptional {
 				results = append(results, map[string]any{
 					"step_id": step.StepID, "tool": step.Tool, "skipped": true, "reason": "optional",
 				})
 				continue
 			}
-			out, stepErr := executeConfigAgentStep(r, deps, system, step)
+			out, stepErr := executeConfigAgentStep(r, deps, system, baseSystem, step)
 			entry := map[string]any{
 				"step_id": step.StepID,
 				"tool":    step.Tool,
@@ -284,6 +321,7 @@ func ConfigAgentExecuteHandler(deps ConfigAgentDeps) http.HandlerFunc {
 				return
 			}
 			results = append(results, entry)
+			completed[step.StepID] = true
 		}
 		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "config_agent.execute", map[string]any{
 			"plan_id":        plan.PlanID,
@@ -300,7 +338,27 @@ func ConfigAgentExecuteHandler(deps ConfigAgentDeps) http.HandlerFunc {
 	}
 }
 
-func executeConfigAgentStep(r *http.Request, deps ConfigAgentDeps, system store.SystemSettingsRepository, step configAgentStep) (any, error) {
+func configAgentUnmetDependencies(step configAgentStep, completed map[string]bool) []string {
+	if len(step.DependsOn) == 0 {
+		return nil
+	}
+	unmet := make([]string, 0, len(step.DependsOn))
+	seen := make(map[string]struct{}, len(step.DependsOn))
+	for _, dependency := range step.DependsOn {
+		dependency = strings.TrimSpace(dependency)
+		if dependency == "" || completed[dependency] {
+			continue
+		}
+		if _, exists := seen[dependency]; exists {
+			continue
+		}
+		seen[dependency] = struct{}{}
+		unmet = append(unmet, dependency)
+	}
+	return unmet
+}
+
+func executeConfigAgentStep(r *http.Request, deps ConfigAgentDeps, system, baseSystem store.SystemSettingsRepository, step configAgentStep) (any, error) {
 	switch step.Tool {
 	case "system_free.get":
 		reg, err := loadSystemFreeRegistry(r, system)
@@ -443,10 +501,45 @@ func executeConfigAgentStep(r *http.Request, deps ConfigAgentDeps, system store.
 		return execCardStoreConfigGet(r, system)
 	case "card_store.config.update":
 		return execCardStoreConfigUpdate(r, system, step.Args)
+	case "digital_assets.settings.get":
+		return execDigitalAssetSettingsGet(r, deps)
+	case "digital_assets.settings.update":
+		return execDigitalAssetSettingsUpdate(r, deps, step.Args)
+	case "ve.config.get":
+		return execVEConfigGet(r, baseSystem)
+	case "ve.config.update":
+		return execVEConfigUpdate(r, baseSystem, step.Args)
+	case "security.settings.get":
+		return execSecuritySettingsGet(r, deps)
+	case "security.settings.update":
+		return execSecuritySettingsUpdate(r, deps, step.Args)
+	case "security.default_group.get":
+		return execSecurityDefaultGroupGet(r, deps)
+	case "security.default_group.update":
+		return execSecurityDefaultGroupUpdate(r, deps, step.Args)
+	case "security.approval_roles.get":
+		return execApprovalRolesGet(r, baseSystem)
+	case "security.approval_roles.update":
+		return execApprovalRolesUpdate(r, deps, baseSystem, step.Args)
+	case "referrals.config.get":
+		return execReferralConfigGet(r, baseSystem)
+	case "referrals.config.update":
+		return execReferralConfigUpdate(r, baseSystem, step.Args)
+	case "capability_market.policy.get":
+		return execCapabilityMarketPolicyGet(r, baseSystem)
+	case "capability_market.policy.update":
+		return execCapabilityMarketPolicyUpdate(r, baseSystem, step.Args)
 
 	default:
 		return nil, fmt.Errorf("unknown tool %q", step.Tool)
 	}
+}
+
+func configAgentAuditRepository(deps ConfigAgentDeps) store.AdminAuditRepository {
+	if deps.Audit != nil {
+		return deps.Audit
+	}
+	return firstAdminAuditRepo()
 }
 
 func execSystemFreeUpdate(r *http.Request, system store.SystemSettingsRepository, args map[string]any) (any, error) {
@@ -1666,6 +1759,20 @@ func configAgentToolExample(name string) string {
 		return "show feishu auto enroll"
 	case "card_store.config.get":
 		return "show card store config"
+	case "digital_assets.settings.get":
+		return "show digital assets settings"
+	case "ve.config.get":
+		return "show virtual employee settings"
+	case "security.settings.get":
+		return "show security settings"
+	case "security.default_group.get":
+		return "show default group"
+	case "security.approval_roles.get":
+		return "show approval roles"
+	case "referrals.config.get":
+		return "show referral settings"
+	case "capability_market.policy.get":
+		return "show capability market policy"
 	case "mail.sender_name.get":
 		return "show mail sender name"
 	case "llm.providers.get":
@@ -2146,6 +2253,336 @@ func execCardStoreConfigUpdate(r *http.Request, system store.SystemSettingsRepos
 	cfg.AccessKey = ""
 	cfg.AlipayDirect.PrivateKey = ""
 	return cfg, nil
+}
+
+func execDigitalAssetSettingsGet(r *http.Request, deps ConfigAgentDeps) (any, error) {
+	if deps.DigitalAssets == nil {
+		return nil, fmt.Errorf("digital assets feature unavailable")
+	}
+	settings := deps.DigitalAssets.LoadTenantSettings(r.Context(), RequestTenantID(r))
+	return map[string]any{"enabled": settings.Enabled, "sync_enabled": settings.SyncEnabled, "settings": settings}, nil
+}
+
+func execDigitalAssetSettingsUpdate(r *http.Request, deps ConfigAgentDeps, args map[string]any) (any, error) {
+	if deps.DigitalAssets == nil {
+		return nil, fmt.Errorf("digital assets feature unavailable")
+	}
+	update := digitalasset.SettingsUpdate{}
+	if value, ok := configAgentBoolArg(args, "enabled"); ok {
+		update.Enabled = &value
+	}
+	if value, ok := configAgentBoolArg(args, "sync_enabled"); ok {
+		update.SyncEnabled = &value
+	}
+	if update.Enabled == nil && update.SyncEnabled == nil {
+		return nil, fmt.Errorf("enabled or sync_enabled required")
+	}
+	settings, err := deps.DigitalAssets.UpdateTenantSettings(r.Context(), RequestTenantID(r), update)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"enabled": settings.Enabled, "sync_enabled": settings.SyncEnabled, "settings": settings}, nil
+}
+
+func execVEConfigGet(r *http.Request, system store.SystemSettingsRepository) (any, error) {
+	return loadVEGroupConfig(r.Context(), veSystemSettingsForRequest(r, globalSystemSettings(system))), nil
+}
+
+func execVEConfigUpdate(r *http.Request, system store.SystemSettingsRepository, args map[string]any) (any, error) {
+	// The executor already scopes its settings dependency. This helper (and the
+	// regular VE endpoint) applies request scoping itself, so unwrap first to
+	// avoid persisting under a duplicated tenant:<id>:tenant:<id>: key.
+	system = veSystemSettingsForRequest(r, globalSystemSettings(system))
+	cfg := loadVEGroupConfig(r.Context(), system)
+	touched := false
+	if value, ok := toInt64(args["max_group_participants"]); ok {
+		if value < 1 || value > 10 {
+			return nil, fmt.Errorf("max_group_participants must be 1-10")
+		}
+		cfg.MaxGroupParticipants = int(value)
+		touched = true
+	}
+	if value, ok := configAgentBoolArg(args, "auto_approve"); ok {
+		cfg.AutoApprove = value
+		touched = true
+	}
+	if !touched {
+		return nil, fmt.Errorf("max_group_participants or auto_approve required")
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := system.Set(r.Context(), veGroupConfigKey, string(data)); err != nil {
+		return nil, err
+	}
+	clearVEDiscoverableCache()
+	return cfg, nil
+}
+
+func execSecuritySettingsGet(r *http.Request, deps ConfigAgentDeps) (any, error) {
+	if deps.Security == nil {
+		return nil, fmt.Errorf("security service unavailable")
+	}
+	settings, err := deps.Security.GetSettings(securityRequestContext(r))
+	if err != nil {
+		return nil, err
+	}
+	return settings, nil
+}
+
+func execSecuritySettingsUpdate(r *http.Request, deps ConfigAgentDeps, args map[string]any) (any, error) {
+	if deps.Security == nil {
+		return nil, fmt.Errorf("security service unavailable")
+	}
+	ctx := securityRequestContext(r)
+	settings, err := deps.Security.GetSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	touched := false
+	if value, ok := configAgentBoolArg(args, "centralized_security_enabled"); ok {
+		settings.CentralizedSecurityEnabled = value
+		touched = true
+	}
+	if value, ok := configAgentBoolArg(args, "org_structure_enabled"); ok {
+		settings.OrgStructureEnabled = value
+		touched = true
+	}
+	if !touched {
+		return nil, fmt.Errorf("centralized_security_enabled or org_structure_enabled required")
+	}
+	if err := deps.Security.UpdateSettings(ctx, settings, adminAuditUserID(r)); err != nil {
+		return nil, err
+	}
+	writeAdminAuditLog(r.Context(), configAgentAuditRepository(deps), adminAuditUserID(r), "security.settings.update", map[string]any{
+		"centralized_security_enabled": settings.CentralizedSecurityEnabled,
+		"org_structure_enabled":        settings.OrgStructureEnabled,
+	})
+	return settings, nil
+}
+
+func execSecurityDefaultGroupGet(r *http.Request, deps ConfigAgentDeps) (any, error) {
+	return execSecuritySettingsGet(r, deps)
+}
+
+func execSecurityDefaultGroupUpdate(r *http.Request, deps ConfigAgentDeps, args map[string]any) (any, error) {
+	if deps.Security == nil {
+		return nil, fmt.Errorf("security service unavailable")
+	}
+	groupID := strings.TrimSpace(fmt.Sprint(args["group_id"]))
+	if groupID == "" || groupID == "<nil>" {
+		return nil, fmt.Errorf("group_id required")
+	}
+	if err := deps.Security.SetDefaultGroup(securityRequestContext(r), groupID); err != nil {
+		return nil, err
+	}
+	writeAdminAuditLog(r.Context(), configAgentAuditRepository(deps), adminAuditUserID(r), "security.default_group.update", map[string]any{"group_id": groupID})
+	return map[string]any{"ok": true, "default_group_id": groupID}, nil
+}
+
+func execApprovalRolesGet(r *http.Request, system store.SystemSettingsRepository) (any, error) {
+	return loadApprovalRoles(r, globalSystemSettings(system))
+}
+
+func execApprovalRolesUpdate(r *http.Request, deps ConfigAgentDeps, system store.SystemSettingsRepository, args map[string]any) (any, error) {
+	roles, err := configAgentApprovalRoles(args)
+	if err != nil {
+		return nil, err
+	}
+	next, err := normalizeApprovalRoleStore(roles)
+	if err != nil {
+		return nil, err
+	}
+	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := saveApprovalRoles(r, globalSystemSettings(system), next); err != nil {
+		return nil, err
+	}
+	writeAdminAuditLog(r.Context(), configAgentAuditRepository(deps), adminAuditUserID(r), "security.approval_roles.update", map[string]any{"role_count": len(next.Roles)})
+	return next, nil
+}
+
+func execReferralConfigGet(r *http.Request, system store.SystemSettingsRepository) (any, error) {
+	cfg, _, err := loadUserReferralConfigWithVersion(r.Context(), globalSystemSettings(system), RequestTenantID(r))
+	return cfg, err
+}
+
+func execReferralConfigUpdate(r *http.Request, system store.SystemSettingsRepository, args map[string]any) (any, error) {
+	tenantID := RequestTenantID(r)
+	system = globalSystemSettings(system)
+	// Serialize with the standard admin endpoint so a partial assistant update
+	// cannot overwrite another administrator's referral-policy change.
+	userReferralConfigMu.Lock()
+	defer userReferralConfigMu.Unlock()
+	cfg, _, err := loadUserReferralConfigWithVersion(r.Context(), system, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	initialEnabled := cfg.Enabled
+	touched := false
+	if value, ok := configAgentBoolArg(args, "enabled"); ok {
+		cfg.Enabled = value
+		touched = true
+	}
+	if value, ok := configAgentFloatArg(args, "inviter_credits"); ok {
+		cfg.InviterCredits = value
+		touched = true
+	}
+	if value, ok := configAgentFloatArg(args, "invitee_credits"); ok {
+		cfg.InviteeCredits = value
+		touched = true
+	}
+	if value, ok := toInt64(args["duration_days"]); ok {
+		cfg.DurationDays = int(value)
+		touched = true
+	}
+	if value, ok := toInt64(args["daily_reward_cap"]); ok {
+		cfg.DailyRewardCap = int(value)
+		touched = true
+	}
+	if value, ok := toInt64(args["daily_network_client_review_cap"]); ok {
+		cfg.DailyNetworkClientReviewCap = int(value)
+		touched = true
+	}
+	if value := strings.TrimSpace(fmt.Sprint(args["service_group_id"])); value != "" && value != "<nil>" {
+		cfg.ServiceGroupID = value
+		touched = true
+	}
+	if !touched {
+		return nil, fmt.Errorf("at least one referral configuration field required")
+	}
+	if err := validateUserReferralCredits(cfg.InviterCredits, cfg.InviteeCredits); err != nil {
+		return nil, err
+	}
+	cfg = normalizeUserReferralConfig(cfg)
+	if (cfg.InviterCredits > 0 || cfg.InviteeCredits > 0) && strings.TrimSpace(cfg.ServiceGroupID) == "" {
+		return nil, fmt.Errorf("service_group_id required when referral credits are enabled")
+	}
+	if cfg.InviterCredits > 0 || cfg.InviteeCredits > 0 {
+		registry, loadErr := llmservice.LoadRegistry(r.Context(), ScopedSystemSettingsForTenant(tenantID, system))
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if registry == nil || registry.FindModelServiceGroup(cfg.ServiceGroupID) == nil {
+			return nil, fmt.Errorf("service group %q not found", cfg.ServiceGroupID)
+		}
+	}
+	// Keep this update path consistent with UpdateUserReferralConfigHandler:
+	// changing availability must invalidate referral-registration sessions that
+	// were created under the prior policy.
+	if cfg.Enabled != initialEnabled {
+		epoch, epochErr := newUserReferralCode()
+		if epochErr != nil {
+			return nil, fmt.Errorf("rotate referral session epoch: %w", epochErr)
+		}
+		cfg.SessionEpoch = epoch
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := ScopedSystemSettingsForTenant(tenantID, system).Set(r.Context(), userReferralSettingsKey, string(data)); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func execCapabilityMarketPolicyGet(r *http.Request, system store.SystemSettingsRepository) (any, error) {
+	return loadCapabilityMarketPolicy(r, scopedSystemSettingsForTenant(RequestTenantID(r), globalSystemSettings(system)))
+}
+
+func execCapabilityMarketPolicyUpdate(r *http.Request, system store.SystemSettingsRepository, args map[string]any) (any, error) {
+	policy, err := configAgentCapabilityMarketPolicy(args["policy"])
+	if err != nil {
+		return nil, err
+	}
+	policy = policy.WithDefaults()
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return nil, err
+	}
+	settings := scopedSystemSettingsForTenant(RequestTenantID(r), globalSystemSettings(system))
+	if settings == nil {
+		return nil, fmt.Errorf("system settings unavailable")
+	}
+	if err := settings.Set(r.Context(), capabilityMarketPolicySettingKey, string(data)); err != nil {
+		return nil, err
+	}
+	return policy, nil
+}
+
+func configAgentBoolArg(args map[string]any, key string) (bool, bool) {
+	value, exists := args[key]
+	if !exists || value == nil {
+		return false, false
+	}
+	if b, ok := value.(bool); ok {
+		return b, true
+	}
+	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
+	case "true", "1", "yes", "on", "enable", "enabled":
+		return true, true
+	case "false", "0", "no", "off", "disable", "disabled":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func configAgentFloatArg(args map[string]any, key string) (float64, bool) {
+	value, exists := args[key]
+	if !exists || value == nil {
+		return 0, false
+	}
+	switch n := value.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		f, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(value)), 64)
+		return f, err == nil
+	}
+}
+
+func configAgentApprovalRoles(args map[string]any) (approvalRoleStore, error) {
+	data, err := json.Marshal(map[string]any{"roles": args["roles"], "functionScopes": firstConfigAgentArg(args, "function_scopes", "functionScopes")})
+	if err != nil {
+		return approvalRoleStore{}, err
+	}
+	var roles approvalRoleStore
+	if err := json.Unmarshal(data, &roles); err != nil {
+		return approvalRoleStore{}, fmt.Errorf("invalid approval roles: %w", err)
+	}
+	return roles, nil
+}
+
+func configAgentCapabilityMarketPolicy(value any) (corelib.CapabilityMarketPolicy, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return corelib.CapabilityMarketPolicy{}, err
+	}
+	var policy corelib.CapabilityMarketPolicy
+	if err := json.Unmarshal(data, &policy); err != nil {
+		return corelib.CapabilityMarketPolicy{}, fmt.Errorf("invalid capability market policy: %w", err)
+	}
+	return policy, nil
+}
+
+func firstConfigAgentArg(args map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := args[key]; ok {
+			return value
+		}
+	}
+	return nil
 }
 
 func execInvitationCodesList(r *http.Request, deps ConfigAgentDeps, args map[string]any) (any, error) {

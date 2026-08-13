@@ -42,6 +42,26 @@ bool provisioning_failure_injection_display_service_request_delay_enabled(void);
 uint32_t provisioning_failure_injection_display_service_secondary_stop_delay_ms(void);
 uint32_t provisioning_failure_injection_display_service_secondary_stop_timeout_ms(void);
 
+/* Drives a service-private compact-animation lifecycle test.  The selected
+ * test artifact delays completion publication while holding the animation
+ * lifecycle mutex, then delays cleanup after its one-shot completion.  This
+ * proves callers consume the original transaction's remaining deadline. */
+bool provisioning_failure_injection_compact_display_animation_deadline_test_enabled(void);
+uint32_t provisioning_failure_injection_compact_display_animation_pre_completion_delay_ms(void);
+uint32_t provisioning_failure_injection_compact_display_animation_post_completion_delay_ms(void);
+
+/* Round Display Service counterpart of the compact animation deadline proof.
+ * It is compile-time test-only and never exposes a board, panel or runtime
+ * control surface through Device/Platform APIs. */
+bool provisioning_failure_injection_round_display_animation_deadline_test_enabled(void);
+uint32_t provisioning_failure_injection_round_display_animation_pre_completion_delay_ms(void);
+uint32_t provisioning_failure_injection_round_display_animation_post_completion_delay_ms(void);
+
 /* Test-only: abandon exactly one real color-transfer fence wait. The selected
  * profile keeps the old source controller-owned until its actual callback. */
 bool provisioning_failure_injection_display_transfer_fence_timeout_once(void);
+
+/* Boots a dedicated lifecycle-test artifact through the Task Registry's
+ * internal contention/deadline test. Production configurations compile this
+ * to false; it is neither a business feature nor a runtime control surface. */
+bool provisioning_failure_injection_task_registry_lifecycle_test_enabled(void);

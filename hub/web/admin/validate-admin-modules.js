@@ -22,6 +22,7 @@ const expectedScripts = [
   'im-tab.js',
   'feishu-tab.js',
   'invitation-tab.js',
+	'user-referrals-tab.js',
   'pwa-tab.js',
   'system-tab.js',
   'compute-tab.js',
@@ -54,7 +55,7 @@ const expectedExports = {
   'usage-stats-tab.js': ['loadUsageStats'],
   'knowledge-management-tab.js': ['loadKnowledgeShares', 'forceDeleteKnowledgeShare'],
   'admin-ui.js': ['confirmDialog', 'promptDialog', 'dismissActiveDialog', 'isDialogOpen', 'admin-ui-dialog-overlay', 'mountDialogSession', 'DIALOG_Z_INDEX', '20000', 'bindModalOverlayDismiss', 'isImeComposing', 'skipDismiss'],
-  'digital-assets-tab.js': ['loadDigitalAssetLibraries', 'createDigitalAssetLibrary', 'digital-assets-merge-src', 'import/local-dir', 'import/browser-dir', 'digitalAssetsBrowserDir', 'digitalAssetsServerDir', 'trackJob', 'openContentDialog', 'import-jobs', '/sources', 'beginProgress', 'phaseLabel', 'jobIdOf', 'digitalAssetsProgressTimeout', 'digitalAssetsPhaseImporting', 'deleteContentSources', 'sources/delete', 'digitalAssetsContentDeleteSelected', 'digitalAssetsContentSearch', 'loadMoreContentSources', 'digitalAssetsContentLoadMore', 'offset=', 'scheduleContentJobsPoll', 'refreshContentJobsOnly', 'wireContentScrollLoadMore', 'maybeAutoFillSources', 'jobsStatusSignature', 'contentAutoFillRounds', 'renderAclPanel', 'renderDepartmentTree', 'saveLibraryAcl', 'loadSecurityGroups', 'set_acl', 'digitalAssetsAclSave', 'digital-assets-acl-dept', 'acl_mode', '/api/admin/security/groups', 'captureAclDraftFromDom', 'itemWithAclDraft', 'digitalAssetsAclClearDepartmentsBtn', 'digitalAssetsAclDeptFilter', 'digitalAssetsAclEmptyRestrictedWarn', 'unknownSelectedDepartments', 'showConfirm', 'showPrompt', 'confirmDialog', 'promptDialog', 'digitalAssetsDeleteLibraryConfirm', 'digitalAssetsCreateNamePrompt', 'admin-ui-dialog-overlay', 'isDialogOpen', 'createLibraryBusy', 'isAdminDialogOpen', 'aclSaveGuard', 'contentDeleteGuard', 'deleteLibraryBusy']
+  'digital-assets-tab.js': ['loadDigitalAssetLibraries', 'createDigitalAssetLibrary', 'stopDigitalAssetsForUnauthorizedScope', 'digital-assets-merge-src', 'import/local-dir', 'import/browser-dir', 'digitalAssetsBrowserDir', 'digitalAssetsServerDir', 'trackJob', 'openContentDialog', 'import-jobs', '/sources', 'beginProgress', 'phaseLabel', 'jobIdOf', 'digitalAssetsProgressTimeout', 'digitalAssetsPhaseImporting', 'deleteContentSources', 'sources/delete', 'digitalAssetsContentDeleteSelected', 'digitalAssetsContentSearch', 'loadMoreContentSources', 'digitalAssetsContentLoadMore', 'offset=', 'scheduleContentJobsPoll', 'refreshContentJobsOnly', 'wireContentScrollLoadMore', 'maybeAutoFillSources', 'jobsStatusSignature', 'contentAutoFillRounds', 'renderAclPanel', 'renderDepartmentTree', 'saveLibraryAcl', 'loadSecurityGroups', 'set_acl', 'digitalAssetsAclSave', 'digital-assets-acl-dept', 'acl_mode', '/api/admin/security/groups', 'captureAclDraftFromDom', 'itemWithAclDraft', 'digitalAssetsAclClearDepartmentsBtn', 'digitalAssetsAclDeptFilter', 'digitalAssetsAclEmptyRestrictedWarn', 'unknownSelectedDepartments', 'showConfirm', 'showPrompt', 'confirmDialog', 'promptDialog', 'digitalAssetsDeleteLibraryConfirm', 'digitalAssetsCreateNamePrompt', 'admin-ui-dialog-overlay', 'isDialogOpen', 'createLibraryBusy', 'isAdminDialogOpen', 'aclSaveGuard', 'contentDeleteGuard', 'deleteLibraryBusy', 'downloadBackup', 'backupFilename', 'global.URL.createObjectURL', 'Authorization', 'res.status === 401', 'global.logoutAdmin']
 };
 
 function fail(message) {
@@ -203,6 +204,7 @@ function assertTenantAdminUIHooks() {
     fail('admin.js must preserve tenant display context when refreshing admin profile tokens.');
   }
   const system = read('system-tab.js');
+  const tenant = read('tenant-tab.js');
   if (!system.includes('setAdminProfile(data.admin)') || system.includes('localStorage.setItem(adminProfileKey, JSON.stringify(data.admin))')) {
     fail('system-tab.js must preserve tenant display context when password/profile updates return a fresh admin token.');
   }
@@ -214,6 +216,32 @@ function assertTenantAdminUIHooks() {
   if (!admin.includes("normalized === 'system'") || !admin.includes("String(profile.scope || '').toLowerCase() === 'tenant'") || !admin.includes('openDefaultImSub')) {
     fail('admin.js must avoid global-only system loads for tenant admins.');
   }
+  // Registration verification and SMS credentials are tenant policy. Keep the
+  // visual boundary and the loading boundary aligned with the server route.
+  if (!html.includes('id="registrationAuthCard"')) {
+    fail('index.html is missing the tenant registration verification card.');
+  }
+  if (!tenant.includes("registrationAuthCard.classList.toggle('hidden', !tenantAdmin)")) {
+    fail('tenant-tab.js must show registration verification only to tenant admins.');
+  }
+  const openTabSource = extractNamedFunction(admin, 'openTab');
+  const tenantSystemLoads = "if (profile && String(profile.scope || '').toLowerCase() === 'tenant') { if (typeof loadRegistrationAuthConfig === 'function') loadRegistrationAuthConfig();";
+  if (!openTabSource.includes(tenantSystemLoads)) {
+    fail('admin.js must load registration verification only in the tenant system scope.');
+  }
+  const globalSystemLoads = 'else { loadTlsConfig(); loadSystemRoutingConfig();';
+  if (!openTabSource.includes(globalSystemLoads)) {
+    fail('admin.js must keep Hub routing and TLS loading in the global system scope.');
+  }
+  if (!system.includes('function canManageRegistrationAuth()') || !system.includes("String(profile.scope || '').toLowerCase() === 'tenant'")) {
+    fail('system-tab.js must guard registration verification handlers to tenant scope.');
+  }
+  ['loadRegistrationAuthConfig', 'saveRegistrationAuthConfig'].forEach(function(name) {
+    const handler = extractNamedFunction(system, name);
+    if (!handler.includes('if (!canManageRegistrationAuth()) return null;')) {
+      fail('system-tab.js must guard direct registration verification calls.');
+    }
+  });
   ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemFreeStatusBadge', 'tenantSystemFreeTestBtn', 'tenantSystemLLMDefaultsSaveBtn', 'id="tenantDigitalAssetsSettingsCard"', 'tenantDigitalAssetsEnabledToggle', 'tenantDigitalAssetsSyncToggle'].forEach(function(marker) {
     if (!html.includes(marker)) {
       fail('index.html is missing tenant-safe mail settings marker: ' + marker);
@@ -235,6 +263,15 @@ function assertTenantAdminUIHooks() {
   ['loadTenantDigitalAssetsSettings', 'toggleTenantDigitalAssetsEnabled', 'toggleTenantDigitalAssetsSync', '/api/admin/digital-assets/settings', 'TENANT_DIGITAL_ASSETS_SETTINGS_I18N'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing tenant digital assets settings marker: ' + marker);
+    }
+  });
+  if (!system.includes('function canManageTenantDigitalAssets()')) {
+    fail('system-tab.js must define the tenant digital assets scope guard.');
+  }
+  ['loadTenantDigitalAssetsSettings', 'toggleTenantDigitalAssetsEnabled', 'toggleTenantDigitalAssetsSync'].forEach(function(name) {
+    const handler = extractNamedFunction(system, name);
+    if (!handler.includes('if (!canManageTenantDigitalAssets()) return null;')) {
+      fail('system-tab.js must guard ' + name + ' to tenant admins.');
     }
   });
   ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'getTenantSystemFreeCache', 'setTenantSystemFreeCache', 'fetchTenantSystemFreeStatus', 'formatTenantSystemFreeDetail', 'renderTenantSystemFreeStatus', 'applyTenantSystemFreeStatusUI', '/api/admin/llm/system-free', '/api/admin/llm/system-free/test', 'testTenantSystemFreeLLM', 'openSystemFreeServiceGroup', 'skipPeer', 'systemFreeConfigToasted', 'tenantSystemFreeTestInflight'].forEach(function(marker) {
@@ -323,7 +360,6 @@ function assertTenantAdminUIHooks() {
       fail('Hub LLM / prompt-cache admin UI must stay removed: ' + marker);
     }
   });
-  const tenant = read('tenant-tab.js');
   [
     'loadLoginTenants',
     'renderLoginTenantOptions',
@@ -370,6 +406,8 @@ function assertTenantSystemLLMDefaultBehavior() {
     tslxFn,
     'var tenantSystemFreeStatusCache = null;',
     'var window = {};',
+    'function canManageRegistrationAuth() { return true; }',
+    extractNamedFunction(system, 'clearTenantSystemFreeState'),
     extractNamedFunction(system, 'getTenantSystemFreeCache'),
     extractNamedFunction(system, 'setTenantSystemFreeCache'),
     extractNamedFunction(system, 'formatTenantSystemFreeDetail'),
@@ -399,7 +437,15 @@ function assertEmptyTextNodesAreOwned() {
   const scripts = expectedScripts.map(function(name) { return read(name); }).join('\n');
   const allowedDynamic = {
     setupGateList: true,
-    maclawComputeTopAlert: true
+    maclawComputeTopAlert: true,
+    userReferralInviters: true,
+	userReferralMetricGrid: true,
+	userReferralMetricsHint: true,
+    userReferralPagerMeta: true,
+    userReferralReviewQueue: true,
+    userReferralReviewPagerMeta: true,
+    userReferralDetailBody: true,
+    userReferralDetailMeta: true
   };
   const emptyNode = /<([a-z0-9]+)\b([^>]*\bid="([^"]+)"[^>]*)>\s*<\/\1>/gi;
   let match;
@@ -625,6 +671,23 @@ function assertUsageStatsSubtabState() {
 
 function assertDigitalAssetDepartmentTreeRender() {
   const source = read('digital-assets-tab.js');
+  if (!source.includes('function canManageDigitalAssets()')) {
+    fail('digital-assets-tab.js must define a tenant-admin scope guard.');
+  }
+  ['loadDigitalAssetLibraries', 'createDigitalAssetLibrary'].forEach(function(name) {
+    const handler = extractNamedFunction(source, name);
+    if (!handler.includes('if (!canManageDigitalAssets())')
+        || !handler.includes('stopDigitalAssetsForUnauthorizedScope();')
+        || !handler.includes('return null;')) {
+      fail('digital-assets-tab.js must guard ' + name + ' to tenant admins.');
+    }
+  });
+  const clearUnauthorized = extractNamedFunction(source, 'stopDigitalAssetsForUnauthorizedScope');
+  ['stopContentJobsPoll()', 'state.contentJobsPollToken', 'state.progressToken', 'state.contentOpen = false', 'state.items = []', "global.stopDigitalAssetsForUnauthorizedScope = stopDigitalAssetsForUnauthorizedScope"].forEach(function(marker) {
+    if (!clearUnauthorized.includes(marker) && !source.includes(marker)) {
+      fail('digital-assets-tab.js must clear tenant data and polling after scope changes: ' + marker);
+    }
+  });
   const normalizeTree = extractNamedFunction(source, 'normalizeSecurityGroupTree');
   const renderTree = extractNamedFunction(source, 'renderDepartmentTree');
   const panel = extractNamedFunction(source, 'renderAclPanel');
@@ -675,6 +738,56 @@ function assertDigitalAssetDepartmentTreeRender() {
     }
   });
 }
+
+function assertDigitalAssetRoutesTenantScoped() {
+  const routerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'router.go');
+  const router = fs.readFileSync(routerPath, 'utf8');
+  const routes = router.split('\n').filter(function(line) {
+    return line.includes('/api/admin/digital-assets/');
+  });
+  if (!routes.length) {
+    fail('router.go must register digital asset admin routes.');
+    return;
+  }
+  routes.forEach(function(line) {
+    if (!line.includes('requireTenantAdmin(') || line.includes('requireAdmin(')) {
+      fail('digital asset admin route must require a tenant admin: ' + line.trim());
+    }
+  });
+}
+
+function assertAdminAssetsNoStore() {
+  const staticPath = path.join(root, '..', '..', 'internal', 'httpapi', 'static.go');
+  const source = fs.readFileSync(staticPath, 'utf8');
+  [
+    'for _, method := range []string{http.MethodGet, http.MethodHead}',
+    'if r.Method == http.MethodHead',
+    'w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")'
+  ].forEach(function(marker) {
+    if (!source.includes(marker)) {
+      fail('admin static assets must be no-store for GET and HEAD: ' + marker);
+    }
+  });
+}
+
+function assertUserReferralPanelIsolation() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const css = read('professional.css');
+  const admin = read('admin.js');
+  if (!html.includes('id="tab-userreferrals" class="panel card"')) {
+    fail('index.html must keep User referrals inside an independently switchable panel.');
+  }
+  if (!css.includes('#tab-userreferrals.active{display:grid!important;gap:14px}')) {
+    fail('professional.css must enable the User referrals grid only while its panel is active.');
+  }
+  if (css.includes('#tab-userreferrals{display:grid;gap:14px}')) {
+    fail('professional.css must not force User referrals visible while another panel is active.');
+  }
+  if (!admin.includes("document.querySelectorAll('.panel').forEach(v => v.classList.remove('active'))")) {
+    fail('admin.js must deactivate every panel before activating the selected one.');
+  }
+}
+
 function assertAdminApiRoutesRegistered() {
   const routerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'router.go');
   const router = fs.readFileSync(routerPath, 'utf8');
@@ -977,7 +1090,10 @@ function assertApprovalRolesHooks() {
 expectedScripts.concat(['MODULES.md', 'check-admin.ps1']).forEach(assertExists);
 expectedScripts.forEach(assertJavaScriptSyntax);
 expectedScripts.forEach(assertModuleExports);
-expectedScripts.concat(['MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1']).forEach(assertAscii);
+// Legacy modules may still contain pre-existing localized source. Keep the
+// invitation module in the same ASCII-only contract as the other modern admin
+// modules (Chinese copy must be expressed with \u escapes).
+['user-referrals-tab.js', 'MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1'].forEach(assertAscii);
 removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();
@@ -994,6 +1110,9 @@ assertMaclawAppEvidenceReviewMarkers();
 assertUsageRankingEmailFilter();
 assertUsageStatsSubtabState();
 assertDigitalAssetDepartmentTreeRender();
+assertDigitalAssetRoutesTenantScoped();
+assertAdminAssetsNoStore();
+assertUserReferralPanelIsolation();
 assertLegacyMirrorRemoved();
 assertRemovedLegacyFilesDocumented();
 assertLLMProviderPricingHooks();

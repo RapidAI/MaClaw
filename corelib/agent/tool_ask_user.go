@@ -66,8 +66,16 @@ func ToolAskUser(args map[string]interface{}) string {
 		InputType: inputType,
 	}
 
-	data, _ := json.Marshal(req)
+	return AskUserResultMarker(&req)
+}
 
+// AskUserResultMarker serializes an interactive request using the stable
+// marker consumed by RunLoop and GUI hosts.
+func AskUserResultMarker(req *AskUserRequest) string {
+	if req == nil {
+		return ""
+	}
+	data, _ := json.Marshal(req)
 	// Return a special marker that the agent loop can detect.
 	// The loop will pause and wait for user input, then inject the
 	// user's response as the tool_result.

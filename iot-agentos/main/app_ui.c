@@ -254,7 +254,7 @@ static void replay_render_locked(void) {
         default:
             device_display_set_command_lock(model.command_display_locked);
             device_display_set_command_stage(model.command_stage);
-            device_display_set_command_cancel_enabled(model.command_cancel_enabled);
+            device_input_set_command_cancel_enabled(model.command_cancel_enabled);
             device_display_set_pet_profile(model.pet_skin, true);
             device_display_set_pet_state(model.pet_state);
             break;
@@ -417,7 +417,7 @@ void app_ui_set_command_cancel_enabled(bool enabled) {
     model_touch_locked();
     alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (!alarm_active) device_display_set_command_cancel_enabled(enabled);
+    if (!alarm_active) device_input_set_command_cancel_enabled(enabled);
     replay_unlock();
 }
 
@@ -748,7 +748,7 @@ void app_ui_restore_standby(void) {
     // guards, then paint idle. Both board ports reject stale ambient frames
     // while the guard is set, so reversing this order would leave the cancel
     // message visible even though the application model already says PET.
-    device_display_set_command_cancel_enabled(false);
+    device_input_set_command_cancel_enabled(false);
     device_display_set_command_lock(false);
     device_display_set_recording_mode(false);
     device_display_set_pet_state("idle");
@@ -812,13 +812,19 @@ void app_ui_show_ready_prompt(const char *title, const char *text) {
     model_touch_locked();
     bool alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
-    replay_begin_locked(APP_UI_REPLAY_READY_PROMPT);
-    strlcpy(s_replay.title, title ? title : "", sizeof(s_replay.title));
-    strlcpy(s_replay.text, text ? text : "", sizeof(s_replay.text));
+    /* Ready is an ambient state, not a foreground scene.  Keeping the legacy
+     * status copy as the replay surface left the normal idle pet hidden for a
+     * full display-off interval, so an already restored multi-frame pack had
+     * no opportunity to animate.  The business model stays PET/idle; publish
+     * that same normalized state through Display HAL and leave any ready copy
+     * to logs/voice feedback. */
+    replay_begin_locked(APP_UI_REPLAY_PET);
+    s_replay.title[0] = '\0';
+    s_replay.text[0] = '\0';
     if (!alarm_active) {
         if (was_recording) device_display_set_recording_visual(false, false, 0);
         device_display_set_command_lock(false);
-        device_display_show_ready_prompt(s_replay.title, s_replay.text);
+        device_display_set_pet_state("idle");
         /* The old renderer held the ready prompt for one minute and then
          * started its 30-minute ambient timer. Preserve that user-visible
          * timing while moving the actual deadline ownership to Power Service. */

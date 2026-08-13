@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"mime"
@@ -20,9 +21,102 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/imgconv"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+// toolArchive performs embedded, pure-Go archive work. Unsupported formats
+// return a structured fallback plan; this handler never starts an external
+// program itself.
+func (h *IMMessageHandler) toolArchive(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return archiveToolJSON(archiveutil.Result{OK: false, Action: archiveutil.Action(stringVal(args, "action")), Code: archiveutil.CodeInvalidArgument, Message: "archive runtime owner is missing; isolated runtime will not fall back to desktop working directory"})
+	}
+	action := archiveutil.Action(stringVal(args, "action"))
+	request := archiveutil.Request{
+		Action:         action,
+		ConflictPolicy: stringVal(args, "conflict_policy"),
+		RootMode:       stringVal(args, "root_mode"),
+	}
+	var err error
+	if action == archiveutil.ActionInspect || action == archiveutil.ActionExtract || action == archiveutil.ActionExtractExternal {
+		path := stringVal(args, "archive_path")
+		if path == "" {
+			return archiveToolJSON(archiveutil.Result{OK: false, Action: action, Code: archiveutil.CodeInvalidArgument, Message: "archive_path is required"})
+		}
+		request.ArchivePath, err = h.resolveFileToolPathForOwner(path, ownerID)
+		if err != nil {
+			return archiveToolJSON(archiveutil.Result{OK: false, Action: action, Code: archiveutil.CodeInvalidArgument, Message: err.Error()})
+		}
+		if (action == archiveutil.ActionExtract || action == archiveutil.ActionExtractExternal) && stringVal(args, "destination") != "" {
+			request.Destination, err = h.resolveFileToolPathForOwner(stringVal(args, "destination"), ownerID)
+			if err != nil {
+				return archiveToolJSON(archiveutil.Result{OK: false, Action: action, Code: archiveutil.CodeInvalidArgument, Message: err.Error()})
+			}
+		}
+		if action == archiveutil.ActionExtractExternal {
+			// A model-supplied boolean is not authorization.  The execution
+			// gateway injects a short-lived token only after the user accepts the
+			// exact external-program request; consume it here so it cannot be
+			// replayed for another archive or destination.
+			request.AllowExternal = consumeArchiveExternalApproval(args)
+			if !request.AllowExternal {
+				return archiveToolJSON(archiveutil.Result{OK: false, Action: action, Code: archiveutil.CodeExternalApprovalRequired, Message: "external archive execution requires explicit user approval"})
+			}
+		}
+	} else if action == archiveutil.ActionCreateZIP {
+		paths := archiveToolStringSlice(args["source_paths"])
+		if len(paths) == 0 {
+			return archiveToolJSON(archiveutil.Result{OK: false, Action: action, Code: archiveutil.CodeInvalidArgument, Message: "source_paths is required"})
+		}
+		for _, path := range paths {
+			resolved, resolveErr := h.resolveFileToolPathForOwner(path, ownerID)
+			if resolveErr != nil {
+				return archiveToolJSON(archiveutil.Result{OK: false, Action: action, Code: archiveutil.CodeInvalidArgument, Message: resolveErr.Error()})
+			}
+			request.SourcePaths = append(request.SourcePaths, resolved)
+		}
+		if stringVal(args, "output_path") == "" {
+			return archiveToolJSON(archiveutil.Result{OK: false, Action: action, Code: archiveutil.CodeInvalidArgument, Message: "output_path is required"})
+		}
+		request.OutputPath, err = h.resolveFileToolPathForOwner(stringVal(args, "output_path"), ownerID)
+		if err != nil {
+			return archiveToolJSON(archiveutil.Result{OK: false, Action: action, Code: archiveutil.CodeInvalidArgument, Message: err.Error()})
+		}
+		request.BasePath, err = h.resolveFileToolPathForOwner("", ownerID)
+		if err != nil {
+			return archiveToolJSON(archiveutil.Result{OK: false, Action: action, Code: archiveutil.CodeInvalidArgument, Message: err.Error()})
+		}
+	}
+	return archiveToolJSON(archiveutil.Run(request))
+}
+
+func archiveToolStringSlice(value interface{}) []string {
+	switch values := value.(type) {
+	case []string:
+		return values
+	case []interface{}:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func archiveToolJSON(result archiveutil.Result) string {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return `{"ok":false,"code":"IO_ERROR","message":"could not encode archive result"}`
+	}
+	return string(data)
+}
 
 func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]interface{}, onProgress coretool.ProgressCallback) string {
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)

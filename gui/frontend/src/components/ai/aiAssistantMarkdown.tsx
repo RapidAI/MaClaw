@@ -1,5 +1,5 @@
 import React from "react";
-import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
+import { AIAssistantAttachmentPreviewDataURL, OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
@@ -1165,6 +1165,16 @@ function renderUnfinishedSlotCard(
                     {renderContentWithCodeBlocks(formatUnfinishedSlotSummary(slot.summary, lang), t)}
                 </div>
             )}
+            {slot.recoveryMode === 'requires_review' && (
+                <div data-testid="unfinished-slot-review-required" style={{ color: t.fieldLabel, marginTop: "6px", whiteSpace: "pre-wrap" }}>
+                    {localizeText(lang, "Review required: the previous task may have changed the workspace or caused an external side effect. Continuing restores context only; it does not retry that action.", "需要审阅：上次任务可能已修改工作区或产生外部副作用。继续只恢复上下文，不会重试该操作。", "需要審閱：上次任務可能已修改工作區或產生外部副作用。繼續只恢復上下文，不會重試該操作。")}
+                </div>
+            )}
+            {slot.recoveryMode === 'requires_review' && slot.sideEffectState === 'local_committed' && (
+                <div data-testid="unfinished-slot-workspace-review" style={{ color: t.fieldLabel, marginTop: "6px", whiteSpace: "pre-wrap" }}>
+                    {localizeText(lang, "Local changes may already exist; review the workspace before continuing.", "本地修改可能已存在；继续前请检查工作区。", "本機修改可能已存在；繼續前請檢查工作區。")}
+                </div>
+            )}
             {slot.projectPath && (
                 <div data-testid="unfinished-slot-project" style={{ color: t.pathColor, marginTop: "6px", wordBreak: "break-all" }}>
                     <a
@@ -1330,6 +1340,57 @@ function renderGuideReceipt(msg: ChatMessage, t: Theme): React.ReactNode {
 
 /* Render a single ChatMessage */
 
+function compactAttachmentLabel(fileName: string, extension: string): string {
+    const raw = (extension || fileName.match(/\.[^./\\]+$/)?.[0] || "").replace(/^\./, "").trim();
+    return raw ? raw.slice(0, 4).toUpperCase() : "FILE";
+}
+
+function UserAttachmentChip({ attachment, theme }: { attachment: NonNullable<ChatMessage["attachments"]>[number]; theme: Theme }) {
+    const [thumbnail, setThumbnail] = React.useState(attachment.thumbnailDataUrl || "");
+
+    React.useEffect(() => {
+        if (attachment.thumbnailDataUrl) {
+            setThumbnail(attachment.thumbnailDataUrl);
+            return;
+        }
+        if (!attachment.isImage) {
+            setThumbnail("");
+            return;
+        }
+        let active = true;
+        void AIAssistantAttachmentPreviewDataURL(attachment.filePath)
+            .then(dataUrl => { if (active) setThumbnail(String(dataUrl || "")); })
+            .catch(() => { if (active) setThumbnail(""); });
+        return () => { active = false; };
+    }, [attachment.filePath, attachment.isImage, attachment.thumbnailDataUrl]);
+
+    return (
+        <span
+            title={attachment.filePath}
+            aria-label={attachment.fileName}
+            style={{
+                display: "inline-flex",
+                width: 30,
+                height: 30,
+                alignItems: "center",
+                justifyContent: "center",
+                overflow: "hidden",
+                borderRadius: 4,
+                background: theme.codeBlockBg,
+                border: `1px solid ${theme.codeBlockBorder}`,
+                color: theme.pathColor,
+                fontSize: 8,
+                fontWeight: 800,
+                lineHeight: 1,
+            }}
+        >
+            {thumbnail
+                ? <img src={thumbnail} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                : compactAttachmentLabel(attachment.fileName, attachment.extension)}
+        </span>
+    );
+}
+
 export function renderMessage(
     msg: ChatMessage,
     executeAction: (cmd: string) => void,
@@ -1382,7 +1443,12 @@ export function renderMessage(
                             borderRadius: "14px 14px 4px 14px",
                         }}
                     >
-                        {msg.content}
+                        {msg.content && <div>{msg.content}</div>}
+                        {!!msg.attachments?.length && (
+                            <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: msg.content ? 7 : 0 }}>
+                                {msg.attachments.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} />)}
+                            </div>
+                        )}
                     </ChatBubbleFrame>
                 </div>
             );
@@ -1542,20 +1608,22 @@ export function renderMessage(
                 if (codingAgentProgress) return codingAgentProgress;
             }
             return (
-                <div key={msg.id} role="status" aria-live="polite" data-testid={`assistant-chat-progress-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "8px 0" }}>
+                <div key={msg.id} role="status" aria-live="polite" data-testid={`assistant-chat-progress-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "4px 0" }}>
                     <span style={{
                         maxWidth: "84%",
-                        boxSizing: "border-box",
-                        padding: "4px 8px",
-                        borderRadius: "999px",
-                        background: t.fieldBg,
-                        border: `1px solid ${t.fieldBorder}`,
+                        minWidth: 0,
+                        display: "inline-flex",
+                        alignItems: "baseline",
+                        gap: 7,
                         color: t.textMuted,
                         fontSize: "11px",
-                        lineHeight: 1.4,
-                        overflowWrap: "anywhere",
+                        lineHeight: 1.45,
+                        overflow: "hidden",
                     }}>
-                        {prepareChatBodyForDisplay(msg.content)}
+                        <span aria-hidden="true" style={{ width: 5, height: 5, flex: "0 0 auto", borderRadius: "50%", background: t.headingColor, opacity: 0.72 }} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={msg.content}>
+                            {prepareChatBodyForDisplay(msg.content)}
+                        </span>
                     </span>
                 </div>
             );

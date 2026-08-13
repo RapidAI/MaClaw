@@ -52,7 +52,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
+import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
 import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
@@ -76,6 +76,20 @@ function requestEvent(indexOrText: number | string = 0, text = '') {
 function otherRequestEvent(text = '') {
     return { request_id: 'other-request', text };
 }
+
+describe('desktop file path formatting', () => {
+    it('adds attachment-first vision guidance only for supported raster images', () => {
+        const message = buildOutgoingMessageMulti('inspect', ['/tmp/shot.png', '/tmp/vector.svg']);
+        expect(message).toContain('Analyze attached images first');
+        expect(message).toContain('/tmp/vector.svg');
+    });
+
+    it.each(['/tmp/vector.svg', '/tmp/legacy.bmp', '/tmp/icon.ico', '/tmp/scan.tiff'])('does not claim unsupported image-like files are vision attachments: %s', (path) => {
+        const message = buildOutgoingMessage('inspect', path);
+        expect(message).not.toContain('vision-capable model');
+        expect(isImageFilePath(path)).toBe(false);
+    });
+});
 
 function messageContents(messages: Array<{ content: string }>) {
     return messages.map(message => message.content);
@@ -5474,7 +5488,7 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
-    it('caps live progress messages to the latest 30 entries', async () => {
+    it('caps live progress messages to the latest three entries', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
 
@@ -5491,9 +5505,9 @@ describe('useAIAssistant property tests', () => {
             }
         });
 
-        expect(result.current.progressMessages).toHaveLength(30);
-        expect(result.current.progressMessages[0].content).toBe('progress-5');
-        expect(result.current.progressMessages[29].content).toBe('progress-34');
+        expect(result.current.progressMessages).toHaveLength(3);
+        expect(result.current.progressMessages[0].content).toBe('progress-32');
+        expect(result.current.progressMessages[2].content).toBe('progress-34');
 
         await act(async () => {
             pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });
@@ -5521,6 +5535,25 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(result.current.sending).toBe(false);
+        expect(result.current.progressMessages).toEqual([]);
+    });
+
+    it('adds structured status milestones to the active assistant reasoning', async () => {
+        mockSendResponse = { deferred: true, text: '', error: '', fields: null, actions: null };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('show status milestones');
+        });
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[Status] Task received' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[Status] Preparing the execution path' });
+        });
+
+        const assistant = result.current.messages.find(message => message.role === 'assistant');
+        expect(assistant?.reasoning).toContain('• Task received');
+        expect(assistant?.reasoning).toContain('• Preparing the execution path');
         expect(result.current.progressMessages).toEqual([]);
     });
 

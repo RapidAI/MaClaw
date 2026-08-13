@@ -235,6 +235,7 @@ func flushCreditCharges(ctx context.Context, system store.SystemSettingsReposito
 	if err != nil {
 		return err
 	}
+	referralUsageBefore := userReferralGrantUsageSnapshot(reg)
 	now := time.Now().UTC()
 	keys := make([]string, 0, len(chargeMap))
 	for key := range chargeMap {
@@ -251,8 +252,68 @@ func flushCreditCharges(ctx context.Context, system store.SystemSettingsReposito
 	if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {
 		return err
 	}
+	// Credit charges are already serialized and batched here. Record referral
+	// consumption after the ledger save so a failed save cannot produce a metric
+	// for usage that was not durable. One event per grant keeps the funnel
+	// aggregate lightweight and retry-safe without writes in request handlers.
+	recordReferralRewardUsageMetrics(ctx, system, reg, referralUsageBefore, now)
 	invalidateLLMRuntimeCaches(system)
 	return nil
+}
+
+func userReferralGrantUsageSnapshot(reg *llmservice.Registry) map[string]float64 {
+	if reg == nil {
+		return nil
+	}
+	result := make(map[string]float64)
+	for _, grant := range reg.Grants {
+		if grant.Source == "user_referral" && !grant.Frozen && strings.TrimSpace(grant.ID) != "" {
+			result[grant.ID] = grant.CreditsUsed
+		}
+	}
+	return result
+}
+
+func recordReferralRewardUsageMetrics(ctx context.Context, system store.SystemSettingsRepository, reg *llmservice.Registry, before map[string]float64, occurredAt time.Time) {
+	if len(before) == 0 || reg == nil {
+		return
+	}
+	repo, ok := userReferralMetricRepository(system)
+	if !ok || repo == nil {
+		return
+	}
+	tenantID := tenantIDForSystemSettings(system)
+	for _, grant := range reg.Grants {
+		if grant.Source != "user_referral" || grant.Frozen || strings.TrimSpace(grant.ID) == "" || grant.CreditsUsed <= before[grant.ID] {
+			continue
+		}
+		if _, err := repo.RecordRewardMetricEvent(ctx, tenantID, grant.ID, userReferralMetricRewardUsed, occurredAt); err != nil {
+			log.Printf("[user-referral] record reward usage metric: %v", err)
+		}
+	}
+}
+
+type userReferralMetricRepositoryProvider interface {
+	UserReferralMetricRepository() store.UserReferralRepository
+}
+
+type tenantScopedSettings interface {
+	TenantID() string
+}
+
+func userReferralMetricRepository(system store.SystemSettingsRepository) (store.UserReferralRepository, bool) {
+	provider, ok := system.(userReferralMetricRepositoryProvider)
+	if !ok {
+		return nil, false
+	}
+	return provider.UserReferralMetricRepository(), true
+}
+
+func tenantIDForSystemSettings(system store.SystemSettingsRepository) string {
+	if scoped, ok := system.(tenantScopedSettings); ok && strings.TrimSpace(scoped.TenantID()) != "" {
+		return scoped.TenantID()
+	}
+	return store.DefaultTenantID
 }
 
 func normalizeUsageStringSlice(items []string) []string {

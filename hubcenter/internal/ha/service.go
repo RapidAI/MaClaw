@@ -160,6 +160,12 @@ type historyPruner interface {
 	PruneHistory(ctx context.Context, cutoff time.Time, maxRetainedOps, batchSize int64) (*store.HAPruneResult, error)
 }
 
+// ErrReplicaNotReady means an HA operation reached this node before the
+// corresponding local repository was attached.  Returning an error is
+// intentional: the sync cursor must not advance or mark the operation applied,
+// otherwise the replicated data would be silently lost on this node.
+var ErrReplicaNotReady = errors.New("ha replica repository not ready")
+
 func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []StaticPeer) *Service {
 	nodeID = strings.TrimSpace(nodeID)
 	peerMap := make(map[string]*PeerRuntimeState, len(peers))
@@ -750,6 +756,21 @@ func (s *Service) localSyncRecordCounts(ctx context.Context) map[string]int64 {
 			}
 		} else if snap, err := s.skillMarket.DumpSnapshot(ctx); err == nil {
 			counts["skillmarket"] += countSkillMarketSnapshotRecords(snap)
+		}
+	}
+	if s.cardTypes != nil {
+		if items, err := s.cardTypes.ListAll(ctx); err == nil {
+			counts["compute_market"] += int64(len(items))
+		}
+	}
+	if s.cardOrders != nil {
+		if _, total, err := s.cardOrders.List(ctx, cardstore.OrderFilter{IncludeArchived: true, Limit: 1}); err == nil {
+			counts["compute_market"] += int64(total)
+		}
+	}
+	if s.llmAuthorizations != nil {
+		if items, err := s.llmAuthorizations.ListAll(ctx); err == nil {
+			counts["compute_market"] += int64(len(items))
 		}
 	}
 	if s.news != nil {
@@ -2107,7 +2128,7 @@ func (s *Service) applyPetStoreMetricsOp(ctx context.Context, op *store.HASyncOp
 
 func (s *Service) applyLLMCardTypeOp(ctx context.Context, op *store.HASyncOp) error {
 	if s.cardTypes == nil {
-		return nil
+		return fmt.Errorf("%w: llm card types", ErrReplicaNotReady)
 	}
 	switch op.OpType {
 	case OpUpsert:
@@ -2138,7 +2159,7 @@ func (s *Service) applyLLMCardTypeOp(ctx context.Context, op *store.HASyncOp) er
 
 func (s *Service) applyLLMTenantAuthOp(ctx context.Context, op *store.HASyncOp) error {
 	if s.llmAuthorizations == nil {
-		return nil
+		return fmt.Errorf("%w: llm tenant authorizations", ErrReplicaNotReady)
 	}
 	switch op.OpType {
 	case OpUpsert:
@@ -2161,7 +2182,7 @@ func (s *Service) applyLLMTenantAuthOp(ctx context.Context, op *store.HASyncOp) 
 
 func (s *Service) applyLLMCardOrderOp(ctx context.Context, op *store.HASyncOp) error {
 	if s.cardOrders == nil {
-		return nil
+		return fmt.Errorf("%w: llm card orders", ErrReplicaNotReady)
 	}
 	switch op.OpType {
 	case OpUpsert:
@@ -2199,7 +2220,7 @@ func llmBindingEntityID(item *store.LLMNodeBinding) string {
 
 func (s *Service) applyLLMNodeBindingOp(ctx context.Context, op *store.HASyncOp) error {
 	if s.llmBindings == nil {
-		return nil
+		return fmt.Errorf("%w: llm node bindings", ErrReplicaNotReady)
 	}
 	if op.OpType != OpUpsert {
 		return fmt.Errorf("unsupported llm node binding op: %s", op.OpType)

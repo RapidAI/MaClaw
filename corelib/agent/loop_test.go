@@ -210,6 +210,40 @@ type projectingCallbacks struct {
 	projectedSeen string
 }
 
+type toolBatchCommitCallbacks struct {
+	DefaultLoopHooks
+	batches   [][]ConversationEntry
+	metas     []ToolBatchMetadata
+	starts    []ToolBatchMetadata
+	fail      bool
+	failStart bool
+	abandons  []ToolBatchMetadata
+}
+
+func (m *toolBatchCommitCallbacks) OnToolBatchStarting(delta []ConversationEntry, meta ToolBatchMetadata) error {
+	if len(delta) != 1 || delta[0].Role != "assistant" || !entryHasToolCalls(delta[0]) {
+		return fmt.Errorf("pre-execution checkpoint did not receive a complete assistant tool-call declaration: %#v", delta)
+	}
+	m.starts = append(m.starts, meta)
+	if m.failStart {
+		return fmt.Errorf("disk unavailable")
+	}
+	return nil
+}
+
+func (m *toolBatchCommitCallbacks) OnToolBatchAbandoned(meta ToolBatchMetadata) {
+	m.abandons = append(m.abandons, meta)
+}
+
+func (m *toolBatchCommitCallbacks) OnToolBatchCommitted(delta []ConversationEntry, meta ToolBatchMetadata) error {
+	m.batches = append(m.batches, append([]ConversationEntry(nil), delta...))
+	m.metas = append(m.metas, meta)
+	if m.fail {
+		return fmt.Errorf("disk unavailable")
+	}
+	return nil
+}
+
 func (m *projectingCallbacks) OnToolExecuted(name, argsJSON, result string, success bool) {
 	_ = name
 	_ = argsJSON
@@ -880,6 +914,106 @@ func TestRunLoopProjectsEveryParallelToolCallWithoutOrphans(t *testing.T) {
 		if !toolIDs[id] {
 			t.Fatalf("orphaned assistant tool call %s", id)
 		}
+	}
+}
+
+func TestRunLoopCommitsOnlyCompleteToolBatch(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"read_file","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: "ok"}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "task", nil, server.Client(), hooks)
+	if result.Error != "" || len(hooks.batches) != 1 {
+		t.Fatalf("result=%#v batches=%d", result, len(hooks.batches))
+	}
+	batch := hooks.batches[0]
+	if len(batch) != 3 || batch[0].Role != "assistant" || batch[1].Role != "tool" || batch[2].Role != "tool" {
+		t.Fatalf("checkpoint received incomplete/invalid batch: %#v", batch)
+	}
+	if hooks.metas[0].Sequence != 1 || hooks.metas[0].LastToolName != "write_file" || hooks.metas[0].SideEffectState != "local_committed" {
+		t.Fatalf("unexpected metadata: %#v", hooks.metas[0])
+	}
+	if len(hooks.starts) != 1 || hooks.starts[0].Sequence != 1 || hooks.starts[0].LastToolName != "read_file" || hooks.starts[0].SideEffectState != "external_uncertain" {
+		t.Fatalf("unexpected pre-execution metadata: %#v", hooks.starts)
+	}
+}
+
+func TestRunLoopStopsWhenToolBatchCheckpointFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: "ok"}
+	hooks := &toolBatchCommitCallbacks{fail: true}
+	result := RunLoop(cb, "task", nil, server.Client(), hooks)
+	if result.Error != "recovery_checkpoint_failed" || !result.HardExit || len(cb.toolCalls) != 1 || len(hooks.batches) != 1 {
+		t.Fatalf("result=%#v calls=%#v batches=%d", result, cb.toolCalls, len(hooks.batches))
+	}
+}
+
+func TestRunLoopStopsBeforeToolWhenPreExecutionCheckpointFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: "ok"}
+	hooks := &toolBatchCommitCallbacks{failStart: true}
+	result := RunLoop(cb, "task", nil, server.Client(), hooks)
+	if result.Error != "recovery_checkpoint_failed" || !result.HardExit || len(cb.toolCalls) != 0 || len(hooks.starts) != 1 || len(hooks.batches) != 0 {
+		t.Fatalf("result=%#v calls=%#v starts=%d batches=%d", result, cb.toolCalls, len(hooks.starts), len(hooks.batches))
+	}
+}
+
+func TestRunLoopAbandonsPreExecutionCheckpointForInteractivePause(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"ask","type":"function","function":{"name":"ask_user","arguments":"{}"}},{"id":"sibling","type":"function","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: ToolAskUser(map[string]interface{}{"question": "continue?"})}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "task", nil, server.Client(), hooks)
+	if result.AskUser == nil || len(hooks.starts) != 1 || len(hooks.abandons) != 1 || len(hooks.batches) != 0 {
+		t.Fatalf("result=%#v starts=%#v abandons=%#v batches=%#v", result, hooks.starts, hooks.abandons, hooks.batches)
+	}
+	if hooks.abandons[0].Sequence != hooks.starts[0].Sequence {
+		t.Fatalf("abandoned wrong batch: start=%#v abandon=%#v", hooks.starts[0], hooks.abandons[0])
+	}
+}
+
+func TestSideEffectStateForToolBatchFailsClosedForUnknownTools(t *testing.T) {
+	tests := []struct {
+		name  string
+		tools []string
+		want  string
+	}{
+		{name: "local reads", tools: []string{"read_file", "ripgrep"}, want: "none"},
+		{name: "local mutation", tools: []string{"read_file", "apply_patch"}, want: "local_committed"},
+		{name: "known external", tools: []string{"web_search"}, want: "external_uncertain"},
+		{name: "dynamic client tool", tools: []string{"alarm_set"}, want: "external_uncertain"},
+		{name: "empty name", tools: []string{""}, want: "external_uncertain"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := make([]llm.ToolCall, 0, len(tt.tools))
+			for _, name := range tt.tools {
+				calls = append(calls, llm.ToolCall{Function: llm.ToolCallFunction{Name: name}})
+			}
+			if got := sideEffectStateForToolBatch(calls); got != tt.want {
+				t.Fatalf("sideEffectStateForToolBatch(%v) = %q, want %q", tt.tools, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1743,7 +1877,8 @@ func TestRunLoop_CancelBetweenToolCallsSkipsRemainingTools(t *testing.T) {
 		toolResult: "ok",
 	}}
 
-	result := RunLoop(cb, "do tools", nil, nil)
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "do tools", nil, nil, hooks)
 	if result.Error != "cancelled" {
 		t.Fatalf("RunLoop error = %q, want cancelled", result.Error)
 	}
@@ -1752,6 +1887,12 @@ func TestRunLoop_CancelBetweenToolCallsSkipsRemainingTools(t *testing.T) {
 	}
 	if result.ToolCalls != 1 {
 		t.Fatalf("ToolCalls = %d, want 1", result.ToolCalls)
+	}
+	if len(hooks.starts) != 1 || len(hooks.abandons) != 1 || len(hooks.batches) != 0 {
+		t.Fatalf("cancelled batch lifecycle starts=%d abandons=%d commits=%d", len(hooks.starts), len(hooks.abandons), len(hooks.batches))
+	}
+	if hooks.abandons[0].Sequence != hooks.starts[0].Sequence {
+		t.Fatalf("cancel abandoned the wrong checkpoint: start=%#v abandon=%#v", hooks.starts[0], hooks.abandons[0])
 	}
 }
 

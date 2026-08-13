@@ -4,6 +4,8 @@
 // diagnostics or candidate recall, but they are not an execution-route authority.
 package intent
 
+import "context"
+
 // IntentLabel represents a classified user intent.
 type IntentLabel string
 
@@ -116,3 +118,7 @@ type MessageContext struct {
 // The caller (gui/) provides this based on their LLM config.
 // Must respect the provided timeout via context.
 type LLMClassifyFunc func(systemPrompt, userText string) (string, error)
+
+// LLMClassifyContextFunc lets latency-sensitive callers cancel the underlying
+// LLM transport when a classification deadline has expired.
+type LLMClassifyContextFunc func(ctx context.Context, systemPrompt, userText string) (string, error)

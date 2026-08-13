@@ -1,4 +1,4 @@
-import type { ChatMessage } from "./useAIAssistant";
+import { buildOutgoingMessageMulti, type ChatMessage } from "./useAIAssistant";
 import { expertTabId } from "./expertTypes";
 
 const MAX_PROJECT_CONTEXT_MESSAGES_TO_SEND = 12;
@@ -14,7 +14,13 @@ export function buildProjectTabRecentMessages(history: ChatMessage[] | undefined
             // active loop. Do not replay it as an ordinary historical user turn
             // when this project/expert tab starts a later request.
             if (message.kind === 'guideInjection') return null;
-            const content = String(message.content || '').trim();
+            const visibleContent = String(message.content || '').trim();
+            const attachmentPaths = message.role === 'user'
+                ? (message.attachments || []).map(attachment => attachment.filePath).filter(Boolean)
+                : [];
+            const content = attachmentPaths.length > 0
+                ? [visibleContent, buildOutgoingMessageMulti('', attachmentPaths)].filter(Boolean).join('\n\n')
+                : visibleContent;
             if (!content) return null;
             return { role: message.role, content };
         })

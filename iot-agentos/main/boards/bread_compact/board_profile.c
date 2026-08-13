@@ -8,15 +8,10 @@ bool board_profile_get(device_profile_t *out_profile) {
         .id = "bread-compact-wifi-lcd-v1",
         .display_width = 240,
         .display_height = 320,
-        .capabilities = DEVICE_CAPABILITY_DISPLAY |
-                        DEVICE_CAPABILITY_PRIMARY_CONTROL |
-                        DEVICE_CAPABILITY_VOLUME_CONTROL |
-                        DEVICE_CAPABILITY_OUTPUT_VOLUME |
-                        DEVICE_CAPABILITY_AUDIO_CAPTURE |
-                        DEVICE_CAPABILITY_AUDIO_PLAYBACK |
-                        DEVICE_CAPABILITY_OFFLINE_WAKE_WORD |
-                        DEVICE_CAPABILITY_PERSISTENT_STORAGE |
-                        DEVICE_CAPABILITY_DISPLAY_OFF,
+        /* All MaClaw AgentOS devices implement the same business baseline.
+         * This profile adds only physical controls beyond that shared offer. */
+        .capabilities = DEVICE_CAPABILITY_REQUIRED_BASELINE |
+                        DEVICE_CAPABILITY_VOLUME_CONTROL,
         .primary_interaction_source = DEVICE_INPUT_SOURCE_PRIMARY_CONTROL,
         .primary_interaction_label = "激活键",
     };

@@ -83,6 +83,17 @@ func (s *MemoryRecordStore) DeleteStructuredRecord(tenantID, userID, collection,
 	return nil
 }
 
+func (s *MemoryRecordStore) DeleteStructuredRecordsForUser(tenantID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, record := range s.records {
+		if record.TenantID == tenantID && record.UserID == userID {
+			delete(s.records, id)
+		}
+	}
+	return nil
+}
+
 func memoryRecordHasTag(record StructuredRecord, tag string) bool {
 	for _, candidate := range record.Tags {
 		if strings.ToLower(strings.TrimSpace(candidate)) == tag {

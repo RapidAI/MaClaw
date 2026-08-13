@@ -6,6 +6,16 @@
  */
 #pragma once
 
+#include "sdkconfig.h"
+
+#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
+#error "Bread connectivity adapter may only be included by the Bread Compact profile"
+#endif
+
+#ifndef MACLAW_COMPACT_CONNECTIVITY_ADAPTER_IMPLEMENTATION
+#error "Bread connectivity adapter is owned exclusively by compact_connectivity_service.c"
+#endif
+
 #include "device_api.h"
 #include "esp_err.h"
 
@@ -61,8 +71,8 @@ static inline bool compact_connectivity_adapter_load_transport_selection(
 }
 
 static inline bool compact_connectivity_adapter_apply_startup_transport_toggle(
-    uint32_t window_ms, bool current_cellular, bool *out_cellular) {
-    (void)window_ms;
+    bool toggle_requested, bool current_cellular, bool *out_cellular) {
+    (void)toggle_requested;
     if (out_cellular) *out_cellular = current_cellular;
     return false;
 }

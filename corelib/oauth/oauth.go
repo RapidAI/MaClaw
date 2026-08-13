@@ -190,9 +190,9 @@ func BuildAuthURL(cfg Config, codeChallenge, redirectURI, state string) string {
 	return cfg.AuthEndpoint + "?" + params.Encode()
 }
 
-// XAIAuthSession is a prepared Grok Build OAuth flow. Desktop GUIs open its
-// AuthorizationURL through their own system-browser integration, which is more
-// reliable than a background process trying to launch a browser on managed PCs.
+// XAIAuthSession is a prepared Grok Build OAuth flow. It separates the
+// authorization URL, loopback callback, and token exchange for callers that
+// need manual control over the browser-launch step.
 type XAIAuthSession struct {
 	cfg              Config
 	callbackServer   *CallbackServer
@@ -273,8 +273,9 @@ func (s *XAIAuthSession) Close() {
 	s.closeOnce.Do(func() { s.callbackServer.Stop() })
 }
 
-// RunXAIOAuthFlowCtx preserves the CLI/headless convenience flow. Desktop GUIs
-// should use PrepareXAIOAuthFlowCtx so the GUI runtime opens the browser.
+// RunXAIOAuthFlowCtx opens the system browser and completes xAI's loopback
+// OAuth flow. It is suitable for desktop clients that use the native browser
+// launcher, as well as CLI clients.
 func RunXAIOAuthFlowCtx(ctx context.Context) (*TokenResult, error) {
 	session, err := PrepareXAIOAuthFlowCtx(ctx)
 	if err != nil {

@@ -13,11 +13,15 @@ export interface LLMProvider {
     context_length?: number; // max context tokens (0 = default 128k)
     max_output_tokens?: number; // max output tokens per request (0 = system default 8192/16384)
     is_custom?: boolean;
+	/** Set after this provider's current configuration passes Test & Save. */
+	connection_test_passed?: boolean;
     auth_type?: string;
     refresh_token?: string;
     token_expires_at?: number;
     oauth_access_token?: string;
     agent_type?: string; // "openclaw" (default) or "claude_code"
+    /** Model IDs whose image-input capability has been confirmed. */
+    vision_models?: string[];
     supports_vision?: boolean; // whether the model supports image input
     wire_api?: string; // "chat" (default), "responses", or "responses-ws"
 }

@@ -446,10 +446,31 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		return result
 	}
 
-	// Last resort: drop the entire tool-call group, keep only system +
-	// placeholder + a minimal user message so the LLM can still respond.
-	// This avoids orphaned tool messages that would cause API errors.
-	return append(systemMsg, fallbackPlaceholder...)
+	// Last resort: the conversation may still be over budget when the current
+	// user turn itself is very large. Never discard that turn: doing so makes a
+	// latency-oriented trim silently change the user's request into a generic
+	// placeholder. Keeping it can exceed the requested budget, but is the only
+	// safe representation; the provider can then report an explicit context
+	// limit error instead of answering a different request. Everything from the
+	// newest user message forward is valid as a standalone tail (it cannot
+	// orphan a preceding assistant tool call).
+	for i := len(msgs) - 1; i >= 1; i-- {
+		if msgRole(msgs[i]) != "user" {
+			continue
+		}
+		result := make([]interface{}, 0, len(systemMsg)+len(fallbackPlaceholder)+len(msgs)-i)
+		result = append(result, systemMsg...)
+		result = append(result, fallbackPlaceholder...)
+		result = append(result, msgs[i:]...)
+		return result
+	}
+
+	// A malformed history without a user turn has no request to protect. Keep
+	// the provider-valid minimal fallback rather than risking an orphaned tool
+	// result.
+	result = make([]interface{}, 0, len(systemMsg)+len(fallbackPlaceholder))
+	result = append(result, systemMsg...)
+	return append(result, fallbackPlaceholder...)
 }
 
 // truncateLastGroup builds a result from system + placeholder + the last

@@ -82,7 +82,7 @@ func (s *configAgentStore) get(id string) *configAgentPlan {
 	return p
 }
 
-func (s *configAgentStore) consume(id, token, adminID string) (*configAgentPlan, error) {
+func (s *configAgentStore) consume(id, token, adminID, tenantID string) (*configAgentPlan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.plans[id]
@@ -99,8 +99,19 @@ func (s *configAgentStore) consume(id, token, adminID string) (*configAgentPlan,
 	if p.AdminUserID != "" && adminID != "" && p.AdminUserID != adminID {
 		return nil, fmt.Errorf("plan was created by a different admin")
 	}
-	delete(s.plans, id) // one-shot
+	if p.TenantID != "" && p.TenantID != tenantID {
+		return nil, fmt.Errorf("plan was created for a different tenant")
+	}
 	return p, nil
+}
+
+// discard removes a plan only after it has passed all validation gates and is
+// about to execute. This lets an administrator supply missing fields and retry
+// rather than losing a valid plan to a premature execute request.
+func (s *configAgentStore) discard(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.plans, id)
 }
 
 func newConfigAgentIDs() (planID, confirmToken string, err error) {
@@ -130,6 +141,58 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 		return nil
 	}
 	lower := strings.ToLower(msg)
+
+	// Intent: tenant configuration overview. This deterministic read-only plan
+	// remains useful even while system-free is unavailable for LLM planning.
+	if (strings.Contains(lower, "all tenant") && (strings.Contains(lower, "config") || strings.Contains(lower, "setting"))) ||
+		strings.Contains(lower, "tenant configuration overview") ||
+		strings.Contains(msg, "全部租户配置") || strings.Contains(msg, "所有租户配置") ||
+		(strings.Contains(msg, "租户") && (strings.Contains(msg, "配置总览") || strings.Contains(msg, "全部配置") || strings.Contains(msg, "所有配置"))) {
+		tools := []string{
+			"llm.providers.get", "llm.services.list", "system_free.get",
+			"registration_auth.get", "mail.sender_name.get", "smart_route_all.get",
+			"feishu.config.get", "wecom.config.get", "dingtalk.config.get", "qqbot.config.get", "openclaw_im.config.get",
+			"content_audit.config.get", "bridge.channels.list", "migration.settings.get", "feishu.auto_enroll.get",
+			"card_store.config.get", "digital_assets.settings.get", "ve.config.get", "security.settings.get",
+			"security.default_group.get", "security.approval_roles.get", "referrals.config.get", "capability_market.policy.get",
+		}
+		steps := make([]configAgentStep, 0, len(tools))
+		for i, tool := range tools {
+			steps = append(steps, configAgentStep{StepID: fmt.Sprintf("s%d", i+1), Tool: tool, Mode: "read", Purpose: "Load tenant configuration", APIPreview: defaultAPIPreviewForTool(tool)})
+		}
+		return &configAgentPlan{Intent: "tenant.configuration.overview", Summary: "Show all supported configuration for this tenant", RiskLevel: "low", Steps: steps, Planner: "rule"}
+	}
+
+	// Deterministic read paths for the settings newly surfaced by the overview
+	// assistant. Writes are intentionally delegated to the LLM planner, whose
+	// allow-list and confirmation gate validate structured update payloads.
+	for _, item := range []struct{ phrase, tool, summary string }{
+		{"digital assets", "digital_assets.settings.get", "Show digital-assets settings"},
+		{"virtual employee", "ve.config.get", "Show virtual-employee settings"},
+		{"security settings", "security.settings.get", "Show security settings"},
+		{"default group", "security.default_group.get", "Show default security group"},
+		{"approval role", "security.approval_roles.get", "Show approval role settings"},
+		{"referral", "referrals.config.get", "Show user-referral settings"},
+		{"capability market policy", "capability_market.policy.get", "Show capability-market policy"},
+	} {
+		if (strings.Contains(lower, "show") || strings.Contains(lower, "get") || strings.Contains(lower, "list") || strings.Contains(lower, "status")) && strings.Contains(lower, item.phrase) {
+			return &configAgentPlan{Intent: item.tool, Summary: item.summary, RiskLevel: "low", Steps: []configAgentStep{{StepID: "s1", Tool: item.tool, Mode: "read", Purpose: item.summary, APIPreview: defaultAPIPreviewForTool(item.tool)}}, Planner: "rule"}
+		}
+	}
+	for _, item := range []struct{ phrase, tool, summary string }{
+		{"数字资产", "digital_assets.settings.get", "Show digital-assets settings"},
+		{"虚拟员工", "ve.config.get", "Show virtual-employee settings"},
+		{"安全设置", "security.settings.get", "Show security settings"},
+		{"默认分组", "security.default_group.get", "Show default security group"},
+		{"审批角色", "security.approval_roles.get", "Show approval role settings"},
+		{"邀请奖励", "referrals.config.get", "Show user-referral settings"},
+		{"推荐奖励", "referrals.config.get", "Show user-referral settings"},
+		{"能力市场策略", "capability_market.policy.get", "Show capability-market policy"},
+	} {
+		if (strings.Contains(msg, "查看") || strings.Contains(msg, "显示") || strings.Contains(msg, "查询") || strings.Contains(msg, "状态")) && strings.Contains(msg, item.phrase) {
+			return &configAgentPlan{Intent: item.tool, Summary: item.summary, RiskLevel: "low", Steps: []configAgentStep{{StepID: "s1", Tool: item.tool, Mode: "read", Purpose: item.summary, APIPreview: defaultAPIPreviewForTool(item.tool)}}, Planner: "rule"}
+		}
+	}
 
 	// Intent: list providers
 	if (strings.Contains(lower, "list") && strings.Contains(lower, "provider")) ||
@@ -1919,6 +1982,40 @@ func recomputeMissingFields(plan *configAgentPlan) []string {
 			_, hasEnabled := args["enabled"]
 			if !hasEnabled && isBlankConfigArg(args["payment_mode"]) {
 				missing = append(missing, "enabled")
+			}
+		case "digital_assets.settings.update":
+			if _, ok := args["enabled"]; !ok {
+				if _, ok := args["sync_enabled"]; !ok {
+					missing = append(missing, "enabled_or_sync_enabled")
+				}
+			}
+		case "ve.config.update":
+			if _, groupSet := args["max_group_participants"]; !groupSet {
+				if _, autoSet := args["auto_approve"]; !autoSet {
+					missing = append(missing, "max_group_participants_or_auto_approve")
+				}
+			}
+		case "security.settings.update":
+			if _, centralizedSet := args["centralized_security_enabled"]; !centralizedSet {
+				if _, orgSet := args["org_structure_enabled"]; !orgSet {
+					missing = append(missing, "security_setting")
+				}
+			}
+		case "security.default_group.update":
+			if isBlankConfigArg(args["group_id"]) {
+				missing = append(missing, "group_id")
+			}
+		case "security.approval_roles.update":
+			if _, ok := args["roles"]; !ok {
+				missing = append(missing, "roles")
+			}
+		case "referrals.config.update":
+			if len(args) == 0 {
+				missing = append(missing, "referral_setting")
+			}
+		case "capability_market.policy.update":
+			if _, ok := args["policy"]; !ok {
+				missing = append(missing, "policy")
 			}
 		}
 	}

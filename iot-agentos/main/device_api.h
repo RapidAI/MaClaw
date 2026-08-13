@@ -467,6 +467,9 @@ device_status_t device_connectivity_prepare_cellular_transport(void);
  * UART pins, APN and modem implementation stay below this API; callers only
  * receive the stable Device status/readiness contract. */
 device_status_t device_connectivity_start_cellular_transport(uint32_t timeout_ms);
+/* Establishes the selected cellular uplink and publishes readiness through the
+ * hardware-neutral Connectivity Service. */
+device_status_t device_connectivity_establish_cellular_transport(uint32_t timeout_ms);
 bool device_connectivity_is_cellular_transport_ready(void);
 
 /* Stops new cellular transport/start admission and transport-owned recovery
@@ -527,11 +530,6 @@ bool device_connectivity_cancel_cellular_foreground_request(void);
  * share the same HAL contract without exposing cellular handles above it. */
 bool device_connectivity_cancel_cellular_requests_for_owner(const void *owner);
 
-/* Some profiles expose a bounded, pre-input startup selector.  It is a
- * hardware-normalized intent rather than a GPIO gesture; profiles without
- * such a selector return false. */
-bool device_connectivity_take_startup_transport_toggle(uint32_t window_ms);
-
 /* Profile-owned selection/persistence is normalized here so business startup
  * does not inspect a board Kconfig symbol or vendor NVS namespace. A Wi-Fi-
  * only profile restores Wi-Fi and reports no toggle. */
@@ -559,7 +557,6 @@ device_status_t device_display_set_brightness(uint8_t percent);
 void device_display_show_startup(void);
 void device_display_set_pet_state(const char *state);
 void device_display_set_command_stage(const char *stage);
-void device_display_set_command_cancel_enabled(bool enabled);
 void device_display_set_pet_profile(const char *skin, bool motion_enabled);
 device_status_t device_display_set_pet_asset(const uint8_t *const *frames,
                                              uint32_t frame_count,
@@ -669,6 +666,13 @@ device_status_t device_input_start(device_input_cb_t on_input, void *context);
  * by the current board adapter, but its already-registered publisher becomes
  * a no-op before service queues are released. */
 device_status_t device_input_stop(uint32_t timeout_ms);
+
+/* Arms or disarms the short-lived command-cancellation input policy.  The
+ * application owns when a command may be cancelled; the selected Input HAL
+ * owns how its local touch/key gesture is recognized.  This deliberately does
+ * not describe a display surface, controller, debounce interval, or gesture
+ * timing. */
+void device_input_set_command_cancel_enabled(bool enabled);
 
 // Returns whether a physical source is the profile's normal local control for
 // the shared primary intent.  It deliberately hides whether that control is a

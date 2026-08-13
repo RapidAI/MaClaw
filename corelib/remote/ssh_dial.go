@@ -71,7 +71,22 @@ func sshHostKeyCallback(cfg SSHHostConfig) (ssh.HostKeyCallback, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load SSH known_hosts: %w", err)
 		}
+		if capture := cfg.HostKeyFingerprintCapture; capture != nil {
+			return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+				if err := callback(hostname, remote, key); err != nil {
+					return err
+				}
+				capture(ssh.FingerprintSHA256(key))
+				return nil
+			}, nil
+		}
 		return callback, nil
+	}
+	if capture := cfg.HostKeyFingerprintCapture; capture != nil {
+		return func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			capture(ssh.FingerprintSHA256(key))
+			return nil
+		}, nil
 	}
 	// Preserve existing SSH-tool behavior; security-sensitive callers such as
 	// Virtual Repository pass an explicit fingerprint.

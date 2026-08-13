@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,16 +104,24 @@ func TestClassifyTaskIntentWithoutSemantic_DoesNotGuessWithoutSemantic(t *testin
 func TestClassifyTaskIntentForSessionGuard_UsesHandlerUICWhenGlobalUnavailable(t *testing.T) {
 	setUnifiedClassifierForIM(nil)
 	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
+	var llmCalls atomic.Int32
 	h := &IMMessageHandler{
 		unifiedClassifier: intent.New(intent.Config{
 			Embedder:   embedding.NoopEmbedder{},
 			LLMTimeout: time.Second,
+			LLMFunc: func(_, _ string) (string, error) {
+				llmCalls.Add(1)
+				return `{"top":[{"skill":"coding","score":0.96}]}`, nil
+			},
 		}),
 	}
 
 	result := h.classifyTaskIntentForSessionGuard("anything")
 	if result.Source != "uic" {
 		t.Fatalf("expected handler UIC source, got %#v", result)
+	}
+	if got := llmCalls.Load(); got != 0 {
+		t.Fatalf("session guard must not call tree LLM, got %d calls", got)
 	}
 }
 
@@ -140,6 +149,26 @@ func TestClassifyTaskIntentWithUIC_NilHandlerReturnsFalse(t *testing.T) {
 	result, ok := h.classifyTaskIntentWithUIC("anything")
 	if ok {
 		t.Fatalf("expected nil handler to have no UIC, got %#v", result)
+	}
+}
+
+func TestClassifyTaskIntentForExecutionUsesEmbeddingOnly(t *testing.T) {
+	var llmCalls atomic.Int32
+	uic := intent.New(intent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(_, _ string) (string, error) {
+			llmCalls.Add(1)
+			return `{"top":[{"skill":"coding","score":0.96}]}`, nil
+		},
+	})
+	h := &IMMessageHandler{unifiedClassifier: uic}
+
+	result := h.classifyTaskIntentForExecution("desktop-user:test", "fix the login bug and edit code", nil, http.DefaultClient)
+	if got := llmCalls.Load(); got != 0 {
+		t.Fatalf("pre-agent confirmation classification must not call L3, got %d calls", got)
+	}
+	if result.Intent != intentAmbiguous || !result.Degraded {
+		t.Fatalf("unavailable embedding should fail closed without L3, got %#v", result)
 	}
 }
 
@@ -186,6 +215,29 @@ func TestShouldRequireExecutionConfirmationForIntent(t *testing.T) {
 	}
 	if shouldRequireExecutionConfirmationForIntent(msg, &pendingConfirmation{}, taskIntentResult{Intent: intentCoding}) {
 		t.Fatal("existing pending confirmation should block a new one")
+	}
+	if shouldRequireExecutionConfirmationForIntent(msg, nil, taskIntentResult{Intent: intentCoding, Degraded: true}) {
+		t.Fatal("degraded classification must not independently request execution confirmation")
+	}
+}
+
+func TestTaskIntentResultFromUnifiedClassificationDoesNotAuthorizeDegradedExecution(t *testing.T) {
+	result := taskIntentResultFromUnifiedClassification(intent.ClassificationResult{
+		Primary:    intent.LabelCoding,
+		Confidence: 0.95,
+		Degraded:   true,
+	})
+	if result.Intent != intentAmbiguous {
+		t.Fatalf("degraded coding intent = %q, want ambiguous", result.Intent)
+	}
+
+	nonCoding := taskIntentResultFromUnifiedClassification(intent.ClassificationResult{
+		Primary:    intent.LabelSearch,
+		Confidence: 0.95,
+		Degraded:   true,
+	})
+	if nonCoding.Intent != intentNonCoding {
+		t.Fatalf("degraded non-coding intent = %q, want non_coding", nonCoding.Intent)
 	}
 }
 

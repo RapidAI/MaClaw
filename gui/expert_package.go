@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -396,6 +397,9 @@ func (a *App) userExpertForPackage(id string) (ExpertDefinition, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return ExpertDefinition{}, fmt.Errorf("expert id is required")
+	}
+	if isManagedIndustryExpert(id) {
+		return ExpertDefinition{}, fmt.Errorf("industry-managed expert cannot be exported or shared")
 	}
 	if builtinExpertByID(id) != nil {
 		return ExpertDefinition{}, fmt.Errorf("builtin experts cannot be exported")
@@ -795,7 +799,8 @@ func readExpertPackage(packagePath string) (expertPackageManifest, map[string][]
 		if file.FileInfo().Mode()&os.ModeSymlink != 0 || file.FileInfo().IsDir() {
 			return manifest, nil, fmt.Errorf("expert package contains unsupported entry %q", file.Name)
 		}
-		if _, cleanName, err := safeZipEntryTarget(os.TempDir(), file.Name); err != nil || cleanName != file.Name {
+		cleanName, err := archiveutil.CanonicalEntry(file.Name, skillZipArchiveLimits())
+		if err != nil || cleanName != file.Name {
 			return manifest, nil, fmt.Errorf("expert package contains illegal entry %q", file.Name)
 		}
 		if _, exists := files[file.Name]; exists {

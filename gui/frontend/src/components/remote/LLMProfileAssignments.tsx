@@ -5,7 +5,7 @@ import { colors } from "./styles";
 import { inputStyle, labelStyle } from "./LLMConfigPanelShared";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
-type Provider = { id: string; name: string; model?: string; models?: string[] };
+type Provider = { id: string; name: string; model?: string; models?: string[]; connection_test_passed?: boolean };
 type Summary = { provider_id?: string; provider_name?: string; model?: string; inherit_assistant?: boolean; health?: string };
 type ProbeResult = { profile: "assistant" | "coding"; health: string; reason_code?: string };
 type PanelState = {
@@ -236,9 +236,13 @@ export function LLMProfileAssignments({ lang, onSaved }: Props) {
         <div style={{ marginBottom: 14 }}>
             <div style={{ minWidth: 0, flex: "1 1 280px" }}>
                 <h3 id="llm-profile-assignments-title" style={{ fontSize: "0.86rem", color: colors.text, margin: 0 }}>{t("Model assignments", "模型分配")}</h3>
-                <p style={{ color: colors.textMuted, fontSize: "0.72rem", lineHeight: 1.5, margin: "4px 0 0" }}>{t("Choose models for each work context. Connections and credentials are managed separately.", "为不同工作场景选择模型；连接与凭据在服务商管理中维护。")}</p>
+                <p style={{ color: colors.textMuted, fontSize: "0.72rem", lineHeight: 1.5, margin: "4px 0 0" }}>{t("Only providers with a passed connection test are available here. Connections and credentials are managed separately.", "此处仅显示已通过连接测试的服务商；连接与凭据在服务商管理中维护。")}</p>
             </div>
         </div>
+
+        {providers.length === 0 && <div role="status" style={{ margin: "0 0 14px", padding: "8px 10px", borderRadius: 4, background: colors.bg, color: colors.textSecondary, fontSize: "0.72rem", lineHeight: 1.45 }}>
+            {t("No tested providers yet. Test and save a provider in Provider management first.", "暂无已通过连接测试的服务商。请先在服务商管理中检测并保存服务商。")}
+        </div>}
 
         <div style={{ display: "grid", gap: 14 }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 14, alignItems: "center" }}>

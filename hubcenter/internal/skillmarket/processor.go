@@ -1,11 +1,9 @@
 package skillmarket
 
 import (
-	"archive/zip"
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	coreskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
@@ -597,125 +596,14 @@ func isValidPublisherSkillID(id string) bool {
 // 文件数上限（MaxSkillMarketZipEntries）仅防海量空文件 DoS，不阻止「体积正常、文件多」的资源包。
 // 先完整预检再落盘，避免校验失败时留下半截沙箱内容。
 func SafeUnzip(zipPath, destDir string) error {
-	fi, err := os.Stat(zipPath)
-	if err != nil {
-		return fmt.Errorf("stat zip: %w", err)
-	}
-	zipSize := fi.Size()
-
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return fmt.Errorf("open zip: %w", err)
-	}
-	defer r.Close()
-
-	// DoS backstop only — legitimate template/font/SVG packs may have thousands of files.
-	if len(r.File) > maxFileCount {
-		return fmt.Errorf("too many files: %d (max %d DoS limit); remove node_modules/.git/venv/cache if present, or split oversized asset packs", len(r.File), maxFileCount)
-	}
-
-	cleanDest := filepath.Clean(destDir)
-	destPrefix := cleanDest + string(os.PathSeparator)
-
-	type planned struct {
-		file   *zip.File
-		target string
-		isDir  bool
-	}
-	plan := make([]planned, 0, len(r.File))
-	var totalSize int64
-
-	// Pass 1: validate every entry (zip-slip, sizes, ratio) before writing anything.
-	for _, f := range r.File {
-		name := strings.TrimSpace(f.Name)
-		if name == "" || strings.Contains(name, "\x00") {
-			return fmt.Errorf("zip contains empty or invalid entry name")
-		}
-		// Normalize zip paths to slash form before Join so "a\..\b" style
-		// entries cannot bypass slip checks on Windows.
-		name = filepath.ToSlash(name)
-		if name == ".." || strings.HasPrefix(name, "../") || strings.HasPrefix(name, "/") {
-			return fmt.Errorf("zip slip detected: %s", f.Name)
-		}
-		target := filepath.Join(destDir, filepath.FromSlash(name))
-		cleanTarget := filepath.Clean(target)
-		if cleanTarget != cleanDest && !strings.HasPrefix(cleanTarget, destPrefix) {
-			return fmt.Errorf("zip slip detected: %s", f.Name)
-		}
-		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
-		}
-		isDir := f.FileInfo().IsDir() || strings.HasSuffix(name, "/")
-		if isDir {
-			plan = append(plan, planned{file: f, target: cleanTarget, isDir: true})
-			continue
-		}
-		usize := f.UncompressedSize64
-		if usize > uint64(maxSingleFile) {
-			return fmt.Errorf("file too large: %s (%d bytes, max %d)", f.Name, usize, maxSingleFile)
-		}
-		if usize > uint64(maxTotalSize) || uint64(totalSize)+usize > uint64(maxTotalSize) {
-			return fmt.Errorf("total uncompressed size exceeds %d bytes", maxTotalSize)
-		}
-		totalSize += int64(usize)
-		if zipSize > 0 && totalSize > zipSize*maxZipRatio {
-			return fmt.Errorf("zip bomb detected: ratio %.1fx exceeds %dx", float64(totalSize)/float64(zipSize), maxZipRatio)
-		}
-		plan = append(plan, planned{file: f, target: cleanTarget, isDir: false})
-	}
-
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir dest: %w", err)
-	}
-
-	// Pass 2: extract only after all checks pass.
-	for _, p := range plan {
-		if p.isDir {
-			if err := os.MkdirAll(p.target, 0o755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := extractFile(p.file, p.target); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func extractFile(f *zip.File, target string) error {
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	rc, err := f.Open()
-	if err != nil {
-		return fmt.Errorf("open %s: %w", f.Name, err)
-	}
-	defer rc.Close()
-
-	mode := f.Mode().Perm()
-	if mode == 0 {
-		mode = 0o644
-	}
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", f.Name, err)
-	}
-
-	// LimitReader blocks zip bombs that under-declare UncompressedSize64.
-	written, copyErr := io.Copy(out, io.LimitReader(rc, maxSingleFile+1))
-	closeErr := out.Close()
-	if copyErr != nil {
-		_ = os.Remove(target)
-		return fmt.Errorf("extract %s: %w", f.Name, copyErr)
-	}
-	if written > maxSingleFile {
-		_ = os.Remove(target)
-		return fmt.Errorf("file too large after decompression: %s", f.Name)
-	}
-	if closeErr != nil {
-		_ = os.Remove(target)
-		return fmt.Errorf("close %s: %w", f.Name, closeErr)
+	result := archiveutil.ExtractToDirectory(zipPath, destDir, archiveutil.Limits{
+		MaxFiles:            maxFileCount,
+		MaxTotalBytes:       maxTotalSize,
+		MaxFileBytes:        maxSingleFile,
+		MaxCompressionRatio: maxZipRatio,
+	})
+	if !result.OK {
+		return fmt.Errorf("safe unzip: %s: %s", result.Code, result.Message)
 	}
 	return nil
 }

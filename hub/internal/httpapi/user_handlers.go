@@ -70,7 +70,18 @@ func authenticateViewerRequest(r *http.Request, identity *auth.IdentityService) 
 		return nil, auth.ErrInvalidUserCredentials
 	}
 	token := strings.TrimSpace(authz[7:])
-	return identity.AuthenticateViewer(r.Context(), token)
+	principal, err := identity.AuthenticateViewer(r.Context(), token)
+	if err != nil {
+		return nil, err
+	}
+	// The identity/token deletion in an unbind can race a request that started
+	// authentication just beforehand. The Mobile tombstone is set first by the
+	// unified purger, so reject that stale principal before any handler can read
+	// or recreate account-owned runtime state.
+	if principal != nil && mobileKnowledgeOwnerIsPurged(principal.TenantID, principal.UserID) {
+		return nil, auth.ErrInvalidUserCredentials
+	}
+	return principal, nil
 }
 
 func ListMachinesHandler(identity *auth.IdentityService, devices *device.Service) http.HandlerFunc {

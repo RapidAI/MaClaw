@@ -1,0 +1,5 @@
+# Dedicated non-release proof for round Display animation lifecycle budget.
+# It starts one service-private worker and verifies stop+cleanup do not reset
+# the caller's 100 ms deadline.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_ROUND_DISPLAY_ANIMATION_DEADLINE_TEST=y

@@ -87,6 +87,9 @@ func mobileEnqueueDocumentProcessJob(
 	if principal != nil {
 		tenantID = strings.TrimSpace(principal.TenantID)
 	}
+	if !mobileOwnerWriteAllowed(tenantID, ownerID) {
+		return mobileDocumentProcessJobRecord{}
+	}
 	job := mobileDocumentProcessJobRecord{
 		JobID:     fmt.Sprintf("mobdocproc_%d", now.UnixNano()),
 		OwnerID:   ownerID,
@@ -98,18 +101,29 @@ func mobileEnqueueDocumentProcessJob(
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	mobileKnowledgePurgeState.RLock()
+	if !mobileOwnerWriteAllowedLocked(job.TenantID, job.OwnerID) {
+		mobileKnowledgePurgeState.RUnlock()
+		return mobileDocumentProcessJobRecord{}
+	}
 	mobileDocumentProcessJobs.Lock()
 	mobileDocumentProcessJobs.jobs[job.JobID] = job
 	mobileDocumentProcessJobs.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 	go mobileRunDocumentProcessJob(job.JobID, principal)
 	return job
 }
 
 func mobileDocumentProcessJobUpdate(jobID string, mutate func(*mobileDocumentProcessJobRecord)) {
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
 	mobileDocumentProcessJobs.Lock()
 	defer mobileDocumentProcessJobs.Unlock()
 	job, ok := mobileDocumentProcessJobs.jobs[jobID]
 	if !ok {
+		return
+	}
+	if !mobileOwnerWriteAllowedLocked(job.TenantID, job.OwnerID) {
 		return
 	}
 	mutate(&job)

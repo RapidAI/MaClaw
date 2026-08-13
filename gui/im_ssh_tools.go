@@ -225,6 +225,13 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		Label:              label,
 		HostKeyFingerprint: sshStrArg(args, "host_key_fingerprint"),
 	}
+	captureHostKey, _ := args["capture_host_key"].(bool)
+	if captureHostKey && cfg.HostKeyFingerprint == "" {
+		// SSHSessionManager resolves this marker during the same authenticated
+		// handshake, then replaces it with the captured pin before it creates
+		// the session or enters the connection in the pool.
+		cfg.HostKeyFingerprintCapture = func(string) {}
+	}
 
 	// Check if a running session already exists for this host.
 	// Reuse it instead of creating duplicate sessions — this prevents
@@ -304,6 +311,16 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 			}
 		}
 		return errMsg
+	}
+	if captureHostKey && cfg.HostKeyFingerprint == "" {
+		// Create resolves the capture before starting the PTY. Use that final
+		// configuration for the background loop as well; it is also the config
+		// the session will use for release, SFTP and automatic reconnect.
+		cfg = session.Spec.HostConfig
+		if cfg.HostKeyFingerprint == "" {
+			mgr.RemoveSession(session.ID)
+			return "SSH 连接失败：未能确认服务器主机标识"
+		}
 	}
 
 	// Register as a background task for GUI monitoring.

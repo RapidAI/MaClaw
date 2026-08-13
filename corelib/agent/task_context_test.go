@@ -66,6 +66,23 @@ func TestResolve_ConfirmedResume(t *testing.T) {
 	}
 }
 
+func TestResolveFastPreservesAmbiguousHistoryWithoutLLM(t *testing.T) {
+	llm := &mockLLMClassifier{response: "new"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+
+	decision := mgr.ResolveFast(ResolveInput{
+		UserMessage: "review/fix/optimize",
+		History:     []ConversationEntry{{Role: "user", Content: "previous task"}},
+	})
+
+	if llm.calls != 0 {
+		t.Fatalf("ResolveFast LLM calls = %d, want 0", llm.calls)
+	}
+	if decision.Action != TaskContinue || decision.Source != "fallback" {
+		t.Fatalf("ResolveFast decision = %+v, want conservative fallback continuation", decision)
+	}
+}
+
 func TestResolve_ActiveUnderstandingSession_IsContinue(t *testing.T) {
 	llm := &mockLLMClassifier{response: "new"}
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)

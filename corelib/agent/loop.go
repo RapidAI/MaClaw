@@ -191,6 +191,42 @@ type LoopHooks interface {
 	TransformConversation(conversation []interface{}) []interface{}
 }
 
+// ToolBatchMetadata describes a complete assistant tool-call batch after every
+// call has a paired result in HistoryDelta. It deliberately excludes arguments
+// and raw results: persistence hosts already receive the safe conversation
+// entries and must not infer permission to replay a tool call.
+type ToolBatchMetadata struct {
+	Sequence        uint64
+	LastToolName    string
+	SideEffectState string
+}
+
+// ToolBatchCommitter is an optional durability hook. It is intentionally
+// separate from LoopHooks for compatibility with existing hosts; RunLoop stops
+// before the next model/tool step when it returns an error.
+type ToolBatchCommitter interface {
+	OnToolBatchCommitted(delta []ConversationEntry, meta ToolBatchMetadata) error
+}
+
+// ToolBatchStarter is an optional pre-execution durability hook. Its delta
+// contains the assistant's complete tool-call declaration but no results, so
+// the delta is diagnostic evidence rather than a provider-valid history group.
+// Hosts that persist it must retain only their last valid history prefix and
+// store tool identity in metadata. A crash while a tool is executing can then
+// be recovered as uncertain work without replaying it. Returning an error
+// prevents the first tool in the batch from running.
+type ToolBatchStarter interface {
+	OnToolBatchStarting(delta []ConversationEntry, meta ToolBatchMetadata) error
+}
+
+// ToolBatchAbandoner is an optional notification hook for an interactive pause
+// discovered while processing a pre-committed tool batch. Hosts must retire
+// the temporary checkpoint only when they durably commit the paired
+// interactive result; sibling calls in this batch were intentionally not run.
+type ToolBatchAbandoner interface {
+	OnToolBatchAbandoned(meta ToolBatchMetadata)
+}
+
 // DefaultLoopHooks provides no-op implementations of all optional hooks.
 type DefaultLoopHooks struct{}
 
@@ -396,6 +432,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	}
 	llmRequestAttempts := 0
 	freeReplans := 0
+	var toolBatchSequence uint64
 
 	for iteration := 0; iteration < maxIter; iteration++ {
 		if cb.ShouldStop() {
@@ -848,6 +885,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 
 		// Build assistant message for conversation history.
+		batchDeltaStart := len(historyDelta)
 		assistantMsg := map[string]interface{}{
 			"role":    "assistant",
 			"content": content,
@@ -886,9 +924,35 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			return finish(LoopResult{Text: finalText, Iterations: iteration + 1, ToolCalls: totalToolCalls})
 		}
 
+		// Persist a valid conversation prefix before any tool begins. The result
+		// of the imminent call is not yet known, so every such checkpoint is
+		// deliberately classified as externally uncertain. Hosts must resume by
+		// asking the model for a new forward decision, never by replaying it.
+		toolBatchSequence++
+		batchMeta := ToolBatchMetadata{
+			Sequence:        toolBatchSequence,
+			LastToolName:    strings.TrimSpace(choice.Message.ToolCalls[0].Function.Name),
+			SideEffectState: "external_uncertain",
+		}
+		if starter, ok := h.(ToolBatchStarter); ok {
+			batch := append([]ConversationEntry(nil), historyDelta[batchDeltaStart:]...)
+			if err := starter.OnToolBatchStarting(batch, batchMeta); err != nil {
+				return finish(LoopResult{
+					Text:       "Unable to safely persist tool progress; automatic execution stopped.",
+					Error:      "recovery_checkpoint_failed",
+					Iterations: iteration + 1,
+					ToolCalls:  totalToolCalls,
+					HardExit:   true,
+				})
+			}
+		}
+
 		// Execute tool calls.
 		for _, tc := range choice.Message.ToolCalls {
 			if cb.ShouldStop() {
+				if abandoner, ok := h.(ToolBatchAbandoner); ok {
+					abandoner.OnToolBatchAbandoned(batchMeta)
+				}
 				return finish(LoopResult{Error: "cancelled", Iterations: iteration + 1, ToolCalls: totalToolCalls})
 			}
 			totalToolCalls++
@@ -902,6 +966,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					toolName = "unknown"
 				}
 				log.Printf("[agent-loop] rejected oversized tool arguments tool=%q args_len=%d limit=%d", toolName, argSize, llm.MaxToolArgumentsBytes)
+				if abandoner, ok := h.(ToolBatchAbandoner); ok {
+					abandoner.OnToolBatchAbandoned(batchMeta)
+				}
 				return finish(LoopResult{
 					Error:      fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, llm.MaxToolArgumentsBytes),
 					Iterations: iteration + 1,
@@ -943,6 +1010,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
 
 			if askReq, ok := ParseAskUserResult(result); ok {
+				if abandoner, ok := h.(ToolBatchAbandoner); ok {
+					abandoner.OnToolBatchAbandoned(batchMeta)
+				}
 				return finish(LoopResult{
 					Text:            FormatAskUserForDisplay(askReq),
 					AskUser:         askReq,
@@ -955,6 +1025,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// Hosts that reject (non-desktop IM) should rewrite the tool result before
 			// returning the marker so the model can continue with guidance text.
 			if recReq, ok := ParseRecordAudioResult(result); ok {
+				if abandoner, ok := h.(ToolBatchAbandoner); ok {
+					abandoner.OnToolBatchAbandoned(batchMeta)
+				}
 				return finish(LoopResult{
 					Text:            FormatRecordAudioForDisplay(recReq),
 					RecordAudio:     recReq,
@@ -981,6 +1054,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				if consecutiveSameToolFailures >= hardStopSameToolFailures {
 					// Hard stop: LLM ignored the guidance and keeps failing.
 					log.Printf("[agent-loop] hard stop: tool=%q failed %d consecutive times, force-exiting loop", lastFailedTool, consecutiveSameToolFailures)
+					if abandoner, ok := h.(ToolBatchAbandoner); ok {
+						abandoner.OnToolBatchAbandoned(batchMeta)
+					}
 					return finish(LoopResult{
 						Text:       fmt.Sprintf("工具 %s 连续失败 %d 次，已停止执行。请检查环境或换一种方式完成任务。", lastFailedTool, consecutiveSameToolFailures),
 						Iterations: iteration + 1,
@@ -1023,6 +1099,27 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				ToolName:    tc.Function.Name,
 				ToolOutcome: string(execResult.Outcome),
 			})
+		}
+
+		// Commit only after the entire parallel tool batch is fully paired in
+		// HistoryDelta. OnToolExecuted is intentionally earlier and remains for
+		// telemetry/model routing, not durable recovery.
+		if committer, ok := h.(ToolBatchCommitter); ok {
+			batch := append([]ConversationEntry(nil), historyDelta[batchDeltaStart:]...)
+			batchMeta = ToolBatchMetadata{
+				Sequence:        toolBatchSequence,
+				LastToolName:    lastToolName,
+				SideEffectState: sideEffectStateForToolBatch(choice.Message.ToolCalls),
+			}
+			if err := committer.OnToolBatchCommitted(batch, batchMeta); err != nil {
+				return finish(LoopResult{
+					Text:       "Unable to safely persist tool progress; automatic execution stopped.",
+					Error:      "recovery_checkpoint_failed",
+					Iterations: iteration + 1,
+					ToolCalls:  totalToolCalls,
+					HardExit:   true,
+				})
+			}
 		}
 
 		// A context-aware tool may have been cancelled by steering while it was
@@ -1089,6 +1186,33 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 	log.Printf("[agent-loop] max iterations (%d) reached", maxIter)
 	return finish(LoopResult{Error: "max iterations reached", Iterations: maxIter, ToolCalls: totalToolCalls})
+}
+
+func sideEffectStateForToolBatch(calls []llm.ToolCall) string {
+	state := "none"
+	for _, call := range calls {
+		name := strings.ToLower(strings.TrimSpace(call.Function.Name))
+		switch name {
+		// These built-in tools only inspect local, already-available state.
+		// Keep this allow-list explicit: tool names are not a reliable security
+		// boundary, especially for per-client and MCP-provided tools.
+		case "read_file", "read_files", "list_directory", "list_dir",
+			"ripgrep", "grep", "glob", "search_files", "session_search":
+			continue
+		// These built-in tools change local state. A recovery may resume the
+		// conversation, but must first tell the user to inspect the workspace.
+		case "write_file", "edit_file", "apply_patch", "str_replace",
+			"create_file", "delete_file", "remove_file", "bash",
+			"run_terminal", "shell", "powershell":
+			state = "local_committed"
+		default:
+			// Unknown names include dynamically declared client and MCP tools.
+			// We cannot infer whether they made an external change from a string
+			// name, so recovery must require explicit review rather than replay.
+			return "external_uncertain"
+		}
+	}
+	return state
 }
 
 func projectLoopToolResult(cb LoopCallbacks, name string, result ToolExecutionResult) string {

@@ -290,6 +290,10 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		requestID = ctx.Runtime.RequestID
 		loopID = ctx.ID
 	}
+	if strings.TrimSpace(loopID) == "" {
+		loopID = fmt.Sprintf("shared-%d", time.Now().UnixNano())
+		log.Printf("[InFlightTask] generated missing shared run id user=%q run=%q", userID, loopID)
+	}
 	kind := ctxKindLabel(ctx)
 	var loopStats struct {
 		tools, iters int
@@ -361,6 +365,10 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	}
 	runtimeState := h.beginAgentLoopRuntimeState(ctx, userID, userText, onProgress, onStreamDone, telemetry)
 	defer runtimeState.Cleanup()
+	projectPath := h.effectiveWorkingDirForUser(userID)
+	if projectPath == "" {
+		projectPath = projectPathFromUserID(userID)
+	}
 
 	startState := h.prepareAgentLoopStartState(agentLoopStartOptions{
 		Context:          ctx,
@@ -394,27 +402,31 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	userContent := startState.UserContent
 
 	cb := &sharedAgentLoopCallbacks{
-		handler:          h,
-		loopCtx:          ctx,
-		userID:           userID,
-		userText:         userText,
-		hasLocalFileWork: len(attachments) > 0 || hasCurrentLocalFileWork(userText),
-		platform:         platform, // pin turn platform for tool rewrites (not only loopCtx)
-		systemPrompt:     startState.SystemPrompt,
-		tools:            startState.Tools,
-		llmCfg:           cfg,
-		route:            startState.RouteDecision,
-		onProgress:       progressOut,
-		onToken:          onToken,
-		onNewRound:       onNewRound,
-		maxIter:          startState.EffectiveMax,
-		httpClient:       startState.HTTPClient,
+		handler:           h,
+		loopCtx:           ctx,
+		userID:            userID,
+		userText:          userText,
+		checkpointHistory: append(append([]agent.ConversationEntry(nil), history...), agent.ConversationEntry{Role: "user", Content: userContent}),
+		checkpointRunID:   loopID,
+		checkpointProject: projectPath,
+		hasLocalFileWork:  len(attachments) > 0 || hasCurrentLocalFileWork(userText),
+		platform:          platform, // pin turn platform for tool rewrites (not only loopCtx)
+		systemPrompt:      startState.SystemPrompt,
+		tools:             startState.Tools,
+		llmCfg:            cfg,
+		route:             startState.RouteDecision,
+		onProgress:        progressOut,
+		onToken:           onToken,
+		onNewRound:        onNewRound,
+		maxIter:           startState.EffectiveMax,
+		httpClient:        startState.HTTPClient,
 	}
 	if cb.maxIter <= 0 {
 		cb.maxIter = startState.MaxIterations
 	}
 
-	// Pass cb as LoopHooks so OnToolExecuted can escalate models mid-loop.
+	// cb also implements ToolBatchCommitter. The durable checkpoint hook runs
+	// only after all results in a tool batch have been paired in HistoryDelta.
 	loopResult := agent.RunLoopWithUserContent(cb, userText, userContent, history, startState.HTTPClient, cb)
 	loopStats.tools = loopResult.ToolCalls
 	loopStats.iters = loopResult.Iterations
@@ -435,7 +447,69 @@ func (h *IMMessageHandler) runAgentLoopShared(
 			startState.Recorder.SetKind("shared")
 			startState.Recorder.RecordLoopResult(loopResult)
 		}
+		// A pre-tool checkpoint deliberately contains only the prior valid
+		// history prefix. If cancellation lands after the assistant announced a
+		// batch but before every result was paired, saving outHistory here would
+		// overwrite that checkpoint with a provider-invalid partial group.
+		// Leave the durable prefix + uncertain marker intact instead.
+		if cb.hasPendingToolBatch {
+			return h.interruptedSharedLoopExitResponse(userText)
+		}
 		return h.cancelledExitResponse(userID, outHistory, userText)
+	}
+	// ask_user intentionally pauses before the core loop can append its tool
+	// result. Reuse the legacy pause finalizer to atomically persist the paired
+	// history and pending-user state, but do not treat this interactive pause as
+	// a durable side-effect checkpoint. An earlier successful checkpoint, if
+	// any, intentionally remains available for crash recovery.
+	if loopResult.AskUser != nil {
+		askUserOutcome := h.handleAgentLoopAskUserToolResult(
+			userID,
+			platform,
+			userText,
+			agent.AskUserResultMarker(loopResult.AskUser),
+			false,
+			loopResult.PauseToolCallID,
+			nil,
+			outHistory,
+			nil,
+			nil,
+			false,
+		)
+		// Persist the paired interactive history and retire the temporary pre-tool
+		// marker in one write. A split save/clear can leave an old marker on disk
+		// and incorrectly show crash recovery after a normal interactive pause.
+		if err := h.persistSharedInteractivePause(userID, loopID, askUserOutcome.History); err != nil {
+			log.Printf("[InFlightTask] shared ask-user finalization flush failed user=%q run=%q err=%v", userID, loopID, err)
+			// The paired question only becomes resumable state after its history and
+			// marker transition reach disk together. Do not leave an in-memory
+			// pending answer that can disappear on restart while the old pre-tool
+			// checkpoint is still the durable truth.
+			h.pendingAskUser.Delete(userID)
+			return h.sharedInteractivePausePersistenceFailureResponse(
+				userID, requestID, telemetry, onStreamDone, cb,
+			)
+		} else {
+			cb.checkpointCommitted = false
+			cb.hasPendingToolBatch = false
+		}
+		if askUserOutcome.Response != nil {
+			// handleAgentLoopAskUserToolResult deferred this local state mutation
+			// while the paired history waited for its atomic checkpoint transition.
+			h.commitPendingAskUser(userID, &AskUserRequest{
+				Question:  loopResult.AskUser.Question,
+				Options:   append([]string(nil), loopResult.AskUser.Options...),
+				Context:   loopResult.AskUser.Context,
+				InputType: loopResult.AskUser.InputType,
+			}, askUserOutcome.History)
+		}
+		if askUserOutcome.Response != nil {
+			return h.finalizeSharedLoopAskUser(userID, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder, askUserOutcome.Response)
+		}
+		if len(loopResult.HistoryDelta) > 0 {
+			h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
+		}
+		return h.finalizeSharedLoopAskUser(userID, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder, nil)
 	}
 
 	// Interactive record_audio pause: open desktop waveform card and stop the loop
@@ -453,23 +527,25 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	if startState.Recorder != nil {
 		startState.Recorder.SetKind("shared")
 		startState.Recorder.RecordLoopResult(loopResult)
-		// ask_user early-stops before the tool result is appended to HistoryDelta
-		// (same shape as record_audio). Pair the expanded tool call with a result.
-		if loopResult.AskUser != nil {
-			tcID := strings.TrimSpace(loopResult.PauseToolCallID)
-			if tcID == "" {
-				tcID = toolCallIDFromHistoryDeltaByName(loopResult.HistoryDelta, "ask_user")
-			}
-			toolContent := strings.TrimSpace(loopResult.Text)
-			if toolContent == "" {
-				toolContent = agent.FormatAskUserForDisplay(loopResult.AskUser)
-			}
-			startState.Recorder.RecordEarlyStopToolResult(tcID, "ask_user", toolContent)
-		}
 	}
 
-	if len(loopResult.HistoryDelta) > 0 {
+	// When the synchronous batch checkpoint failed, do not fall back to the
+	// generic asynchronous history save: doing so could later flush a tool batch
+	// which was explicitly rejected as unsafe to recover. Preserve only the last
+	// successfully checkpointed context and stop the loop instead.
+	if shouldSaveSharedLoopTerminalHistory(loopResult, cb) {
 		h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
+	}
+	if cb.hasPendingToolBatch {
+		return h.interruptedSharedLoopResultResponse(userText, loopResult, requestID, telemetry, onStreamDone, cb)
+	}
+	// A marker represents incomplete work only. Clear it after a normal shared
+	// loop completion, and only when this exact run owns it. Errors/cancellation
+	// deliberately retain the latest successful checkpoint for recovery.
+	if cb.checkpointCommitted && loopResult.Error == "" && loopResult.AskUser == nil && loopResult.RecordAudio == nil {
+		if err := h.memory.CompleteInFlightCheckpointForRun(userID, loopID); err != nil {
+			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, loopID, err)
+		}
 	}
 
 	// Budget mid-loop / entry stop (EarlyStopper) — keep user-facing text.
@@ -596,6 +672,23 @@ type sharedAgentLoopCallbacks struct {
 	loopCtx  *LoopContext
 	userID   string
 	userText string
+	// checkpointHistory contains only provider-valid history: a valid prefix plus
+	// full, durable tool batches. It is never updated from OnToolExecuted
+	// because that callback runs before history commit and would create
+	// marker-only recovery states. In particular, a pre-tool checkpoint does
+	// not append an unpaired assistant tool-call declaration: strict providers
+	// reject that shape on the next request. The pending tool is recorded in
+	// checkpoint metadata as diagnostic recovery evidence instead.
+	checkpointHistory   []agent.ConversationEntry
+	checkpointRunID     string
+	checkpointProject   string
+	checkpointCommitted bool
+	// hasPendingToolBatch is true from a successful pre-tool checkpoint until
+	// its complete assistant/tool-result batch is durably committed (or an
+	// interactive pause atomically pairs its result). Terminal paths must not
+	// asynchronously save HistoryDelta while this is true: it can contain an
+	// assistant tool-call declaration with missing results.
+	hasPendingToolBatch bool
 	// hasLocalFileWork survives the light-to-full upgrade, which occurs after
 	// attachment staging and otherwise only has the raw user text to inspect.
 	hasLocalFileWork bool
@@ -619,6 +712,9 @@ type sharedAgentLoopCallbacks struct {
 	fileMaterializeNanos int64
 	filesForwarded       int
 	inputBreakdown       agent.LoopInputBreakdown
+	// firstRequestBudgetApplied prevents a latency-oriented history cap from
+	// constraining later tool rounds, which may legitimately need more context.
+	firstRequestBudgetApplied bool
 	// Revision last incorporated by TransformConversation. Keeping this at the
 	// conversation boundary (rather than the later HTTP-start boundary) closes
 	// the race where steering arrives between transform and request creation.
@@ -1024,15 +1120,46 @@ func (h *IMMessageHandler) finalizeSharedLoopRecordAudio(
 	}
 	out := h.handleAgentLoopRecordAudioToolResult(
 		userID, platform, userText, raw, false, tcID,
-		nil, outHistory, nil, nil,
+		nil, outHistory, nil, nil, false,
 	)
+	pairedHistory := out.History
+	if out.Response == nil && tcID != "" && strings.TrimSpace(out.Result) != "" {
+		pairedHistory = append(append([]agent.ConversationEntry(nil), outHistory...), agent.ConversationEntry{
+			Role:        "tool",
+			Content:     out.Result,
+			ToolCallID:  tcID,
+			ToolName:    "record_audio",
+			ToolOutcome: toolOutcomeUncertain.String(),
+		})
+	}
+	// Like ask_user, record_audio replaces autonomous execution with a paired
+	// interactive state. Persist it and retire the temporary marker together.
+	var pausePersistErr error
+	if cb != nil {
+		if err := h.persistSharedInteractivePause(userID, cb.checkpointRunID, pairedHistory); err != nil {
+			log.Printf("[InFlightTask] shared record-audio finalization flush failed user=%q run=%q err=%v", userID, cb.checkpointRunID, err)
+			// Mirror ask_user: pending recording UI is only valid after the paired
+			// transcript has been committed. Otherwise a restart loses the UI state
+			// but retains the earlier recovery marker.
+			h.pendingRecordAudio.Delete(userID)
+			pausePersistErr = err
+		} else {
+			cb.checkpointCommitted = false
+			cb.hasPendingToolBatch = false
+		}
+	}
+	if pausePersistErr == nil && out.Response != nil {
+		// The handler intentionally deferred this local state mutation while the
+		// paired history was waiting for its atomic checkpoint transition.
+		h.commitPendingRecordAudio(userID, req, pairedHistory)
+	}
 
 	// Trajectory: HistoryDelta lacks the tool result (core early-stops before append);
 	// record delta then the friendly/rejection tool result so sessions stay paired.
 	if recorder != nil {
 		recorder.SetKind("shared")
 		recorder.RecordLoopResult(loopResult)
-		if out.Response != nil {
+		if out.Response != nil && pausePersistErr == nil {
 			// Interactive pause succeeded — pair the opened-session tool result.
 			recorder.RecordEarlyStopToolResult(tcID, "record_audio", out.Result)
 		} else {
@@ -1052,6 +1179,11 @@ func (h *IMMessageHandler) finalizeSharedLoopRecordAudio(
 			recorder.CloseUnpairedToolCalls("loop_paused")
 			recorder.SetOutcome("error", toolContent, loopResult.Iterations, loopResult.ToolCalls, -1, -1)
 		}
+	}
+	if pausePersistErr != nil {
+		return h.sharedInteractivePausePersistenceFailureResponse(
+			userID, requestID, telemetry, onStreamDone, cb,
+		)
 	}
 
 	if out.Response != nil {
@@ -1094,16 +1226,9 @@ func (h *IMMessageHandler) finalizeSharedLoopRecordAudio(
 	// Unexpected rejection after ExecuteTool precheck (race on concurrent session).
 	text := recordAudioUserFacingRejectText(out.Result, loopResult.Text)
 	// Keep tool-call/result pairing when we have a rewritten rejection.
-	if tcID != "" && strings.TrimSpace(out.Result) != "" {
-		paired := append(append([]agent.ConversationEntry(nil), outHistory...), agent.ConversationEntry{
-			Role:        "tool",
-			Content:     out.Result,
-			ToolCallID:  tcID,
-			ToolName:    "record_audio",
-			ToolOutcome: toolOutcomeUncertain.String(),
-		})
-		h.saveConversationHistoryTimed(userID, paired, nil)
-	} else if len(loopResult.HistoryDelta) > 0 {
+	if cb == nil && tcID != "" && strings.TrimSpace(out.Result) != "" {
+		h.saveConversationHistoryTimed(userID, pairedHistory, nil)
+	} else if cb == nil && len(loopResult.HistoryDelta) > 0 {
 		h.saveConversationHistoryTimed(userID, outHistory, nil)
 	}
 	resp := &IMAgentResponse{
@@ -1111,6 +1236,157 @@ func (h *IMMessageHandler) finalizeSharedLoopRecordAudio(
 		RequestID:      requestID,
 		SessionKey:     userID,
 		ResponseSource: "shared_agent_loop",
+	}
+	if telemetry != nil {
+		telemetry.Attach(resp)
+	}
+	if onStreamDone != nil {
+		onStreamDone()
+	}
+	return resp
+}
+
+// shouldSaveSharedLoopTerminalHistory rejects the generic terminal save when
+// the shared core stopped mid-batch. In that state HistoryDelta includes an
+// assistant tool-call declaration without every matching tool result; the
+// pre-tool checkpoint is the only durable provider-valid representation.
+func shouldSaveSharedLoopTerminalHistory(loopResult agent.LoopResult, cb *sharedAgentLoopCallbacks) bool {
+	if len(loopResult.HistoryDelta) == 0 || loopResult.Error == "recovery_checkpoint_failed" {
+		return false
+	}
+	return cb == nil || !cb.hasPendingToolBatch
+}
+
+// interruptedSharedLoopResultResponse keeps the UI outcome aligned with the
+// durable state for non-cancel terminal exits (argument validation, policy
+// failures, hard-stop guards, and max rounds) that happen after a pre-tool
+// checkpoint but before a complete batch commit. Returning the raw loop error
+// would suggest ordinary retry even though recovery must begin from the saved
+// provider-valid prefix and explicit review marker.
+func (h *IMMessageHandler) interruptedSharedLoopResultResponse(
+	userText string,
+	loopResult agent.LoopResult,
+	requestID string,
+	telemetry *agentLoopTelemetry,
+	onStreamDone StreamDoneCallback,
+	cb *sharedAgentLoopCallbacks,
+) *IMAgentResponse {
+	resp := h.interruptedSharedLoopExitResponse(userText)
+	resp.RequestID = requestID
+	if cb != nil {
+		resp.SessionKey = cb.userID
+	}
+	resp.ResponseSource = "shared_agent_loop"
+	resp.HardExit = true
+	if loopResult.Usage.InputTokens > 0 || loopResult.Usage.OutputTokens > 0 {
+		resp.InputTokens = loopResult.Usage.InputTokens
+		resp.OutputTokens = loopResult.Usage.OutputTokens
+		resp.TotalTokens = loopResult.Usage.TotalTokens()
+		resp.CacheReadTokens = loopResult.Usage.CachedTokens
+		resp.CacheWriteTokens = loopResult.Usage.CacheWriteTokens
+		resp.EstCostRMB = loopResult.Usage.EstCostRMB
+	}
+	if telemetry != nil {
+		if cb != nil {
+			if route := cb.currentRouteDecision(); route.Task != "" || route.Model != "" {
+				telemetry.Route = route
+			}
+		}
+		telemetry.Attach(resp)
+	}
+	if onStreamDone != nil {
+		onStreamDone()
+	}
+	return resp
+}
+
+// sharedInteractivePausePersistenceFailureResponse fails closed when the
+// paired interactive history cannot be committed with the run-owned recovery
+// marker. Showing a card here would invite a reply that the process cannot
+// safely associate with durable history after a restart.
+func (h *IMMessageHandler) sharedInteractivePausePersistenceFailureResponse(
+	userID, requestID string,
+	telemetry *agentLoopTelemetry,
+	onStreamDone StreamDoneCallback,
+	cb *sharedAgentLoopCallbacks,
+) *IMAgentResponse {
+	resp := &IMAgentResponse{
+		Text:           "无法安全保存本次交互进度，已停止打开交互卡片。请重试；若应用已退出，请重启后从恢复任务继续。",
+		Error:          "recovery_checkpoint_failed",
+		RequestID:      requestID,
+		SessionKey:     userID,
+		ResponseSource: "shared_agent_loop",
+	}
+	if cb != nil && telemetry != nil {
+		if route := cb.currentRouteDecision(); route.Task != "" || route.Model != "" {
+			telemetry.Route = route
+		}
+	}
+	if telemetry != nil {
+		telemetry.Attach(resp)
+	}
+	if onStreamDone != nil {
+		onStreamDone()
+	}
+	return resp
+}
+
+// finalizeSharedLoopAskUser records the shared loop's interactive question as
+// a terminal UI response. The core loop deliberately returns before appending
+// a synthetic tool result, so this helper must not turn the pause into a
+// recoverable in-flight task or ask the model to replay it.
+func (h *IMMessageHandler) finalizeSharedLoopAskUser(
+	userID string,
+	loopResult agent.LoopResult,
+	requestID string,
+	telemetry *agentLoopTelemetry,
+	onStreamDone StreamDoneCallback,
+	cb *sharedAgentLoopCallbacks,
+	recorder *TrajectoryRecorder,
+	baseResponse *IMAgentResponse,
+) *IMAgentResponse {
+	if recorder != nil {
+		recorder.SetKind("shared")
+		recorder.RecordLoopResult(loopResult)
+		tcID := strings.TrimSpace(loopResult.PauseToolCallID)
+		if tcID == "" {
+			tcID = toolCallIDFromHistoryDeltaByName(loopResult.HistoryDelta, "ask_user")
+		}
+		content := strings.TrimSpace(loopResult.Text)
+		if content == "" {
+			content = agent.FormatAskUserForDisplay(loopResult.AskUser)
+		}
+		recorder.RecordEarlyStopToolResult(tcID, "ask_user", content)
+	}
+	resp := baseResponse
+	if resp == nil {
+		resp = &IMAgentResponse{Text: loopResult.Text, ResponseSource: imResponseSourceAskUser.String()}
+	}
+	if strings.TrimSpace(resp.Text) == "" {
+		resp.Text = loopResult.Text
+	}
+	resp.Reasoning = sharedLoopDisplayReasoning(loopResult)
+	resp.RequestID = requestID
+	resp.SessionKey = userID
+	resp.ResponseSource = imResponseSourceAskUser.String()
+	if loopResult.Usage.InputTokens > 0 || loopResult.Usage.OutputTokens > 0 {
+		resp.InputTokens = loopResult.Usage.InputTokens
+		resp.OutputTokens = loopResult.Usage.OutputTokens
+		resp.TotalTokens = loopResult.Usage.TotalTokens()
+		resp.CacheReadTokens = loopResult.Usage.CachedTokens
+		resp.CacheWriteTokens = loopResult.Usage.CacheWriteTokens
+		resp.EstCostRMB = loopResult.Usage.EstCostRMB
+		if telemetry != nil {
+			telemetry.LastLLMInputTokens = loopResult.Usage.InputTokens
+			telemetry.LastLLMOutputTokens = loopResult.Usage.OutputTokens
+			telemetry.LastLLMCacheReadTokens = loopResult.Usage.CachedTokens
+			telemetry.LastLLMCacheWriteTokens = loopResult.Usage.CacheWriteTokens
+		}
+	}
+	if cb != nil && telemetry != nil {
+		if route := cb.currentRouteDecision(); route.Task != "" || route.Model != "" {
+			telemetry.Route = route
+		}
 	}
 	if telemetry != nil {
 		telemetry.Attach(resp)
@@ -1290,6 +1566,92 @@ func (c *sharedAgentLoopCallbacks) OnToolExecuted(name, argsJSON, result string,
 	c.maybeEscalateAfterTools()
 }
 
+// OnToolBatchStarting implements agent.ToolBatchStarter. It durably records
+// the last provider-valid history prefix before a tool begins. The supplied
+// delta intentionally contains an unpaired assistant declaration, so it is
+// evidence only and must not be persisted as conversation history. The core
+// loop labels this checkpoint external_uncertain because a process crash may
+// occur after the tool has changed state but before a result can be paired.
+func (c *sharedAgentLoopCallbacks) OnToolBatchStarting(delta []agent.ConversationEntry, meta agent.ToolBatchMetadata) error {
+	if c == nil || c.handler == nil || len(delta) == 0 {
+		return nil
+	}
+	// Do not persist delta here. At this point it contains an assistant
+	// tool_calls message without matching tool results and would make the
+	// restored provider conversation invalid. LastToolName records the first
+	// possible action without granting permission to replay it.
+	entries := c.trimCheckpointHistory()
+	err := c.handler.persistRecoveryCheckpoint(
+		c.userID,
+		c.userText,
+		c.checkpointProject,
+		c.checkpointRunID,
+		entries,
+		agent.InFlightCheckpoint{
+			Sequence:        meta.Sequence,
+			LastToolName:    meta.LastToolName,
+			SideEffectState: meta.SideEffectState,
+		},
+	)
+	if err != nil {
+		log.Printf("[InFlightTask] shared pre-tool checkpoint failed user=%q run=%q seq=%d err=%v", c.userID, c.checkpointRunID, meta.Sequence, err)
+		return err
+	}
+	c.checkpointCommitted = true
+	c.hasPendingToolBatch = true
+	return nil
+}
+
+// OnToolBatchAbandoned notes that an interactive tool paused the batch before
+// sibling calls could execute. The marker remains until the host atomically
+// writes the paired interactive history and clears it; clearing here would
+// reopen a crash window between those two durable transitions.
+func (c *sharedAgentLoopCallbacks) OnToolBatchAbandoned(meta agent.ToolBatchMetadata) {
+	_ = meta
+}
+
+// OnToolBatchCommitted implements agent.ToolBatchCommitter. RunLoop invokes it
+// after the entire assistant tool-call batch and every paired tool result have
+// been appended to HistoryDelta. A persistence error is returned to RunLoop so
+// it stops before executing a following batch with further side effects.
+func (c *sharedAgentLoopCallbacks) OnToolBatchCommitted(delta []agent.ConversationEntry, meta agent.ToolBatchMetadata) error {
+	if c == nil || c.handler == nil || len(delta) == 0 {
+		return nil
+	}
+	c.checkpointHistory = append(c.checkpointHistory, delta...)
+	entries := c.trimCheckpointHistory()
+	err := c.handler.persistRecoveryCheckpoint(
+		c.userID,
+		c.userText,
+		c.checkpointProject,
+		c.checkpointRunID,
+		entries,
+		agent.InFlightCheckpoint{
+			Sequence:        meta.Sequence,
+			LastToolName:    meta.LastToolName,
+			SideEffectState: meta.SideEffectState,
+		},
+	)
+	if err != nil {
+		log.Printf("[InFlightTask] shared checkpoint failed user=%q run=%q seq=%d err=%v", c.userID, c.checkpointRunID, meta.Sequence, err)
+		return err
+	}
+	c.checkpointCommitted = true
+	c.hasPendingToolBatch = false
+	return nil
+}
+
+// trimCheckpointHistory bounds synchronous checkpoint files during long tool
+// loops. TrimHistory operates on complete entry groups, so it never splits an
+// assistant tool-call declaration from any of its results.
+func (c *sharedAgentLoopCallbacks) trimCheckpointHistory() []agent.ConversationEntry {
+	if c == nil {
+		return nil
+	}
+	c.checkpointHistory = agent.TrimHistory(c.checkpointHistory)
+	return c.checkpointHistory
+}
+
 func (c *sharedAgentLoopCallbacks) OnEmptyResponse(iteration int) bool {
 	_ = iteration
 	return false
@@ -1314,7 +1676,27 @@ func (c *sharedAgentLoopCallbacks) TransformConversation(conversation []interfac
 	if injected == "" {
 		next = conversation
 	}
-	compacted := c.handler.compactAgentLoopConversation(c.loopCtx, c.userID, next, c.tools, c.llmCfg.EffectiveContextTokens(), agent.EstimateToolsTokens(c.tools))
+	effectiveLimit := c.llmCfg.EffectiveContextTokens()
+	if !c.firstRequestBudgetApplied {
+		c.firstRequestBudgetApplied = true
+		beforeTokens := estimateConversationTokens(next) + agent.EstimateToolsTokens(c.tools)
+		budgetedLimit := firstAgentLoopRequestTokenLimit(effectiveLimit, next, c.tools)
+		compacted := c.handler.compactAgentLoopConversation(c.loopCtx, c.userID, next, c.tools, budgetedLimit, agent.EstimateToolsTokens(c.tools), true)
+		afterTokens := estimateConversationTokens(compacted) + agent.EstimateToolsTokens(c.tools)
+		if afterTokens < beforeTokens || budgetedLimit < effectiveLimit {
+			loopID := ""
+			if c.loopCtx != nil {
+				loopID = c.loopCtx.ID
+			}
+			log.Printf("[first-request-budget] loop=%q before~=%d after~=%d limit=%d normal_limit=%d tools=%d",
+				loopID, beforeTokens, afterTokens, budgetedLimit, effectiveLimit, len(c.tools))
+		}
+		if injected == "" && sameConversationElements(compacted, conversation) {
+			return nil
+		}
+		return compacted
+	}
+	compacted := c.handler.compactAgentLoopConversation(c.loopCtx, c.userID, next, c.tools, effectiveLimit, agent.EstimateToolsTokens(c.tools), false)
 	if injected == "" && sameConversationElements(compacted, conversation) {
 		return nil
 	}

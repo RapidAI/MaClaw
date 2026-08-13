@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -20,6 +22,10 @@ const registeredToolApprovalIDField = "_tool_approval_id"
 const registeredToolPolicyOwnerIDField = "_runtime_policy_owner_id"
 const registeredToolRuntimePlatformField = "_runtime_platform"
 
+// archiveExternalApprovalTokenField is populated only in the in-memory copy
+// of a pending approval. It is deliberately not part of the archive schema.
+const archiveExternalApprovalTokenField = "_archive_external_approval_token"
+
 type registeredToolPendingApproval struct {
 	ID            string
 	ToolName      string
@@ -32,9 +38,10 @@ type registeredToolPendingApproval struct {
 
 var registeredToolApprovalStore = struct {
 	sync.Mutex
-	next  int64
-	items map[string]registeredToolPendingApproval
-}{items: map[string]registeredToolPendingApproval{}}
+	next                  int64
+	items                 map[string]registeredToolPendingApproval
+	archiveExternalTokens map[string]bool
+}{items: map[string]registeredToolPendingApproval{}, archiveExternalTokens: map[string]bool{}}
 
 type registeredToolValidationIssue struct {
 	Path    string
@@ -73,6 +80,90 @@ func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name stri
 	approval := storeRegisteredToolPendingApproval(name, args, sessionID, policyOwnerID, risk)
 	h.firewall.recordAudit(name, args, risk, security.PolicyAsk, "agent_view_approval_pending", sessionID)
 	return h.app.emitAgentView(buildRegisteredToolApprovalAgentView(approval))
+}
+
+// emitArchiveExternalApprovalIfNeeded is an action-scoped approval boundary.
+// The ordinary tool firewall can allow the "archive" tool for safe embedded
+// work, but that must never imply approval to launch an external executable.
+func (h *IMMessageHandler) emitArchiveExternalApprovalIfNeeded(args map[string]interface{}, ctx *SecurityCallContext, policyOwnerID string) bool {
+	if !isArchiveExternalExtraction(args) || hasArchiveExternalApproval(args) || h == nil || h.app == nil {
+		return false
+	}
+	token, err := newArchiveExternalApprovalToken()
+	if err != nil {
+		return false
+	}
+	sessionID := ""
+	if ctx != nil {
+		sessionID = strings.TrimSpace(ctx.SessionID)
+	}
+	risk := security.RiskAssessment{Level: security.RiskHigh, Reason: "启动已安装的外部解压程序", Factors: []string{"external_archive_program", "requires_explicit_user_approval"}}
+	approval := storeRegisteredToolPendingApproval("archive", args, sessionID, policyOwnerID, risk)
+	registeredToolApprovalStore.Lock()
+	item := registeredToolApprovalStore.items[approval.ID]
+	item.Args[archiveExternalApprovalTokenField] = token
+	registeredToolApprovalStore.items[approval.ID] = item
+	registeredToolApprovalStore.archiveExternalTokens[token] = true
+	registeredToolApprovalStore.Unlock()
+	if h.firewall != nil {
+		h.firewall.recordAudit("archive", args, risk, security.PolicyAsk, "external_archive_approval_pending", sessionID)
+	}
+	pending, ok := getRegisteredToolPendingApproval(approval.ID)
+	if !ok {
+		return false
+	}
+	return h.app.emitAgentView(buildRegisteredToolApprovalAgentView(pending))
+}
+
+func isArchiveExternalExtraction(args map[string]interface{}) bool {
+	action, _ := args["action"].(string)
+	return strings.EqualFold(strings.TrimSpace(action), "extract_external")
+}
+
+func newArchiveExternalApprovalToken() (string, error) {
+	bytes := make([]byte, 24)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func hasArchiveExternalApproval(args map[string]interface{}) bool {
+	token, _ := args[archiveExternalApprovalTokenField].(string)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	registeredToolApprovalStore.Lock()
+	defer registeredToolApprovalStore.Unlock()
+	return registeredToolApprovalStore.archiveExternalTokens[token]
+}
+
+// consumeArchiveExternalApproval makes an external-program approval one-time.
+func consumeArchiveExternalApproval(args map[string]interface{}) bool {
+	token, _ := args[archiveExternalApprovalTokenField].(string)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	registeredToolApprovalStore.Lock()
+	defer registeredToolApprovalStore.Unlock()
+	if !registeredToolApprovalStore.archiveExternalTokens[token] {
+		return false
+	}
+	delete(registeredToolApprovalStore.archiveExternalTokens, token)
+	return true
+}
+
+func revokeArchiveExternalApproval(args map[string]interface{}) {
+	token, _ := args[archiveExternalApprovalTokenField].(string)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	registeredToolApprovalStore.Lock()
+	defer registeredToolApprovalStore.Unlock()
+	delete(registeredToolApprovalStore.archiveExternalTokens, token)
 }
 
 func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, data map[string]interface{}) *IMAgentResponse {
@@ -137,6 +228,9 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 	if policyOwnerID != "" && h.registeredToolAcceptsRuntimePolicyOwnerArg(toolName) {
 		args[registeredToolPolicyOwnerIDField] = policyOwnerID
 	}
+	if h.emitArchiveExternalApprovalIfNeeded(args, &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}, policyOwnerID) {
+		return &IMAgentResponse{Text: "External archive extraction needs approval. An approval panel has been opened on the right.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
 
 	var result string
 	if tool.HandlerProg != nil {
@@ -180,8 +274,12 @@ func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[
 		h.firewall.ApproveForSession(approval.SessionID, approval.ToolName)
 		h.firewall.recordAudit(approval.ToolName, approval.Args, approval.Risk, security.PolicyUserOverride, "agent_view_approval_approved", approval.SessionID)
 	}
-	deleteRegisteredToolPendingApproval(approvalID)
+	// Keep the action-scoped archive token alive just long enough for the
+	// immediately following execution gateway to consume it.  Rejected and
+	// expired approvals still revoke it through deleteRegisteredToolPendingApproval.
+	removeRegisteredToolPendingApprovalPreservingExecutionToken(approvalID)
 	dataBytes, _ := json.Marshal(approval.Args)
+	defer revokeArchiveExternalApproval(approval.Args)
 	result := h.executeToolDetailedWithPolicyUserText(approval.PolicyOwnerID, approval.ToolName, string(dataBytes), "", nil).Text
 	if h != nil && h.app != nil && h.registry != nil {
 		if tool, ok := h.registry.Get(approval.ToolName); ok && tool != nil {
@@ -1155,6 +1253,17 @@ func getRegisteredToolPendingApproval(id string) (registeredToolPendingApproval,
 func deleteRegisteredToolPendingApproval(id string) {
 	registeredToolApprovalStore.Lock()
 	defer registeredToolApprovalStore.Unlock()
+	if item, ok := registeredToolApprovalStore.items[strings.TrimSpace(id)]; ok {
+		if token, _ := item.Args[archiveExternalApprovalTokenField].(string); token != "" {
+			delete(registeredToolApprovalStore.archiveExternalTokens, token)
+		}
+	}
+	delete(registeredToolApprovalStore.items, strings.TrimSpace(id))
+}
+
+func removeRegisteredToolPendingApprovalPreservingExecutionToken(id string) {
+	registeredToolApprovalStore.Lock()
+	defer registeredToolApprovalStore.Unlock()
 	delete(registeredToolApprovalStore.items, strings.TrimSpace(id))
 }
 
@@ -1164,6 +1273,9 @@ func pruneRegisteredToolPendingApprovals(maxAge time.Duration) {
 	now := time.Now()
 	for id, item := range registeredToolApprovalStore.items {
 		if now.Sub(item.CreatedAt) > maxAge {
+			if token, _ := item.Args[archiveExternalApprovalTokenField].(string); token != "" {
+				delete(registeredToolApprovalStore.archiveExternalTokens, token)
+			}
 			delete(registeredToolApprovalStore.items, id)
 		}
 	}

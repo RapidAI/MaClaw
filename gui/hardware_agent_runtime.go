@@ -174,9 +174,10 @@ func (a *App) newHardwareIntentClassifier() *intent.UnifiedIntentClassifier {
 		emb = embedding.NoopEmbedder{}
 	}
 	return intent.New(intent.Config{
-		Embedder:   emb,
-		LLMFunc:    a.buildUICLLMFunc(),
-		LLMTimeout: 30 * time.Second,
+		Embedder:       emb,
+		LLMFunc:        a.buildUICLLMFunc(),
+		LLMContextFunc: a.buildUICLLMContextFunc(),
+		LLMTimeout:     30 * time.Second,
 	})
 }
 

@@ -513,6 +513,39 @@ func TestEnqueueLLMUsageChargesBuiltinProviderServiceGroupCredits(t *testing.T) 
 	}
 }
 
+func TestFlushCreditChargesRecordsReferralRewardUsageOnce(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	repo := services.store.UserReferrals
+	system := userReferralMetricSystemSettings{SystemSettingsRepository: services.store.System, repo: repo}
+	invalidateLLMRuntimeCaches(system)
+	now := time.Now().UTC()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{Grants: []llmservice.Grant{{
+		ID: "used-referral-grant", UserID: "used-invitee", Email: "used-invitee@example.com", ServiceGroupID: "group-a", Source: "user_referral",
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreatedAt: now.Add(-time.Hour), CreditsTotal: 10,
+	}}}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	for range 2 {
+		if err := flushCreditCharges(ctx, system, map[string]*pendingCreditCharge{"charge": {userID: "used-invitee", email: "used-invitee@example.com", serviceGroupIDs: []string{"group-a"}, credits: 1}}); err != nil {
+			t.Fatalf("flush charges: %v", err)
+		}
+	}
+	items, err := repo.ListDailyMetrics(ctx, store.DefaultTenantID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.Event == userReferralMetricRewardUsed {
+			if item.Count != 1 {
+				t.Fatalf("usage metric count=%d, want 1", item.Count)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing reward usage metric: %#v", items)
+}
+
 func TestFlushProviderUsageSkipsPersistedRemoteCodingToolKeys(t *testing.T) {
 	ctx := context.Background()
 	system := newTestLLMServiceSystemSettings()

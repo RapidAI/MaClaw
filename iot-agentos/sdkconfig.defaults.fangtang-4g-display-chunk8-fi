@@ -1,0 +1,5 @@
+# Dedicated COM5 transport qualification image. Production Fangtang firmware
+# uses the same eight-row NV3023 DMA transport; this test image exists only to
+# preserve an explicit non-release validation target.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_FANGTANG_DISPLAY_TEST_TRANSFER_ROWS=8

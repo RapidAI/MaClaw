@@ -30,6 +30,20 @@ export interface ExpertDefinition {
     about?: string;
     created_at: string;
     updated_at: string;
+    /** HubCenter industry-management metadata. These entries are read-only. */
+    managed_industry?: boolean;
+    industry_asset_id?: string;
+    industry_listing_id?: string;
+    industry_version?: string;
+    industry_names?: string[];
+    industry_price?: number;
+    industry_installed?: boolean;
+    /** A free or already-owned industry listing is installing in the background. */
+    industry_auto_installing?: boolean;
+    /** Automatic installation failed this session; a retry is safe. */
+    industry_auto_install_failed?: boolean;
+    /** Paid industry listing without the current user's market entitlement. */
+    industry_purchase_required?: boolean;
 }
 
 /** Shape returned by OptimizeExpertFromSession: an editor-prefillable draft. */

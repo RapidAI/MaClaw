@@ -61,7 +61,6 @@ func newWorkflowTestApp(llm *tuiWorkflowTestLLM) *TUIApp {
 			filter:        filter,
 		},
 	}
-	app.appConfig.SetWorkflowEnabled(true)
 	// Keep a legacy engine mirror only where older assertions still reference it.
 	// Production runtime uses workflowV2 exclusively.
 	app.workflowEngine = workflow.NewWorkflowEngine(v1Registry, understanding, v1Store, &TUIWorkflowCallbacks{app: app, registry: v1Registry})

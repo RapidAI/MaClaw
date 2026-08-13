@@ -629,3 +629,7 @@ bool power_service_get_snapshot(device_power_snapshot_t *out_snapshot) {
                             : DEVICE_POWER_STATE_ACTIVE;
     return initialized;
 }
+
+bool power_service_get_telemetry(device_power_telemetry_t *out_telemetry) {
+    return platform_power_get_telemetry(out_telemetry);
+}

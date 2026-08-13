@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -621,6 +620,98 @@ func TestQuickSaveMaclawLLMProfileScopesWritesAndRejectsFollowingCoding(t *testi
 	}
 }
 
+func TestProfilePanelStateReportsVisionOnlyForTheConfirmedModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "vision-provider", Name: "Vision Provider", URL: "https://example.test/v1", Key: "key",
+			Model: "vision-model", SupportsVision: true,
+		}},
+		MaclawLLMCurrentProvider: "Vision Provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "vision-provider", Model: "text-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if state.Assistant.SupportsVision || state.Coding.SupportsVision {
+		t.Fatalf("other profile model inherited provider vision capability: %#v", state)
+	}
+
+	profiles := state.Profiles
+	profiles.Assistant.Model = "vision-model"
+	if err := app.SaveMaclawLLMProfiles(profiles, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles: %v", err)
+	}
+	state, err = app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState after save: %v", err)
+	}
+	if !state.Assistant.SupportsVision || !state.Coding.SupportsVision {
+		t.Fatalf("confirmed vision model did not enable capability: %#v", state)
+	}
+}
+
+func TestProfilePanelStateUsesVisionCapabilityForEachConfirmedProviderModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "vision-provider", Name: "Vision Provider", URL: "https://example.test/v1", Key: "key",
+			Model: "default-vision", SupportsVision: true, VisionModels: []string{"default-vision", "alternate-vision"},
+		}},
+		MaclawLLMCurrentProvider: "Vision Provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "vision-provider", Model: "alternate-vision"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "vision-provider", Model: "text-only"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if !state.Assistant.SupportsVision || state.Coding.SupportsVision {
+		t.Fatalf("model-specific capability = assistant:%v coding:%v, want true/false", state.Assistant.SupportsVision, state.Coding.SupportsVision)
+	}
+	if got := app.GetMaclawLLMConfig(); !got.SupportsVision {
+		t.Fatalf("assistant runtime config lost alternate model vision capability: %#v", got)
+	}
+	if got := app.GetCodingLLMConfig(); got.SupportsVision {
+		t.Fatalf("coding runtime config inherited another model vision capability: %#v", got)
+	}
+}
+
+func TestNormalizeMaclawLLMProviderDeduplicatesVisionModelIDs(t *testing.T) {
+	provider := normalizeMaclawLLMProvider(corelib.MaclawLLMProvider{
+		Model: "Vision-Default", SupportsVision: true,
+		VisionModels: []string{" vision-default ", "alternate", "ALTERNATE", ""},
+	})
+	if !reflect.DeepEqual(provider.VisionModels, []string{"alternate", "Vision-Default"}) {
+		t.Fatalf("VisionModels = %#v", provider.VisionModels)
+	}
+	if !provider.SupportsVision || !providerSupportsVisionForModel(provider, "ALTERNATE") || providerSupportsVisionForModel(provider, "text-only") {
+		t.Fatalf("normalized capability lookup is incorrect: %#v", provider)
+	}
+}
+
 func TestFetchMaclawLLMProfileModelsResolvesProviderByStableID(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -846,6 +937,288 @@ func TestMaclawLLMProfileHealthSeparatesIndependentProfilesAndReusesFollow(t *te
 	}
 	if following.Coding.Health != "configured" || following.Coding.CheckedAt != following.Assistant.CheckedAt {
 		t.Fatalf("following coding health = %#v, assistant = %#v; want assistant health projection", following.Coding, following.Assistant)
+	}
+}
+
+func TestProfilePanelStateListsOnlyConnectionTestedProviders(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "passed", Name: "Passed provider", URL: "https://passed.example/v1", Key: "key", Model: "passed-model", ConnectionTestPassed: true},
+			{ID: "pending", Name: "Pending provider", URL: "https://pending.example/v1", Key: "key", Model: "pending-model"},
+			{ID: "hub", Name: hubServiceProviderName, URL: "https://hub.example/v1", Model: "auto", IsHubService: true, ConnectionTestPassed: true},
+		},
+		MaclawLLMCurrentProvider: "Passed provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "passed", Model: "passed-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if len(state.Providers) != 2 {
+		t.Fatalf("assignment providers = %#v, want passed provider and Hub service only", state.Providers)
+	}
+	if state.Providers[0].ID != "passed" || !state.Providers[0].ConnectionTestPassed {
+		t.Fatalf("first assignment provider = %#v, want tested passed provider", state.Providers[0])
+	}
+	if state.Providers[1].ID != "hub" || !state.Providers[1].IsHubService {
+		t.Fatalf("second assignment provider = %#v, want Hub service", state.Providers[1])
+	}
+}
+
+func TestSaveMaclawLLMProfilesRejectsUntestedProviderSelection(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "tested", Name: "Tested provider", URL: "https://tested.example/v1", Key: "key", Model: "tested-model", ConnectionTestPassed: true},
+			{ID: "untested", Name: "Untested provider", URL: "https://untested.example/v1", Key: "key", Model: "untested-model"},
+		},
+		MaclawLLMCurrentProvider: "Tested provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "tested", Model: "tested-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	profiles := state.Profiles
+	profiles.Assistant = corelib.MaclawLLMProfile{ProviderID: "untested", Model: "untested-model"}
+	if err := app.SaveMaclawLLMProfiles(profiles, state.Revision); err == nil || !strings.Contains(err.Error(), "has not passed a connection test") {
+		t.Fatalf("SaveMaclawLLMProfiles untested error = %v, want connection-test rejection", err)
+	}
+	if got := app.GetMaclawLLMConfig().ProviderID; got != "tested" {
+		t.Fatalf("untested save changed assistant provider to %q", got)
+	}
+}
+
+func TestProfileRevisionChangesWhenProviderEligibilityChanges(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://example.test/v1", Key: "key", Model: "model"}},
+		MaclawLLMCurrentProvider: "Provider",
+		MaclawLLMProfiles:        &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion, Assistant: corelib.MaclawLLMProfile{ProviderID: "provider", Model: "model"}, Coding: corelib.MaclawLLMProfile{InheritAssistant: true}},
+	}
+	before := maclawLLMProfileRevision(cfg)
+	cfg.MaclawLLMProviders[0].ConnectionTestPassed = true
+	if after := maclawLLMProfileRevision(cfg); after == before {
+		t.Fatal("profile revision did not change when connection-test eligibility changed")
+	}
+}
+
+func TestMarkMaclawLLMProviderConnectionTestPassedRejectsChangedModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://example.test/v1", Key: "key", Model: "current-model"}},
+		MaclawLLMCurrentProvider: "Provider",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	err := app.markMaclawLLMProviderConnectionTestPassed("Provider", corelib.MaclawLLMConfig{ProviderID: "provider", Model: "tested-model"})
+	if err == nil || !strings.Contains(err.Error(), "changed while its connection test was running") {
+		t.Fatalf("mark changed model error = %v, want stale-test rejection", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MaclawLLMProviders[0].ConnectionTestPassed {
+		t.Fatal("stale probe marked the changed provider as tested")
+	}
+}
+
+func TestMarkMaclawLLMProviderConnectionTestPassedRejectsChangedConnectionShape(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://new.example/v1", Key: "key", Model: "model", Protocol: "openai", WireAPI: "responses"}},
+		MaclawLLMCurrentProvider: "Provider",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	err := app.markMaclawLLMProviderConnectionTestPassed("Provider", corelib.MaclawLLMConfig{ProviderID: "provider", URL: "https://old.example/v1", Model: "model", Protocol: "openai", WireAPI: "responses"})
+	if err == nil || !strings.Contains(err.Error(), "changed while its connection test was running") {
+		t.Fatalf("mark changed connection error = %v, want stale-test rejection", err)
+	}
+}
+
+func TestSaveMaclawLLMProvidersDoesNotTrustClientConnectionTestFlag(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://example.test/v1", Key: "old-key", Model: "model", ConnectionTestPassed: true}},
+		MaclawLLMCurrentProvider: "Provider",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://example.test/v1", Key: "new-key", Model: "model", ConnectionTestPassed: true}}, "Provider"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.MaclawLLMProviders[0].ConnectionTestPassed {
+		t.Fatal("public save retained forged connection-test result after credential change")
+	}
+}
+
+func TestSaveMaclawLLMProvidersKeepsTestedProviderIDAcrossRename(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "provider", Name: "Old name", URL: "https://example.test/v1", Key: "key", Model: "model", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "Old name",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "provider", Model: "model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{{
+		Name: "Renamed provider", URL: "https://example.test/v1", Key: "key", Model: "model", ConnectionTestPassed: true,
+	}}, "Renamed provider"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	provider := saved.MaclawLLMProviders[0]
+	if provider.ID != "provider" || !provider.ConnectionTestPassed {
+		t.Fatalf("renamed provider = %#v, want original ID and verified state", provider)
+	}
+	if saved.MaclawLLMProfiles == nil || saved.MaclawLLMProfiles.Assistant.ProviderID != "provider" {
+		t.Fatalf("rename invalidated assistant profile: %#v", saved.MaclawLLMProfiles)
+	}
+}
+
+func TestTestAndSaveMaclawLLMProvidersMarksSuccessfulConnectionTest(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://old.example/v1", Key: "old-key", Model: "model"}},
+		MaclawLLMCurrentProvider: "Provider",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"}}]}`))
+	}))
+	defer srv.Close()
+	providers := []corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://new.example/v1", Key: "new-key", Model: "model"}}
+	providers[0].URL = srv.URL
+	if _, err := app.TestAndSaveMaclawLLMProviders(providers, "Provider", "Provider"); err != nil {
+		t.Fatalf("TestAndSaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	provider := saved.MaclawLLMProviders[0]
+	if !provider.ConnectionTestPassed || provider.URL != srv.URL || provider.Key != "new-key" {
+		t.Fatalf("saved provider = %#v, want tested new connection", provider)
+	}
+}
+
+func TestTestAndSaveMaclawLLMProvidersRejectsAmbiguousProviderName(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "first", Name: "Shared name", URL: "https://first.example/v1", Key: "first-key", Model: "first-model"},
+			{ID: "second", Name: "Shared name", URL: "https://second.example/v1", Key: "second-key", Model: "second-model"},
+		},
+		MaclawLLMCurrentProvider: "Shared name",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	_, err := app.TestAndSaveMaclawLLMProviders([]corelib.MaclawLLMProvider{
+		{ID: "first", Name: "Shared name", URL: "https://first.example/v1", Key: "first-key", Model: "first-model"},
+		{ID: "second", Name: "Shared name", URL: "https://second.example/v1", Key: "second-key", Model: "second-model"},
+	}, "Shared name", "Shared name")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("TestAndSaveMaclawLLMProviders() error = %v, want ambiguous provider rejection", err)
+	}
+}
+
+func TestTestAndSaveMaclawLLMProvidersRejectsConcurrentProviderChange(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://old.example/v1", Key: "old-key", Model: "model"}},
+		MaclawLLMCurrentProvider: "Provider",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"}}]}`))
+	}))
+	defer srv.Close()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := app.TestAndSaveMaclawLLMProviders([]corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: srv.URL, Key: "new-key", Model: "model"}}, "Provider", "Provider")
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("connection test did not start")
+	}
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{{ID: "provider", Name: "Provider", URL: "https://concurrent.example/v1", Key: "other-key", Model: "model"}}, "Provider"); err != nil {
+		t.Fatalf("concurrent SaveMaclawLLMProviders: %v", err)
+	}
+	close(release)
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "providers changed while the connection test was running") {
+		t.Fatalf("TestAndSaveMaclawLLMProviders error = %v, want stale provider rejection", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if provider := saved.MaclawLLMProviders[0]; provider.URL != "https://concurrent.example/v1" || provider.ConnectionTestPassed {
+		t.Fatalf("concurrent provider was overwritten or marked tested: %#v", provider)
 	}
 }
 
@@ -1582,18 +1955,51 @@ func TestSaveVisionProbeResultForProviderDoesNotCreateUnneededWrite(t *testing.T
 	app := &App{testHomeDir: tmpHome}
 	if err := app.SaveConfig(corelib.AppConfig{
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
-			Name: "OAuth Test", SupportsVision: true, IsCustom: true,
+			Name: "OAuth Test", Model: "test-model", SupportsVision: true, IsCustom: true,
 		}},
 		MaclawLLMCurrentProvider: "OAuth Test",
 	}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	if err := app.saveVisionProbeResultForProvider("OAuth Test", true); err != nil {
+	if err := app.saveVisionProbeResultForProvider("OAuth Test", "test-model", true); err != nil {
 		t.Fatalf("saveVisionProbeResultForProvider() error = %v", err)
 	}
 	if got := app.GetMaclawLLMProviders().Providers[0].SupportsVision; !got {
 		t.Fatal("SupportsVision = false, want true")
+	}
+}
+
+func TestSaveVisionProbeResultForProviderTracksOnlyTheTestedModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: "Vision Provider", Model: "default-model", SupportsVision: true,
+			VisionModels: []string{"default-model", "alternate-model"}, IsCustom: true,
+		}},
+		MaclawLLMCurrentProvider: "Vision Provider",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.saveVisionProbeResultForProvider("Vision Provider", "alternate-model", false); err != nil {
+		t.Fatalf("save alternate-model result: %v", err)
+	}
+	provider := app.GetMaclawLLMProviders().Providers[0]
+	if provider.SupportsVision != true || !reflect.DeepEqual(provider.VisionModels, []string{"default-model"}) {
+		t.Fatalf("alternate result changed default capability or retained stale model: %#v", provider)
+	}
+
+	if err := app.saveVisionProbeResultForProvider("Vision Provider", "default-model", false); err != nil {
+		t.Fatalf("save default-model result: %v", err)
+	}
+	provider = app.GetMaclawLLMProviders().Providers[0]
+	if provider.SupportsVision || len(provider.VisionModels) != 0 {
+		t.Fatalf("default result did not clear only default capability: %#v", provider)
 	}
 }
 
@@ -1704,39 +2110,6 @@ func TestOAuthFlowReplacementKeepsNewestCancellationHandle(t *testing.T) {
 	}
 	if err := claimThird(nil); err == nil {
 		t.Fatal("cancelled OAuth flow claimed a result")
-	}
-}
-
-func TestCancelXAIOAuthURLOnlyCancelsMatchingSession(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	app := &App{
-		oauthCancel:              cancel,
-		xaiOAuthSession:          &oauth.XAIAuthSession{},
-		xaiOAuthAuthorizationURL: "https://auth.x.ai/authorize?state=current",
-	}
-
-	if app.CancelXAIOAuthURL("https://auth.x.ai/authorize?state=stale") {
-		t.Fatal("mismatched xAI authorization URL cancelled the active session")
-	}
-	select {
-	case <-ctx.Done():
-		t.Fatal("mismatched xAI authorization URL cancelled the active context")
-	default:
-	}
-	if app.xaiOAuthSession == nil {
-		t.Fatal("mismatched xAI authorization URL cleared the active session")
-	}
-
-	if !app.CancelXAIOAuthURL("https://auth.x.ai/authorize?state=current") {
-		t.Fatal("matching xAI authorization URL did not cancel the active session")
-	}
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("matching xAI authorization URL did not cancel the active context")
-	}
-	if app.xaiOAuthSession != nil || app.xaiOAuthAuthorizationURL != "" || app.oauthCancel != nil {
-		t.Fatal("matching xAI authorization URL did not release active OAuth state")
 	}
 }
 
@@ -2288,6 +2661,9 @@ func TestUpsertCodeGenProviderStoresAvailableModelIDs(t *testing.T) {
 	}
 	if got := updated[0].Model; got != "qax-codegen/Auto" {
 		t.Fatalf("CodeGen Model = %q, want selected SSO model", got)
+	}
+	if updated[0].ConnectionTestPassed {
+		t.Fatal("SSO authentication incorrectly marked the provider's model connection as tested")
 	}
 	if got := updated[1].Name; got != "Other" {
 		t.Fatalf("non-CodeGen provider was not preserved: %+v", updated[1])

@@ -891,8 +891,16 @@ type MaclawLLMProvider struct {
 	TimeoutSec      int      `json:"timeout_sec,omitempty"`
 	MaxOutputTokens int      `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
 	Models          []string `json:"models,omitempty"`            // provider-specific model IDs, when discovered from the service
+	// ConnectionTestPassed is set only after the provider's current connection
+	// configuration has completed a successful test. Model assignment surfaces
+	// use it to avoid offering unverified providers for execution.
+	ConnectionTestPassed bool `json:"connection_test_passed,omitempty"`
 	IsCustom        bool     `json:"is_custom,omitempty"`
 	IsHubService    bool     `json:"is_hub_service,omitempty"`
+	// VisionModels records the provider model IDs whose image-input capability
+	// has been confirmed. SupportsVision remains the compatibility projection
+	// for Model, so older configuration files keep their existing behaviour.
+	VisionModels    []string `json:"vision_models,omitempty"`
 	SupportsVision  bool     `json:"supports_vision"`
 	AgentType       string   `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──

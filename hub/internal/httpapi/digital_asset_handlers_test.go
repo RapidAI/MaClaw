@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -227,6 +228,22 @@ func TestDigitalAssetAdminHandlers_FeatureFlagAndCRUD(t *testing.T) {
 	got, err := svc.Repo.GetLibrary(req.Context(), store.DefaultTenantID, lib.ID)
 	if err != nil || got == nil || got.Name != "Policy" {
 		t.Fatalf("repo get=%+v err=%v", got, err)
+	}
+}
+
+func TestResolveDigitalAssetTenantUsesAdminScope(t *testing.T) {
+	global := &store.AdminUser{Scope: "global"}
+	globalReq := httptest.NewRequest(http.MethodGet, "/api/admin/digital-assets/libraries?tenant_id=tenant_other", nil)
+	globalReq = globalReq.WithContext(context.WithValue(globalReq.Context(), adminUserContextKey, global))
+	if got := resolveDigitalAssetTenant(globalReq); got != store.DefaultTenantID {
+		t.Fatalf("global admin tenant = %q, want %q", got, store.DefaultTenantID)
+	}
+
+	tenant := &store.AdminUser{Scope: "tenant", TenantID: "tenant_acme"}
+	tenantReq := httptest.NewRequest(http.MethodGet, "/api/admin/digital-assets/libraries?tenant_id=tenant_other", nil)
+	tenantReq = tenantReq.WithContext(context.WithValue(tenantReq.Context(), adminUserContextKey, tenant))
+	if got := resolveDigitalAssetTenant(tenantReq); got != "tenant_acme" {
+		t.Fatalf("tenant admin tenant = %q, want tenant_acme", got)
 	}
 }
 

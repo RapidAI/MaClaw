@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Capture a bounded Fangtang transaction from COM5.
+"""Capture a bounded ESP32 transaction from a selected serial port.
 
-This helper deliberately owns COM5 only in the foreground.  It never touches
-COM3/COM4 and always closes the serial handle before returning, including on
-Ctrl+C.  Terminal markers let a normal voice command finish early while the
-timeout still covers long Agent work and cancellation testing.
+The caller chooses the explicitly named port; the helper owns it only in the
+foreground and always closes it before returning, including on Ctrl+C.
+Terminal markers let a normal voice command finish early while the timeout
+still covers long Agent work and cancellation testing.
 """
 
 from __future__ import annotations
@@ -27,6 +27,11 @@ TERMINAL_MARKERS = (
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--port",
+        default="COM5",
+        help="serial port to capture (default: COM5)",
+    )
     parser.add_argument("--seconds", type=int, default=180)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument(
@@ -57,10 +62,10 @@ def main() -> int:
         temporary.replace(args.output)
 
     try:
-        with serial.Serial("COM5", 115200, timeout=0.2) as port:
+        with serial.Serial(args.port, 115200, timeout=0.2) as port:
             if args.reset_after_open:
                 # Match the conventional ESP32 USB-UART reset sequence after
-                # the reader owns COM5.  This is intentionally opt-in: a
+                # the reader owns the selected port.  This is intentionally opt-in: a
                 # normal voice transaction must never be disrupted merely by
                 # opening the diagnostic capture helper.
                 port.dtr = False

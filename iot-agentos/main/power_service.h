@@ -22,3 +22,4 @@ bool power_service_wake_display_from_schedule(void);
  * synthesizing physical input or changing manual-wake scheduling policy. */
 bool power_service_wake_display_from_remote_control(void);
 bool power_service_get_snapshot(device_power_snapshot_t *out_snapshot);
+bool power_service_get_telemetry(device_power_telemetry_t *out_telemetry);

@@ -339,7 +339,7 @@
     }
 
     renderOverviewTenantInfo(tenantData, centerData, computeData);
-    loadOverviewSystemFreeStatus();
+    if (tenantAdmin) loadOverviewSystemFreeStatus();
   }
 
   function systemFreeI18n(key) {
@@ -368,7 +368,7 @@
     var panel = byID('overviewSystemFreePanel');
     if (!panel) return;
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
-    if (!profile) {
+    if (!profile || !isTenantAdminScope()) {
       panel.classList.add('hidden');
       return;
     }
@@ -411,7 +411,7 @@
     var panel = byID('overviewSystemFreePanel');
     if (!panel) return;
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
-    if (!profile) {
+    if (!profile || !isTenantAdminScope()) {
       panel.classList.add('hidden');
       return;
     }
@@ -419,8 +419,10 @@
       var st = typeof global.fetchTenantSystemFreeStatus === 'function'
         ? await global.fetchTenantSystemFreeStatus()
         : await global.api('/api/admin/llm/system-free');
+      if (!isTenantAdminScope()) return;
       applyOverviewSystemFreeStatus(st);
     } catch (err) {
+      if (!isTenantAdminScope()) return;
       panel.classList.remove('hidden');
       var badge = byID('overviewSystemFreeBadge');
       var detail = byID('overviewSystemFreeDetail');

@@ -100,6 +100,17 @@ var mobileStatePersistence = struct {
 	loaded bool
 }{}
 
+// mobileStateWriteMu serializes complete state.json snapshots. A purge must
+// commit its post-deletion snapshot after any already-running writer, otherwise
+// an older snapshot could win the final rename and restore deleted records on
+// the next Hub restart.
+var mobileStateWriteMu sync.Mutex
+
+// mobilePersistStateBeforeRenameForTest lets the package tests hold a stale
+// snapshot after it has been assembled but before it becomes durable. It is
+// nil in production.
+var mobilePersistStateBeforeRenameForTest func()
+
 var mobileOfficialHubCenterCandidates = []string{
 	"https://hubs.mypapers.top",
 	"https://hubs.maclaw.top",
@@ -521,6 +532,14 @@ func mobileNormalizePersistedTenantID(tenantID *string) bool {
 }
 
 func mobilePersistState() {
+	mobileStateWriteMu.Lock()
+	defer mobileStateWriteMu.Unlock()
+	mobilePersistStateLocked()
+}
+
+// mobilePersistStateLocked writes a complete Mobile state snapshot. The caller
+// must hold mobileStateWriteMu.
+func mobilePersistStateLocked() {
 	path := mobileStatePath()
 	if path == "" {
 		return
@@ -606,6 +625,9 @@ func mobilePersistState() {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return
 	}
+	if hook := mobilePersistStateBeforeRenameForTest; hook != nil {
+		hook()
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 	}
@@ -653,6 +675,11 @@ func mobileRealtimeKey(tenantID, userID string) string {
 }
 
 func mobileRealtimeRegister(tenantID, userID string, conn mobileRealtimeJSONWriter) (*mobileRealtimeClient, func()) {
+	mobileKnowledgePurgeState.RLock()
+	if !mobileOwnerWriteAllowedLocked(tenantID, userID) {
+		mobileKnowledgePurgeState.RUnlock()
+		return nil, func() {}
+	}
 	client := &mobileRealtimeClient{
 		key:  mobileRealtimeKey(tenantID, userID),
 		conn: conn,
@@ -666,6 +693,7 @@ func mobileRealtimeRegister(tenantID, userID string, conn mobileRealtimeJSONWrit
 	}
 	mobileRealtimeClients.clients[client.key][client] = struct{}{}
 	mobileRealtimeClients.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 	return client, func() {
 		mobileRealtimeUnregister(client)
 	}
@@ -875,6 +903,9 @@ func MobileRealtimeHandler(identity *auth.IdentityService) http.HandlerFunc {
 		defer conn.Close()
 		client, unregister := mobileRealtimeRegister(principal.TenantID, principal.UserID, conn)
 		defer unregister()
+		if client == nil {
+			return
+		}
 
 		client.mu.Lock()
 		err = client.conn.WriteJSON(map[string]any{
@@ -1129,9 +1160,17 @@ func mobileHandleRealtimePtyInput(client *mobileRealtimeClient, principal *auth.
 	}
 
 	out, runErr := mobileHubSSHRunInput(&record, input, raw)
+	mobileKnowledgePurgeState.RLock()
+	if !mobileOwnerWriteAllowedLocked(record.TenantID, record.OwnerID) {
+		mobileKnowledgePurgeState.RUnlock()
+		return
+	}
 	mobileBackendSSHSessions.Lock()
-	mobileBackendSSHSessions.sessions[sessionID] = record
+	if current, exists := mobileBackendSSHSessions.sessions[sessionID]; exists && current.OwnerID == record.OwnerID && current.TenantID == record.TenantID {
+		mobileBackendSSHSessions.sessions[sessionID] = record
+	}
 	mobileBackendSSHSessions.Unlock()
+	mobileKnowledgePurgeState.RUnlock()
 	payload := mobileBackendSSHSessionPayload(record)
 	// Fan-out session state (includes progressive output already streamed mid-run).
 	mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
@@ -1431,7 +1470,7 @@ func mobileRequestBaseURL(r *http.Request) string {
 }
 
 func mobileLlmAccessPayload(ctx context.Context, principal *auth.ViewerPrincipal) map[string]any {
-	if principal != nil {
+	if principal != nil && mobileOwnerWriteAllowed(principal.TenantID, principal.UserID) {
 		key := mobileLlmAuthorizationKey(principal.TenantID, principal.UserID)
 		mobileLlmAuthorizations.Lock()
 		record, ok := mobileLlmAuthorizations.authorizations[key]
@@ -1439,9 +1478,7 @@ func mobileLlmAccessPayload(ctx context.Context, principal *auth.ViewerPrincipal
 		if !ok {
 			record, ok = mobilePersistedLLMAuthorization(ctx, principal.TenantID, principal.UserID)
 			if ok {
-				mobileLlmAuthorizations.Lock()
-				mobileLlmAuthorizations.authorizations[key] = record
-				mobileLlmAuthorizations.Unlock()
+				ok = mobileStoreLLMAuthorization(record)
 			}
 		}
 		if ok {
@@ -1756,12 +1793,17 @@ func MobileLLMDesktopQRAuthorizationHandler(identity *auth.IdentityService) http
 			return
 		}
 		if err := persistMobileLLMAuthorization(r.Context(), record); err != nil {
+			if mobileLLMAuthorizationWasPurged(err) {
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "LLM_AUTHORIZATION_STORE_FAILED", "failed to persist desktop LLM authorization")
 			return
 		}
-		mobileLlmAuthorizations.Lock()
-		mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(principal.TenantID, principal.UserID)] = record
-		mobileLlmAuthorizations.Unlock()
+		if !mobileStoreLLMAuthorization(record) {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":    "authorized",
@@ -3695,15 +3737,16 @@ func mobileOfficialSearchAnswer(r *http.Request, handler http.Handler, messages 
 }
 
 func mobileThirdPartyLLMAuthorization(ctx context.Context, tenantID, userID string) (mobileLlmAuthorizationRecord, bool) {
+	if !mobileOwnerWriteAllowed(tenantID, userID) {
+		return mobileLlmAuthorizationRecord{}, false
+	}
 	mobileLlmAuthorizations.Lock()
 	record, ok := mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(tenantID, userID)]
 	mobileLlmAuthorizations.Unlock()
 	if !ok {
 		record, ok = mobilePersistedLLMAuthorization(ctx, tenantID, userID)
 		if ok {
-			mobileLlmAuthorizations.Lock()
-			mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(tenantID, userID)] = record
-			mobileLlmAuthorizations.Unlock()
+			ok = mobileStoreLLMAuthorization(record)
 		}
 	}
 	return record, ok && strings.TrimSpace(record.ProviderURL) != "" && strings.TrimSpace(record.APIKey) != ""
@@ -4314,9 +4357,17 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 			Markdown:  markdown,
 			UpdatedAt: now,
 		}
+		mobileKnowledgePurgeState.RLock()
+		if !mobileOwnerWriteAllowedLocked(principal.TenantID, principal.UserID) {
+			mobileKnowledgePurgeState.RUnlock()
+			mobileDocumentQuotaAdmissionMu.Unlock()
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
 		mobileDocuments.Lock()
 		mobileDocuments.drafts[draftID] = record
 		mobileDocuments.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 		mobileDocumentQuotaAdmissionMu.Unlock()
 		mobilePersistState()
 		go mobileIngestDocumentDraft(principal, record)
@@ -4375,7 +4426,6 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			return
 		}
 		mobileDocumentQuotaAdmissionMu.Lock()
-		// Check ownership + delta while quota writers are serialized.
 		mobileDocuments.Lock()
 		prev, okPrev := mobileDocuments.drafts[draftID]
 		mobileDocuments.Unlock()
@@ -4393,6 +4443,13 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			}
 		}
 		now := time.Now().UTC()
+		mobileKnowledgePurgeState.RLock()
+		if !mobileOwnerWriteAllowedLocked(principal.TenantID, ownerID) {
+			mobileKnowledgePurgeState.RUnlock()
+			mobileDocumentQuotaAdmissionMu.Unlock()
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.drafts[draftID]
 		if ok && record.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
@@ -4402,6 +4459,7 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			mobileDocuments.drafts[draftID] = record
 		}
 		mobileDocuments.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 		mobileDocumentQuotaAdmissionMu.Unlock()
 		if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
@@ -4819,9 +4877,16 @@ func MobileDocumentExportHandler(identity *auth.IdentityService) http.HandlerFun
 			job.Status = "ready"
 			job.Message = "导出文件已生成，可下载或分享。"
 		}
+		mobileKnowledgePurgeState.RLock()
+		if !mobileOwnerWriteAllowedLocked(principal.TenantID, principal.UserID) {
+			mobileKnowledgePurgeState.RUnlock()
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
 		mobileDocuments.Lock()
 		mobileDocuments.exports[job.JobID] = job
 		mobileDocuments.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 		mobilePersistState()
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", mobileDocumentExportPayload(job)))
 		writeJSON(w, http.StatusAccepted, mobileDocumentExportPayload(job))
@@ -6231,6 +6296,10 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				return nil, false
 			}
 			payload := mobileStoreDraftAndUpload(draft, &record, releaseUploadOriginal)
+			if payload == nil {
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+				return nil, false
+			}
 			cleanupUploadBlob = false
 			return payload, true
 		}
@@ -6386,6 +6455,11 @@ func mobileUploadedFileNeedsRemoteOfficeExtraction(filename string) bool {
 // mobileStoreDraftAndUpload writes draft+upload under lock. When releaseUploadOriginal
 // is true and draft has an original, the upload-side blob is freed.
 func mobileStoreDraftAndUpload(draft mobileDocumentDraftRecord, record *mobileDocumentUploadRecord, releaseUploadOriginal bool) map[string]any {
+	mobileKnowledgePurgeState.RLock()
+	defer mobileKnowledgePurgeState.RUnlock()
+	if !mobileOwnerWriteAllowedLocked(draft.TenantID, draft.OwnerID) {
+		return nil
+	}
 	mobileDocuments.Lock()
 	defer mobileDocuments.Unlock()
 	mobileDocuments.drafts[draft.ID] = draft
@@ -6785,6 +6859,13 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 			}
 		}
 
+		mobileKnowledgePurgeState.RLock()
+		if !mobileOwnerWriteAllowedLocked(record.TenantID, record.OwnerID) {
+			mobileKnowledgePurgeState.RUnlock()
+			mobileDocumentQuotaAdmissionMu.Unlock()
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker owner is no longer available")
+			return
+		}
 		mobileDocuments.Lock()
 		// Revalidate after the quota scan, which necessarily acquires and releases
 		// mobileDocuments.Lock. A status poll may have completed the task meanwhile.
@@ -6793,6 +6874,7 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 			(strings.TrimSpace(current.ClaimedBy) != "" && current.ClaimedBy != principal.MachineID) ||
 			current.Status == "ready" || current.Status == "failed" {
 			mobileDocuments.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			mobileDocumentQuotaAdmissionMu.Unlock()
 			writeError(w, http.StatusConflict, "UPLOAD_STATE_CHANGED", "upload task changed while applying result")
 			return
@@ -6839,6 +6921,7 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 		mobileDocuments.uploads[taskID] = record
 		payload := mobileDocumentUploadPayload(record)
 		mobileDocuments.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 		mobileDocumentQuotaAdmissionMu.Unlock()
 		mobilePersistState()
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
@@ -7016,6 +7099,12 @@ func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFun
 					UpdatedAt:       now,
 				}
 			}
+			mobileKnowledgePurgeState.RLock()
+			if !mobileOwnerWriteAllowedLocked(tenantID, ownerID) {
+				mobileKnowledgePurgeState.RUnlock()
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Profile owner is no longer available")
+				return
+			}
 			mobileServerProfiles.Lock()
 			// Worker replace-by-source; mobile viewer upserts without wiping desktop publishes.
 			if !viewerUpsert {
@@ -7029,6 +7118,7 @@ func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFun
 				mobileServerProfiles.profiles[key] = record
 			}
 			mobileServerProfiles.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			go mobilePersistState()
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status": "ok",
@@ -8368,9 +8458,16 @@ func MobileDigitalEmployeeTaskHandler(identity *auth.IdentityService) http.Handl
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
+		mobileKnowledgePurgeState.RLock()
+		if !mobileOwnerWriteAllowedLocked(principal.TenantID, principal.UserID) {
+			mobileKnowledgePurgeState.RUnlock()
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
 		mobileDigitalEmployeeTasks.Lock()
 		mobileDigitalEmployeeTasks.tasks[record.TaskID] = record
 		mobileDigitalEmployeeTasks.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 		mobilePersistState()
 		payload := mobileDigitalEmployeeTaskPayload(record)
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
@@ -8428,6 +8525,7 @@ func mobileDigitalEmployeeTaskClaim(identity *auth.IdentityService, requirePathE
 			registryEmployees = loadVERegistry(r.Context(), tenantSystem).Employees
 		}
 
+		mobileKnowledgePurgeState.RLock()
 		mobileDigitalEmployeeTasks.Lock()
 		// Map iteration order is random; claim the oldest queued task this worker
 		// can host so multi-task mobile queues stay FIFO-fair.
@@ -8451,15 +8549,20 @@ func mobileDigitalEmployeeTaskClaim(identity *auth.IdentityService, requirePathE
 		}
 		if claimID != "" {
 			record := mobileDigitalEmployeeTasks.tasks[claimID]
-			record.Status = "in_progress"
-			record.Result = "远程数字员工已领取任务，正在处理。"
-			record.Message = "远程数字员工已领取任务，正在处理。"
-			record.ClaimedBy = claimedBy
-			record.UpdatedAt = now
-			mobileDigitalEmployeeTasks.tasks[claimID] = record
-			claimed = record
+			if !mobileOwnerWriteAllowedLocked(record.TenantID, record.OwnerID) {
+				claimID = ""
+			} else {
+				record.Status = "in_progress"
+				record.Result = "远程数字员工已领取任务，正在处理。"
+				record.Message = "远程数字员工已领取任务，正在处理。"
+				record.ClaimedBy = claimedBy
+				record.UpdatedAt = now
+				mobileDigitalEmployeeTasks.tasks[claimID] = record
+				claimed = record
+			}
 		}
 		mobileDigitalEmployeeTasks.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 		if claimed.TaskID == "" {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"task":   nil,
@@ -8623,15 +8726,18 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 			registryEmployees = loadVERegistry(r.Context(), tenantSystem).Employees
 		}
 
+		mobileKnowledgePurgeState.RLock()
 		mobileDigitalEmployeeTasks.Lock()
 		record, ok := mobileDigitalEmployeeTasks.tasks[taskID]
 		if !ok {
 			mobileDigitalEmployeeTasks.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}
 		if !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			mobileDigitalEmployeeTasks.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}
@@ -8640,12 +8746,14 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 		if record.Status == "done" || record.Status == "failed" {
 			if status != record.Status {
 				mobileDigitalEmployeeTasks.Unlock()
+				mobileKnowledgePurgeState.RUnlock()
 				writeError(w, http.StatusConflict, "TASK_ALREADY_FINISHED", "task already finished")
 				return
 			}
 			// Idempotent re-report of the same terminal status: return current snapshot.
 			payload := mobileDigitalEmployeeTaskPayload(record)
 			mobileDigitalEmployeeTasks.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			writeJSON(w, http.StatusOK, payload)
 			return
 		}
@@ -8666,6 +8774,7 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 		}
 		if !authorized {
 			mobileDigitalEmployeeTasks.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}
@@ -8685,7 +8794,14 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 		if status == record.Status && nextResult == record.Result && nextMessage == record.Message {
 			payload := mobileDigitalEmployeeTaskPayload(record)
 			mobileDigitalEmployeeTasks.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
 			writeJSON(w, http.StatusOK, payload)
+			return
+		}
+		if !mobileOwnerWriteAllowedLocked(record.TenantID, record.OwnerID) {
+			mobileDigitalEmployeeTasks.Unlock()
+			mobileKnowledgePurgeState.RUnlock()
+			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}
 		record.Status = status
@@ -8696,6 +8812,7 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 		mobileDigitalEmployeeTasks.tasks[taskID] = record
 		ownerID := record.OwnerID
 		mobileDigitalEmployeeTasks.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
 
 		// Streaming in_progress patches are high-frequency; keep them in memory +
 		// realtime only. Persist durable snapshots on terminal status (claim already

@@ -1572,6 +1572,7 @@ jobs:
           Icon=${OUT_LOWER}
           Type=Application
           Categories=Development;
+          MimeType=x-scheme-handler/maclaw;
           DEOF
           sed -i 's/^[[:space:]]*//' "$APP_DIR/${OUT_LOWER}.desktop"
 
@@ -1803,6 +1804,7 @@ jobs:
           Icon=${OUT_LOWER}
           Type=Application
           Categories=Development;
+          MimeType=x-scheme-handler/maclaw;
           DEOF
           sed -i 's/^[[:space:]]*//' "$APP_DIR/${OUT_LOWER}.desktop"
 

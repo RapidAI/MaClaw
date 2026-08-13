@@ -2373,7 +2373,7 @@ func (m *tuiModel) resolveIdentityFromTUI(identity, hubCenterURL string) tea.Cmd
 		if err != nil {
 			return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
 		}
-		hubURL, hubID, tenantID, err := remote.PickBestHubWithTenantAndID(*resolveResult)
+		hubURL, hubID, tenantID, err := remote.PickDefaultRegistrationHubWithTenantAndID(*resolveResult)
 		if err != nil {
 			// Fallback: if identity looks like a phone number and resolve failed
 			// with "no phone route found", try using the configured hub URL
@@ -2416,10 +2416,13 @@ func (m *tuiModel) resolveIdentityFromTUI(identity, hubCenterURL string) tea.Cmd
 		if method == "" {
 			method = "email"
 		}
-		// If Hub declares phone auth but identity looks like email, override to email.
-		// This mirrors GUI's registrationIdentityLooksPhone logic.
+		// A phone-only Hub must not silently fall back to email. Doing so lets the
+		// user proceed into an email flow that the selected Hub will reject later.
 		if method == "phone" && !isPhoneIdentityForTUI(identity) {
-			method = "email"
+			return views.OnboardingResolveIdentityResultMsg{
+				Success: false,
+				Message: tuiText(lang, "regRequiresPhone"),
+			}
 		}
 		if method == "mixed" {
 			if isPhoneIdentityForTUI(identity) {

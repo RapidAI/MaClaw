@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 type hubLLMConfigTestSettings struct {
@@ -38,5 +39,20 @@ func TestLoadGlobalHubLLMConfigIgnoresTenantScopedShadow(t *testing.T) {
 	cfg := loadGlobalHubLLMConfig(im.WithTenant(context.Background(), "tenant_a"), settings)
 	if cfg == nil || cfg.APIURL != "https://global.example/v1" || cfg.Model != "global-model" {
 		t.Fatalf("loaded config = %#v", cfg)
+	}
+}
+
+func TestTenantScopedSystemSettingsExposesGlobalSettings(t *testing.T) {
+	base := hubLLMConfigTestSettings{values: map[string]string{"mail_config": "global-smtp"}}
+	scoped := scopedSystemSettingsForTenant("tenant_a", base)
+	globalProvider, ok := scoped.(interface {
+		GlobalSystemSettings() store.SystemSettingsRepository
+	})
+	if !ok {
+		t.Fatal("tenant-scoped settings must expose their global repository")
+	}
+	value, err := globalProvider.GlobalSystemSettings().Get(context.Background(), "mail_config")
+	if err != nil || value != "global-smtp" {
+		t.Fatalf("global mail config = %q, %v", value, err)
 	}
 }

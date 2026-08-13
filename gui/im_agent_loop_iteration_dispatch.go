@@ -223,6 +223,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		MilestoneTracker:        opts.MilestoneTracker,
 		LastInputTokens:         opts.Telemetry.LastLLMInputTokens,
 		LastOutputTokens:        opts.Telemetry.LastLLMOutputTokens,
+		FirstRequest:            !opts.Telemetry.FirstLLMRequestMarked,
 		SendProgress:            opts.RuntimeState.SendProgress,
 		IsDebug:                 opts.RuntimeState.IsDebug,
 		RecordSystemMessages:    opts.RecordSystemMessages,

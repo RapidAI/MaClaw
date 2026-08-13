@@ -2057,8 +2057,10 @@ export namespace corelib {
 	    timeout_sec?: number;
 	    max_output_tokens?: number;
 	    models?: string[];
+	    connection_test_passed?: boolean;
 	    is_custom?: boolean;
 	    is_hub_service?: boolean;
+	    vision_models?: string[];
 	    supports_vision: boolean;
 	    agent_type?: string;
 	    auth_type?: string;
@@ -2084,8 +2086,10 @@ export namespace corelib {
 	        this.timeout_sec = source["timeout_sec"];
 	        this.max_output_tokens = source["max_output_tokens"];
 	        this.models = source["models"];
+	        this.connection_test_passed = source["connection_test_passed"];
 	        this.is_custom = source["is_custom"];
 	        this.is_hub_service = source["is_hub_service"];
+	        this.vision_models = source["vision_models"];
 	        this.supports_vision = source["supports_vision"];
 	        this.agent_type = source["agent_type"];
 	        this.auth_type = source["auth_type"];
@@ -2447,7 +2451,6 @@ export namespace corelib {
 	    nudge_disabled?: boolean;
 	    working_directory?: string;
 	    data_dir?: string;
-	    workflow_enabled?: boolean;
 	    coding_knowledge_auto_save_mode?: string;
 	    coding_knowledge_save_strategy?: string;
 	    coding_knowledge_max_per_project?: number;
@@ -2717,7 +2720,6 @@ export namespace corelib {
 	        this.nudge_disabled = source["nudge_disabled"];
 	        this.working_directory = source["working_directory"];
 	        this.data_dir = source["data_dir"];
-	        this.workflow_enabled = source["workflow_enabled"];
 	        this.coding_knowledge_auto_save_mode = source["coding_knowledge_auto_save_mode"];
 	        this.coding_knowledge_save_strategy = source["coding_knowledge_save_strategy"];
 	        this.coding_knowledge_max_per_project = source["coding_knowledge_max_per_project"];
@@ -7652,6 +7654,59 @@ export namespace knowledge {
 }
 
 export namespace main {
+
+	export class ReferralHandoffClaimResult {
+		registration_session: string;
+		expires_in_seconds: number;
+		tenant: any;
+		registration_method: string;
+		invitee_credits: number;
+		duration_days: number;
+
+		static createFrom(source: any = {}) {
+			return new ReferralHandoffClaimResult(source);
+		}
+
+		constructor(source: any = {}) {
+			if ('string' === typeof source) source = JSON.parse(source);
+			this.registration_session = source["registration_session"];
+			this.expires_in_seconds = source["expires_in_seconds"];
+			this.tenant = source["tenant"];
+			this.registration_method = source["registration_method"];
+			this.invitee_credits = source["invitee_credits"];
+			this.duration_days = source["duration_days"];
+		}
+	}
+
+	export class ReferralRegistrationStatus {
+		registration_status: string;
+		registration_method: string;
+
+		static createFrom(source: any = {}) {
+			return new ReferralRegistrationStatus(source);
+		}
+
+		constructor(source: any = {}) {
+			if ('string' === typeof source) source = JSON.parse(source);
+			this.registration_status = source["registration_status"];
+			this.registration_method = source["registration_method"];
+		}
+	}
+
+	export class ReferralHandoffLaunch {
+		handoff: string;
+		hub_url: string;
+
+		static createFrom(source: any = {}) {
+			return new ReferralHandoffLaunch(source);
+		}
+
+		constructor(source: any = {}) {
+			if ('string' === typeof source) source = JSON.parse(source);
+			this.handoff = source["handoff"];
+			this.hub_url = source["hub_url"];
+		}
+	}
 	
 	export class AIAssistantBackgroundTaskRequest {
 	    text: string;
@@ -12509,6 +12564,28 @@ export namespace main {
 	        Object.assign(this, source);
 	    }
 	}
+	export class HubUserInvitee {
+	    user_id?: string;
+	    contact?: string;
+	    registered_at?: string;
+	    status?: string;
+	    static createFrom(source: any = {}) { return new HubUserInvitee(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.user_id = source["user_id"]; this.contact = source["contact"]; this.registered_at = source["registered_at"]; this.status = source["status"]; }
+	}
+	export class HubUserInvitation {
+	    enabled: boolean;
+	    invite_url?: string;
+	    inviter_credits?: number;
+	    invitee_credits?: number;
+	    duration_days?: number;
+	    invitees?: HubUserInvitee[];
+	    total?: number;
+	    page?: number;
+	    error?: string;
+	    static createFrom(source: any = {}) { return new HubUserInvitation(source); }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.enabled = source["enabled"]; this.invite_url = source["invite_url"]; this.inviter_credits = source["inviter_credits"]; this.invitee_credits = source["invitee_credits"]; this.duration_days = source["duration_days"]; this.invitees = this.convertValues(source["invitees"], HubUserInvitee); this.total = source["total"]; this.page = source["page"]; this.error = source["error"]; }
+	    convertValues(a: any, classs: any, asMap: boolean = false): any { if (!a) return a; if (a.slice) return a.map((elem: any) => this.convertValues(elem, classs)); if ("object" === typeof a) { if (asMap) { for (const key of Object.keys(a)) a[key] = new classs(a[key]); return a; } return new classs(a); } return a; }
+	}
 	export class IMAuditMessage {
 	    id: number;
 	    timestamp: string;
@@ -15259,6 +15336,7 @@ export namespace main {
 	export class RemoteRegistrationAuthResult {
 	    method: string;
 	    tenant_id?: string;
+	    email_verification_required?: boolean;
 	    code_ttl_minutes?: number;
 	    code_length?: number;
 	    provider?: string;
@@ -15271,6 +15349,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.method = source["method"];
 	        this.tenant_id = source["tenant_id"];
+	        this.email_verification_required = source["email_verification_required"];
 	        this.code_ttl_minutes = source["code_ttl_minutes"];
 	        this.code_length = source["code_length"];
 	        this.provider = source["provider"];
@@ -15344,6 +15423,7 @@ export namespace main {
 	    hub_id?: string;
 	    tenant_id?: string;
 	    method: string;
+	    email_verification_required: boolean;
 	    code_ttl_minutes?: number;
 	    code_length?: number;
 	    provider?: string;
@@ -15359,6 +15439,7 @@ export namespace main {
 	        this.hub_id = source["hub_id"];
 	        this.tenant_id = source["tenant_id"];
 	        this.method = source["method"];
+	        this.email_verification_required = source["email_verification_required"];
 	        this.code_ttl_minutes = source["code_ttl_minutes"];
 	        this.code_length = source["code_length"];
 	        this.provider = source["provider"];
@@ -17016,7 +17097,6 @@ export namespace main {
 	    show_app_entry?: boolean;
 	    show_coding_tool_entry?: boolean;
 	    show_utilities_entry?: boolean;
-	    workflow_enabled?: boolean;
 	    maclaw_llm_current_provider?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -17036,7 +17116,6 @@ export namespace main {
 	        this.show_app_entry = source["show_app_entry"];
 	        this.show_coding_tool_entry = source["show_coding_tool_entry"];
 	        this.show_utilities_entry = source["show_utilities_entry"];
-	        this.workflow_enabled = source["workflow_enabled"];
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
 	    }
 	}

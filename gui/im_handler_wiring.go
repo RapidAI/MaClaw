@@ -948,18 +948,20 @@ func (h *IMMessageHandler) filterInactiveDeferredTools(tools []map[string]interf
 }
 
 // routeTools applies the ToolRouter to filter tools based on user message.
+// It is retained for compatibility callers; interactive Agent turns should
+// use routeToolsForUser with their owner ID so routing remains local-only.
 // If no router is configured, conditional tools fail closed so high-cost or
 // sensitive tools such as ssh and browser automation are not exposed by a
 // missing router setup.
 func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
-	return h.routeToolsForUser("", userMessage, allTools, false)
+	return h.routeToolsForUser("", userMessage, allTools, true)
 }
 
-// routeToolsWithOptions is like routeTools. When skipHeavySemantic is true
-// (ACP Mode B), skip route-intent LLM rewrite and full UIC fusion — those
-// alone often cost 5–8s before the main agent LLM starts.
+// routeToolsWithOptions is like routeTools. The skipHeavySemantic argument is
+// retained for API compatibility; interactive routing never makes an auxiliary
+// LLM request before the main agent response.
 func (h *IMMessageHandler) routeToolsWithOptions(userMessage string, allTools []map[string]interface{}, skipHeavySemantic bool) []map[string]interface{} {
-	return h.routeToolsForUser("", userMessage, allTools, skipHeavySemantic)
+	return h.routeToolsForUser("", userMessage, allTools, true)
 }
 
 func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTools []map[string]interface{}, skipHeavySemantic bool) []map[string]interface{} {
@@ -998,16 +1000,15 @@ func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTool
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		router.SetUnifiedClassifier(uic)
 	}
-	// Optional lightweight LLM rewrite → structured pins + retrieval query.
-	// Failures degrade silently to original-message routing.
-	// ACP Mode B skips rewrite + UIC fusion (often multi-second).
-	var routeIntent *tool.RouteIntent
-	if !skipHeavySemantic {
-		routeIntent = h.rewriteRouteIntentForTools(userMessage)
-	}
+	// Tool selection is an affordance, not an authority. Never issue a second
+	// LLM request just to rewrite a message before the main Agent can respond.
+	// BM25 plus optional local embedding provides enough pruning; uncertain
+	// conditional tools stay hidden and can be discovered explicitly later.
+	// Keep the parameter for callers compiled against the older API.
+	_ = skipHeavySemantic
 	routeOpts := tool.RouteOptions{
-		Intent:                routeIntent,
-		SkipUnifiedClassifier: skipHeavySemantic,
+		SkipUnifiedClassifier: false,
+		PreferEmbeddingOnly:   true,
 	}
 	routed := router.RouteForSession(userID, userMessage, allTools, routeOpts)
 	if isIMManagementRequest(userMessage) {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"golang.org/x/crypto/argon2"
@@ -1192,68 +1193,20 @@ func zipDir(root, zipPath string) error {
 }
 
 func unzipToDir(zipPath, dest string) error {
-	zr, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer zr.Close()
-	if len(zr.File) > migrationMaxZipFiles {
-		return fmt.Errorf("migration package contains too many files")
-	}
-	var expandedBytes uint64
-	seen := make(map[string]struct{}, len(zr.File))
-	for _, f := range zr.File {
-		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
+	result := archiveutil.ExtractToDirectoryWithPolicy(zipPath, dest, archiveutil.Limits{
+		MaxInputBytes: migrationMaxDownload,
+		MaxFiles:      migrationMaxZipFiles,
+		MaxFileBytes:  migrationMaxExpanded,
+		MaxTotalBytes: migrationMaxExpanded,
+	}, archiveutil.ExtractionPolicy{Filter: func(entry archiveutil.Entry) (bool, error) {
+		original := strings.TrimSuffix(entry.OriginalPath, "/")
+		if !canonicalMigrationRelativePath(original) {
+			return false, fmt.Errorf("invalid migration entry path: %s", entry.OriginalPath)
 		}
-		cleanName := filepath.ToSlash(filepath.Clean(strings.TrimSuffix(f.Name, "/")))
-		if !canonicalMigrationRelativePath(cleanName) {
-			return fmt.Errorf("zip contains invalid entry path: %s", f.Name)
-		}
-		key := strings.ToLower(cleanName)
-		if _, exists := seen[key]; exists {
-			return fmt.Errorf("zip contains duplicate entry: %s", f.Name)
-		}
-		seen[key] = struct{}{}
-		if f.FileInfo().IsDir() {
-			continue
-		}
-		if f.UncompressedSize64 > uint64(migrationMaxExpanded)-expandedBytes {
-			return fmt.Errorf("migration package expands beyond %d bytes", migrationMaxExpanded)
-		}
-		outPath, err := safeJoin(dest, cleanName)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		limited := &io.LimitedReader{R: rc, N: int64(f.UncompressedSize64) + 1}
-		n, copyErr := io.Copy(out, limited)
-		closeErr := out.Close()
-		rcErr := rc.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if uint64(n) != f.UncompressedSize64 {
-			return fmt.Errorf("zip entry size mismatch: %s", f.Name)
-		}
-		expandedBytes += uint64(n)
-		if closeErr != nil {
-			return closeErr
-		}
-		if rcErr != nil {
-			return rcErr
-		}
+		return true, nil
+	}})
+	if !result.OK {
+		return fmt.Errorf("extract migration package: %s: %s", result.Code, result.Message)
 	}
 	return nil
 }

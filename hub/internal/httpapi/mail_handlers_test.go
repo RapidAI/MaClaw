@@ -139,6 +139,34 @@ func TestMailConfigHandlersSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestMailConfigHandlersRemainGlobalForTenantScopedAdmin(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	service := mail.New(config.Config{}, settings)
+	payload := []byte(`{"enabled":true,"smtp_host":"smtp.example.com","smtp_port":587,"smtp_username":"admin@example.com","smtp_password":"app-password","from_email":"admin@example.com"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/mail/config", bytes.NewReader(payload))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant_acme"}))
+	rr := httptest.NewRecorder()
+
+	UpdateMailConfigHandler(service).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected save 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if _, exists := settings.values["tenant:tenant_acme:mail_config"]; exists {
+		t.Fatalf("mail_config was incorrectly scoped to tenant: %#v", settings.values)
+	}
+	if settings.values["mail_config"] == "" {
+		t.Fatalf("global mail_config was not saved: %#v", settings.values)
+	}
+
+	loadReq := httptest.NewRequest(http.MethodGet, "/api/admin/mail/config", nil)
+	loadReq = loadReq.WithContext(context.WithValue(loadReq.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant_acme"}))
+	loadRR := httptest.NewRecorder()
+	GetMailConfigHandler(service).ServeHTTP(loadRR, loadReq)
+	if loadRR.Code != http.StatusOK || !bytes.Contains(loadRR.Body.Bytes(), []byte(`"smtp_host":"smtp.example.com"`)) {
+		t.Fatalf("expected global config, got %d body=%s", loadRR.Code, loadRR.Body.String())
+	}
+}
+
 func TestTenantMailSenderNameHandlersAreScoped(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	payload, _ := json.Marshal(map[string]string{"from_name": "  Acme Mail  "})

@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, type ClipboardEvent, type DragEvent } from "react";
 import type { ChatMessage } from "./useAIAssistant";
-import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds } from "./useAIAssistant";
+import { attachmentInfoFromFilePath, buildAttachmentDisplayText, findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
 import { normalizeASRText, shouldDispatchASRText } from "./asrTextUtils";
 import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
@@ -77,7 +77,7 @@ import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSes
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
 import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
-import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
+import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
@@ -431,7 +431,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [saveTaskDialogOpen, setSaveTaskDialogOpen] = useState(false);
     const [saveTaskName, setSaveTaskName] = useState("");
     const [savingTask, setSavingTask] = useState(false);
-    const [workflowEnabled, setWorkflowEnabled] = useState(false);
     const [permissionMode, setPermissionMode] = useState<AssistantPermissionMode>("request");
     /** Remote coding SSH reconnect form. Password is recalled from localStorage vault only. */
     const [remoteReconnect, setRemoteReconnect] = useState<{
@@ -553,22 +552,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const pureCodingTabRef = useRef(false);
     // Active pure-coding session key (desktop-user:<path>) for scoping goal-state-changed.
     const pureCodingSessionKeyRef = useRef("");
-    // Workflow toggle: load initial state from config, sync on config-changed event.
     // Permission mode for pure coding tabs is loaded after activeTab is available.
     useEffect(() => {
         LoadConfig().then((cfg) => {
-            setWorkflowEnabled(cfg?.workflow_enabled === true);
             // Pure coding tabs load tier from sticky; do not overwrite with global.
             if (!pureCodingTabRef.current) {
                 setPermissionMode(cfg?.subagent_full_access === true ? "full" : "request");
             }
         }).catch(() => { /* ignore */ });
         const off = EventsOn("config-changed", (cfg: any) => {
-            if (cfg && typeof cfg.workflow_enabled === "boolean") {
-                setWorkflowEnabled(cfg.workflow_enabled);
-            } else if (cfg && cfg.workflow_enabled === undefined) {
-                setWorkflowEnabled(false);
-            }
             // Global full-access only drives non-coding tabs. Pure coding uses
             // GetCodingWorkbenchPermission (request can win over global).
             if (cfg && typeof cfg.subagent_full_access === "boolean" && cfg.subagent_full_access && !pureCodingTabRef.current) {
@@ -576,22 +568,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
         });
         return () => { if (typeof off === "function") off(); };
-    }, []);
-    const handleToggleWorkflow = useCallback(() => {
-        setWorkflowEnabled(prev => {
-            const next = !prev;
-            PatchConfigFields({ workflow_enabled: next }).then((saved) => {
-                setWorkflowEnabled(saved?.workflow_enabled === true);
-            }).catch(() => {
-                // Revert to actual backend state on failure
-                LoadConfig().then(cfg => {
-                    setWorkflowEnabled(cfg?.workflow_enabled === true);
-                }).catch(() => {
-                    setWorkflowEnabled(!next); // last resort: toggle back
-                });
-            });
-            return next;
-        });
     }, []);
     // Stable callbacks for the memoized quick-settings bar (inline arrows would
     // defeat memo on every keystroke-triggered panel re-render).
@@ -816,7 +792,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }).catch(() => { /* ignore */ });
         }
     }, [lang]);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, clearTabConversation, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, clearTabConversation, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError } = useAITabManager();
+    const projectTabRenameRequestRef = useRef<Map<string, number>>(new Map());
+    const [projectTabSessionReadyRevisions, setProjectTabSessionReadyRevisions] = useState<Record<string, number>>({});
     // Quick model controls use this stable task classification; never infer it
     // from prompt text, visible panels, or routing choices.
     useEffect(() => {
@@ -2881,6 +2859,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }));
         }
     }, [getTabState, saveTabState, setProjectTabPreparing]);
+    // Keep the App-level registration gateway in the loop when it is available:
+    // besides persisting the record, it immediately upserts the task sidebar.
+    // The direct binding is retained for isolated panel hosts that do not provide
+    // the App callback (for example, focused component integrations).
+    const registerAssistantTabTask = useCallback(async (tabType: string, tabIdentity: string, title: string, projectPath?: string) => {
+        if (props.onEnsureAssistantTabTask) {
+            await props.onEnsureAssistantTabTask(tabType, tabIdentity, title, projectPath);
+            return true;
+        }
+        const created = await EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath || "");
+        return !!created?.project_path;
+    }, [props.onEnsureAssistantTabTask]);
+
     const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteSafety?: "diagnosis"; remoteNeedsReconnect?: boolean; sessionKey?: string } | boolean) => {
         const sessionKey = typeof options === "object" ? String(options.sessionKey || "").trim() : "";
         const tabExisted = sessionKey
@@ -2913,6 +2904,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             sessionKey,
             ...(prepareMode === "new-agent" ? {
                 onSessionReady: (readyTab: { id: string; projectPath?: string }) => {
+                    setProjectTabSessionReadyRevisions(previous => ({
+                        ...previous,
+                        [readyTab.id]: (previous[readyTab.id] || 0) + 1,
+                    }));
                     const minimumVisibleMs = Math.max(0, 120 - (performance.now() - startedAt));
                     scheduleNewAgentReady(readyTab, minimumVisibleMs, "session-ready");
                 },
@@ -2983,28 +2978,36 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (!projectPath) return;
             const sessionKey = String(data.session_key || data.sessionKey || "").trim();
             if (!sessionKey) return;
-            const tab = createProjectTabWithContext(projectPath, "VS Code / ACP", {
-                prepareMode: "restore-context",
-                agentMode: "coding_dev",
-                sessionKey,
-            });
-            if (tab?.id) {
-                activateTab(tab.id);
-            }
-            setActiveSessionKey(sessionKey);
-            logAIPanelDiagnostic({
-                event: "acp_mode_b_open_project",
-                projectPath,
-                sessionKey,
-                requestId: String(data.request_id || ""),
-                tabId: tab?.id || "",
-            });
+            void (async () => {
+                try {
+                    // ACP is a secondary assistant tab with an external session,
+                    // so it cannot rely on a project task having been created by
+                    // the desktop task-management UI.
+                    if (!await registerAssistantTabTask("acp", sessionKey, "VS Code / ACP", projectPath)) return;
+                    const tab = createProjectTabWithContext(projectPath, "VS Code / ACP", {
+                        prepareMode: "restore-context",
+                        agentMode: "coding_dev",
+                        sessionKey,
+                    });
+                    if (tab?.id) activateTab(tab.id);
+                    setActiveSessionKey(sessionKey);
+                    logAIPanelDiagnostic({
+                        event: "acp_mode_b_open_project",
+                        projectPath,
+                        sessionKey,
+                        requestId: String(data.request_id || ""),
+                        tabId: tab?.id || "",
+                    });
+                } catch (error) {
+                    console.error("[task_management] create ACP assistant task failed:", error);
+                }
+            })();
         });
         return () => {
             if (typeof off === "function") off();
             else EventsOff("acp-mode-b-message");
         };
-    }, [activateTab, createProjectTabWithContext]);
+    }, [activateTab, createProjectTabWithContext, registerAssistantTabTask]);
 
     const messagesLengthRef = useRef(messages.length);
     messagesLengthRef.current = messages.length;
@@ -3315,6 +3318,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 console.warn("[AIAssistantPanel] EnsureCodingWorkbenchArmed from search failed", err);
                 if (resolvedMode === "remote_coding_dev") remoteNeedsReconnect = true;
             }
+            // Search can surface ordinary project memory in addition to Task
+            // Management rows. Register it before creating a secondary project
+            // tab so that every newly opened tab has a durable task-list entry.
+            if (!tabExistedInList) {
+                try {
+                    if (!await registerAssistantTabTask("project", projectPath, taskTitle, projectPath)) return;
+                } catch (error) {
+                    console.error("[task_management] create project assistant task failed:", error);
+                    return;
+                }
+            }
             const tab = createProjectTabWithContext(projectPath, taskTitle, {
                 prepareMode: "restore-context",
                 agentMode: resolvedMode,
@@ -3330,7 +3344,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
         })();
         return null;
-    }, [createProjectTabWithContext, getTabState, hasProjectTab, sendProjectMessageAfterPrepare]);
+    }, [createProjectTabWithContext, getTabState, hasProjectTab, registerAssistantTabTask, sendProjectMessageAfterPrepare]);
     const closeProjectTabByPath = useCallback((projectPath: string) => {
         const normalizedPath = normalizeProjectSessionPath(projectPath);
         const tab = getTabs().find(t => t.type === "project" && normalizeProjectSessionPath(t.projectPath) === normalizedPath);
@@ -3398,6 +3412,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pendingExpertOpen: props.pendingExpertOpen,
         onPendingExpertOpenHandled: props.onPendingExpertOpenHandled,
         onEnsureExpertTask: props.onEnsureExpertTask,
+        onEnsureAssistantTabTask: props.onEnsureAssistantTabTask,
     });
     useEffect(() => {
         if (!tabLimitError) return;
@@ -4654,12 +4669,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         for (const att of pendingAttachments) {
             if (att.filePath.trim()) allFilePaths.push(att.filePath.trim());
         }
+        const displayAttachments = [
+            ...pendingAttachments.map(att => ({
+                filePath: att.filePath,
+                fileName: att.fileName,
+                extension: att.extension,
+                isImage: att.isImage,
+                thumbnailDataUrl: att.thumbnailDataUrl,
+            })),
+            ...selectedFilePaths.map(attachmentInfoFromFilePath),
+        ];
         sendInFlightRef.current = true;
         clearComposerDraft({ clearAttachments: true });
         userScrolledUpRef.current = false;
         try {
             const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(text, allFilePaths) : text;
-            const sent = await sendMessageForTab(outgoing);
+            const sent = await sendMessageForTab(outgoing, {
+                displayText: buildAttachmentDisplayText(text, displayAttachments),
+                displayAttachments,
+            });
             if (sent !== false) recordSubmittedPrompt?.(text);
         } finally {
             sendInFlightRef.current = false;
@@ -4701,7 +4729,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             refreshQueueInFlight();
             const entryText = entry.text.trim();
             const entrySessionKey = entry.sessionKey?.trim() || activeSessionKey;
-            const sendEntryAsTurn = (outgoing: string) => sendMessageForTab(outgoing, { queue_session_key: entrySessionKey });
+            const sendEntryAsTurn = (outgoing: string) => sendMessageForTab(outgoing, {
+                queue_session_key: entrySessionKey,
+                displayText: buildAttachmentDisplayText(entry.text, entry.attachments),
+                displayAttachments: entry.attachments,
+            });
             console.info("[AIAssistantPanel] drain queued input", {
                 activeTabId: activeTab.id,
                 activeTabType: activeTab.type,
@@ -4752,7 +4784,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return;
         }
         const entrySessionKey = entry.sessionKey?.trim() || activeSessionKey;
-        const sendEntryAsTurn = (text: string) => sendMessageForTab(text, { queue_session_key: entrySessionKey });
+        const sendEntryAsTurn = (text: string) => sendMessageForTab(text, {
+            queue_session_key: entrySessionKey,
+            displayText: buildAttachmentDisplayText(entry.text, entry.attachments),
+            displayAttachments: entry.attachments,
+        });
         firingEntryIdsRef.current.add(id);
         refreshQueueInFlight();
         const entryText = entry.text.trim();
@@ -5238,14 +5274,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 }
                 setParticipantInviteTargetTabId(tab.id);
                 activateTab(tab.id);
-            }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} lang={lang} recordingTabId={skillRecordingTabId} />
+            }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} onRenameLocalTab={renameLocalTab} onRenameProjectTab={(tab, title) => {
+                if (!tab.projectPath) return;
+                const projectPath = tab.projectPath;
+                const requestId = (projectTabRenameRequestRef.current.get(projectPath) || 0) + 1;
+                projectTabRenameRequestRef.current.set(projectPath, requestId);
+                void RenameTask(projectPath, title).then((displayTitle) => {
+                    if (projectTabRenameRequestRef.current.get(projectPath) !== requestId) return;
+                    const syncedTitle = String(displayTitle || "").trim();
+                    if (syncedTitle) renameProjectTabs(projectPath, syncedTitle);
+                }).catch(() => { /* the current tab title stays unchanged on failure */ });
+            }} lang={lang} recordingTabId={skillRecordingTabId} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") && (
                 <ProjectDirBar
 					key={activeTab?.type === "local" ? "local" : activeTab.id}
 					// Every assistant tab has an optional private directory. Until it
-					// is set, project and expert tabs dynamically follow the main tab.
+                    // is set, project and expert tabs dynamically follow the main tab.
 					tabId={activeTab?.type === "local" ? "" : activeTab.id}
+                    sessionReadyRevision={activeTab?.type === "project" ? projectTabSessionReadyRevisions[activeTab.id] || 0 : 0}
                     theme={t}
                     lang={lang}
                 />
@@ -6190,7 +6237,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             </div>
             {/* Full-bleed footer under content-row (chat|preview). Always mounted so
                 welcome/guide and VE/group tabs keep the same chrome as normal chat. */}
-            <AssistantQuickSettingsBar active={panelActive} lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} workflowEnabled={workflowEnabled} onToggleWorkflow={handleToggleWorkflow} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} onLanguageChange={onLanguageChange} statusSlot={statusSlot} />
+            <AssistantQuickSettingsBar active={panelActive} lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} onLanguageChange={onLanguageChange} statusSlot={statusSlot} />
             </div>
         </div>
     );

@@ -32,6 +32,72 @@ func NewSSHPool() *SSHPool {
 
 // Acquire 获取或创建到指定主机的 SSH 连接。
 func (p *SSHPool) Acquire(cfg SSHHostConfig) (*ssh.Client, error) {
+	client, _, err := p.AcquireResolved(cfg)
+	return client, err
+}
+
+// AcquireResolved acquires a connection and returns the effective host
+// configuration used for it. When a caller supplies a host-key capture
+// callback, the callback is invoked during this connection's SSH handshake
+// and the returned configuration is upgraded to a concrete host-key pin.
+//
+// A capture request never reuses an unpinned pool entry: doing so would leave
+// the new session without proof of which server key authenticated it. Once the
+// handshake completes, the connection is entered into the pool under its final
+// pinned identity so release, SFTP and reconnect all use the same key.
+func (p *SSHPool) AcquireResolved(cfg SSHHostConfig) (*ssh.Client, SSHHostConfig, error) {
+	cfg.Defaults()
+	if cfg.HostKeyFingerprintCapture != nil && strings.TrimSpace(cfg.HostKeyFingerprint) == "" {
+		return p.acquireCaptured(cfg)
+	}
+	client, err := p.acquire(cfg)
+	return client, cfg, err
+}
+
+func (p *SSHPool) acquireCaptured(cfg SSHHostConfig) (*ssh.Client, SSHHostConfig, error) {
+	capture := cfg.HostKeyFingerprintCapture
+	var capturedFingerprint string
+	cfg.HostKeyFingerprintCapture = func(fingerprint string) {
+		capturedFingerprint = fingerprint
+		capture(fingerprint)
+	}
+
+	// A first-use capture must perform its own handshake. In particular, it
+	// must not inherit a legacy/unpinned pooled client created by another call.
+	client, err := dialSSH(cfg)
+	if err != nil {
+		return nil, cfg, fmt.Errorf("ssh dial %s: %w", cfg.SSHHostID(), err)
+	}
+	if strings.TrimSpace(capturedFingerprint) == "" {
+		_ = client.Close()
+		return nil, cfg, fmt.Errorf("ssh dial %s: host-key capture did not run", cfg.SSHHostID())
+	}
+
+	resolvedCfg := cfg
+	resolvedCfg.HostKeyFingerprint = capturedFingerprint
+	resolvedCfg.HostKeyFingerprintCapture = nil
+	hostID := sshPoolKey(resolvedCfg)
+
+	p.mu.Lock()
+	if entry, ok := p.conns[hostID]; ok {
+		entry.refCount++
+		p.mu.Unlock()
+		_ = client.Close()
+		return entry.client, resolvedCfg, nil
+	}
+	p.conns[hostID] = &poolEntry{
+		client:    client,
+		hostID:    resolvedCfg.SSHHostID(),
+		createdAt: time.Now(),
+		refCount:  1,
+	}
+	p.mu.Unlock()
+
+	go p.keepalive(hostID, client, resolvedCfg.KeepaliveInterval)
+	return client, resolvedCfg, nil
+}
+
+func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	cfg.Defaults()
 	hostID := sshPoolKey(cfg)
 

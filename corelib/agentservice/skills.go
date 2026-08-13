@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
@@ -1590,60 +1590,25 @@ func copySkillPackageFiles(src, dst string) error {
 }
 
 func unzipBytes(data []byte, dest string) error {
-	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return err
-	}
-	if err := validateImportedZipResourceLimits(reader.File); err != nil {
-		return err
-	}
-	type zipEntry struct {
-		file   *zip.File
-		target string
-	}
-	entries := make([]zipEntry, 0, len(reader.File))
-	for _, file := range reader.File {
-		if file.FileInfo().Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("zip contains unsupported symlink entry %q", file.Name)
-		}
-		target, err := safeImportedZipTarget(dest, file.Name)
-		if err != nil {
-			return err
-		}
-		entries = append(entries, zipEntry{file: file, target: target})
-	}
-	for _, entry := range entries {
-		file := entry.file
-		if file.FileInfo().IsDir() {
-			if err := os.MkdirAll(entry.target, 0o755); err != nil {
-				return err
+	result := archiveutil.ExtractZIPBytesToDirectory(data, dest, archiveutil.Limits{
+		MaxInputBytes: 64 << 20,
+		MaxFiles:      maxImportedSkillZipEntries,
+		MaxFileBytes:  maxImportedSkillZipFileBytes,
+		MaxTotalBytes: maxImportedSkillZipTotalExpandedBytes,
+	}, archiveutil.ExtractionPolicy{})
+	if !result.OK {
+		switch result.Code {
+		case archiveutil.CodeUnsafeEntry:
+			if strings.Contains(result.Message, "symlink") {
+				return fmt.Errorf("zip contains unsupported symlink: %s", result.Message)
 			}
-			continue
+			return fmt.Errorf("zip contains invalid path: %s", result.Message)
+		case archiveutil.CodeLimitExceeded:
+			if strings.Contains(result.Message, "file count") {
+				return fmt.Errorf("zip contains too many entries: %s", result.Message)
+			}
 		}
-		if err := os.MkdirAll(filepath.Dir(entry.target), 0o755); err != nil {
-			return err
-		}
-		src, err := file.Open()
-		if err != nil {
-			return err
-		}
-		dst, err := os.OpenFile(entry.target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.Mode())
-		if err != nil {
-			src.Close()
-			return err
-		}
-		written, copyErr := io.Copy(dst, io.LimitReader(src, int64(maxImportedSkillZipFileBytes)+1))
-		closeErr := dst.Close()
-		src.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		if file.UncompressedSize64 > maxImportedSkillZipFileBytes || written > maxImportedSkillZipFileBytes {
-			return fmt.Errorf("zip entry %q is too large after decompression", file.Name)
-		}
+		return fmt.Errorf("extract skill ZIP: %s: %s", result.Code, result.Message)
 	}
 	return nil
 }
@@ -1653,66 +1618,6 @@ const (
 	maxImportedSkillZipFileBytes          = 64 << 20
 	maxImportedSkillZipTotalExpandedBytes = 256 << 20
 )
-
-func validateImportedZipResourceLimits(files []*zip.File) error {
-	if len(files) > maxImportedSkillZipEntries {
-		return fmt.Errorf("zip contains too many entries: %d > %d", len(files), maxImportedSkillZipEntries)
-	}
-	var total uint64
-	for _, file := range files {
-		if file == nil || file.FileInfo().IsDir() {
-			continue
-		}
-		size := file.UncompressedSize64
-		if size > maxImportedSkillZipFileBytes {
-			return fmt.Errorf("zip entry %q is too large after decompression: %d > %d bytes", file.Name, size, maxImportedSkillZipFileBytes)
-		}
-		total += size
-		if total > maxImportedSkillZipTotalExpandedBytes {
-			return fmt.Errorf("zip expands to too much data: %d > %d bytes", total, maxImportedSkillZipTotalExpandedBytes)
-		}
-	}
-	return nil
-}
-
-func safeImportedZipTarget(dest, name string) (string, error) {
-	name = strings.ToValidUTF8(name, "")
-	slashName := strings.ReplaceAll(name, "\\", "/")
-	if slashName == "" || strings.HasPrefix(slashName, "/") || importedZipEntryHasDrivePrefix(slashName) || importedZipEntryHasColonPathComponent(slashName) || filepath.IsAbs(name) || filepath.IsAbs(filepath.FromSlash(slashName)) || filepath.VolumeName(filepath.FromSlash(slashName)) != "" {
-		return "", fmt.Errorf("zip contains invalid path %q", name)
-	}
-	cleanName := pathpkg.Clean(slashName)
-	if cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, "../") {
-		return "", fmt.Errorf("zip contains invalid path %q", name)
-	}
-	destAbs, err := filepath.Abs(dest)
-	if err != nil {
-		return "", err
-	}
-	targetAbs, err := filepath.Abs(filepath.Join(destAbs, filepath.FromSlash(cleanName)))
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(destAbs, targetAbs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("zip contains invalid path %q", name)
-	}
-	return targetAbs, nil
-}
-
-func importedZipEntryHasDrivePrefix(name string) bool {
-	return len(name) >= 2 && name[1] == ':' &&
-		((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z'))
-}
-
-func importedZipEntryHasColonPathComponent(name string) bool {
-	for _, part := range strings.Split(name, "/") {
-		if strings.Contains(part, ":") {
-			return true
-		}
-	}
-	return false
-}
 
 func resolveImportedSkillPackageRoots(sandboxDir string) ([]string, error) {
 	if importedSkillDefinitionExists(sandboxDir) {

@@ -38,6 +38,205 @@ func newTestStore(t *testing.T) *store.Store {
 	return NewStore(provider)
 }
 
+func TestUserReferralPaginationUsesStableTieBreakers(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	referrals := st.UserReferrals
+	users := []*store.User{
+		{ID: "ref-page-inviter-a", TenantID: "tenant_a", Email: "ref-page-a@example.com", SN: "SN-ref-page-a", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "ref-page-inviter-b", TenantID: "tenant_a", Email: "ref-page-b@example.com", SN: "SN-ref-page-b", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "ref-page-invitee-a1", TenantID: "tenant_a", Email: "ref-page-a1@example.com", SN: "SN-ref-page-a1", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "ref-page-invitee-a2", TenantID: "tenant_a", Email: "ref-page-a2@example.com", SN: "SN-ref-page-a2", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "ref-page-invitee-b1", TenantID: "tenant_a", Email: "ref-page-b1@example.com", SN: "SN-ref-page-b1", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, user := range users {
+		if err := st.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+	for _, item := range []*store.UserReferral{
+		{ID: "ref-page-a2", TenantID: "tenant_a", ReferralCodeID: "code-a", InviterUserID: "ref-page-inviter-a", InviteeUserID: "ref-page-invitee-a2", Status: "rewarded", RegisteredAt: now, CreatedAt: now, UpdatedAt: now},
+		{ID: "ref-page-b1", TenantID: "tenant_a", ReferralCodeID: "code-b", InviterUserID: "ref-page-inviter-b", InviteeUserID: "ref-page-invitee-b1", Status: "rewarded", RegisteredAt: now, CreatedAt: now, UpdatedAt: now},
+		{ID: "ref-page-a1", TenantID: "tenant_a", ReferralCodeID: "code-a", InviterUserID: "ref-page-inviter-a", InviteeUserID: "ref-page-invitee-a1", Status: "rewarded", RegisteredAt: now, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := referrals.CreateReferral(ctx, item); err != nil {
+			t.Fatalf("create referral %s: %v", item.ID, err)
+		}
+	}
+	summaries, total, err := referrals.ListInviterSummaries(ctx, store.UserReferralFilter{TenantID: "tenant_a", Limit: 20})
+	if err != nil || total != 2 || len(summaries) != 2 {
+		t.Fatalf("summaries=%#v total=%d err=%v", summaries, total, err)
+	}
+	if summaries[0].InviterUserID != "ref-page-inviter-a" || summaries[1].InviterUserID != "ref-page-inviter-b" {
+		t.Fatalf("summary order=%#v; want inviter ID ascending for equal timestamps", summaries)
+	}
+	invitees, total, err := referrals.ListInvitees(ctx, store.UserReferralFilter{TenantID: "tenant_a", InviterUserID: "ref-page-inviter-a", Limit: 20})
+	if err != nil || total != 2 || len(invitees) != 2 {
+		t.Fatalf("invitees=%#v total=%d err=%v", invitees, total, err)
+	}
+	if invitees[0].ReferralID != "ref-page-a1" || invitees[1].ReferralID != "ref-page-a2" {
+		t.Fatalf("invitee order=%#v; want referral ID ascending for equal timestamps", invitees)
+	}
+}
+
+func TestReplaceActiveUserReferralCodeIsAtomic(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := st.UserReferrals.CreateCode(ctx, &store.UserReferralCode{ID: "replace-old", TenantID: "tenant_replace", InviterUserID: "replace-inviter", CodeHash: "replace-old-hash", EncryptedCode: "replace-old-encrypted", Status: "active", CreatedAt: now}); err != nil {
+		t.Fatalf("create old code: %v", err)
+	}
+	if err := st.UserReferrals.ReplaceActiveCode(ctx, "tenant_replace", "replace-inviter", &store.UserReferralCode{ID: "replace-new", TenantID: "tenant_replace", InviterUserID: "replace-inviter", CodeHash: "replace-new-hash", EncryptedCode: "replace-new-encrypted", Status: "active", CreatedAt: now.Add(time.Second)}, now.Add(time.Second)); err != nil {
+		t.Fatalf("replace active code: %v", err)
+	}
+	active, err := st.UserReferrals.GetActiveCodeForInviter(ctx, "tenant_replace", "replace-inviter")
+	if err != nil || active == nil || active.ID != "replace-new" {
+		t.Fatalf("active replacement=%#v err=%v", active, err)
+	}
+	old, err := st.UserReferrals.GetCodeByHash(ctx, "tenant_replace", "replace-old-hash")
+	if err != nil || old != nil {
+		t.Fatalf("old code must no longer resolve: %#v err=%v", old, err)
+	}
+
+	// The unique code hash causes INSERT to fail. Because replacement is one
+	// transaction, the prior active link remains usable after that failure.
+	if err := st.UserReferrals.ReplaceActiveCode(ctx, "tenant_replace", "replace-inviter", &store.UserReferralCode{ID: "replace-conflict", TenantID: "tenant_replace", InviterUserID: "replace-inviter", CodeHash: "replace-new-hash", EncryptedCode: "other-encrypted", Status: "active", CreatedAt: now.Add(2 * time.Second)}, now.Add(2*time.Second)); err == nil {
+		t.Fatal("expected duplicate replacement code hash to fail")
+	}
+	active, err = st.UserReferrals.GetActiveCodeForInviter(ctx, "tenant_replace", "replace-inviter")
+	if err != nil || active == nil || active.ID != "replace-new" {
+		t.Fatalf("failed replacement must retain the old active link: %#v err=%v", active, err)
+	}
+}
+
+func TestCreateReferralUserWithAttributionIsAtomic(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	inviter := &store.User{ID: "atomic-inviter", TenantID: "tenant_atomic", Email: "atomic-inviter@example.com", SN: "SN-atomic-inviter", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, inviter); err != nil {
+		t.Fatalf("create inviter: %v", err)
+	}
+	creator, ok := st.Users.(interface {
+		CreateReferralUserWithAttribution(context.Context, *store.User, *store.UserIdentity, *store.UserReferral) error
+	})
+	if !ok {
+		t.Fatal("SQLite user repository does not expose atomic referral registration")
+	}
+	user := &store.User{ID: "atomic-invitee", TenantID: "tenant_atomic", Email: "atomic-invitee@example.com", SN: "SN-atomic-invitee", Status: "active", EnrollmentStatus: "approved", EmailVerified: true, CreatedAt: now, UpdatedAt: now}
+	referral := &store.UserReferral{ID: "atomic-referral", TenantID: "tenant_atomic", ReferralCodeID: "atomic-code", InviterUserID: inviter.ID, Status: "attributed", RegisteredAt: now, ServiceGroupID: "coding", InviterCredits: 10, InviteeCredits: 5, DurationDays: 30, CreatedAt: now, UpdatedAt: now}
+	if err := creator.CreateReferralUserWithAttribution(ctx, user, &store.UserIdentity{ID: "atomic-invitee_phone", Type: "phone", Value: "13800138000", Verified: true, CreatedAt: now, UpdatedAt: now}, referral); err != nil {
+		t.Fatalf("atomic registration: %v", err)
+	}
+	storedUser, err := st.Users.GetByTenantEmail(ctx, "tenant_atomic", "atomic-invitee@example.com")
+	if err != nil || storedUser == nil || storedUser.ID != user.ID {
+		t.Fatalf("stored user=%#v err=%v", storedUser, err)
+	}
+	storedReferral, err := st.UserReferrals.GetReferralForInvitee(ctx, "tenant_atomic", user.ID)
+	if err != nil || storedReferral == nil || storedReferral.ID != referral.ID || storedReferral.InviterUserID != inviter.ID {
+		t.Fatalf("stored referral=%#v err=%v", storedReferral, err)
+	}
+	phoneOwner, err := st.Users.GetByTenantIdentity(ctx, "tenant_atomic", "phone", "13800138000")
+	if err != nil || phoneOwner == nil || phoneOwner.ID != user.ID {
+		t.Fatalf("stored phone owner=%#v err=%v", phoneOwner, err)
+	}
+	duplicate := &store.User{ID: "atomic-duplicate", TenantID: "tenant_atomic", Email: "atomic-invitee@example.com", SN: "SN-atomic-duplicate", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	failedReferral := &store.UserReferral{ID: "atomic-failed-referral", TenantID: "tenant_atomic", ReferralCodeID: "atomic-code", InviterUserID: inviter.ID, Status: "attributed", RegisteredAt: now, ServiceGroupID: "coding", DurationDays: 30, CreatedAt: now, UpdatedAt: now}
+	if err := creator.CreateReferralUserWithAttribution(ctx, duplicate, nil, failedReferral); err == nil {
+		t.Fatal("expected duplicate account to reject atomic registration")
+	}
+	if got, err := st.UserReferrals.GetReferralByID(ctx, "tenant_atomic", failedReferral.ID); err != nil || got != nil {
+		t.Fatalf("failed transaction must not leave referral: got=%#v err=%v", got, err)
+	}
+}
+
+func TestUserReferralExpiryCleanupExpiresOnlyOverdueReservedAndPurgesTemporaryArtifacts(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	for _, item := range []*store.UserReferral{
+		{ID: "ref-old-reserved", TenantID: "tenant_a", ReferralCodeID: "code-a", InviterUserID: "inviter-a", InviteeUserID: "invitee-old", Status: "reserved", RegisteredAt: now.Add(-8 * 24 * time.Hour), CreatedAt: now.Add(-8 * 24 * time.Hour), UpdatedAt: now.Add(-8 * 24 * time.Hour)},
+		{ID: "ref-fresh-reserved", TenantID: "tenant_a", ReferralCodeID: "code-a", InviterUserID: "inviter-a", InviteeUserID: "invitee-fresh", Status: "reserved", RegisteredAt: now.Add(-6 * 24 * time.Hour), CreatedAt: now.Add(-6 * 24 * time.Hour), UpdatedAt: now.Add(-6 * 24 * time.Hour)},
+		{ID: "ref-old-rewarded", TenantID: "tenant_a", ReferralCodeID: "code-a", InviterUserID: "inviter-a", InviteeUserID: "invitee-rewarded", Status: "rewarded", RegisteredAt: now.Add(-30 * 24 * time.Hour), CreatedAt: now.Add(-30 * 24 * time.Hour), UpdatedAt: now.Add(-30 * 24 * time.Hour)},
+		{ID: "ref-other-tenant", TenantID: "tenant_b", ReferralCodeID: "code-b", InviterUserID: "inviter-b", InviteeUserID: "invitee-b", Status: "reserved", RegisteredAt: now.Add(-30 * 24 * time.Hour), CreatedAt: now.Add(-30 * 24 * time.Hour), UpdatedAt: now.Add(-30 * 24 * time.Hour)},
+	} {
+		if err := st.UserReferrals.CreateReferral(ctx, item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+	expired, err := st.UserReferrals.ExpireReservedReferrals(ctx, "tenant_a", now.Add(-7*24*time.Hour), now)
+	if err != nil || len(expired) != 1 || expired[0] != "ref-old-reserved" {
+		t.Fatalf("expired=%v err=%v; want only old tenant_a reserved referral", expired, err)
+	}
+	for _, want := range []struct{ id, status string }{
+		{"ref-old-reserved", "expired"}, {"ref-fresh-reserved", "reserved"}, {"ref-old-rewarded", "rewarded"}, {"ref-other-tenant", "reserved"},
+	} {
+		tenantID := "tenant_a"
+		if want.id == "ref-other-tenant" {
+			tenantID = "tenant_b"
+		}
+		got, err := st.UserReferrals.GetReferralByID(ctx, tenantID, want.id)
+		if err != nil || got == nil || got.Status != want.status {
+			t.Fatalf("%s=%#v err=%v; want status=%s", want.id, got, err, want.status)
+		}
+	}
+	history, err := st.UserReferrals.ListStatusHistory(ctx, "tenant_a", "ref-old-reserved")
+	if err != nil || len(history) != 1 || history[0].FromStatus != "reserved" || history[0].ToStatus != "expired" || history[0].Reason != "review window expired" {
+		t.Fatalf("expiry history=%#v err=%v", history, err)
+	}
+	second, err := st.UserReferrals.ExpireReservedReferrals(ctx, "tenant_a", now.Add(-7*24*time.Hour), now.Add(time.Minute))
+	if err != nil || len(second) != 0 {
+		t.Fatalf("second expiry=%v err=%v; want idempotent no-op", second, err)
+	}
+	history, err = st.UserReferrals.ListStatusHistory(ctx, "tenant_a", "ref-old-reserved")
+	if err != nil || len(history) != 1 {
+		t.Fatalf("history after repeated expiry=%#v err=%v; want one event", history, err)
+	}
+
+	db, ok := st.UserReferrals.(*userReferralRepo)
+	if !ok {
+		t.Fatal("user referral repository has unexpected type")
+	}
+	for _, row := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO user_referral_registration_idempotency (tenant_id, key_hash, fingerprint, status, payload, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{"tenant_a", "expired-idem", "fingerprint", 200, []byte("{}"), now.Add(-time.Minute).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{`INSERT INTO user_referral_registration_idempotency (tenant_id, key_hash, fingerprint, status, payload, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, []any{"tenant_a", "fresh-idem", "fingerprint", 200, []byte("{}"), now.Add(time.Minute).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{`INSERT INTO user_referral_registration_sessions (tenant_id, token_hash, code_hash, user_agent_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`, []any{"tenant_a", "expired-session", "code", "agent", now.Add(-time.Minute).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{`INSERT INTO user_referral_registration_sessions (tenant_id, token_hash, code_hash, user_agent_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`, []any{"tenant_a", "fresh-session", "code", "agent", now.Add(time.Minute).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{`INSERT INTO user_referral_identity_reservations (tenant_id, identity_hash, code_hash, session_hash, reserved_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`, []any{"tenant_a", "expired-identity", "code", "session", now.Format(time.RFC3339), now.Add(-time.Minute).Format(time.RFC3339)}},
+		{`INSERT INTO user_referral_identity_reservations (tenant_id, identity_hash, code_hash, session_hash, reserved_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`, []any{"tenant_a", "fresh-identity", "code", "session", now.Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339)}},
+		{`INSERT INTO user_referral_handoffs (token_hash, tenant_id, code_hash, referral_code_id, inviter_user_id, config_epoch, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, []any{"expired-handoff", "tenant_a", "code", "code-a", "inviter-a", "epoch", now.Add(-time.Minute).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{`INSERT INTO user_referral_handoffs (token_hash, tenant_id, code_hash, referral_code_id, inviter_user_id, config_epoch, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, []any{"fresh-handoff", "tenant_a", "code", "code-a", "inviter-a", "epoch", now.Add(time.Minute).Format(time.RFC3339), now.Format(time.RFC3339)}},
+	} {
+		if _, err := db.db.ExecContext(ctx, row.query, row.args...); err != nil {
+			t.Fatalf("seed temporary referral state: %v", err)
+		}
+	}
+	cleaned, err := st.UserReferrals.CleanupExpiredRegistrationArtifacts(ctx, now)
+	if err != nil || cleaned.IdempotencyRecords != 1 || cleaned.Sessions != 1 || cleaned.IdentityReservations != 1 || cleaned.Handoffs != 1 {
+		t.Fatalf("cleanup=%#v err=%v", cleaned, err)
+	}
+	for _, check := range []struct {
+		table, key, expired, fresh string
+	}{
+		{"user_referral_registration_idempotency", "key_hash", "expired-idem", "fresh-idem"},
+		{"user_referral_registration_sessions", "token_hash", "expired-session", "fresh-session"},
+		{"user_referral_identity_reservations", "identity_hash", "expired-identity", "fresh-identity"},
+		{"user_referral_handoffs", "token_hash", "expired-handoff", "fresh-handoff"},
+	} {
+		var count int
+		if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+check.table+` WHERE `+check.key+` = ?`, check.expired).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("expired artifact %s count=%d err=%v; want removed", check.table, count, err)
+		}
+		if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+check.table+` WHERE `+check.key+` = ?`, check.fresh).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("fresh artifact %s count=%d err=%v; want retained", check.table, count, err)
+		}
+	}
+}
+
 func TestAdminUserRepositoryRoundTrip(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -1006,6 +1205,29 @@ func TestUsersTenantEmailLookupAndDeleteAreCaseInsensitive(t *testing.T) {
 	got, err = st.Users.GetByTenantEmail(ctx, "tenant_case", "mixed.user@example.com")
 	if err != nil || got != nil {
 		t.Fatalf("deleted user = %#v err=%v, want nil", got, err)
+	}
+}
+
+func TestUsersNormalizeUnicodeEmailBeforeIdentityDeduplication(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	// These two strings render identically, but use different Unicode forms.
+	composed := "caf\u00e9@example.com"
+	decomposed := "cafe\u0301@example.com"
+	user := &store.User{ID: "u_unicode_email", TenantID: "tenant_unicode", Email: composed, SN: "SN-UNICODE", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create unicode user: %v", err)
+	}
+	if user.Email != composed {
+		t.Fatalf("stored email = %q, want NFC %q", user.Email, composed)
+	}
+	got, err := st.Users.GetByTenantEmail(ctx, "tenant_unicode", decomposed)
+	if err != nil || got == nil || got.ID != user.ID {
+		t.Fatalf("NFD lookup user=%#v err=%v", got, err)
+	}
+	if err := st.Users.Create(ctx, &store.User{ID: "u_unicode_duplicate", TenantID: "tenant_unicode", Email: decomposed, SN: "SN-UNICODE-DUP", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err == nil {
+		t.Fatal("expected NFC-equivalent email conflict")
 	}
 }
 

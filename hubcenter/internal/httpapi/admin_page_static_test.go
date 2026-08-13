@@ -322,6 +322,7 @@ func TestAdminPageSplitScriptOrder(t *testing.T) {
 		"assets/js/skillmarket-admin.js",
 		"assets/js/petstore-admin.js",
 		"assets/js/expertmarket-admin.js",
+		"assets/js/industry-management-admin.js",
 		"assets/js/ha-news-admin.js",
 		"assets/js/llm-service-tab.js",
 		"assets/js/compute-market-tab.js",

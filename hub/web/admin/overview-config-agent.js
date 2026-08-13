@@ -3579,6 +3579,7 @@
   }
 
   async function submitConfigAgent() {
+    if (!isTenantAdminScope()) return;
     var input = byID('configAgentInput');
     var text = String(input && input.value || '').trim();
     if (!text) return;
@@ -3845,6 +3846,7 @@
   }
 
   async function executePendingPlan(runOptional) {
+    if (!isTenantAdminScope()) return;
     if (!pendingPlan || !pendingPlan.plan_id || !pendingPlan.confirm_token) {
       appendChat('assistant', '<div class="item-meta">' + esc(cat('noPlan')) + '</div>');
       return;
@@ -3977,6 +3979,10 @@
   }
 
   function applyConfigAgentI18n() {
+    var root = byID('overviewConfigAgent');
+    var isTenant = isTenantAdminScope();
+    if (root) root.classList.toggle('hidden', !isTenant);
+    if (!isTenant) return;
     var t = byID('configAgentTitle');
     var s = byID('configAgentSubtitle');
     var input = byID('configAgentInput');
@@ -4002,6 +4008,11 @@
     if (historySummary) historySummary.textContent = cat('recentPlans');
     var empty = byID('configAgentEmptyHint');
     if (empty) empty.textContent = cat('empty');
+  }
+
+  function isTenantAdminScope() {
+    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
+    return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
   }
 
   function ensureGateModal() {
@@ -4055,6 +4066,7 @@
   }
 
   function showGateModal(status) {
+    if (!isTenantAdminScope()) return;
     ensureGateModal();
     var overlay = byID('systemFreeGateOverlay');
     if (!overlay) return;
@@ -4072,12 +4084,9 @@
 
   async function maybeShowSystemFreeGate(forceRefresh) {
     // Only for tenant-scoped admins after login.
-    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
-    if (!profile) return;
-    var isTenant = String(profile.scope || '').toLowerCase() === 'tenant';
-    // Global admins also benefit when viewing a tenant, but gate primarily for tenant ops.
-    if (!isTenant && !forceRefresh) {
-      // still refresh overview status if available
+    if (!isTenantAdminScope()) {
+      hideGateModal();
+      return;
     }
     if (gateDismissedAt && (Date.now() - gateDismissedAt) < 30 * 60 * 1000 && !forceRefresh) {
       return;
@@ -4099,6 +4108,10 @@
       } else {
         global.tenantSystemFreeStatusCache = st || {};
       }
+      if (!isTenantAdminScope()) {
+        hideGateModal();
+        return;
+      }
       if (st && st.ready) {
         hideGateModal();
         return;
@@ -4106,6 +4119,10 @@
       // Soft-block: show modal once after login / when not ready.
       showGateModal(st || {});
     } catch (err) {
+      if (!isTenantAdminScope()) {
+        hideGateModal();
+        return;
+      }
       showGateModal({ reasons: [String(err && err.message || err || 'load failed')] });
     }
   }
@@ -4131,6 +4148,7 @@
 
   function onConfigAgentGlobalKeydown(e) {
     if (!e) return;
+    if (!isTenantAdminScope()) return;
     var tag = (e.target && e.target.tagName) ? String(e.target.tagName).toLowerCase() : '';
     var typing = tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable);
     var inAgent = isConfigAgentContext(e.target);
@@ -4212,6 +4230,7 @@
 
   function initConfigAgent() {
     applyConfigAgentI18n();
+    if (!isTenantAdminScope()) return;
     loadUIPrefs();
     loadRememberedEmail();
     loadRecentGroups();
@@ -4243,7 +4262,7 @@
       examples.onclick = function(e) {
         var t = e.target;
         if (t && t.getAttribute && t.getAttribute('data-ca-example')) {
-          var msg = t.getAttribute('data-ca-example') || '';
+	          var msg = (global.currentLang === 'zh' ? t.getAttribute('data-ca-example-zh') : '') || t.getAttribute('data-ca-example') || '';
           // Alt+click (or middle-click via alt) stars as favorite without running.
           if (e.altKey) {
             e.preventDefault();
@@ -4271,6 +4290,7 @@
 
   global.initConfigAgent = initConfigAgent;
   global.applyConfigAgentI18n = applyConfigAgentI18n;
+  global.hideSystemFreeGate = hideGateModal;
   global.maybeShowSystemFreeGate = maybeShowSystemFreeGate;
   global.submitConfigAgent = submitConfigAgent;
 

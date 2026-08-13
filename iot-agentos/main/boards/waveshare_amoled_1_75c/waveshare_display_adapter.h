@@ -10,6 +10,8 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
+#include "esp_check.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_lcd_co5300.h"
@@ -32,6 +34,17 @@ extern const uint8_t _binary_waveshare_totem_rgb565_start[];
 #define WAVESHARE_DISPLAY_NATIVE_TOTEM_SOURCE_SIZE 312
 #define WAVESHARE_DISPLAY_NATIVE_TOTEM_DRAW_SIZE 188
 #define WAVESHARE_DISPLAY_NATIVE_TOTEM_TOP 38
+
+/* Physical display facts stay with the CO5300 adapter.  They are consumed
+ * through round_display_service, not the visual-profile/layout contract. */
+static inline int round_display_adapter_width(void) { return WAVESHARE_DISPLAY_WIDTH; }
+static inline int round_display_adapter_height(void) { return WAVESHARE_DISPLAY_HEIGHT; }
+static inline int round_display_adapter_transfer_stripe_rows(void) {
+    return WAVESHARE_DISPLAY_STRIPE_ROWS;
+}
+static inline uint32_t round_display_adapter_pet_animation_frame_ms(void) {
+    return 150u;
+}
 
 static const uint8_t s_waveshare_co5300_qspi_mode[] = {0x20};
 static const uint8_t s_waveshare_co5300_qspi_enable[] = {0x10};
@@ -63,14 +76,15 @@ static const co5300_lcd_init_cmd_t s_waveshare_co5300_init_cmds[] = {
     {0x58, s_waveshare_co5300_contrast_off, sizeof(s_waveshare_co5300_contrast_off), 0},
 };
 
-static spi_bus_config_t waveshare_display_bus_config(size_t max_transfer_bytes) {
+static spi_bus_config_t waveshare_display_bus_config(void) {
     return (spi_bus_config_t){
         .sclk_io_num = GPIO_NUM_38,
         .data0_io_num = GPIO_NUM_4,
         .data1_io_num = GPIO_NUM_5,
         .data2_io_num = GPIO_NUM_6,
         .data3_io_num = GPIO_NUM_7,
-        .max_transfer_sz = max_transfer_bytes,
+        .max_transfer_sz = WAVESHARE_DISPLAY_WIDTH * WAVESHARE_DISPLAY_STRIPE_ROWS *
+                           sizeof(uint16_t),
         .flags = SPICOMMON_BUSFLAG_QUAD,
     };
 }
@@ -125,8 +139,8 @@ static spi_host_device_t round_display_adapter_host(void) {
     return WAVESHARE_DISPLAY_HOST;
 }
 
-static spi_bus_config_t round_display_adapter_bus_config(size_t max_transfer_bytes) {
-    return waveshare_display_bus_config(max_transfer_bytes);
+static spi_bus_config_t round_display_adapter_bus_config(void) {
+    return waveshare_display_bus_config();
 }
 
 static esp_lcd_panel_io_spi_config_t round_display_adapter_io_config(
@@ -211,8 +225,7 @@ static bool round_display_adapter_color_transfer_done(
     esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata,
     void *user_ctx);
 
-static esp_err_t round_display_adapter_init_hardware(
-    size_t max_transfer_bytes, unsigned brightness) {
+static esp_err_t round_display_adapter_init_hardware(unsigned brightness) {
     if (brightness > 100) return ESP_ERR_INVALID_ARG;
     if (s_waveshare_display_panel || s_waveshare_display_io ||
         s_waveshare_display_spi_initialized) return ESP_ERR_INVALID_STATE;
@@ -224,7 +237,7 @@ static esp_err_t round_display_adapter_init_hardware(
     if (err != ESP_OK) return err;
     DISPLAY_INIT_FAULT_POINT(1);
     const spi_host_device_t host = round_display_adapter_host();
-    const spi_bus_config_t bus = round_display_adapter_bus_config(max_transfer_bytes);
+    const spi_bus_config_t bus = round_display_adapter_bus_config();
     err = spi_bus_initialize(host, &bus, SPI_DMA_CH_AUTO);
     if (err != ESP_OK) goto fail;
     s_waveshare_display_spi_initialized = true;

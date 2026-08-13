@@ -104,6 +104,38 @@ func (c *expertHubClient) List(ctx context.Context) ([]ExpertDefinition, error) 
 	return parseExpertListJSON(raw)
 }
 
+// managedIndustryExpertCatalog is purposefully metadata-only. Hub retains the
+// verified definition for control-plane integrity, but GUI gets the actual
+// package only through the per-user authenticated Expert Market installation
+// flow, especially for paid listings.
+type managedIndustryExpertCatalog struct {
+	Revision    int64                         `json:"revision"`
+	ContentHash string                        `json:"content_hash"`
+	Experts     []managedIndustryExpertRecord `json:"experts"`
+}
+
+type managedIndustryExpertRecord struct {
+	AssetID     string `json:"asset_id"`
+	ListingID   string `json:"listing_id"`
+	PackageHash string `json:"package_hash"`
+	Version     string `json:"version"`
+	Price       int64  `json:"price"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Icon        string `json:"icon"`
+	Industries  []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"industries"`
+	DisplayOrder int `json:"display_order"`
+}
+
+func (c *expertHubClient) ListManagedIndustryExperts(ctx context.Context) (managedIndustryExpertCatalog, error) {
+	var out managedIndustryExpertCatalog
+	err := c.do(ctx, http.MethodGet, "/api/v1/managed-industry-experts", nil, &out)
+	return out, err
+}
+
 // parseExpertListJSON tolerates both `[...]` and `{"experts":[...]}` shapes.
 func parseExpertListJSON(raw json.RawMessage) ([]ExpertDefinition, error) {
 	raw = bytes.TrimSpace(raw)

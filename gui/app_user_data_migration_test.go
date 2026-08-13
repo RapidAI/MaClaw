@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1432,6 +1433,13 @@ func TestUserDataMigrationHubBytesLimitedRejectsOversizedChunk(t *testing.T) {
 	}
 }
 
+func TestUserDataMigrationHubReadErrorAvoidsRawEOF(t *testing.T) {
+	err := userDataMigrationHubReadError(http.MethodGet, "/chunk", io.ErrUnexpectedEOF)
+	if err == nil || strings.Contains(strings.ToLower(err.Error()), "eof") || !strings.Contains(err.Error(), "ended unexpectedly") {
+		t.Fatalf("expected sanitized truncated-response error, got %v", err)
+	}
+}
+
 func TestUserDataMigrationRetryableLocalRestoreError(t *testing.T) {
 	for _, message := range []string{
 		"database is locked",
@@ -1458,6 +1466,7 @@ func TestUserDataMigrationRetryableTransferError(t *testing.T) {
 	for _, message := range []string{
 		"connection reset by peer",
 		"unexpected EOF",
+		"Hub migration API GET /chunk response ended unexpectedly",
 		"Hub migration API GET /chunk returned 503: request failed",
 		"Hub migration API GET /chunk returned 429: request failed",
 	} {

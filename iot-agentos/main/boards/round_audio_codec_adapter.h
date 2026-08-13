@@ -4,10 +4,12 @@
  * Private codec-family adapter for the circular profiles.
  *
  * The shared circular renderer owns capture/playback session state, PCM
- * framing and wake-word arbitration.  ES7210/ES8311 register programming,
+ * framing.  Wake-word arbitration and its task placement belong to the
+ * dedicated Wake service.  ES7210/ES8311 register programming,
  * including the known-good 16 kHz clock coefficients and analogue mute
  * sequence, belongs below that boundary.  This header is intentionally not a
- * Device or Platform API: it is included only through round_profile_adapter.h
+ * Device or Platform API: it is included only through the round Audio HAL
+ * source owner after round_audio_profile_adapter.h has selected its profile.
  * by the selected circular board implementation.
  */
 
@@ -141,8 +143,10 @@ static esp_err_t round_audio_adapter_restore_input_gain_with_device(
  * policy decides when playback owns the amplifier; this adapter alone knows
  * how that intent reaches a physical output pin. */
 static esp_err_t round_audio_adapter_initialize_power_amplifier(void) {
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!profile) return ESP_ERR_INVALID_STATE;
     const gpio_config_t config = {
-        .pin_bit_mask = 1ULL << ROUND_PROFILE_AUDIO_PA_ENABLE,
+        .pin_bit_mask = 1ULL << profile->power_amplifier_enable,
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -150,11 +154,13 @@ static esp_err_t round_audio_adapter_initialize_power_amplifier(void) {
     };
     esp_err_t err = gpio_config(&config);
     if (err != ESP_OK) return err;
-    return gpio_set_level(ROUND_PROFILE_AUDIO_PA_ENABLE, 0);
+    return gpio_set_level(profile->power_amplifier_enable, 0);
 }
 
 static esp_err_t round_audio_adapter_set_power_amplifier(bool enabled) {
-    return gpio_set_level(ROUND_PROFILE_AUDIO_PA_ENABLE, enabled ? 1 : 0);
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    return profile ? gpio_set_level(profile->power_amplifier_enable, enabled ? 1 : 0)
+                   : ESP_ERR_INVALID_STATE;
 }
 
 /* The shared round code needs codec handles to run its normalized capture and
@@ -181,10 +187,12 @@ static void round_audio_adapter_release_codec_bus(void) {
 
 static esp_err_t round_audio_adapter_open_codec_bus(void) {
     if (s_round_audio_i2c_bus) return ESP_ERR_INVALID_STATE;
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!profile) return ESP_ERR_INVALID_STATE;
     const i2c_master_bus_config_t bus_config = {
         .i2c_port = I2C_NUM_0,
-        .sda_io_num = ROUND_PROFILE_AUDIO_I2C_SDA,
-        .scl_io_num = ROUND_PROFILE_AUDIO_I2C_SCL,
+        .sda_io_num = profile->i2c_sda,
+        .scl_io_num = profile->i2c_scl,
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,
@@ -192,14 +200,16 @@ static esp_err_t round_audio_adapter_open_codec_bus(void) {
     return i2c_new_master_bus(&bus_config, &s_round_audio_i2c_bus);
 }
 
-/* Touch/PMIC may share the physical bus.  Preserve the established order:
- * profile peripheral discovery first, then codec device attachment. */
+/* Codec devices attach after the Peripheral service claims shared-bus PMIC,
+ * touch and IMU controllers. Audio never owns their controller handles. */
 static esp_err_t round_audio_adapter_attach_codecs(void) {
     if (!s_round_audio_i2c_bus || s_round_audio_input_codec ||
         s_round_audio_output_codec) return ESP_ERR_INVALID_STATE;
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!profile) return ESP_ERR_INVALID_STATE;
     const i2c_device_config_t input_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = ROUND_PROFILE_AUDIO_ES7210_ADDRESS,
+        .device_address = profile->input_codec_address,
         .scl_speed_hz = 100000,
     };
     esp_err_t err = i2c_master_bus_add_device(
@@ -207,7 +217,7 @@ static esp_err_t round_audio_adapter_attach_codecs(void) {
     if (err != ESP_OK) goto fail;
     const i2c_device_config_t output_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = ROUND_PROFILE_AUDIO_ES8311_ADDRESS,
+        .device_address = profile->output_codec_address,
         .scl_speed_hz = 100000,
     };
     err = i2c_master_bus_add_device(
@@ -250,6 +260,8 @@ static void round_audio_adapter_release_i2s(void) {
 
 static esp_err_t round_audio_adapter_initialize_i2s(void) {
     if (s_round_audio_tx || s_round_audio_rx) return ESP_ERR_INVALID_STATE;
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!profile) return ESP_ERR_INVALID_STATE;
     i2s_chan_config_t channels = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     /* 4 x 256 frames per direction holds 64 ms but leaves contiguous internal
      * RAM for interaction tasks. Auto-clear prevents stale DMA audio on feed
@@ -261,36 +273,32 @@ static esp_err_t round_audio_adapter_initialize_i2s(void) {
     if (err != ESP_OK) goto fail;
 
     i2s_std_config_t rx_config = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(ROUND_PROFILE_AUDIO_RATE),
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(profile->sample_rate),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
-            .mclk = ROUND_PROFILE_AUDIO_MCLK,
-            .bclk = ROUND_PROFILE_AUDIO_BCLK,
-            .ws = ROUND_PROFILE_AUDIO_WS,
+            .mclk = profile->mclk, .bclk = profile->bclk, .ws = profile->ws,
             .dout = I2S_GPIO_UNUSED,
-            .din = ROUND_PROFILE_AUDIO_DIN,
+            .din = profile->din,
             .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
         },
     };
-    rx_config.clk_cfg.mclk_multiple = ROUND_PROFILE_AUDIO_MCLK_MULTIPLE;
+    rx_config.clk_cfg.mclk_multiple = profile->mclk_multiple;
     err = i2s_channel_init_std_mode(s_round_audio_rx, &rx_config);
     if (err != ESP_OK) goto fail;
 
     i2s_std_config_t tx_config = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(ROUND_PROFILE_AUDIO_RATE),
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(profile->sample_rate),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
-            .mclk = ROUND_PROFILE_AUDIO_MCLK,
-            .bclk = ROUND_PROFILE_AUDIO_BCLK,
-            .ws = ROUND_PROFILE_AUDIO_WS,
-            .dout = ROUND_PROFILE_AUDIO_DOUT,
+            .mclk = profile->mclk, .bclk = profile->bclk, .ws = profile->ws,
+            .dout = profile->dout,
             .din = I2S_GPIO_UNUSED,
             .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
         },
     };
-    tx_config.clk_cfg.mclk_multiple = ROUND_PROFILE_AUDIO_MCLK_MULTIPLE;
+    tx_config.clk_cfg.mclk_multiple = profile->mclk_multiple;
     err = i2s_channel_init_std_mode(s_round_audio_tx, &tx_config);
     if (err != ESP_OK) goto fail;
     err = i2s_channel_enable(s_round_audio_tx);
@@ -342,40 +350,26 @@ static void round_audio_adapter_free_wake_capture_buffer(void *buffer) {
     heap_caps_free(buffer);
 }
 
-/* Wake dispatch runs only after the recognizer has relinquished its large
- * model buffers.  The task is audio-session infrastructure, so keep its
- * PSRAM stack placement in this private adapter instead of the shared wake
- * state machine. */
-static BaseType_t round_audio_adapter_start_wake_dispatch_task(
-    TaskFunction_t entry, TaskHandle_t *out_task) {
-    if (!entry || !out_task) return pdFAIL;
-    return xTaskCreateWithCaps(entry, "maclaw_wake_dispatch", 3072, NULL, 5,
-                               out_task, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-}
-/* MultiNet owns a large model arena while it listens.  Its task placement and
- * CPU affinity are audio-runtime facts, not wake-word session policy. */
-static BaseType_t round_audio_adapter_start_wake_recognizer_task(
-    TaskFunction_t entry, TaskHandle_t *out_task) {
-    if (!entry || !out_task) return pdFAIL;
-    return xTaskCreatePinnedToCore(entry, "maclaw_offline_wake", 10240, NULL,
-                                   4, out_task, 1);
-}
 /* Capture arrives from the ES7210 as a profile-selected interleaved I2S
  * format.  Business/session code works in logical mono frames only; this
  * private seam owns the wire-frame size and selected microphone slot. */
 static size_t round_audio_adapter_capture_wire_bytes(size_t frames) {
-    return frames * ROUND_PROFILE_MIC_SLOT_COUNT * sizeof(int16_t);
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    return profile ? frames * profile->microphone_slot_count * sizeof(int16_t) : 0;
 }
 
 static size_t round_audio_adapter_extract_capture_mono(
     const int16_t *wire, size_t wire_bytes, int16_t *mono, size_t mono_capacity) {
     if (!wire || !mono || mono_capacity == 0) return 0;
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!profile || profile->microphone_slot_count == 0 ||
+        profile->microphone_selected_slot >= profile->microphone_slot_count) return 0;
     const size_t available = wire_bytes /
-                             (ROUND_PROFILE_MIC_SLOT_COUNT * sizeof(*wire));
+                             (profile->microphone_slot_count * sizeof(*wire));
     const size_t frames = available < mono_capacity ? available : mono_capacity;
     for (size_t frame = 0; frame < frames; ++frame) {
-        mono[frame] = wire[frame * ROUND_PROFILE_MIC_SLOT_COUNT +
-                           ROUND_PROFILE_MIC_SELECTED_SLOT];
+        mono[frame] = wire[frame * profile->microphone_slot_count +
+                           profile->microphone_selected_slot];
     }
     return frames;
 }
@@ -418,23 +412,28 @@ static esp_err_t round_audio_adapter_write_pcm(const int16_t *pcm, size_t frames
  * PCM conversion, wake arbitration and retry policy. */
 static void round_audio_adapter_release(void) {
     round_audio_adapter_release_i2s();
-    round_touch_adapter_deinit();
+    /* PMIC/touch/IMU are bus devices. Their profile-private owner must detach
+     * them before this Audio owner deletes the shared I2C master bus. */
+    round_peripheral_lifecycle_detach();
     round_audio_adapter_release_codec_bus();
 }
 
 static esp_err_t round_audio_adapter_initialize(unsigned output_volume) {
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!profile) return ESP_ERR_INVALID_STATE;
     round_audio_adapter_release();
     esp_err_t err = round_audio_adapter_open_codec_bus();
     if (err != ESP_OK) goto fail;
 
-    const esp_err_t touch_err = round_touch_adapter_init(s_round_audio_i2c_bus);
-    if (touch_err != ESP_OK) {
-        if (round_touch_adapter_init_is_required()) {
-            err = touch_err;
+    const esp_err_t peripheral_err =
+        round_peripheral_lifecycle_attach(s_round_audio_i2c_bus);
+    if (peripheral_err != ESP_OK) {
+        if (profile->touch_initialization_required) {
+            err = peripheral_err;
             goto fail;
         }
-        ESP_LOGW("round_audio", "touch controller init deferred: %s",
-                 esp_err_to_name(touch_err));
+        ESP_LOGW("round_audio", "peripheral controller init deferred: %s",
+                 esp_err_to_name(peripheral_err));
     }
 
     err = round_audio_adapter_attach_codecs();
@@ -446,10 +445,10 @@ static esp_err_t round_audio_adapter_initialize(unsigned output_volume) {
     err = round_audio_adapter_initialize_power_amplifier();
     if (err != ESP_OK) goto fail;
     err = round_audio_adapter_initialize_output_codec(
-        s_round_audio_output_codec, ROUND_PROFILE_AUDIO_ES8311_DAC_MUTE_REG,
-        ROUND_PROFILE_AUDIO_ES8311_DAC_VOLUME_REG, output_volume);
+        s_round_audio_output_codec, profile->output_mute_register,
+        profile->output_volume_register, output_volume);
     if (err != ESP_OK) goto fail;
-    round_audio_adapter_log_i2s_ready(ROUND_PROFILE_NAME);
+    round_audio_adapter_log_i2s_ready(profile->name);
     return ESP_OK;
 
 fail:
@@ -499,14 +498,18 @@ static esp_err_t round_audio_adapter_playback_finish(
     return power_err;
 }
 static esp_err_t round_audio_adapter_set_output_volume(unsigned percent) {
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!profile) return ESP_ERR_INVALID_STATE;
     return round_audio_adapter_set_output_volume_with_device(
-        s_round_audio_output_codec, ROUND_PROFILE_AUDIO_ES8311_DAC_VOLUME_REG,
+        s_round_audio_output_codec, profile->output_volume_register,
         percent);
 }
 
 static esp_err_t round_audio_adapter_set_output_muted(bool muted) {
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!profile) return ESP_ERR_INVALID_STATE;
     return round_audio_adapter_set_output_muted_with_device(
-        s_round_audio_output_codec, ROUND_PROFILE_AUDIO_ES8311_DAC_MUTE_REG,
+        s_round_audio_output_codec, profile->output_mute_register,
         muted);
 }
 

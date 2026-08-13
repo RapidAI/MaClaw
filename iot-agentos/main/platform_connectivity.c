@@ -69,10 +69,6 @@ bool platform_connectivity_cancel_cellular_requests_for_owner(const void *owner)
     return board_port_cancel_cellular_requests_for_owner(owner);
 }
 
-bool platform_connectivity_take_startup_transport_toggle(uint32_t window_ms) {
-    return board_port_wait_for_boot_network_toggle(window_ms);
-}
-
 bool platform_connectivity_load_transport_selection(bool *out_cellular) {
     if (!out_cellular) return false;
     return board_port_load_transport_selection(out_cellular);

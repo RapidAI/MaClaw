@@ -138,6 +138,19 @@ type BoundUserView struct {
 	EmailVerified     bool                      `json:"email_verified"`
 	HasServiceAccess  bool                      `json:"has_service_access,omitempty"`
 	ServiceStatus     *llmservice.ServiceStatus `json:"service_status,omitempty"`
+	Referral          *BoundUserReferralView    `json:"referral,omitempty"`
+}
+
+// BoundUserReferralView is a permission-safe attribution indicator for the
+// user-management surface. It includes an internal inviter ID and a masked
+// display value so tenant administrators can investigate the source without
+// exposing an invitation code or raw third-party contact data.
+type BoundUserReferralView struct {
+	ReferralID         string `json:"referral_id"`
+	InviterUserID      string `json:"inviter_user_id"`
+	InviterDisplayName string `json:"inviter_display_name"`
+	Status             string `json:"reward_status"`
+	RegisteredAt       string `json:"registered_at"`
 }
 
 type BoundUserIdentityView struct {
@@ -719,8 +732,20 @@ func LookupUserHandler(identity *auth.IdentityService) http.HandlerFunc {
 	}
 }
 
-func ListUsersHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
+func ListUsersHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService, referralRepos ...store.UserReferralRepository) http.HandlerFunc {
+	var referralRepo store.UserReferralRepository
+	if len(referralRepos) > 0 {
+		referralRepo = referralRepos[0]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		registrationSource := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("registration_source")))
+		if registrationSource == "" {
+			registrationSource = "all"
+		}
+		if registrationSource != "all" && registrationSource != "direct" && registrationSource != "referral" {
+			writeError(w, http.StatusBadRequest, "INVALID_REGISTRATION_SOURCE", "registration_source must be one of all, direct, referral")
+			return
+		}
 		var (
 			items []*store.User
 			err   error
@@ -736,6 +761,33 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 			return
 		}
 		identityRows := preloadBoundUserIdentities(r.Context(), identity.UsersRepo(), items)
+		usersByTenantID := make(map[string]*store.User, len(items))
+		for _, user := range items {
+			if user != nil && strings.TrimSpace(user.ID) != "" {
+				usersByTenantID[store.NormalizeTenantID(user.TenantID)+"\x00"+strings.TrimSpace(user.ID)] = user
+			}
+		}
+		referralsByTenantUser := make(map[string]*store.UserReferral)
+		if referralRepo != nil {
+			userIDsByTenant := make(map[string][]string)
+			for _, user := range items {
+				if user == nil || strings.TrimSpace(user.ID) == "" {
+					continue
+				}
+				tenantID := store.NormalizeTenantID(user.TenantID)
+				userIDsByTenant[tenantID] = append(userIDsByTenant[tenantID], user.ID)
+			}
+			for tenantID, userIDs := range userIDsByTenant {
+				referrals, lookupErr := referralRepo.ListReferralsForInvitees(r.Context(), tenantID, userIDs)
+				if lookupErr != nil {
+					log.Printf("[admin/users] list referrals failed: %v", lookupErr)
+					continue
+				}
+				for userID, referral := range referrals {
+					referralsByTenantUser[tenantID+"\x00"+userID] = referral
+				}
+			}
+		}
 		out := make([]BoundUserView, 0, len(items))
 		seenUsers := make(map[string]struct{}, len(items))
 		virtualEmailCache := map[string]map[string]struct{}{}
@@ -758,6 +810,14 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				continue
 			}
 			seenUsers[seenKey] = struct{}{}
+			referralItem := referralsByTenantUser[tenantID+"\x00"+strings.TrimSpace(user.ID)]
+			hasVisibleReferral := referralItem != nil && isUserReferralVisible(referralItem.Status)
+			if registrationSource == "referral" && !hasVisibleReferral {
+				continue
+			}
+			if registrationSource == "direct" && hasVisibleReferral {
+				continue
+			}
 			accountType := "physical_employee"
 			isVirtualEmployee := false
 			if system != nil {
@@ -776,6 +836,15 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				tenantSystem := ScopedSystemSettingsForTenant(tenantID, system)
 				serviceStatus, _ = llmservice.ResolveServiceStatusForUserID(r.Context(), tenantSystem, securitySvc, user.ID, user.Email, externalLLMBaseURL(r))
 			}
+			var referral *BoundUserReferralView
+			if item := referralItem; hasVisibleReferral {
+				inviter := usersByTenantID[tenantID+"\x00"+strings.TrimSpace(item.InviterUserID)]
+				inviterDisplayName := maskBoundUserReferralInviter(item.InviterUserID)
+				if inviter != nil && strings.TrimSpace(inviter.Email) != "" {
+					inviterDisplayName = maskBoundUserReferralInviter(inviter.Email)
+				}
+				referral = &BoundUserReferralView{ReferralID: item.ID, InviterUserID: item.InviterUserID, InviterDisplayName: inviterDisplayName, Status: item.Status, RegisteredAt: item.RegisteredAt.UTC().Format(time.RFC3339)}
+			}
 			out = append(out, BoundUserView{
 				ID:                user.ID,
 				TenantID:          tenantID,
@@ -793,9 +862,38 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				EmailVerified:     boundUserEmailVerified(user, identities),
 				HasServiceAccess:  serviceStatus != nil && serviceStatus.Active,
 				ServiceStatus:     serviceStatus,
+				Referral:          referral,
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"users": out})
+	}
+}
+
+func maskBoundUserReferralInviter(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "***"
+	}
+	if at := strings.Index(value, "@"); at > 0 {
+		local := []rune(value[:at])
+		if len(local) <= 1 {
+			return "*" + value[at:]
+		}
+		return string(local[:1]) + "***" + value[at:]
+	}
+	runes := []rune(value)
+	if len(runes) <= 4 {
+		return "***"
+	}
+	return string(runes[:2]) + "***" + string(runes[len(runes)-2:])
+}
+
+func isUserReferralVisible(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "attributed", "rewarded", "reward_failed":
+		return true
+	default:
+		return false
 	}
 }
 
