@@ -985,10 +985,7 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 			prompt += section
 		}
 
-		// Select relevant MCP tools for this task.
-		c.ensureMatchedMCPToolsSelected()
-
-		if section := buildCodingSubAgentMCPSection(c.matchedMCPTools); section != "" {
+		if section := c.buildCodingSubAgentMCPSection(); section != "" {
 			prompt += section
 		}
 	}

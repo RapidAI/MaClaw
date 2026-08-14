@@ -245,6 +245,20 @@ func TestTriggerOptimize_Guards(t *testing.T) {
 	if !strings.Contains(res.SkipReason, "file-backed") {
 		t.Fatalf("file-backed SkipReason=%q", res.SkipReason)
 	}
+
+	// Agent-guided Markdown project workflows need interactive orchestration,
+	// not an LLM rewrite of their single craft_tool adapter step.
+	workflowEntry := &corelib.NLSkillEntry{
+		Name: "Book-PDF", Source: "clawhub", Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}
+	res = p3.TriggerOptimize(ctx, workflowEntry, true)
+	if !strings.Contains(res.SkipReason, "agent-guided") {
+		t.Fatalf("agent-guided SkipReason=%q", res.SkipReason)
+	}
 }
 
 func TestTriggerOptimize_SkipsThresholdUnlessForce(t *testing.T) {
@@ -628,6 +642,33 @@ func TestEvolutionPipeline_tryFileBackedRepairDraft(t *testing.T) {
 	files, err = os.ReadDir(draftsDir)
 	if err != nil || len(files) != 1 {
 		t.Fatalf("draft files after retry = %v, err = %v, want exactly 1", files, err)
+	}
+}
+
+func TestEvolutionPipeline_TriggerFileBackedRepairDraft_ForceCreatesReviewedDraft(t *testing.T) {
+	skillDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: local-skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name: "local-skill", Source: "file", SkillDir: skillDir, Status: "active",
+		// Deliberately below the automatic threshold: force must only bypass
+		// that statistical gate, never the reviewed-draft requirement.
+		UsageCount: 1, FailureCount: 1,
+		LastError: "[class: command_not_found] missing foo",
+		Steps:     []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "foo"}}},
+	}
+	p := NewEvolutionPipeline()
+	p.LLM = &stubRepairLLM{respond: `{"repaired":true,"explanation":"use echo","new_steps":[{"action":"bash","params":{"command":"echo fixed"}}]}`}
+	result := p.TriggerFileBackedRepairDraft(context.Background(), entry, nil, true)
+	if !result.Created || !result.RequiresReview || result.Draft == "" {
+		t.Fatalf("result = %#v, want a reviewed draft", result)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, RepairDraftsDirName, result.Draft)); err != nil {
+		t.Fatalf("draft not written: %v", err)
+	}
+	if entry.Steps[0].Params["command"] != "foo" {
+		t.Fatalf("manual draft must not mutate file-backed entry: %#v", entry.Steps)
 	}
 }
 

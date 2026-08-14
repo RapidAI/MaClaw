@@ -271,6 +271,8 @@ const (
 	skillEntrySourceGitHub  skillEntrySource = "github"
 	skillEntrySourceManual  skillEntrySource = "manual"
 	skillEntrySourceAgent   skillEntrySource = "agent_skill"
+	skillEntrySourceMarket  skillEntrySource = "skillmarket"
+	skillEntrySourceHubV2   skillEntrySource = "skillhub"
 )
 
 func normalizeSkillEntrySource(source string) skillEntrySource {
@@ -287,6 +289,10 @@ func normalizeSkillEntrySource(source string) skillEntrySource {
 		return skillEntrySourceManual
 	case skillEntrySourceAgent:
 		return skillEntrySourceAgent
+	case skillEntrySourceMarket:
+		return skillEntrySourceMarket
+	case skillEntrySourceHubV2:
+		return skillEntrySourceHubV2
 	default:
 		return skillEntrySourceUnknown
 	}
@@ -298,7 +304,7 @@ func (s skillEntrySource) String() string {
 
 func (s skillEntrySource) IsAgentMarkdownSkillSource() bool {
 	switch s {
-	case skillEntrySourceGitHub, skillEntrySourceClawHub, skillEntrySourceAgent:
+	case skillEntrySourceGitHub, skillEntrySourceClawHub, skillEntrySourceAgent, skillEntrySourceMarket, skillEntrySourceHubV2:
 		return true
 	default:
 		return false

@@ -78,6 +78,23 @@ interface NLSkillDefinition {
     mode?: string;
 }
 
+function isAgentGuidedWorkflow(skill: NLSkillDefinition): boolean {
+    return skill.execution_class === "agent_guided_workflow";
+}
+
+// Builds before the workflow classification fix used this runner error as the
+// whole reason to demote an imported multi-agent workflow to needs_review.
+// It is not a safety finding, and the backend reconciles it on load. Keep a
+// stale client-side copy out of the review queue while leaving genuine review
+// decisions (security, repair, governance) visible and actionable.
+function isLegacyAgentGuidedWorkflowRunnerReview(skill: NLSkillDefinition): boolean {
+    if (!isAgentGuidedWorkflow(skill) || String(skill.status || "").toLowerCase() !== "needs_review") return false;
+    const reason = String(skill.last_error || "").trim().toLowerCase();
+    return reason.startsWith("runner incompatible:")
+        && reason.includes("interactive agent orchestration")
+        && reason.includes("gui skill runner");
+}
+
 interface SkillEvolutionStatus {
     pipeline_started?: boolean;
     pending_skills?: number;
@@ -602,7 +619,7 @@ export function getLearnedSkillDescriptionPreview(description: string, maxChars 
 }
 
 function skillReviewReason(skill: NLSkillDefinition, localizeText: Props["localizeText"]): string {
-    const reason = String(skill.review_reason || skill.last_error || "").trim();
+	const reason = String(skill.review_reason || skill.last_error || "").trim();
     if (reason) return reason;
     if (skill.status === "needs_setup") {
         return localizeText("This skill needs configuration before use.", "\u8be5 Skill \u9700\u8981\u5b8c\u6210\u914d\u7f6e\u540e\u624d\u80fd\u4f7f\u7528\u3002", "\u8a72 Skill \u9700\u8981\u5b8c\u6210\u8a2d\u5b9a\u5f8c\u624d\u80fd\u4f7f\u7528\u3002");
@@ -610,6 +627,13 @@ function skillReviewReason(skill: NLSkillDefinition, localizeText: Props["locali
     if (skill.status === "needs_review") {
         return localizeText("This skill was marked for local review by safety, repair, or governance checks.", "\u8be5 Skill \u88ab\u672c\u5730\u5b89\u5168\u3001\u4fee\u590d\u6216\u6cbb\u7406\u68c0\u67e5\u6807\u8bb0\u4e3a\u9700\u8981\u4eba\u5de5\u5ba1\u6838\u3002", "\u8a72 Skill \u88ab\u672c\u5730\u5b89\u5168\u3001\u4fee\u5fa9\u6216\u6cbb\u7406\u6aa2\u67e5\u6a19\u8a18\u70ba\u9700\u8981\u4eba\u5de5\u5be9\u6838\u3002");
     }
+	if (isAgentGuidedWorkflow(skill)) {
+		return localizeText(
+			"This imported workflow is ready for an AI-agent project task. It cannot run as one GUI Skill Runner step.",
+			"该导入工作流应在 AI 助手任务中使用，不能作为单步 GUI Skill Runner 运行。",
+			"此匯入工作流程應在 AI 助手任務中使用，不能作為單一步驟 GUI Skill Runner 執行。",
+		);
+	}
     return "";
 }
 
@@ -2179,7 +2203,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     // Evolution attention queues (shown on Evolution settings tab).
     const reviewQueue = useMemo(() => {
         return skills
-            .filter((s) => String(s.status || "").toLowerCase() === "needs_review")
+            // Exclude only the obsolete runner-incompatibility demotion. A
+            // genuine security, repair, or governance review for an agent
+            // workflow must remain visible here and be explicitly approved.
+            .filter((s) => String(s.status || "").toLowerCase() === "needs_review" && !isLegacyAgentGuidedWorkflowRunnerReview(s))
             .slice(0, 20);
     }, [skills]);
 
@@ -2242,6 +2269,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         return skills
             .filter((s) => {
                 if (!String(s.last_error || "").trim()) return false;
+                if (isAgentGuidedWorkflow(s)) return false;
                 const st = String(s.status || "active").toLowerCase();
                 return st === "active" || st === "needs_review" || st === "";
             })
@@ -2497,9 +2525,16 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     }, [optimizeCandidates, showConfirm, showToast, localizeText, pushEvolutionActivity, loadData, loadMaintenanceDrafts, loadEvolutionAudit]);
 
     // Run a skill by dispatching an event to the AI assistant
-    const handleRunSkill = useCallback((skillName: string) => {
-        window.dispatchEvent(new CustomEvent("maclaw:run-skill", { detail: { name: skillName } }));
-    }, []);
+	const handleRunSkill = useCallback((skillName: string) => {
+		window.dispatchEvent(new CustomEvent("maclaw:run-skill", { detail: { name: skillName } }));
+	}, []);
+
+	// Agent-guided Markdown workflows are intentionally not GUI-runner skills.
+	// Launching a dedicated assistant task gives the agent the conversational,
+	// multi-stage orchestration context required by the imported workflow.
+	const handleStartAgentGuidedWorkflow = useCallback((skillName: string) => {
+		window.dispatchEvent(new CustomEvent("maclaw:start-agent-guided-workflow", { detail: { name: skillName } }));
+	}, []);
 
     // Manual self-repair from skill detail modal (force=true skips usage-rate threshold).
     const handleTriggerSelfRepair = useCallback(async (skill: NLSkillDefinition) => {
@@ -2508,14 +2543,23 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         setDetailActionBusy("repair");
         try {
             const raw = await TriggerSkillSelfRepair(skill.name, true);
-            let parsed: { ok?: boolean; error?: string; message?: string } = {};
+            let parsed: { ok?: boolean; error?: string; message?: string; draft_created?: boolean; requires_review?: boolean } = {};
             try {
                 parsed = typeof raw === "string" ? JSON.parse(raw) : (raw as typeof parsed) || {};
             } catch {
                 parsed = { ok: false, error: String(raw) };
             }
             if (parsed.ok) {
-                pushEvolutionActivity("repaired", skill.name, parsed.message || "");
+                if (parsed.draft_created || parsed.requires_review) {
+                    // Disk-backed skills are never overwritten by the repair
+                    // action. Take the reviewer directly to the generated
+                    // draft, where applying it remains an explicit choice.
+                    setActiveTab("evolution");
+                    setEvolutionFocusSkill(skill.name);
+                    pushEvolutionActivity("repaired", skill.name, "repair draft pending review");
+                } else {
+                    pushEvolutionActivity("repaired", skill.name, parsed.message || "");
+                }
                 showToast(
                     parsed.message
                         || localizeText("Self-repair finished", "自修复已完成", "自修復已完成"),
@@ -2543,7 +2587,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             setBusy(false);
             setDetailActionBusy(null);
         }
-    }, [loadData, localizeText, showToast, pushEvolutionActivity]);
+    }, [loadData, localizeText, showToast, pushEvolutionActivity, setActiveTab]);
 
     // Manual one-shot LLM optimization (force=true skips auto thresholds + 24h throttle).
     const handleTriggerOptimize = useCallback(async (skill: NLSkillDefinition) => {
@@ -2667,6 +2711,8 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     const getExecutionClassLabel = (executionClass?: string) => {
         switch (executionClass) {
+            case "agent_guided_workflow":
+                return localizeText("Agent-guided workflow", "需 Agent 编排", "需 Agent 編排");
             case "agent_markdown_skill":
                 return localizeText("Agent Skill", "代理 Skill", "代理 Skill");
             case "native_skill":
@@ -2678,6 +2724,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     const getExecutionClassTitle = (skill: NLSkillDefinition) => {
         switch (skill.execution_class) {
+            case "agent_guided_workflow":
+                return localizeText(
+                    "This imported Markdown workflow needs interactive multi-step agent orchestration; it cannot run or self-repair as one GUI skill step.",
+                    "该导入 Markdown 工作流需要 Agent 进行交互式多步骤编排，不能作为单个 GUI Skill 步骤运行或自修复。",
+                    "此匯入 Markdown 工作流程需要 Agent 進行互動式多步驟編排，不能作為單一 GUI Skill 步驟執行或自我修復。",
+                );
             case "agent_markdown_skill":
                 return localizeText(
                     "Imported markdown-style skill executed through the agent skill pipeline.",
@@ -2852,7 +2904,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 {s.status === "needs_review" && (
                                                     <button className="btn-secondary" style={iconBtnStyle} onClick={() => handleApproveSkillReview(s)} disabled={busy} title={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")} aria-label={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")}>{localizeText("OK", "通过", "通過")}</button>
                                                 )}
-                                                {!!s.last_error && (
+                                                {!!s.last_error && !isAgentGuidedWorkflow(s) && (
                                                     <button
                                                         className="btn-secondary"
                                                         style={{ ...iconBtnStyle, color: "var(--theme-warning, #b45309)" }}
@@ -2864,7 +2916,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         {localizeText("Fix", "修复", "修復")}
                                                     </button>
                                                 )}
-                                                {!s.last_error && (s.usage_count ?? 0) >= 3 && (() => {
+                                                {!isAgentGuidedWorkflow(s) && !s.last_error && (s.usage_count ?? 0) >= 3 && (() => {
                                                     const rate = typeof s.success_rate === "number" ? s.success_rate : 0;
                                                     return rate >= 0.5 && rate <= 0.85;
                                                 })() && (
@@ -2879,7 +2931,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         {localizeText("Opt", "优化", "優化")}
                                                     </button>
                                                 )}
-                                                <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>{localizeText("Run", "运行", "執行")}</button>
+                                                {isAgentGuidedWorkflow(s) ? (
+                                                    <button className="btn-primary" style={{ ...runBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => handleStartAgentGuidedWorkflow(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Open an AI-agent project task for this workflow", "在 AI 助手中启动此工作流任务", "在 AI 助手中啟動此工作流程任務")} aria-label={localizeText("Start with AI Agent", "用 AI 助手启动", "用 AI 助手啟動")}>{localizeText("Start", "启动", "啟動")}</button>
+                                                ) : (
+                                                    <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>{localizeText("Run", "运行", "執行")}</button>
+                                                )}
                                                 <button className="btn-secondary" style={iconBtnStyle} onClick={() => openEditForm(s)} disabled={busy} title={localizeText("Edit", "编辑", "編輯")} aria-label={localizeText("Edit", "编辑", "編輯")}>{localizeText("Edit", "编辑", "編輯")}</button>
                                                 <button className="btn-secondary" style={deleteIconBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>
                                                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
@@ -2940,7 +2996,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         {s.status === "needs_review" && (
                                                             <button className="btn-secondary" style={iconBtnStyle} onClick={() => handleApproveSkillReview(s)} disabled={busy} title={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")} aria-label={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")}>{localizeText("OK", "通过", "通過")}</button>
                                                         )}
-                                                        {!!s.last_error && (
+                                                        {!!s.last_error && !isAgentGuidedWorkflow(s) && (
                                                             <button
                                                                 className="btn-secondary"
                                                                 style={{ ...iconBtnStyle, color: "var(--theme-warning, #b45309)" }}
@@ -2952,7 +3008,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                                 {localizeText("Fix", "修复", "修復")}
                                                             </button>
                                                         )}
-                                                        {!s.last_error && (s.usage_count ?? 0) >= 3 && (() => {
+                                                        {!isAgentGuidedWorkflow(s) && !s.last_error && (s.usage_count ?? 0) >= 3 && (() => {
                                                             const rate = typeof s.success_rate === "number" ? s.success_rate : 0;
                                                             return rate >= 0.5 && rate <= 0.85;
                                                         })() && (
@@ -2967,7 +3023,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                                 {localizeText("Opt", "优化", "優化")}
                                                             </button>
                                                         )}
-                                                        <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>{localizeText("Run", "运行", "執行")}</button>
+                                                        {isAgentGuidedWorkflow(s) ? (
+                                                            <button className="btn-primary" style={{ ...runBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => handleStartAgentGuidedWorkflow(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Open an AI-agent project task for this workflow", "在 AI 助手中启动此工作流任务", "在 AI 助手中啟動此工作流程任務")} aria-label={localizeText("Start with AI Agent", "用 AI 助手启动", "用 AI 助手啟動")}>{localizeText("Start", "启动", "啟動")}</button>
+                                                        ) : (
+                                                            <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>{localizeText("Run", "运行", "執行")}</button>
+                                                        )}
                                                         <button className="btn-secondary" style={iconBtnStyle} onClick={() => openEditForm(s)} disabled={busy} title={localizeText("Edit", "编辑", "編輯")} aria-label={localizeText("Edit", "编辑", "編輯")}>{localizeText("Edit", "编辑", "編輯")}</button>
                                                         <button className="btn-secondary" style={deleteIconBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>
                                                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>
@@ -5162,7 +5222,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     {localizeText("Approve and Enable", "\u5ba1\u6838\u901a\u8fc7\u5e76\u542f\u7528", "\u5be9\u6838\u901a\u904e\u4e26\u555f\u7528")}
                                 </button>
                             )}
-                            {!!detailSkill.last_error && (
+                            {!!detailSkill.last_error && !isAgentGuidedWorkflow(detailSkill) && (
                                 <button
                                     className="btn-secondary"
                                     style={{ fontSize: "0.78rem", padding: "4px 14px" }}
@@ -5179,7 +5239,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                         : localizeText("Repair now", "立即修复", "立即修復")}
                                 </button>
                             )}
-                            {(detailSkill.status === "active" || detailSkill.status === "needs_review") && (
+                            {(detailSkill.status === "active" || detailSkill.status === "needs_review") && !isAgentGuidedWorkflow(detailSkill) && (
                                 <button
                                     className="btn-secondary"
                                     style={{ fontSize: "0.78rem", padding: "4px 14px" }}
@@ -5196,9 +5256,15 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                         : localizeText("Optimize now", "立即优化", "立即優化")}
                                 </button>
                             )}
-                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => { handleRunSkill(detailSkill.name); setDetailSkill(null); }} disabled={detailSkill.status !== "active"}>
-                                {localizeText("Run", "运行", "執行")}
-                            </button>
+                            {isAgentGuidedWorkflow(detailSkill) ? (
+                                <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => { handleStartAgentGuidedWorkflow(detailSkill.name); setDetailSkill(null); }} disabled={detailSkill.status !== "active"}>
+                                    {localizeText("Start with AI Agent", "用 AI 助手启动", "用 AI 助手啟動")}
+                                </button>
+                            ) : (
+                                <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => { handleRunSkill(detailSkill.name); setDetailSkill(null); }} disabled={detailSkill.status !== "active"}>
+                                    {localizeText("Run", "运行", "執行")}
+                                </button>
+                            )}
                             <button className="btn-secondary" onClick={() => { openEditForm(detailSkill); setDetailSkill(null); }}>
                                 {localizeText("Edit", "编辑", "編輯")}
                             </button>

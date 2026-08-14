@@ -204,6 +204,14 @@ type SkillExecutor struct {
 	skillCache    []corelib.NLSkillEntry
 	skillCacheAt  time.Time
 	skillCacheKey string
+
+	// statusOverlayPersistWG owns the small asynchronous config patches started
+	// by loadSkills.  In particular, shutdown must wait for them: otherwise a
+	// late patch can recreate files while the application (or a test) is
+	// already tearing down its data directory.
+	statusOverlayPersistMu     sync.Mutex
+	statusOverlayPersistWG     sync.WaitGroup
+	statusOverlayPersistClosed bool
 }
 
 const skillLoadCacheTTL = 10 * time.Minute
@@ -372,28 +380,27 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	// so BM25 routing (ListActiveSkills) and UI agree with StartRunForOwner.
 	statusFixed := normalizeEmptySkillStatuses(skills)
 
-	// Persist demotion of broken generic download skills (wget/curl/fetch) so the
-	// agent stops selecting them over built-in download_file after a restart.
-	demoted := demoteBrokenGenericDownloadSkills(skills)
-	if statusFixed || demoted {
-		if demoted {
+	// Persist demotion of broken generic download skills and reconcile imported
+	// agent-guided Markdown workflows. The latter remain enabled because they
+	// are valid AI-agent project instructions; only the GUI one-step runner is
+	// ineligible to execute them.
+	demotedDownload := demoteBrokenGenericDownloadSkills(skills)
+	classifiedWorkflow := reconcileAgentGuidedWorkflowSkills(skills)
+	changed := demotedDownload || classifiedWorkflow
+	if statusFixed || changed {
+		if demotedDownload {
 			log.Printf("[skill-load] demoted broken generic download skills for needs_review")
+		}
+		if classifiedWorkflow {
+			log.Printf("[skill-load] enabled agent-guided Markdown workflows for AI-agent orchestration (GUI runner excluded)")
 		}
 		// Patch status overlays only — never rewrite the full NLSkills table via
 		// saveSkills here. Full-table save filters disk skills and has wiped
 		// hub entries when a partial in-memory list was persisted.
-		toPatch := cloneSkillEntries(skills)
-		go func() {
-			if e == nil {
-				return
-			}
-			if err := e.persistSkillStatusOverlays(toPatch); err != nil {
-				log.Printf("[skill-load] persist skill status overlays failed: %v", err)
-			}
-		}()
+		e.persistSkillStatusOverlaysAsync(cloneSkillEntries(skills))
 	}
 
-	if fileSkillsReady || demoted || statusFixed {
+	if fileSkillsReady || changed || statusFixed {
 		e.skillCacheMu.Lock()
 		e.skillCache = cloneSkillEntries(skills)
 		e.skillCacheAt = time.Now()
@@ -402,6 +409,41 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	}
 
 	return cloneSkillEntries(skills)
+}
+
+// persistSkillStatusOverlaysAsync persists load-time status changes without
+// making the UI wait for disk I/O.  It is lifecycle-aware so shutdown can
+// reliably drain the work before its config directory is removed.
+func (e *SkillExecutor) persistSkillStatusOverlaysAsync(skills []corelib.NLSkillEntry) {
+	if e == nil {
+		return
+	}
+	e.statusOverlayPersistMu.Lock()
+	if e.statusOverlayPersistClosed {
+		e.statusOverlayPersistMu.Unlock()
+		return
+	}
+	e.statusOverlayPersistWG.Add(1)
+	e.statusOverlayPersistMu.Unlock()
+
+	go func() {
+		defer e.statusOverlayPersistWG.Done()
+		if err := e.persistSkillStatusOverlays(skills); err != nil {
+			log.Printf("[skill-load] persist skill status overlays failed: %v", err)
+		}
+	}()
+}
+
+// waitForStatusOverlayPersistence stops new load-time overlay writes and
+// waits for all already-scheduled writes. It is used during App shutdown.
+func (e *SkillExecutor) waitForStatusOverlayPersistence() {
+	if e == nil {
+		return
+	}
+	e.statusOverlayPersistMu.Lock()
+	e.statusOverlayPersistClosed = true
+	e.statusOverlayPersistMu.Unlock()
+	e.statusOverlayPersistWG.Wait()
 }
 
 // normalizeEmptySkillStatuses promotes blank status to active for skills that
@@ -457,6 +499,49 @@ func demoteBrokenGenericDownloadSkills(skills []corelib.NLSkillEntry) bool {
 		}
 		changed = true
 		log.Printf("[skill-load] demote skill=%q status=needs_review fail=%d ok=%d", s.Name, s.FailureCount, s.SuccessCount)
+	}
+	return changed
+}
+
+// reconcileAgentGuidedWorkflowSkills marks imported SKILL.md project guides as
+// enabled AI-agent workflows, rather than pending human review. They cannot be
+// executed by the GUI runner, but are ready to use in an interactive agent task.
+func reconcileAgentGuidedWorkflowSkills(skills []corelib.NLSkillEntry) bool {
+	changed := false
+	for i := range skills {
+		if reconcileAgentGuidedWorkflowEntry(&skills[i]) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+const agentGuidedWorkflowRunnerNote = "runner incompatible: imported Markdown workflow requires interactive agent orchestration; it is not directly runnable by the GUI skill runner"
+
+// reconcileAgentGuidedWorkflowEntry repairs only the legacy status produced by
+// the GUI runner incompatibility. Agent-guided workflows do not need approval
+// merely because they cannot run as one GUI step, but a real security or
+// governance needs_review status must remain intact.
+func reconcileAgentGuidedWorkflowEntry(entry *corelib.NLSkillEntry) bool {
+	if entry == nil || !skill.IsAgentGuidedWorkflowSkill(entry) {
+		return false
+	}
+	status := normalizeSkillEntryStatus(entry.Status)
+	if status == skillEntryStatusDisabled {
+		return false
+	}
+	changed := false
+	legacyRunnerDemotion := status == skillEntryStatusNeedsReview && strings.TrimSpace(entry.LastError) == agentGuidedWorkflowRunnerNote
+	if legacyRunnerDemotion {
+		entry.Status = string(skillEntryStatusActive)
+		changed = true
+	}
+	// An older build could leave the runner note behind even after a user
+	// explicitly activated the workflow. It is classification metadata, not a
+	// runtime failure, so remove it only when the workflow is active.
+	if normalizeSkillEntryStatus(entry.Status) == skillEntryStatusActive && strings.TrimSpace(entry.LastError) == agentGuidedWorkflowRunnerNote {
+		entry.LastError = ""
+		changed = true
 	}
 	return changed
 }
@@ -830,10 +915,20 @@ func (e *SkillExecutor) persistSkillStatusOverlays(skills []corelib.NLSkillEntry
 			// demoting to needs_review). A background "active" promotion must not
 			// downgrade an explicit non-active status, and an empty snapshot
 			// LastError must not erase a recorded one.
-			if !fileSkillStatusIsOverlay(cur.Status) || fileSkillStatusIsOverlay(src.Status) {
+			//
+			// Agent-guided workflows are the intentional exception: a legacy
+			// needs_review overlay was created by an older build solely because it
+			// tried to run an interactive project workflow in the GUI runner. It is
+			// not a user or safety decision, so it must be persisted back to active
+			// (while an explicit disabled status still wins).
+			agentWorkflowReenabled := skill.IsAgentGuidedWorkflowSkill(&src) &&
+				normalizeSkillEntryStatus(src.Status) == skillEntryStatusActive &&
+				normalizeSkillEntryStatus(cur.Status) != skillEntryStatusDisabled
+			if agentWorkflowReenabled || !fileSkillStatusIsOverlay(cur.Status) || fileSkillStatusIsOverlay(src.Status) {
 				cur.Status = src.Status
 			}
-			if src.LastError != "" || cur.LastError == "" {
+			if src.LastError != "" || cur.LastError == "" ||
+				(agentWorkflowReenabled && strings.TrimSpace(cur.LastError) == agentGuidedWorkflowRunnerNote) {
 				cur.LastError = src.LastError
 			}
 			cur.UsageCount = src.UsageCount
@@ -1055,6 +1150,9 @@ func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
 	if entry.Steps == nil {
 		entry.Steps = []corelib.NLSkillStep{}
 	}
+	if skill.IsAgentGuidedWorkflowSkill(&entry) {
+		reconcileAgentGuidedWorkflowEntry(&entry)
+	}
 	skills = append(skills, entry)
 	return e.saveSkills(skills)
 }
@@ -1133,6 +1231,7 @@ func (e *SkillExecutor) Update(entry corelib.NLSkillEntry) error {
 			if isShellBrowserAutomationSkillEntry(entry) {
 				return browserAutomationSkillRejectedError(entry.Name)
 			}
+			reconcileAgentGuidedWorkflowEntry(&entry)
 			skills[i].Description = entry.Description
 			skills[i].Triggers = entry.Triggers
 			skills[i].Steps = entry.Steps
@@ -1143,6 +1242,12 @@ func (e *SkillExecutor) Update(entry corelib.NLSkillEntry) error {
 				skills[i].UsageCount = entry.UsageCount
 				skills[i].SuccessCount = entry.SuccessCount
 				skills[i].LastUsedAt = entry.LastUsedAt
+			}
+			// LastError is also lifecycle state, not merely a usage statistic.
+			// In particular, an Update can newly demote an imported Markdown
+			// workflow before it has ever run. Persist that explanatory reason
+			// even when UsageCount is zero.
+			if strings.TrimSpace(entry.LastError) != "" {
 				skills[i].LastError = entry.LastError
 			}
 			return e.saveSkills(skills)
@@ -1276,11 +1381,11 @@ func (e *SkillExecutor) UpdateStatus(name, status string) error {
 func (e *SkillExecutor) UpdateFromHub(name string) error {
 	// Phase 1: snapshot skill info (loadSkills is self-synchronized).
 	skills := e.loadSkills()
-	var skill corelib.NLSkillEntry
+	var installedSkill corelib.NLSkillEntry
 	found := false
 	for _, s := range skills {
 		if s.Name == name {
-			skill = s
+			installedSkill = s
 			found = true
 			break
 		}
@@ -1288,7 +1393,7 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 	if !found {
 		for _, s := range skills {
 			if s.MatchesName(name) {
-				skill = s
+				installedSkill = s
 				found = true
 				break
 			}
@@ -1298,7 +1403,7 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 	if !found {
 		return fmt.Errorf("skill %q not found", name)
 	}
-	if normalizeSkillEntrySource(skill.Source) != skillEntrySourceHub || skill.HubSkillID == "" {
+	if normalizeSkillEntrySource(installedSkill.Source) != skillEntrySourceHub || installedSkill.HubSkillID == "" {
 		return fmt.Errorf("skill %q is not a hub skill", name)
 	}
 	if e.app.skillHubClient == nil {
@@ -1308,7 +1413,7 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 	// Phase 2: Network calls without holding the lock.
 	ctx := context.Background()
 
-	meta, err := e.app.skillHubClient.CheckUpdate(ctx, skill.HubSkillID, skill.HubVersion)
+	meta, err := e.app.skillHubClient.CheckUpdate(ctx, installedSkill.HubSkillID, installedSkill.HubVersion)
 	if err != nil {
 		return fmt.Errorf("failed to check update for skill %q: %w", name, err)
 	}
@@ -1316,7 +1421,7 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 		return nil // already up to date
 	}
 
-	updated, err := e.app.skillHubClient.Install(ctx, skill.HubSkillID, meta.HubURL)
+	updated, err := e.app.skillHubClient.Install(ctx, installedSkill.HubSkillID, meta.HubURL)
 	if err != nil {
 		return fmt.Errorf("failed to download update for skill %q: %w", name, err)
 	}
@@ -1355,6 +1460,7 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 	if isShellBrowserAutomationSkillEntry(skills[idx]) {
 		return browserAutomationSkillRejectedError(skills[idx].Name)
 	}
+	reconcileAgentGuidedWorkflowEntry(&skills[idx])
 
 	// Invalidate the security scan cache: the content hash changed (new steps),
 	// so the next StartRunForOwner → ensureSkillSecurityScanned will trigger a
@@ -1631,6 +1737,9 @@ func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
 }
 
 func classifySkillExecutionClass(entry corelib.NLSkillEntry) string {
+	if skill.IsAgentGuidedWorkflowSkill(&entry) {
+		return "agent_guided_workflow"
+	}
 	if len(entry.Steps) == 1 && classifySkillStepAction(entry.Steps[0].Action).IsCraftTool() {
 		if normalizeSkillEntrySource(entry.Source).IsAgentMarkdownSkillSource() {
 			return "agent_markdown_skill"
@@ -1723,6 +1832,9 @@ func skillReviewReason(s corelib.NLSkillEntry) string {
 		}
 		return "skill was marked needs_review by local governance or safety checks"
 	}
+	if skill.IsAgentGuidedWorkflowSkill(&s) {
+		return "this imported Markdown workflow is ready for an AI-agent project task; it cannot be run or self-repaired as one GUI skill step"
+	}
 	if status == skillEntryStatusNeedsSetup {
 		if lastError != "" {
 			return lastError
@@ -1808,6 +1920,9 @@ func (e *SkillExecutor) AsRegisteredTools() []tool.RegisteredTool {
 		// the Apps panel, but its container has no direct skill execution surface.
 		// Do not expose it as a generic registered tool for an agent to select.
 		if skill.IsInstructionOnlySkillType(s.Type) {
+			continue
+		}
+		if skill.IsAgentGuidedWorkflowSkill(&s) {
 			continue
 		}
 		if isShellBrowserAutomationSkillEntry(s) {
@@ -2280,6 +2395,13 @@ func (e *SkillExecutor) executeSkillByNameDetailed(name string, runArgs map[stri
 
 	if target == nil {
 		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: fmt.Errorf("skill %q not found or disabled", name)}}
+	}
+	// Agent-guided project workflows are instructions for an interactive AI
+	// assistant, never a generic executable skill. This protects all callers
+	// of ExecuteWithArgs (including pipeline sub-skill execution) in addition
+	// to the GUI SkillRunner boundary.
+	if skill.IsAgentGuidedWorkflowSkill(target) {
+		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: fmt.Errorf("skill %q is an agent-guided workflow, not an executable skill; use Start with AI Agent", target.Name)}, Entry: target}
 	}
 	if isShellBrowserAutomationSkillEntry(*target) {
 		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: browserAutomationSkillRejectedError(name)}, Entry: target}

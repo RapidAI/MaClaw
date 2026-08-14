@@ -9,7 +9,7 @@
     "verify:welcome:dist": "node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist",
     "resolve:version": "node scripts/resolve-release-version.mjs --print",
     "test:approval-workflow": "node hub/web/approval_workflow/i18n.test.js && node hub/web/approval_workflow/terminal-node-config.test.js && node hub/web/approval_workflow/workflow-editor.test.js",
-    "test:hub-admin": "node hub/web/admin/security-tab.test.js && node hub/web/admin/ve-tab.test.js && node hub/web/admin/validate-admin-modules.js"
+    "test:hub-admin": "node hub/web/admin/security-tab.test.js && node hub/web/admin/ve-tab.test.js && node hub/web/admin/admin-lazy-module-loader.test.js && node hub/web/admin/validate-admin-modules.js"
   },
   "dependencies": {
     "pptxgenjs": "^4.0.1"

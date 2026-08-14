@@ -2632,6 +2632,12 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.screenDimCancel != nil {
 		a.screenDimCancel()
 	}
+	// loadSkills may have queued a status-overlay write after classifying an
+	// imported Markdown workflow. Drain it before other shutdown work (and
+	// before temporary application data can be removed).
+	if a.skillExecutor != nil {
+		a.skillExecutor.waitForStatusOverlayPersistence()
+	}
 	a.maybeCleanToolCacheOnExit()
 	// Clean up workstation mode (restore lock screen policy, etc.)
 	a.setWorkstationMode(false, 0)

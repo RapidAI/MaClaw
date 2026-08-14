@@ -60,6 +60,28 @@ func TestToolRunSkill_StartFailure(t *testing.T) {
 	}
 }
 
+func TestToolRunSkillRejectsAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name: "Book-PDF", Status: "active", Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{
+			"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json.",
+		}}},
+	}}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	h := &IMMessageHandler{app: app}
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "Book-PDF"}, nil)
+	if !strings.Contains(got, "agent-guided workflow") || !strings.Contains(got, "Start with AI Agent") {
+		t.Fatalf("toolRunSkill() = %q, want agent-workflow rejection", got)
+	}
+}
+
 func TestInstallSkillHub_AutoRunAcceptsWaitSeconds(t *testing.T) {
 	if got := normalizeSkillRunWaitSeconds(float64(200)); got > 120*time.Second {
 		t.Fatalf("expected wait_seconds clamp to 120s, got %v", got)

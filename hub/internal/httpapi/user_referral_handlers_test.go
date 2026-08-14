@@ -52,6 +52,107 @@ func TestUserReferralURLUsesNormalizedForwardedOrigin(t *testing.T) {
 	}
 }
 
+func TestUserReferralCodeHashIsCaseInsensitive(t *testing.T) {
+	tenantID := store.DefaultTenantID
+	lower := "rf_abcdefghijklmnopqrstuvwxyz234567"
+	upper := strings.ToUpper(lower)
+
+	if got, want := userReferralCodeHash(tenantID, upper), userReferralCodeHash(tenantID, lower); got != want {
+		t.Fatalf("uppercase referral code hash=%q, want %q", got, want)
+	}
+}
+
+func TestUserReferralCodeHashCandidatesRetainLegacyLinks(t *testing.T) {
+	tenantID := store.DefaultTenantID
+	legacyCode := "rf_MixedCaseLegacyCode123"
+	legacyHash := legacyUserReferralCodeHash(tenantID, legacyCode)
+
+	found := false
+	for _, hash := range userReferralCodeHashCandidates(tenantID, legacyCode) {
+		if hash == legacyHash {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("legacy referral hash was not included in lookup candidates")
+	}
+
+	if got, want := userReferralCodeHashCandidates(tenantID, strings.ToUpper(legacyCode[:3])+legacyCode[3:]), legacyHash; !containsReferralCodeHash(got, want) {
+		t.Fatalf("uppercase legacy prefix candidates=%q, missing %q", got, want)
+	}
+}
+
+func TestNewUserReferralCodesHaveOneCaseInsensitiveSpelling(t *testing.T) {
+	code, err := newUserReferralCode()
+	if err != nil {
+		t.Fatalf("newUserReferralCode: %v", err)
+	}
+	if !strings.HasPrefix(code, "RF_") || code != strings.ToUpper(code) {
+		t.Fatalf("new referral code=%q, want uppercase RF_ base32 code", code)
+	}
+	if got, want := userReferralCodeHash(store.DefaultTenantID, strings.ToLower(code)), userReferralCodeHash(store.DefaultTenantID, code); got != want {
+		t.Fatalf("case-insensitive hash=%q, want %q", got, want)
+	}
+}
+
+func TestNewUserReferralOpaqueTokenIsNotAnInvitationCode(t *testing.T) {
+	token, err := newUserReferralOpaqueToken()
+	if err != nil {
+		t.Fatalf("newUserReferralOpaqueToken: %v", err)
+	}
+	if token == "" || strings.HasPrefix(token, "RF_") || strings.HasPrefix(token, "rf_") {
+		t.Fatalf("opaque token=%q must not use the invitation code format", token)
+	}
+}
+
+func TestFindPublicReferralCodeAcceptsCaseChangedLegacyLink(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	legacyCode := "rf_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345"
+	encrypted, err := llmservice.EncryptCardCode(legacyCode)
+	if err != nil {
+		t.Fatalf("encrypt legacy referral code: %v", err)
+	}
+	if err := services.store.UserReferrals.CreateCode(ctx, &store.UserReferralCode{
+		ID:            "legacy-case-folded-code",
+		TenantID:      store.DefaultTenantID,
+		InviterUserID: "legacy-case-folded-inviter",
+		CodeHash:      legacyUserReferralCodeHash(store.DefaultTenantID, legacyCode),
+		EncryptedCode: encrypted,
+		Status:        "active",
+		CreatedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("store legacy referral code: %v", err)
+	}
+
+	found, err := findPublicReferralCode(ctx, services.store.UserReferrals, store.DefaultTenantID, strings.ToUpper(legacyCode))
+	if err != nil || found == nil || found.ID != "legacy-case-folded-code" {
+		t.Fatalf("case-changed legacy referral lookup=%#v err=%v", found, err)
+	}
+}
+
+func TestUserReferralLegacyCodeFallbackOnlyAcceptsLegacyBase64Shape(t *testing.T) {
+	valid := "rf_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345"
+	if !userReferralIsPotentialLegacyCode(valid) {
+		t.Fatalf("valid legacy code must allow compatibility lookup")
+	}
+	for _, code := range []string{"", "RF_short", "RF_ABCDEFGHIJKLMNOPQRSTUVWXYZ234567890123", "unexpected-path"} {
+		if userReferralIsPotentialLegacyCode(code) {
+			t.Fatalf("invalid legacy candidate %q must not trigger compatibility lookup", code)
+		}
+	}
+}
+
+func containsReferralCodeHash(hashes []string, want string) bool {
+	for _, hash := range hashes {
+		if hash == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestUserReferralURLRejectsInvalidForwardedOrigin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://internal.local/api/me/invitations", nil)
 	req.Host = "bad host"
@@ -71,6 +172,59 @@ func TestPublicUserReferralEmailSendCodeUnavailableDependenciesDoNotPanic(t *tes
 
 	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "REGISTRATION_UNAVAILABLE") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPublicUserReferralUnavailableIdentityReturnsServiceError(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.Handler
+		method  string
+		target  string
+		body    string
+	}{
+		{name: "email register", handler: PublicUserReferralRegisterHandler(nil, nil, nil, nil), method: http.MethodPost, target: "/invite/code/register", body: `{}`},
+		{name: "phone send code", handler: PublicUserReferralPhoneSendCodeHandler(nil, nil, nil, nil), method: http.MethodPost, target: "/invite/code/phone/send-code", body: `{}`},
+		{name: "phone register", handler: PublicUserReferralPhoneRegisterHandler(nil, nil, nil, nil), method: http.MethodPost, target: "/invite/code/phone/register", body: `{}`},
+		{name: "phone enroll", handler: PublicUserReferralPhoneEnrollHandler(nil, nil, nil, nil), method: http.MethodPost, target: "/invite/code/phone/enroll", body: `{}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.target, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			tc.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "REGISTRATION_UNAVAILABLE") {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestPublicUserReferralNilUserRepositoryReturnsServiceError(t *testing.T) {
+	identity := auth.NewIdentityService(nil, nil, nil, nil, nil, nil, nil, nil, "open", true, nil, "")
+	tests := []struct {
+		name    string
+		handler http.Handler
+		method  string
+		target  string
+		body    string
+	}{
+		{name: "landing", handler: PublicUserReferralLandingHandler(identity, nil, nil, nil), method: http.MethodGet, target: "/invite/code"},
+		{name: "status", handler: PublicUserReferralRegistrationStatusHandler(identity, nil, nil, nil), method: http.MethodGet, target: "/invite/code/registration/status"},
+		{name: "account check", handler: PublicUserReferralAccountCheckHandler(identity, nil, nil, nil), method: http.MethodPost, target: "/invite/code/registration/account-check", body: `{}`},
+		{name: "handoff", handler: PublicUserReferralHandoffHandler(identity, nil, nil, nil), method: http.MethodPost, target: "/invite/code/handoff", body: `{}`},
+		{name: "email send code", handler: PublicUserReferralEmailSendCodeHandler(identity, nil, nil, nil, nil), method: http.MethodPost, target: "/invite/code/email/send-code", body: `{}`},
+		{name: "email enroll", handler: PublicUserReferralEmailEnrollHandler(identity, nil, nil, nil), method: http.MethodPost, target: "/invite/code/email/enroll", body: `{}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.target, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			tc.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -273,7 +427,21 @@ func TestUserReferralLandingAndModerationRecordOperationalMetrics(t *testing.T) 
 	moderate.SetPathValue("action", "reject")
 	moderate = moderate.WithContext(WithRequestTenant(moderate.Context(), store.DefaultTenantID))
 	moderateRec := httptest.NewRecorder()
-	ModerateUserReferralHandler(nil, repo, services.store.System, nil).ServeHTTP(moderateRec, moderate)
+	identity := auth.NewIdentityService(
+		services.store.Users,
+		services.store.Enrollments,
+		services.store.EmailBlocks,
+		services.store.Machines,
+		services.store.ViewerTokens,
+		services.store.LoginTokens,
+		services.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:8080",
+	)
+	ModerateUserReferralHandler(identity, repo, services.store.System, nil).ServeHTTP(moderateRec, moderate)
 	if moderateRec.Code != http.StatusOK {
 		t.Fatalf("reject status=%d body=%s", moderateRec.Code, moderateRec.Body.String())
 	}
@@ -479,6 +647,37 @@ func TestUserReferralLandingHTMLSecurityHeaders(t *testing.T) {
 	}
 	if !strings.Contains(rec.Header().Get("Content-Security-Policy"), "connect-src 'self'") {
 		t.Fatalf("unexpected CSP=%q", rec.Header().Get("Content-Security-Policy"))
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="language"`,
+		`value="zh-CN"`,
+		`value="zh-TW"`,
+		`navigator.languages`,
+		`Join this tenant on MaClaw`,
+		`在 MaClaw 中加入此租户`,
+		`在 MaClaw 中加入此租戶`,
+		`class="button button-primary"`,
+		`autocomplete="one-time-code"`,
+		`id="referral-hidden-state"`,
+		`[hidden]{display:none!important}`,
+		`id="referral-registration-switch"`,
+		`#phone-wrap[hidden]{display:none!important}`,
+		`id="referral-primary-action"`,
+		`.button-primary{width:auto;min-width:144px;justify-self:start}`,
+		`id="referral-language-buttons"`,
+		`id="language-switch"`,
+		`class="language-button"`,
+		`id="referral-language-selection"`,
+		`button.dataset.language===select.value`,
+		`document.title=(titles[select.value]||titles.en).replace('{tenant}',tenant)`,
+		`.open-app{border-color:#c6d5e7;background:#f3f6fb`,
+		`header.appendChild(group)`,
+		`@media(pointer:coarse){.language-button{min-width:44px;min-height:44px}}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("landing page is missing %q", want)
+		}
 	}
 }
 

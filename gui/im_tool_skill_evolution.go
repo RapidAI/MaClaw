@@ -184,6 +184,52 @@ func (h *IMMessageHandler) toolTriggerSkillRepair(args map[string]interface{}) s
 	if found == nil {
 		return fmt.Sprintf(`{"ok":false,"error":"skill %q not found"}`, name)
 	}
+	if cskill.IsAgentGuidedWorkflowSkill(found) {
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"ok":    false,
+			"skill": found.Name,
+			"error": "this imported Markdown workflow requires interactive agent orchestration and cannot be repaired into a single GUI runner step",
+		}, "", "  ")
+		return string(data)
+	}
+	// Imported/local skills keep their authoritative definition on disk.  A
+	// manual repair must therefore create a reviewed patch draft instead of
+	// falling through to the in-memory self-repair path (which correctly
+	// refuses to overwrite file-backed skills).
+	if cskill.IsFileBackedSkill(*found) {
+		h.app.ensureEvolutionPipeline()
+		pipeline := h.app.evolutionPipeline
+		if pipeline == nil {
+			return `{"ok":false,"error":"skill repair pipeline is not available"}`
+		}
+		var runArgs map[string]string
+		if h.app.usageTracker != nil {
+			if args := h.app.usageTracker.RecentRunArgs("skill:"+found.Name, 1); len(args) > 0 {
+				runArgs = args[len(args)-1]
+			}
+		}
+		result := pipeline.TriggerFileBackedRepairDraft(context.Background(), found, runArgs, force)
+		if result.Created {
+			data, _ := json.MarshalIndent(map[string]interface{}{
+				"ok":              true,
+				"skill":           found.Name,
+				"draft_created":   true,
+				"draft":           result.Draft,
+				"requires_review": true,
+				"waited":          true,
+				"message":         "repair draft created; review and apply it in Pending repair drafts",
+			}, "", "  ")
+			return string(data)
+		}
+		reason := fileBackedRepairDraftMessage(result.SkipReason, result.Explanation)
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"ok":         false,
+			"skill":      found.Name,
+			"error":      reason,
+			"last_error": found.LastError,
+		}, "", "  ")
+		return string(data)
+	}
 
 	eligible := cskill.ShouldAttemptRepair(found)
 	forced := false
@@ -196,6 +242,8 @@ func (h *IMMessageHandler) toolTriggerSkillRepair(args map[string]interface{}) s
 		switch {
 		case found.LastError == "":
 			reason = "no LastError recorded; run the skill first so failures can be diagnosed"
+		case cskill.IsAgentGuidedWorkflowSkill(found):
+			reason = "this imported Markdown workflow requires interactive agent orchestration and cannot be repaired into a single GUI runner step"
 		case cskill.IsFileBackedSkill(*found):
 			reason = "file-backed skills require a reviewed patch flow"
 		case found.RepairAttemptCount >= cskill.SelfRepairMaxAttempts:
@@ -269,6 +317,44 @@ func (h *IMMessageHandler) toolTriggerSkillRepair(args map[string]interface{}) s
 	return string(data)
 }
 
+// fileBackedRepairDraftMessage turns pipeline reasons into actionable UI/API
+// messages.  In particular, a bad invocation should be corrected rather than
+// misleading the user into editing a healthy on-disk skill definition.
+func fileBackedRepairDraftMessage(reason, detail string) string {
+	switch reason {
+	case "draft_pending":
+		return "a repair draft is already pending review; apply or reject it before creating another"
+	case "no_skill_yaml":
+		return "this file-backed skill has no skill.yaml or skill.yml, so no repair draft can be applied"
+	case "poll_loop_unsupported":
+		return "this skill uses poll/loop steps that the reviewed repair-draft writer cannot safely preserve"
+	case "llm_not_configured":
+		return "LLM not configured for skill repair"
+	case "repair_throttled":
+		return "a recent repair attempt is still in the cooldown period; retry later"
+	case "no_last_error":
+		return "no recorded failure is available to diagnose; run the skill first"
+	case "status_not_active":
+		return "only active skills can create repair drafts"
+	case "max_attempts":
+		return fmt.Sprintf("repair attempt limit reached (%d)", cskill.SelfRepairMaxAttempts)
+	case "error_class_not_repairable":
+		return "the recorded failure is an input or contract issue, not an auto-repairable skill error"
+	case "usage_threshold", "success_rate_ok":
+		return "skill does not meet automatic repair thresholds; retry with force=true to create a reviewed draft"
+	case "gate_error", "gate_rejected", "llm_error", "draft_write_failed", "not_repairable":
+		if strings.TrimSpace(detail) != "" {
+			return detail
+		}
+		return "repair draft could not be created"
+	default:
+		if strings.TrimSpace(detail) != "" {
+			return detail
+		}
+		return "repair draft could not be created"
+	}
+}
+
 // toolTriggerSkillOptimize runs a one-shot LLM optimization for a named skill.
 func (h *IMMessageHandler) toolTriggerSkillOptimize(args map[string]interface{}) string {
 	if h == nil || h.app == nil {
@@ -299,6 +385,14 @@ func (h *IMMessageHandler) toolTriggerSkillOptimize(args map[string]interface{})
 	}
 	if found == nil {
 		return fmt.Sprintf(`{"ok":false,"error":"skill %q not found"}`, name)
+	}
+	if cskill.IsAgentGuidedWorkflowSkill(found) {
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"ok":    false,
+			"skill": found.Name,
+			"error": "this imported Markdown workflow requires interactive agent orchestration and cannot be optimized as a single GUI runner step",
+		}, "", "  ")
+		return string(data)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)

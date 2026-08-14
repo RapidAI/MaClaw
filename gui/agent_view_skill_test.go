@@ -445,6 +445,29 @@ func TestHandleSkillRunAgentViewSubmitRevalidatesMissingOperation(t *testing.T) 
 	}
 }
 
+func TestHandleSkillRunAgentViewSubmitRejectsAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name: "Book-PDF", Status: "active", Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{
+			"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json.",
+		}}},
+	}}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+
+	resp := app.handleSkillRunAgentViewSubmit("Book-PDF", map[string]interface{}{"_run_args": map[string]interface{}{}})
+	if resp == nil || !strings.Contains(resp.Error, "agent-guided workflow") || !strings.Contains(resp.Text, "AI Agent") {
+		t.Fatalf("agent-view submit = %#v, want agent-workflow rejection", resp)
+	}
+}
+
 func TestHandleSkillRunAgentViewSubmitDoesNotInheritWorkflowPolicy(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

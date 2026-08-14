@@ -250,16 +250,17 @@ func TestFilterToolDefsForLightTurn(t *testing.T) {
 		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
 		{"type": "function", "function": map[string]interface{}{"name": "read_file"}},
 		{"type": "function", "function": map[string]interface{}{"name": "web_fetch"}},
+		{"type": "function", "function": map[string]interface{}{"name": "manage_skill"}},
 	}
 	got := FilterToolDefsForLightTurn(defs)
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("got %d tools: %+v", len(got), got)
 	}
 	names := map[string]bool{}
 	for _, d := range got {
 		names[toolDefName(d)] = true
 	}
-	if !names["web_search"] || !names["web_fetch"] {
+	if !names["web_search"] || !names["web_fetch"] || !names["manage_skill"] {
 		t.Fatalf("names=%v", names)
 	}
 }

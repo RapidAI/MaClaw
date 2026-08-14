@@ -609,6 +609,38 @@ describe('OnboardingWizard registration', () => {
         expect(ActivateRemoteSMSMock).not.toHaveBeenCalled();
     });
 
+    it('refreshes an unauthenticated email route before sending an OTP', async () => {
+        ResolveRemoteRegistrationTargetMock
+            .mockResolvedValueOnce({
+                hub_url: 'http://stale-hub.example.com',
+                hub_id: 'hub-stale',
+                tenant_id: 'tenant-default',
+                method: 'email',
+                code_length: 6,
+            })
+            .mockResolvedValueOnce({
+                hub_url: 'http://public-fallback.example.com',
+                hub_id: 'hub-public',
+                tenant_id: 'tenant-default',
+                method: 'mixed',
+                code_length: 6,
+            });
+
+        render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity('fresh@example.com');
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+        await waitFor(() => {
+            expect(ResolveRemoteRegistrationTargetMock).toHaveBeenCalledTimes(2);
+            expect(SendRemoteRegistrationEmailMock).toHaveBeenCalledWith('http://public-fallback.example.com', 'fresh@example.com', 'tenant-default');
+        });
+        fireEvent.change(await screen.findByLabelText('Email verification code'), { target: { value: '123456' } });
+        fireEvent.click(await screen.findByRole('button', { name: /Verify & continue/ }));
+        await waitFor(() => {
+            expect(ActivateRemoteEmailMock).toHaveBeenCalledWith('http://public-fallback.example.com', 'fresh@example.com', '123456', '', 'tenant-default', 'hub-public');
+        });
+    });
+
     it('clears a stale email-delivery error when a later code request succeeds', async () => {
         ResolveRemoteRegistrationTargetMock.mockResolvedValue({
             hub_url: 'http://mixed-hub.example.com',

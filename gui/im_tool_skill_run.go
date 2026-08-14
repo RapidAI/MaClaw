@@ -411,6 +411,9 @@ func (h *IMMessageHandler) toolRunSkill(ctx context.Context, args map[string]int
 	if name == "" {
 		return "缺少 name 参数"
 	}
+	if target := h.app.findSkillForAgentView(name); target != nil && cskill.IsAgentGuidedWorkflowSkill(target) {
+		return fmt.Sprintf("Skill 启动失败: skill %q is an agent-guided workflow; use Start with AI Agent instead of the GUI Skill Runner", target.Name)
+	}
 	// When the agent (LLM) calls run_skill with missing parameters, return a
 	// structured error so the LLM can extract the required info from user
 	// context and retry. Do NOT pop up an AgentView form — the agent should
@@ -537,6 +540,9 @@ func (h *IMMessageHandler) checkSkillRunMissingParams(name string, args map[stri
 	target := h.app.findSkillForAgentView(name)
 	if target == nil {
 		return ""
+	}
+	if cskill.IsAgentGuidedWorkflowSkill(target) {
+		return fmt.Sprintf("Skill %q is an agent-guided workflow. Do not call manage_skill(action=\"run\") for it; use Start with AI Agent instead.", target.Name)
 	}
 	runArgs := buildRunSkillArgs(args)
 	vars := normalizeSkillRunVars(runArgs)

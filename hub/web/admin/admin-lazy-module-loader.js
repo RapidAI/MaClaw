@@ -21,23 +21,37 @@
 
   function loadModule(filename) {
     if (!filename) return Promise.resolve();
-    if (loads[filename]) return loads[filename];
-    loads[filename] = new Promise(function(resolve, reject) {
+    if (loads[filename]) return loads[filename].promise;
+    var entry = { loaded: false, promise: null };
+    loads[filename] = entry;
+    entry.promise = new Promise(function(resolve, reject) {
       var script = document.createElement('script');
       script.src = '/admin/' + filename;
       script.async = false;
-      script.onload = resolve;
+      script.onload = function() {
+        // Modules may register translations after the initial i18n pass. Apply
+        // the active locale as part of loading so both navigation and callers
+        // of loadAdminLazyModule receive a fully localized module.
+        if (typeof global.applyI18n === 'function') global.applyI18n();
+        if (global.AdminTabRegistry && typeof global.AdminTabRegistry.notifyLanguageChange === 'function') {
+          global.AdminTabRegistry.notifyLanguageChange(global.currentLang);
+        }
+        entry.loaded = true;
+        resolve();
+      };
       script.onerror = function() {
-        delete loads[filename];
+        if (loads[filename] === entry) delete loads[filename];
         reject(new Error('Unable to load admin module: ' + filename));
       };
       document.head.appendChild(script);
     });
-    return loads[filename];
+    return entry.promise;
   }
 
   global.loadAdminLazyModule = loadModule;
-  global.isAdminLazyModuleLoaded = function(filename) { return !!loads[filename]; };
+  global.isAdminLazyModuleLoaded = function(filename) {
+    return !!(loads[filename] && loads[filename].loaded);
+  };
   global.openTab = function(name) {
     var request = ++navigationRequest;
     var filename = modulesByTab[normalizeTabID(name)];

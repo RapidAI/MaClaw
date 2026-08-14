@@ -88,6 +88,21 @@ func TestShouldOptimize_FileBacked(t *testing.T) {
 	}
 }
 
+func TestShouldOptimize_AgentGuidedWorkflow(t *testing.T) {
+	opt := NewSkillOptimizer(nil, nil, nil)
+	workflow := &corelib.NLSkillEntry{
+		Name: "Book-PDF", Source: "clawhub", UsageCount: 10, SuccessCount: 7,
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}
+	records := []SkillUsageRecord{{FollowUp: "retry"}, {FollowUp: "abandon"}}
+	if opt.ShouldOptimize(workflow, records) {
+		t.Fatal("should not optimize agent-guided Markdown workflow")
+	}
+}
+
 func TestApplyOptimization_UpdatesMetadata(t *testing.T) {
 	skill := &corelib.NLSkillEntry{
 		Name:        "test-skill",

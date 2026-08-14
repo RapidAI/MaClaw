@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ func TestSetNLSkillStatusApprovesReviewedSkillAndExposesReason(t *testing.T) {
 
 	app := &App{testHomeDir: tempHome}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
 		Name:       "reviewed-skill",
 		Status:     "needs_review",
@@ -44,6 +46,306 @@ func TestSetNLSkillStatusApprovesReviewedSkillAndExposesReason(t *testing.T) {
 	}
 	if reviewed.LastError == "" {
 		t.Fatalf("expected last_error evidence to remain available after approval")
+	}
+}
+
+func TestSkillExecutorRegisterEnablesAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Status: "active",
+		Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "阶段1 调研，启动多个background agent并行调研；与用户确认大纲；多Agent并行写作；从 templates/ 复制项目骨架；维护 version.json。"},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	got := findNLSkillDefinitionForTest(app.ListNLSkills(), "Book-PDF")
+	if got == nil || got.Status != "active" || got.ExecutionClass != "agent_guided_workflow" {
+		t.Fatalf("registered workflow = %#v, want active agent_guided_workflow", got)
+	}
+	if got.LastError != "" {
+		t.Fatalf("agent workflow should not acquire a runner error: %q", got.LastError)
+	}
+}
+
+func TestSkillExecutorRegisterEnablesSkillMarketAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name: "Book-PDF", Status: "active", Source: "skillmarket",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	got := findNLSkillDefinitionForTest(app.ListNLSkills(), "Book-PDF")
+	if got == nil || got.Status != "active" || got.ExecutionClass != "agent_guided_workflow" {
+		t.Fatalf("skillmarket workflow = %#v, want active agent_guided_workflow", got)
+	}
+}
+
+func TestSkillExecutorCanEnableAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "阶段1 调研，启动多个background agent并行调研；与用户确认大纲；多Agent并行写作；从 templates/ 复制项目骨架；维护 version.json。"},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := app.SetNLSkillStatus("Book-PDF", "active"); err != nil {
+		t.Fatalf("SetNLSkillStatus(active) error = %v", err)
+	}
+	got := findNLSkillDefinitionForTest(app.ListNLSkills(), "Book-PDF")
+	if got == nil || got.Status != "active" || got.ExecutionClass != "agent_guided_workflow" {
+		t.Fatalf("enabled workflow = %#v, want active agent_guided_workflow", got)
+	}
+}
+
+func TestSkillExecutorUpdateEnablesAgentGuidedWorkflowWithoutUsage(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Status: "active",
+		Source: "clawhub",
+		Steps:  []corelib.NLSkillStep{{Action: "noop", Params: map[string]interface{}{}}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := app.skillExecutor.Update(corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Status: "active",
+		Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	got := findNLSkillDefinitionForTest(app.ListNLSkills(), "Book-PDF")
+	if got == nil || got.Status != "active" || got.ExecutionClass != "agent_guided_workflow" {
+		t.Fatalf("updated workflow = %#v, want active agent_guided_workflow", got)
+	}
+	if got.LastError != "" {
+		t.Fatalf("updated workflow should not receive a runner error: %q", got.LastError)
+	}
+}
+
+func TestSkillExecutorUpdatePreservesExplicitDisableForAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name: "Book-PDF", Status: "disabled", Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := app.skillExecutor.Update(corelib.NLSkillEntry{
+		Name: "Book-PDF", Status: "disabled", Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	got := findNLSkillDefinitionForTest(app.ListNLSkills(), "Book-PDF")
+	if got == nil || got.Status != "disabled" {
+		t.Fatalf("disabled workflow = %#v, want disabled", got)
+	}
+}
+
+func TestPersistSkillStatusOverlaysReenablesLegacyAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	legacy := corelib.NLSkillEntry{
+		Name:      "Book-PDF",
+		Status:    "needs_review",
+		Source:    "clawhub",
+		LastError: agentGuidedWorkflowRunnerNote,
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{legacy}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	reconciled := []corelib.NLSkillEntry{legacy}
+	if !reconcileAgentGuidedWorkflowSkills(reconciled) {
+		t.Fatal("expected legacy workflow reconciliation")
+	}
+	if err := app.skillExecutor.persistSkillStatusOverlays(reconciled); err != nil {
+		t.Fatalf("persistSkillStatusOverlays() error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].Status != "active" || cfg.NLSkills[0].LastError != "" {
+		t.Fatalf("legacy overlay = %#v, want active workflow with cleared runner note", cfg.NLSkills)
+	}
+}
+
+func TestPersistSkillStatusOverlaysPreservesExplicitDisableForAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	workflow := corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Status: "disabled",
+		Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{workflow}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	activeSnapshot := workflow
+	activeSnapshot.Status = "active"
+	if err := app.skillExecutor.persistSkillStatusOverlays([]corelib.NLSkillEntry{activeSnapshot}); err != nil {
+		t.Fatalf("persistSkillStatusOverlays() error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].Status != "disabled" {
+		t.Fatalf("explicit disabled overlay = %#v, want disabled", cfg.NLSkills)
+	}
+}
+
+func TestReconcileAgentGuidedWorkflowPreservesRealReviewStatus(t *testing.T) {
+	entry := corelib.NLSkillEntry{
+		Name: "Book-PDF", Status: "needs_review", Source: "clawhub",
+		LastError: "auto-repair blocked by security scan: level=high summary=uses shell",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}
+	if reconcileAgentGuidedWorkflowEntry(&entry) {
+		t.Fatalf("real governance review should not be reconciled: %#v", entry)
+	}
+	if entry.Status != "needs_review" || !strings.Contains(entry.LastError, "security scan") {
+		t.Fatalf("real governance review changed: %#v", entry)
+	}
+}
+
+func TestAgentGuidedWorkflowRealReviewReasonIsNotMasked(t *testing.T) {
+	entry := corelib.NLSkillEntry{
+		Name: "Book-PDF", Status: "needs_review", Source: "clawhub",
+		LastError: "auto-repair blocked by security scan: level=high summary=uses shell",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}
+	reason := skillReviewReason(entry)
+	if !strings.Contains(reason, "security scan") {
+		t.Fatalf("skillReviewReason() = %q, want real security review reason", reason)
+	}
+}
+
+func TestSkillExecutorAsRegisteredToolsExcludesAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "阶段1 调研，启动多个background agent并行调研；与用户确认大纲；多Agent并行写作；从 templates/ 复制项目骨架；维护 version.json。"},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	for _, registered := range app.skillExecutor.AsRegisteredTools() {
+		if registered.Name == "Book-PDF" {
+			t.Fatalf("agent-guided workflow leaked into registered tools: %#v", registered)
+		}
+	}
+}
+
+func TestSkillExecutorExecuteRejectsAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name: "Book-PDF", Status: "active", Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if _, err := app.skillExecutor.ExecuteWithArgs("Book-PDF", nil); err == nil || !strings.Contains(err.Error(), "agent-guided workflow") || !strings.Contains(err.Error(), "Start with AI Agent") {
+		t.Fatalf("ExecuteWithArgs() error = %v, want agent-guided workflow rejection", err)
 	}
 }
 
@@ -78,6 +380,29 @@ func TestBatchTriggerSkillOptimizeEmptyAndMissing(t *testing.T) {
 	failed, _ := missing["failed"].([]string)
 	if len(failed) < 1 {
 		t.Fatalf("expected failure: %#v", missing)
+	}
+}
+
+func TestTriggerSkillOptimizeRejectsAgentGuidedWorkflow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name: "Book-PDF", Source: "clawhub", Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json."},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	raw := app.TriggerSkillOptimize("Book-PDF", true)
+	if !strings.Contains(raw, "interactive agent orchestration") {
+		t.Fatalf("TriggerSkillOptimize() = %s, want orchestration rejection", raw)
 	}
 }
 

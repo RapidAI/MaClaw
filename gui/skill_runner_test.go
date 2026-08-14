@@ -678,6 +678,33 @@ func TestSkillRunnerReloadPreservesDisabledFileSkillOverlay(t *testing.T) {
 	}
 }
 
+func TestSkillRunnerRejectsAgentGuidedWorkflowBeforeExecution(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Source: "clawhub",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{
+				"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json.",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	runner := NewSkillRunner(app.skillExecutor)
+	if _, err := runner.StartRunForOwner("desktop-user:project-a", "Book-PDF", nil); err == nil || !strings.Contains(err.Error(), "agent-guided workflow") || !strings.Contains(err.Error(), "Start with AI Agent") {
+		t.Fatalf("StartRunForOwner() error = %v, want agent-guided workflow rejection", err)
+	}
+}
+
 func TestSkillExecutorUsesIsolatedWorkspaceForSkillDir(t *testing.T) {
 	skillDir := filepath.Join(t.TempDir(), "skill-src")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {

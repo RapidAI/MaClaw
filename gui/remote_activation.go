@@ -851,7 +851,7 @@ func (a *App) resolveRemoteRegistrationTarget(identity string, invitationCode st
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	result, _, _, err := remote.NewEnrollmentClient().ResolveHubs(ctx, identity, strings.TrimSpace(invitationCode), cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
+	result, usedCenter, discoveredCenters, err := remote.NewEnrollmentClient().ResolveHubs(ctx, identity, strings.TrimSpace(invitationCode), cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
 	if err != nil {
 		return RemoteRegistrationTargetResult{}, err
 	}
@@ -870,7 +870,16 @@ func (a *App) resolveRemoteRegistrationTarget(identity string, invitationCode st
 		return RemoteRegistrationTargetResult{}, err
 	}
 	log.Printf("[registration-route] resolved identity=%s invitation=%t hub=%s hub_id=%s tenant=%s", remoteRegistrationIdentityLogValue(identity), strings.TrimSpace(invitationCode) != "", strings.TrimRight(strings.TrimSpace(hubURL), "/"), strings.TrimSpace(hubID), strings.TrimSpace(tenantID))
-	return a.resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, tenantID)
+	target, err := a.resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, tenantID)
+	if err != nil {
+		return RemoteRegistrationTargetResult{}, err
+	}
+	// Onboarding resolves a Hub before either email or SMS enrollment, after
+	// which those flows connect directly to that Hub. Persist the HubCenter only
+	// after that Hub confirms its registration capability, so transient or stale
+	// routes cannot change the identity shown in About.
+	a.rememberHubCenterSelection(usedCenter, discoveredCenters)
+	return target, nil
 }
 
 func (a *App) resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, tenantID string) (RemoteRegistrationTargetResult, error) {

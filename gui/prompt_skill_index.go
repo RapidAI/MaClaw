@@ -17,6 +17,12 @@ func promptSkillIndexEntries(skills []NLSkillDefinition, limit int) []NLSkillDef
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
+		// Defense in depth for stale overlays written by older builds. Imported
+		// Markdown project workflows must not re-enter the runnable-skill prompt
+		// solely because their persisted status still says "active".
+		if s.ExecutionClass == "agent_guided_workflow" {
+			continue
+		}
 		if strings.TrimSpace(s.Name) == "" {
 			continue
 		}

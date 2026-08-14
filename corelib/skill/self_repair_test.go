@@ -215,6 +215,29 @@ func TestShouldAttemptRepairSkipsFileBackedSkills(t *testing.T) {
 	}
 }
 
+func TestShouldAttemptRepairSkipsAgentGuidedWorkflow(t *testing.T) {
+	entry := &corelib.NLSkillEntry{
+		Name:       "Book-PDF",
+		Source:     "clawhub",
+		Status:     "active",
+		UsageCount: 1,
+		LastError:  "[class: unknown] execution failed",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"instructions": "多Agent并行写作。阶段1 调研；与用户确认大纲；从 templates/ 复制项目；维护 version.json。"},
+		}},
+	}
+	if ShouldAttemptRepair(entry) {
+		t.Fatal("agent-guided workflow must not enter automatic repair")
+	}
+	if CanForceAttemptRepair(entry) {
+		t.Fatal("agent-guided workflow must not enter forced repair")
+	}
+	if ok, reason := ExplainRepairGate(entry); ok || reason != "agent_guided_workflow" {
+		t.Fatalf("ExplainRepairGate = (%v, %q), want (false, agent_guided_workflow)", ok, reason)
+	}
+}
+
 func TestShouldAttemptRepairSkipsInactiveStatuses(t *testing.T) {
 	formatted := FormatErrorForLLM(ClassifiedError{Class: ErrCommandNotFound, UserMessage: "missing cmd", Repairable: true})
 	for _, status := range []string{"needs_review", "disabled", "archived"} {

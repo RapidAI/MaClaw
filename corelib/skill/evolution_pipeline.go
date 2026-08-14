@@ -89,6 +89,16 @@ type evolutionRequest struct {
 	RunArgs    map[string]string
 }
 
+// RepairDraftResult describes a reviewed repair-draft attempt.  A successful
+// attempt only creates a draft; applying it remains an explicit user action.
+type RepairDraftResult struct {
+	Created        bool
+	Draft          string
+	SkipReason     string
+	Explanation    string
+	RequiresReview bool
+}
+
 // DefaultRepairCooldown is used when RepairCooldown is unset and when AppConfig
 // SkillEvolutionRepairCooldownHours is 0.
 const DefaultRepairCooldown = time.Hour
@@ -402,7 +412,7 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 
 	// file-backed 技能不后台改盘，走人审 patch draft 流（P0-4）。
 	if fileBackedOnly {
-		p.tryFileBackedRepairDraft(ctx, req, entry)
+		p.tryFileBackedRepairDraft(ctx, req, entry, false)
 		return
 	}
 
@@ -507,40 +517,40 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 // <skill_dir>/.evolution-drafts/<utc时间戳>.json 并发 EventSkillRepairDraftReady。
 // 本路径绝不修改 entry、不调 SkillSaver、不写回 skill.yaml —— 应用/拒绝由
 // GUI 人审时完成。
-func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req evolutionRequest, entry *corelib.NLSkillEntry) {
+func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req evolutionRequest, entry *corelib.NLSkillEntry, force bool) RepairDraftResult {
 	// 除 file-backed 外其他门槛仍需全部通过（max_attempts / error class / 用量统计）。
-	if ok, reason := explainRepairGate(entry, true); !ok {
+	if ok, reason := explainRepairGate(entry, true); !ok && !(force && CanForceAttemptFileBackedRepairDraft(entry)) {
 		log.Printf("[evolution-pipeline] repair draft skipped skill=%s reason=%s", req.SkillName, reason)
-		return
+		return RepairDraftResult{SkipReason: reason}
 	}
 
 	// 已有未评审 draft 时不重复生成。
 	draftsDir := filepath.Join(entry.SkillDir, RepairDraftsDirName)
 	if HasPendingRepairDraft(draftsDir) {
 		log.Printf("[evolution-pipeline] repair draft skipped skill=%s reason=draft_pending", req.SkillName)
-		return
+		return RepairDraftResult{SkipReason: "draft_pending", RequiresReview: true}
 	}
 
 	// SKILL.md-only 技能没有机器可写的 steps 文件，apply 必然失败——在 LLM
 	// 调用前跳过（不烧 LLM，也不写冷却时间戳：反正永远不会成功）。
 	if !hasSkillYAMLFile(entry.SkillDir) {
 		log.Printf("[evolution-pipeline] repair draft skipped skill=%s reason=no_skill_yaml", req.SkillName)
-		return
+		return RepairDraftResult{SkipReason: "no_skill_yaml"}
 	}
 
 	// 含 poll/loop 步骤的技能：WriteBackOptimizedSteps 不回写 poll/loop，
 	// apply 会静默剥离这些配置——跳过生成，不烧 LLM。
 	if StepsHavePollLoop(entry.Steps) {
 		log.Printf("[evolution-pipeline] repair draft skipped skill=%s reason=poll_loop_unsupported", req.SkillName)
-		return
+		return RepairDraftResult{SkipReason: "poll_loop_unsupported"}
 	}
 
 	if p.LLM == nil || !p.LLM.IsConfigured() {
 		log.Printf("[evolution-pipeline] repair draft skipped skill=%s: LLM not configured", req.SkillName)
-		return
+		return RepairDraftResult{SkipReason: "llm_not_configured"}
 	}
 	if ctx.Err() != nil {
-		return
+		return RepairDraftResult{SkipReason: "context_cancelled"}
 	}
 
 	repairCtx := NewRepairContext(entry, req.RunArgs)
@@ -549,7 +559,7 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 		// LLM 调用已真实发生（失败也算成本），消耗冷却防止每次失败都重调。
 		p.markRepairAttempt(req.SkillName)
 		log.Printf("[evolution-pipeline] repair draft LLM failed skill=%s: %v", req.SkillName, err)
-		return
+		return RepairDraftResult{SkipReason: "llm_error", Explanation: err.Error()}
 	}
 	if result != nil && result.ShouldDisable {
 		// LLM 认为不可修复应禁用：生成"禁用建议" draft（NewSteps/OldSteps 为
@@ -562,8 +572,11 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 			Disable:     true,
 		}
-		p.writeRepairDraftAndNotify(req.SkillName, entry.SkillDir, draft)
-		return
+		name, err := p.writeRepairDraftAndNotify(req.SkillName, entry.SkillDir, draft)
+		if err != nil {
+			return RepairDraftResult{SkipReason: "draft_write_failed", Explanation: err.Error()}
+		}
+		return RepairDraftResult{Created: true, Draft: name, Explanation: result.Explanation, RequiresReview: true}
 	}
 	if result == nil || !result.Repaired || len(result.NewSteps) == 0 {
 		// LLM 已调用但认为不可修复/被 sanitize 拒绝：同样消耗冷却。
@@ -575,7 +588,7 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 			explanation = result.Explanation
 		}
 		log.Printf("[evolution-pipeline] repair draft not applicable skill=%s: %s", req.SkillName, explanation)
-		return
+		return RepairDraftResult{SkipReason: "not_repairable", Explanation: explanation}
 	}
 
 	nlSteps := convertRepairResultSteps(result.NewSteps)
@@ -589,7 +602,7 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 			if gateErr != nil {
 				p.markRepairAttempt(req.SkillName)
 				log.Printf("[evolution-pipeline] repair draft gate error skill=%s: %v", req.SkillName, gateErr)
-				return
+				return RepairDraftResult{SkipReason: "gate_error", Explanation: gateErr.Error()}
 			}
 			if gateResult == nil || !gateResult.Passed {
 				p.markRepairAttempt(req.SkillName)
@@ -598,7 +611,7 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 					reason = gateResult.Reason
 				}
 				log.Printf("[evolution-pipeline] repair draft gate rejected skill=%s: %s", req.SkillName, reason)
-				return
+				return RepairDraftResult{SkipReason: "gate_rejected", Explanation: reason}
 			}
 		}
 	}
@@ -611,19 +624,50 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 		LastError:   entry.LastError,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
-	p.writeRepairDraftAndNotify(req.SkillName, entry.SkillDir, draft)
+	name, err := p.writeRepairDraftAndNotify(req.SkillName, entry.SkillDir, draft)
+	if err != nil {
+		return RepairDraftResult{SkipReason: "draft_write_failed", Explanation: err.Error()}
+	}
+	return RepairDraftResult{Created: true, Draft: name, Explanation: result.Explanation, RequiresReview: true}
+}
+
+// TriggerFileBackedRepairDraft is the synchronous, user-triggered entry point
+// for file-backed skills.  It honors the repair cooldown but, when force is
+// true, may bypass only the usage-rate threshold.  It never edits skill.yaml.
+func (p *EvolutionPipeline) TriggerFileBackedRepairDraft(ctx context.Context, entry *corelib.NLSkillEntry, runArgs map[string]string, force bool) RepairDraftResult {
+	if p == nil || entry == nil {
+		return RepairDraftResult{SkipReason: "pipeline_or_skill_unavailable"}
+	}
+	if !IsFileBackedSkill(*entry) {
+		return RepairDraftResult{SkipReason: "not_file_backed"}
+	}
+	cooldown := p.RepairCooldown
+	if cooldown <= 0 {
+		cooldown = DefaultRepairCooldown
+	}
+	p.throttleMu.Lock()
+	last, attempted := p.repairAttempts[entry.Name]
+	p.throttleMu.Unlock()
+	if attempted && time.Since(last) < cooldown {
+		return RepairDraftResult{SkipReason: "repair_throttled"}
+	}
+	return p.tryFileBackedRepairDraft(ctx, evolutionRequest{
+		SkillName: entry.Name,
+		Entry:     entry,
+		RunArgs:   runArgs,
+	}, entry, force)
 }
 
 // writeRepairDraftAndNotify persists a repair draft and emits
 // EventSkillRepairDraftReady. A successful write consumes the repair cooldown
 // (shared with the auto-repair throttle); a failed write does not — nothing
 // was produced, so the next failure may retry immediately.
-func (p *EvolutionPipeline) writeRepairDraftAndNotify(skillName, skillDir string, draft RepairDraft) {
+func (p *EvolutionPipeline) writeRepairDraftAndNotify(skillName, skillDir string, draft RepairDraft) (string, error) {
 	name, err := WriteRepairDraft(skillDir, draft)
 	if err != nil {
 		// 写盘失败不消耗冷却——draft 没产出，下次可立即重试。
 		log.Printf("[evolution-pipeline] repair draft write failed skill=%s: %v", skillName, err)
-		return
+		return "", err
 	}
 	// 与自动修复共用 repairAttempts 冷却节流：draft 落盘成功才写时间戳。
 	p.markRepairAttempt(skillName)
@@ -634,6 +678,7 @@ func (p *EvolutionPipeline) writeRepairDraftAndNotify(skillName, skillDir string
 		})
 	}
 	log.Printf("[evolution-pipeline] repair draft ready skill=%s draft=%s", skillName, name)
+	return name, nil
 }
 
 // hasSkillYAMLFile reports whether skillDir contains a skill.yaml or
@@ -705,6 +750,9 @@ func (p *EvolutionPipeline) TriggerOptimize(ctx context.Context, entry *corelib.
 	if p.Optimizer == nil {
 		return OptimizeResult{SkipReason: "optimizer not configured"}
 	}
+	if IsAgentGuidedWorkflowSkill(entry) {
+		return OptimizeResult{SkipReason: "agent-guided workflows require interactive orchestration and cannot be optimized as one GUI skill step"}
+	}
 	if IsFileBackedSkill(*entry) {
 		return OptimizeResult{SkipReason: "file-backed skills require a reviewed patch flow"}
 	}
@@ -722,6 +770,9 @@ func (p *EvolutionPipeline) tryOptimize(ctx context.Context, req evolutionReques
 func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionRequest, force bool) OptimizeResult {
 	if req.Entry == nil || p.UsageTracker == nil || p.Optimizer == nil {
 		return OptimizeResult{SkipReason: "optimizer prerequisites missing"}
+	}
+	if IsAgentGuidedWorkflowSkill(req.Entry) {
+		return OptimizeResult{Skipped: true, SkipReason: "agent-guided workflows require interactive orchestration and cannot be optimized as one GUI skill step"}
 	}
 
 	// UsageTracker records skill executions with "skill:" prefix on ToolName.

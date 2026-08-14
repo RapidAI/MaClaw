@@ -215,6 +215,38 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText('invoice_app')).toBeTruthy();
         expect(screen.queryByText('paper_digest')).toBeNull();
     });
+    it('starts an active agent-guided workflow through the AI assistant, not the GUI runner', async () => {
+        const started: string[] = [];
+        const onStart = (event: Event) => {
+            started.push(String((event as CustomEvent).detail?.name || ''));
+        };
+        window.addEventListener('maclaw:start-agent-guided-workflow', onStart);
+        ListNLSkillsMock.mockResolvedValue([{
+            name: 'Book-PDF',
+            description: 'Create a book PDF with research and multiple agents',
+            triggers: ['book pdf'],
+            steps: [{ action: 'craft_tool', params: {}, on_error: 'stop' }],
+            status: 'active',
+            created_at: '2026-04-09T00:00:00Z',
+            source: 'clawhub',
+            execution_class: 'agent_guided_workflow',
+            usage_count: 0,
+            success_rate: 0,
+        }]);
+
+        try {
+            renderPanel();
+            await screen.findByText('Book-PDF');
+            expect(screen.getByText('需 Agent 编排')).toBeTruthy();
+            fireEvent.click(screen.getByRole('button', { name: '用 AI 助手启动' }));
+            expect(started).toEqual(['Book-PDF']);
+            expect(screen.queryByRole('button', { name: '运行' })).toBeNull();
+            expect(screen.queryByRole('button', { name: '修复' })).toBeNull();
+            expect(screen.queryByRole('button', { name: '优化' })).toBeNull();
+        } finally {
+            window.removeEventListener('maclaw:start-agent-guided-workflow', onStart);
+        }
+    });
     it('shows review reasons and can approve a needs-review skill', async () => {
         ListNLSkillsMock.mockResolvedValue([
             {
@@ -246,6 +278,35 @@ describe('SkillsManagementPanel execution class', () => {
 
         await waitFor(() => {
             expect(SetNLSkillStatusMock).toHaveBeenCalledWith('RapidOCR', 'active');
+        });
+    });
+    it('keeps a real agent-workflow security review visible and approvable', async () => {
+        const securityReason = 'auto-repair blocked by security scan: level=high summary=uses shell';
+        ListNLSkillsMock.mockResolvedValue([{
+            name: 'Book-PDF',
+            description: 'Create a book PDF with research and multiple agents',
+            triggers: ['book pdf'],
+            steps: [{ action: 'craft_tool', params: {}, on_error: 'stop' }],
+            status: 'needs_review',
+            review_reason: securityReason,
+            last_error: securityReason,
+            created_at: '2026-04-09T00:00:00Z',
+            source: 'clawhub',
+            execution_class: 'agent_guided_workflow',
+            usage_count: 0,
+            success_rate: 0,
+        }]);
+        SetNLSkillStatusMock.mockResolvedValue(undefined);
+
+        renderPanel();
+
+        await screen.findByText('Book-PDF');
+        expect(screen.getAllByTitle(securityReason).length).toBeGreaterThan(0);
+        fireEvent.click(screen.getByTitle(/\u5ba1\u6838\u5e76\u542f\u7528/));
+        const approveButton = await screen.findByRole('button', { name: /\u5ba1\u6838\u901a\u8fc7\u5e76\u542f\u7528/ });
+        fireEvent.click(approveButton);
+        await waitFor(() => {
+            expect(SetNLSkillStatusMock).toHaveBeenCalledWith('Book-PDF', 'active');
         });
     });
     it('keeps MaClaw App skills filterable from their category', async () => {

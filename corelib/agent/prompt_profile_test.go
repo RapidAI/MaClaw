@@ -52,6 +52,21 @@ func TestBuildPromptBundle_LightSkipsCodingAndSSH(t *testing.T) {
 	}
 }
 
+func TestBuildPromptBundle_LightKeepsSkillDiscoveryCue(t *testing.T) {
+	bundle := BuildPromptBundle(SystemPromptDeps{
+		Config: SystemPromptConfig{RoleName: "MaClaw", PromptProfile: PromptProfileLight},
+		SkillLister: func() []SkillInfo {
+			return []SkillInfo{{Name: "local-pdf", Description: "convert PDFs"}}
+		},
+	}, "run local-pdf", true)
+	if !strings.Contains(bundle.RetrievedContext, "Installed Skills are available") {
+		t.Fatalf("light prompt lost skill discovery cue: %s", bundle.RetrievedContext)
+	}
+	if strings.Contains(bundle.RetrievedContext, "- local-pdf:") {
+		t.Fatalf("light prompt should not include the full skill catalog: %s", bundle.RetrievedContext)
+	}
+}
+
 func TestPromptProfileFromUserText(t *testing.T) {
 	t.Setenv(PromptProfileEnvKey, "")
 	p, c := PromptProfileFromUserText("你好", llm.ClassifyHints{})

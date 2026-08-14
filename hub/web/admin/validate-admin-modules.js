@@ -163,7 +163,7 @@ function assertLazyScriptLoading() {
       fail('admin-lazy-module-loader.js must register lazy module: ' + name);
     }
   });
-  ['global.openTab = function(name)', 'global.loadAdminLazyModule = loadModule', 'global.isAdminLazyModuleLoaded', "script.async = false"].forEach(function(marker) {
+  ['global.openTab = function(name)', 'global.loadAdminLazyModule = loadModule', 'global.isAdminLazyModuleLoaded', "script.async = false", 'script.onload = function()', "typeof global.applyI18n === 'function'", 'global.applyI18n();', 'AdminTabRegistry.notifyLanguageChange(global.currentLang)'].forEach(function(marker) {
     if (!loader.includes(marker)) {
       fail('admin-lazy-module-loader.js is missing lazy loading behavior: ' + marker);
     }

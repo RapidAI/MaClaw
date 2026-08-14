@@ -1,8 +1,11 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSelectRelevantMCPToolsForTask_NilHandler(t *testing.T) {
@@ -12,6 +15,13 @@ func TestSelectRelevantMCPToolsForTask_NilHandler(t *testing.T) {
 	result := cb.selectRelevantMCPToolsForTask("测试登录页面")
 	if result != nil {
 		t.Errorf("expected nil with nil handler, got %v", result)
+	}
+}
+
+func TestSelectRelevantMCPToolsForTask_NilCallbacks(t *testing.T) {
+	var cb *codingSubAgentCallbacks
+	if result := cb.selectRelevantMCPToolsForTask("test"); result != nil {
+		t.Fatalf("nil callback selection = %#v, want nil", result)
 	}
 }
 
@@ -70,6 +80,243 @@ func TestBuildCodingSubAgentMCPSectionCapsRequiredArgs(t *testing.T) {
 	}
 	if !strings.Contains(section, "还有 2 项未展开") {
 		t.Fatalf("section should report omitted required args, got %q", section)
+	}
+}
+
+func TestExtractMCPToolRequiredArgumentHints(t *testing.T) {
+	hints := extractMCPToolRequiredArgumentHints(map[string]interface{}{
+		"required": []interface{}{"userMail", "limit", "missing"},
+		"properties": map[string]interface{}{
+			"userMail": map[string]interface{}{"type": "string", "description": "The user's corporate email address."},
+			"limit":    map[string]interface{}{"type": "integer"},
+		},
+	})
+	want := []string{"userMail (string): The user's corporate email address.", "limit (integer)", "missing"}
+	if strings.Join(hints, "|") != strings.Join(want, "|") {
+		t.Fatalf("argument hints = %#v, want %#v", hints, want)
+	}
+}
+
+func TestExtractMCPToolRequiredArgsNormalizesDuplicateAndBlankValues(t *testing.T) {
+	for _, schema := range []map[string]interface{}{
+		{"required": []interface{}{" userMail ", "", "usermail", "limit", " LIMIT "}},
+		{"required": []string{" userMail ", "", "usermail", "limit", " LIMIT "}},
+	} {
+		got := extractMCPToolRequiredArgs(schema)
+		want := []string{"userMail", "limit"}
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Fatalf("required args = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestBuildCodingSubAgentMCPSectionShowsRequiredArgumentHints(t *testing.T) {
+	section := buildCodingSubAgentMCPSection([]codingSubAgentMCPToolMatch{{
+		ServerID: "tengyun", ServerName: "Tengyun", ToolName: "work_log_query",
+		RequiredArgs:  []string{"userMail"},
+		ArgumentHints: []string{"userMail (string): The user's corporate email address."},
+	}})
+	if !strings.Contains(section, "userMail (string): The user's corporate email address.") {
+		t.Fatalf("MCP prompt should include required argument guidance, got %q", section)
+	}
+}
+
+func TestBuildCodingSubAgentMCPSectionCapsRequiredArgumentHints(t *testing.T) {
+	hints := make([]string, codingSubAgentDynamicRequiredArgsMax+2)
+	for i := range hints {
+		hints[i] = "field_" + strconv.Itoa(i) + " (string): description"
+	}
+	section := buildCodingSubAgentMCPSection([]codingSubAgentMCPToolMatch{{
+		ServerID: "test", ServerName: "Test", ToolName: "many_args",
+		RequiredArgs:  []string{"placeholder"},
+		ArgumentHints: hints,
+	}})
+	if !strings.Contains(section, "field_5") || strings.Contains(section, "field_6") || strings.Contains(section, "field_7") {
+		t.Fatalf("MCP prompt should cap expanded hints, got %q", section)
+	}
+	if !strings.Contains(section, "还有 2 项未展开") {
+		t.Fatalf("MCP prompt should report omitted hints, got %q", section)
+	}
+}
+
+func TestCodingSubAgentMCPToolReferencesUseServerIDsAndCapOutput(t *testing.T) {
+	tools := make([]codingSubAgentMCPToolMatch, 13)
+	for i := range tools {
+		tools[i] = codingSubAgentMCPToolMatch{ServerID: "server-" + strconv.Itoa(i), ServerName: "same-name", ToolName: "tool"}
+	}
+	refs := codingSubAgentMCPToolReferences(tools, 12)
+	if len(refs) != 13 || refs[0] != "server-0/tool" || refs[11] != "server-11/tool" || refs[12] != "... +1 more" {
+		t.Fatalf("tool references = %#v", refs)
+	}
+}
+
+func TestSelectRelevantMCPToolsForTask_FullEnvironmentDoesNotCapToolList(t *testing.T) {
+	tools := make([]MCPToolView, 17)
+	for i := range tools {
+		tools[i] = MCPToolView{
+			Name:        "tool_" + strconv.Itoa(i),
+			Description: "MCP tool description",
+		}
+	}
+	manager := &LocalMCPManager{clients: map[string]*LocalMCPClient{
+		"tengyun-mcp": {
+			entry:   corelib.LocalMCPServerEntry{Name: "tengyun-mcp"},
+			running: true,
+			tools:   tools,
+		},
+	}}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: &App{localMCPManager: manager}},
+		fullEnvironment: true,
+	}}
+
+	matched := cb.selectRelevantMCPToolsForTask("query this week's work log")
+	if len(matched) != len(tools) {
+		t.Fatalf("full-environment MCP selection = %d tools, want all %d", len(matched), len(tools))
+	}
+	matchedNames := make(map[string]bool, len(matched))
+	for _, tool := range matched {
+		matchedNames[tool.ToolName] = true
+	}
+	for _, tool := range tools {
+		if !matchedNames[tool.Name] {
+			t.Fatalf("full-environment MCP selection omitted %q: %#v", tool.Name, matched)
+		}
+	}
+}
+
+func TestCodingSubAgentMCPSection_FullEnvironmentIncludesAllConnectedTools(t *testing.T) {
+	tools := make([]MCPToolView, 17)
+	for i := range tools {
+		tools[i] = MCPToolView{Name: "tool_" + strconv.Itoa(i), Description: "MCP tool description"}
+	}
+	manager := &LocalMCPManager{clients: map[string]*LocalMCPClient{
+		"tengyun-mcp": {
+			entry:   corelib.LocalMCPServerEntry{Name: "tengyun-mcp"},
+			running: true,
+			tools:   tools,
+		},
+	}}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: &App{localMCPManager: manager}},
+		fullEnvironment: true,
+	}}
+
+	section := cb.buildCodingSubAgentMCPSection()
+	if len(cb.matchedMCPTools) != len(tools) {
+		t.Fatalf("selected MCP tools = %d, want %d", len(cb.matchedMCPTools), len(tools))
+	}
+	for _, tool := range tools {
+		if !strings.Contains(section, tool.Name) {
+			t.Fatalf("MCP prompt section omitted %q: %q", tool.Name, section)
+		}
+	}
+}
+
+func TestCodingSubAgentMCPSectionShowsServerIDForUnambiguousInvocation(t *testing.T) {
+	section := buildCodingSubAgentMCPSection([]codingSubAgentMCPToolMatch{{
+		ServerID: "tengyun-msrgp18h", ServerName: "腾云 MCP", ToolName: "work_log_query",
+	}})
+	if !strings.Contains(section, "腾云 MCP [tengyun-msrgp18h]") {
+		t.Fatalf("MCP prompt should include the server id, got %q", section)
+	}
+}
+
+func TestSelectRelevantMCPToolsForTask_ExcludesDisabledMCPTargets(t *testing.T) {
+	manager := &LocalMCPManager{clients: map[string]*LocalMCPClient{
+		"test-mcp": {
+			entry:   corelib.LocalMCPServerEntry{Name: "Test MCP"},
+			running: true,
+			tools: []MCPToolView{
+				{Name: "create_session", Description: "disabled external coding session"},
+				{Name: "allowed_tool", Description: "usable MCP tool"},
+			},
+		},
+	}}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: &App{localMCPManager: manager}},
+		fullEnvironment: true,
+	}}
+	matched := cb.selectRelevantMCPToolsForTask("use the MCP tool")
+	if len(matched) != 1 || matched[0].ToolName != "allowed_tool" {
+		t.Fatalf("matched tools = %#v, want only allowed_tool", matched)
+	}
+}
+
+func TestSelectRelevantMCPToolsForTask_DeduplicatesAndNormalizesLocalTools(t *testing.T) {
+	manager := &LocalMCPManager{clients: map[string]*LocalMCPClient{
+		" test-mcp ": {
+			entry:   corelib.LocalMCPServerEntry{Name: " Test MCP "},
+			running: true,
+			tools: []MCPToolView{
+				{Name: " lookup ", Description: "first definition"},
+				{Name: "lookup", Description: "duplicate definition"},
+				{Name: "  ", Description: "invalid empty name"},
+			},
+		},
+	}}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: &App{localMCPManager: manager}},
+		fullEnvironment: true,
+	}}
+	matched := cb.selectRelevantMCPToolsForTask("look up a record")
+	if len(matched) != 1 {
+		t.Fatalf("matched tools = %#v, want one normalized unique tool", matched)
+	}
+	if got := matched[0]; got.ServerID != "test-mcp" || got.ServerName != "Test MCP" || got.ToolName != "lookup" || got.Description != "first definition" {
+		t.Fatalf("normalized tool = %#v", got)
+	}
+}
+
+func TestSelectRelevantMCPToolsForTask_FullEnvironmentIncludesHealthyRemoteTools(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{MCPServers: []corelib.MCPServerEntry{
+		{ID: "remote-mcp", Name: "Remote MCP", EndpointURL: "http://example.test/mcp"},
+		{ID: "slow-mcp", Name: "Slow MCP", EndpointURL: "http://example.test/slow"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewMCPRegistry(app)
+	registry.health["remote-mcp"] = &mcpHealthState{Status: mcpHealthStatusHealthy}
+	registry.health["slow-mcp"] = &mcpHealthState{Status: mcpHealthStatusSlow}
+	registry.toolsCache["remote-mcp"] = []MCPToolView{{Name: "remote_lookup", Description: "Look up remote records"}}
+	registry.toolsCache["slow-mcp"] = []MCPToolView{{Name: "slow_lookup", Description: "Look up records on a slow server"}}
+	app.mcpRegistry = registry
+
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: app},
+		fullEnvironment: true,
+	}}
+	matched := cb.selectRelevantMCPToolsForTask("look up a remote record")
+	if len(matched) != 2 {
+		t.Fatalf("full-environment MCP selection = %#v, want both reachable remote tools", matched)
+	}
+	got := make(map[string]string, len(matched))
+	for _, tool := range matched {
+		got[tool.ServerID] = tool.ToolName
+	}
+	if got["remote-mcp"] != "remote_lookup" || got["slow-mcp"] != "slow_lookup" {
+		t.Fatalf("remote tools = %#v", got)
+	}
+}
+
+func TestSelectRelevantMCPToolsForTask_SkipsReachableRemoteServerWithoutCachedTools(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{MCPServers: []corelib.MCPServerEntry{{
+		ID: "remote-mcp", Name: "Remote MCP", EndpointURL: "http://127.0.0.1:1/mcp",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewMCPRegistry(app)
+	registry.health["remote-mcp"] = &mcpHealthState{Status: mcpHealthStatusHealthy}
+	app.mcpRegistry = registry
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: app},
+		fullEnvironment: true,
+	}}
+
+	if got := cb.selectRelevantMCPToolsForTask("look up a remote record"); got != nil {
+		t.Fatalf("selection = %#v, want nil when no remote tool cache is available", got)
 	}
 }
 
@@ -142,6 +389,15 @@ func TestIsMatchedMCPTool_CaseInsensitive(t *testing.T) {
 	// Non-matching tool
 	if cb.isMatchedMCPTool("playwright", "click") {
 		t.Error("isMatchedMCPTool should return false for non-matched tool")
+	}
+}
+
+func TestIsMatchedMCPTool_WhitespaceInsensitive(t *testing.T) {
+	cb := &codingSubAgentCallbacks{matchedMCPTools: []codingSubAgentMCPToolMatch{{
+		ServerID: " test-mcp ", ServerName: " Test MCP ", ToolName: " lookup ",
+	}}}
+	if !cb.isMatchedMCPTool(" test-mcp ", " lookup ") {
+		t.Fatal("server id and tool name should match after trimming whitespace")
 	}
 }
 

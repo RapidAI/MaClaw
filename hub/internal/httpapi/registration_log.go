@@ -31,6 +31,12 @@ func registrationEmailDomainLog(email string) string {
 // registrationPhoneLogIdentity redacts a phone number for logs.
 func registrationPhoneLogIdentity(phoneNumber string) string {
 	phoneNumber = normalizePhoneNumber(phoneNumber)
+	// Keep the redacted form stable for Chinese mobile numbers regardless of
+	// whether the caller supplied the common +86 country prefix. This exposes
+	// no additional digits while making the same account recognizable in logs.
+	if len(phoneNumber) == 13 && strings.HasPrefix(phoneNumber, "86") && phoneNumber[2] == '1' {
+		phoneNumber = phoneNumber[2:]
+	}
 	if phoneNumber == "" {
 		return "***"
 	}

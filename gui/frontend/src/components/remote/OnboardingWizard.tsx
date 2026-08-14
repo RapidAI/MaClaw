@@ -1065,8 +1065,9 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             let targetHubURL = registrationBaseTarget.hubURL || registrationHubUrl || hubUrl;
             let targetTenantID = registrationBaseTarget.tenantID || registrationTenantID;
             let targetHubID = registrationBaseTarget.hubID || registrationHubID;
-            if (invCode.trim()) {
-                const route = await ResolveRemoteRegistrationTargetWithInvitation(target, invCode.trim().toUpperCase()) as any;
+            const invitationCode = invCode.trim().toUpperCase();
+            if (invitationCode) {
+                const route = await ResolveRemoteRegistrationTargetWithInvitation(target, invitationCode) as any;
                 if (emailCodeRequestRef.current !== requestID) return;
                 targetHubURL = String(route?.hub_url || route?.HubURL || "").trim();
                 targetTenantID = String(route?.tenant_id || route?.TenantID || "").trim();
@@ -1079,6 +1080,26 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                 setRegistrationHubUrl(targetHubURL);
                 setRegistrationTenantID(targetTenantID);
                 setRegistrationHubID(targetHubID);
+            } else {
+                // Registration can remain open while HubCenter repairs a
+                // stale user route.  Do not keep sending an OTP to the Hub
+                // that happened to be selected when this page was opened:
+                // resolve immediately before every public email send so the
+                // request follows the current authoritative fallback route.
+                const route = await ResolveRemoteRegistrationTarget(target) as any;
+                if (emailCodeRequestRef.current !== requestID) return;
+                targetHubURL = String(route?.hub_url || route?.HubURL || "").trim();
+                targetTenantID = String(route?.tenant_id || route?.TenantID || "").trim();
+                targetHubID = String(route?.hub_id || route?.HubID || "").trim();
+                const method = String(route?.method || route?.Method || "email").toLowerCase();
+                if (!targetHubURL) throw new Error("REGISTRATION_ROUTE_NOT_FOUND");
+                if (method === "phone") throw new Error("REGISTRATION_METHOD_CHANGED_TO_PHONE");
+                setRegistrationHubUrl(targetHubURL);
+                setRegistrationTenantID(targetTenantID);
+                setRegistrationHubID(targetHubID);
+                setRegistrationBaseTarget({ hubURL: targetHubURL, hubID: targetHubID, tenantID: targetTenantID });
+                setRegistrationAuthMethod(method === "mixed" ? "mixed" : "email");
+                setEmailVerificationRequired(route?.email_verification_required !== false);
             }
             attemptedHubURL = targetHubURL;
             const result = referralActive
@@ -1116,6 +1137,8 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         if (/RATE_LIMITED/i.test(message)) return t("验证码发送过于频繁，请稍后重试", "Please wait before requesting another code.");
         if (/MAIL_NOT_CONFIGURED/i.test(message)) return t(`该 Hub${hubLabel} 尚未配置邮件服务，请联系管理员`, `This Hub${hubLabel} has not configured email delivery. Contact an administrator.`);
         if (/MAIL_SEND_FAILED/i.test(message)) return t(`Hub${hubLabel} 邮件服务器未能投递验证码。请让管理员检查 SMTP 日志或发送测试邮件`, `The Hub${hubLabel} mail server could not deliver the code. Ask an administrator to check SMTP logs or send a test email.`);
+        if (/REGISTRATION_METHOD_CHANGED_TO_PHONE/i.test(message)) return t("注册路由已更新为仅支持手机号，请返回后使用手机号继续", "The registration route now accepts phone numbers only. Go back and use a phone number.");
+        if (/REGISTRATION_ROUTE_NOT_FOUND/i.test(message)) return t("当前没有可用的注册路由，请稍后重试", "No registration route is currently available. Please try again shortly.");
         if (/INVITATION_CODE_NOT_ROUTED|INVALID_INVITATION_CODE/i.test(message)) return t("邀请码无效或无法找到对应 Hub", "The invitation code is invalid or cannot be routed to a Hub.");
         return message;
     };

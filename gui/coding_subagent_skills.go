@@ -115,6 +115,7 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 			Name:        s.Name,
 			Description: s.Description,
 			Type:        s.Type,
+			Source:      s.Source,
 			Steps:       s.Steps,
 			SkillDir:    s.SkillDir,
 		}

@@ -408,15 +408,72 @@ func TestResolveRemoteRegistrationTargetUsesHubCenterPhoneRoute(t *testing.T) {
 	defer center.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: center.URL}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
+	originalDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = []string{center.URL}
+	t.Cleanup(func() { remote.DefaultRemoteHubCenterURLs = originalDefaults })
 	got, err := app.ResolveRemoteRegistrationTarget("19900001111")
 	if err != nil {
 		t.Fatalf("ResolveRemoteRegistrationTarget() error = %v", err)
 	}
 	if got.HubURL != hub.URL || got.HubID != "hub-phone" || got.TenantID != "" || got.Method != "phone" || got.CodeLength != 6 {
 		t.Fatalf("resolved target = %#v", got)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.RemoteHubCenterURL != center.URL {
+		t.Fatalf("RemoteHubCenterURL = %q, want %q", saved.RemoteHubCenterURL, center.URL)
+	}
+	if !remote.StringSliceEqual(saved.RemoteHubCenterURLs, []string{center.URL}) {
+		t.Fatalf("RemoteHubCenterURLs = %#v, want %#v", saved.RemoteHubCenterURLs, []string{center.URL})
+	}
+}
+
+func TestResolveRemoteRegistrationTargetDoesNotPersistHubCenterWhenHubAuthProbeFails(t *testing.T) {
+	remote.InvalidateCenterCache()
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "registration auth unavailable", http.StatusServiceUnavailable)
+	}))
+	defer hub.Close()
+
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/quality":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"quality_score":100,"routable":true,"service_status":"ok","features":{"can_resolve":true}}`))
+		case "/api/client/hubcenters":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"urls":[],"nodes":[],"count":0,"ttl_seconds":300}`))
+		case "/api/entry/resolve":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"email":"new@example.com","mode":"single","hubs":[{"hub_id":"hub-failed-auth","base_url":"` + hub.URL + `","status":"online"}]}`))
+		default:
+			t.Fatalf("unexpected center path %s", r.URL.Path)
+		}
+	}))
+	defer center.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	originalDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = []string{center.URL}
+	t.Cleanup(func() { remote.DefaultRemoteHubCenterURLs = originalDefaults })
+
+	if _, err := app.ResolveRemoteRegistrationTarget("new@example.com"); err == nil {
+		t.Fatal("ResolveRemoteRegistrationTarget() error = nil, want registration auth failure")
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.RemoteHubCenterURL != "" || len(saved.RemoteHubCenterURLs) != 0 {
+		t.Fatalf("failed route persisted HubCenter identity: url=%q urls=%#v", saved.RemoteHubCenterURL, saved.RemoteHubCenterURLs)
 	}
 }
 

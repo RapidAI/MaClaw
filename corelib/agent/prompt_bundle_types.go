@@ -165,6 +165,13 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 			fmt.Fprintf(&retrieved, "\nSelf identity memory for %s:\n%s\nUse this only to guide behavior; do not recite it to the user unless asked.\n", roleName, selfIdentityOverride)
 		}
 	}
+	if light && deps.SkillLister != nil {
+		// Keep the catalog out of the cost-sensitive light prompt, but do not
+		// hide the capability itself.  Otherwise a short follow-up such as
+		// "run it again" loses both the skill list and manage_skill tool.
+		retrieved.WriteString("\n## Installed Skills\n")
+		retrieved.WriteString("Installed Skills are available. When the user names, asks for, or wants to run a skill, use manage_skill(action=\"list\", \"search\", or \"run\") to find or execute it.\n")
+	}
 	if !light && deps.SkillLister != nil {
 		if skills := deps.SkillLister(); len(skills) > 0 {
 			retrieved.WriteString("\n## Registered Skills\n")

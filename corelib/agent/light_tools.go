@@ -18,6 +18,10 @@ var LightTurnToolAllowlist = map[string]bool{
 	"read_tool_result":       true,
 	"knowledge_search":       true,
 	"knowledge_context_pack": true,
+	// Skill discovery and execution are deliberately light-safe.  The skill
+	// runner owns dependency checks, so exposing this tool does not require
+	// shell/file access from a light turn.
+	"manage_skill": true,
 	// Read-only knowledge lookups are light-safe; writes/imports stay full-only.
 	"knowledge_list_sources": true,
 	"knowledge_stats":        true,

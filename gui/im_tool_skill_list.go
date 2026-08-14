@@ -101,6 +101,9 @@ func (h *IMMessageHandler) toolListSkills() string {
 				if st := strings.ToLower(strings.TrimSpace(s.Status)); st == "needs_review" || st == "disabled" || st == "needs_setup" {
 					line += " [do_not_run]"
 				}
+				if s.ExecutionClass == "agent_guided_workflow" {
+					line += " [agent_guided_workflow] [start_with_ai_agent] [do_not_run_gui_runner]"
+				}
 				if isDownloadLikeSkillName(s.Name, s.Description) && (strings.EqualFold(s.Status, "needs_review") || s.FailureCount > s.SuccessCount) {
 					line += " [prefer:download_file]"
 				}

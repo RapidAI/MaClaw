@@ -17,9 +17,13 @@ type RunnerCompatReport struct {
 	SupportedSteps     int      `json:"supported_steps"`
 	UnsupportedActions []string `json:"unsupported_actions,omitempty"`
 	CraftToolOnly      bool     `json:"craft_tool_only,omitempty"`
-	HasBash            bool     `json:"has_bash,omitempty"`
-	Warnings           []string `json:"warnings,omitempty"`
-	SuggestedAlt       string   `json:"suggested_alt,omitempty"`
+	// AgentGuidedOnly identifies imported Markdown workflows which describe an
+	// agent-led project (for example research -> approval -> multi-agent
+	// writing) rather than a single recipe the GUI runner can execute.
+	AgentGuidedOnly bool     `json:"agent_guided_only,omitempty"`
+	HasBash         bool     `json:"has_bash,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+	SuggestedAlt    string   `json:"suggested_alt,omitempty"`
 }
 
 // AssessRunnerCompatibility normalizes a copy of the skill steps and checks
@@ -81,13 +85,20 @@ func AssessRunnerCompatibility(entry *corelib.NLSkillEntry, runner string) Runne
 	if report.CraftToolOnly {
 		report.Warnings = append(report.Warnings,
 			"skill is craft_tool-only; requires a working Python runtime at run time")
+		if IsAgentGuidedWorkflowSkill(entry) {
+			report.AgentGuidedOnly = true
+			report.Runnable = false
+			report.Warnings = append(report.Warnings,
+				"imported Markdown workflow requires interactive agent orchestration and cannot run as one GUI skill step")
+			report.SuggestedAlt = "use this as an agent-guided project workflow; it is not directly runnable by the GUI skill runner"
+		}
 	}
-	if !report.Runnable {
+	if !report.Runnable && len(report.UnsupportedActions) > 0 {
 		report.Warnings = append(report.Warnings,
 			fmt.Sprintf("unsupported step actions for %s runner: %s",
 				report.Runner, strings.Join(report.UnsupportedActions, ", ")))
 	}
-	if LooksLikeGenericDownloadSkill(entry.Name, entry.Description) {
+	if !report.AgentGuidedOnly && LooksLikeGenericDownloadSkill(entry.Name, entry.Description) {
 		report.SuggestedAlt = "download_file (or web_fetch with save_path) for simple HTTP/PDF downloads"
 		if !report.Runnable || report.CraftToolOnly {
 			report.Warnings = append(report.Warnings,
@@ -95,6 +106,75 @@ func AssessRunnerCompatibility(entry *corelib.NLSkillEntry, runner string) Runne
 		}
 	}
 	return report
+}
+
+// IsAgentGuidedWorkflowSkill reports whether an imported Markdown skill is a
+// project workflow that needs an interactive agent rather than a single GUI
+// runner invocation. It deliberately requires multiple independent signals so
+// ordinary craft_tool skills that merely mention Node, Playwright, or a script
+// continue to run normally.
+func IsAgentGuidedWorkflowSkill(entry *corelib.NLSkillEntry) bool {
+	if entry == nil || len(entry.Steps) != 1 {
+		return false
+	}
+	// Only imported marketplace sources use the SKILL.md -> craft_tool adapter.
+	// A manually-authored craft_tool can legitimately describe a richer task and
+	// must not be silently reclassified merely because it uses similar words.
+	if !isImportedMarkdownWorkflowSource(entry.Source) {
+		return false
+	}
+	step := NormalizeStepForRunnerCopy(entry.Steps[0], entry.SkillDir)
+	if NormalizeStepActionName(step.Action) != "craft_tool" {
+		return false
+	}
+	instructions, _ := step.Params["instructions"].(string)
+	text := strings.ToLower(strings.TrimSpace(instructions))
+	if text == "" {
+		return false
+	}
+
+	// One explicit multi-agent requirement plus two workflow-management signals
+	// is intentionally conservative. This catches Book-PDF-style SKILL.md files
+	// without treating a normal executable recipe as documentation-only.
+	multiAgent := containsRunnerCompatAny(text,
+		"multi-agent", "multi agent", "background agent", "background agents",
+		"多agent", "多 agent", "多个agent", "多个 agent", "多智能体", "并行写作")
+	if !multiAgent {
+		return false
+	}
+	signals := 0
+	if containsRunnerCompatAny(text, "research →", "research ->", "调研 →", "调研->", "阶段1", "阶段 1", "五个阶段", "multi-phase", "多阶段") {
+		signals++
+	}
+	if containsRunnerCompatAny(text, "confirm with the user", "user confirmation", "ask the user", "与用户确认", "用户确认", "等待用户确认") {
+		signals++
+	}
+	if containsRunnerCompatAny(text, "templates/", "scripts/", "references/", "项目初始化", "project initialization") {
+		signals++
+	}
+	if containsRunnerCompatAny(text, "version.json", "changelog", "语义化版本", "semantic version") {
+		signals++
+	}
+	return signals >= 2
+}
+
+func isImportedMarkdownWorkflowSource(source string) bool {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "hub", "skillhub", "skillmarket", "clawhub", "github", "agent_skill",
+		"auto_hub", "auto_skillhub", "auto_skillmarket", "auto_clawhub", "auto_github":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsRunnerCompatAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // LooksLikeGenericDownloadSkill reports whether a skill name/description is a
@@ -168,6 +248,9 @@ func FormatRunnerCompatReport(report RunnerCompatReport) string {
 		report.Runner, report.Runnable, report.SupportedSteps, report.StepCount))
 	if report.CraftToolOnly {
 		b.WriteString(" craft_tool_only=true")
+	}
+	if report.AgentGuidedOnly {
+		b.WriteString(" agent_guided_only=true")
 	}
 	if len(report.UnsupportedActions) > 0 {
 		b.WriteString(" unsupported=[" + strings.Join(report.UnsupportedActions, ",") + "]")

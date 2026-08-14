@@ -610,6 +610,13 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	if strings.TrimSpace(target.Type) == "" {
 		target.Type = configuredType
 	}
+	// Imported project workflows are valid only when an interactive AI agent can
+	// coordinate their research, confirmations, and sub-agents. Their status is
+	// deliberately active, so reject them here before the normal GUI-runner
+	// status/preflight path can turn an "active" entry into a real run.
+	if cskill.IsAgentGuidedWorkflowSkill(target) {
+		return "", fmt.Errorf("skill %q is an agent-guided workflow, not a one-step GUI runner skill; use Start with AI Agent", skillName)
+	}
 
 	// Bug #3: Distinguish needs_setup / disabled / needs_review from active
 	switch normalizeSkillEntryStatus(target.Status) {

@@ -116,6 +116,11 @@ func (o *SkillOptimizer) ShouldOptimize(skill *corelib.NLSkillEntry, recentRecor
 	if IsFileBackedSkill(*skill) {
 		return false
 	}
+	// Imported Markdown project workflows are guidance for an interactive agent,
+	// not a recipe an optimizer may safely rewrite as one craft_tool step.
+	if IsAgentGuidedWorkflowSkill(skill) {
+		return false
+	}
 
 	// Guard against division by zero (should not happen given MinUsageCount check).
 	if skill.UsageCount == 0 {

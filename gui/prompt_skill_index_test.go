@@ -65,3 +65,14 @@ func TestPromptSkillIndexEntriesFiltersBrowserToolsetSkills(t *testing.T) {
 		t.Fatalf("unexpected skill index entries: %+v", got)
 	}
 }
+
+func TestPromptSkillIndexEntriesSkipsAgentGuidedWorkflowEvenWhenStaleActive(t *testing.T) {
+	skills := []NLSkillDefinition{
+		{Name: "Book-PDF", Status: "active", ExecutionClass: "agent_guided_workflow"},
+		{Name: "pdf-word", Status: "active", ExecutionClass: "native_skill"},
+	}
+	got := promptSkillIndexEntries(skills, 10)
+	if len(got) != 1 || got[0].Name != "pdf-word" {
+		t.Fatalf("promptSkillIndexEntries() = %#v, want only runnable native skill", got)
+	}
+}

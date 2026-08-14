@@ -616,6 +616,14 @@ function App() {
     const [skillRunLaunchInFlight, setSkillRunLaunchInFlight] = useState(false);
     const skillRunPendingRef = useRef<{ launchId: string; skillName: string; projectPath: string } | null>(null);
     const skillRunLaunchInFlightRef = useRef(false);
+    // Agent-guided workflows also create isolated assistant tasks. Keep their
+    // launch queue separate from one-step runs so a double-click does not
+    // create duplicate Book-PDF tasks, while different requested workflows
+    // still open deterministically one at a time.
+    const [agentWorkflowLaunchQueue, setAgentWorkflowLaunchQueue] = useState<string[]>([]);
+    const [agentWorkflowLaunchInFlight, setAgentWorkflowLaunchInFlight] = useState(false);
+    const agentWorkflowPendingRef = useRef<{ launchId: string; skillName: string; projectPath: string } | null>(null);
+    const agentWorkflowLaunchInFlightRef = useRef(false);
     const skillRunLaunchSequenceRef = useRef(0);
     // A workflow tile stays pending until its project tab has actually been
     // created. This prevents a fast double-click from creating orphan tasks
@@ -645,6 +653,13 @@ function App() {
         setSkillRunQueue(([, ...queue]) => queue);
     }, []);
 
+    const finishAgentWorkflowLaunch = useCallback(() => {
+        if (!agentWorkflowLaunchInFlightRef.current) return;
+        agentWorkflowLaunchInFlightRef.current = false;
+        setAgentWorkflowLaunchInFlight(false);
+        setAgentWorkflowLaunchQueue(([, ...queue]) => queue);
+    }, []);
+
     useEffect(() => {
         const runSkill = (e: Event) => {
             const name = String((e as CustomEvent).detail?.name || '').trim();
@@ -657,6 +672,49 @@ function App() {
         window.addEventListener('maclaw:run-skill', runSkill);
         return () => window.removeEventListener('maclaw:run-skill', runSkill);
     }, [setNavTabNow]);
+
+    useEffect(() => {
+        const startAgentGuidedWorkflow = (e: Event) => {
+            const name = String((e as CustomEvent).detail?.name || '').trim();
+            if (!name) return;
+            // Unlike maclaw:run-skill, this never invokes the GUI runner. The
+            // assistant receives the workflow as context and can carry out its
+            // research/confirmation/sub-agent stages interactively.
+            setNavTabNow('ai');
+            setAgentWorkflowLaunchQueue(queue => queue.includes(name) ? queue : [...queue, name]);
+        };
+        window.addEventListener('maclaw:start-agent-guided-workflow', startAgentGuidedWorkflow);
+        return () => window.removeEventListener('maclaw:start-agent-guided-workflow', startAgentGuidedWorkflow);
+    }, [setNavTabNow]);
+
+    useEffect(() => {
+        if (agentWorkflowLaunchInFlight || agentWorkflowPendingRef.current || agentWorkflowLaunchQueue.length === 0) return;
+        const skillName = agentWorkflowLaunchQueue[0];
+        const launchId = `agent-workflow-${++skillRunLaunchSequenceRef.current}`;
+        agentWorkflowLaunchInFlightRef.current = true;
+        setAgentWorkflowLaunchInFlight(true);
+
+        void callBackend(() => CreateTask(`Agent workflow: ${skillName}`, ''))
+                .then((created) => {
+                    if (!created?.project_path) {
+                        throw new Error('agent-guided workflow task was not created');
+                    }
+                    agentWorkflowPendingRef.current = { launchId, skillName, projectPath: created.project_path };
+                    enqueueProjectTabOpen({
+                        launchId,
+                        projectPath: created.project_path,
+                        taskTitle: created.name || `Agent workflow: ${skillName}`,
+                        initialMessage: `Use the installed agent-guided workflow ${JSON.stringify(skillName)} for my request. First inspect its instructions with manage_skill(action="info", name=${JSON.stringify(skillName)}), then follow that workflow. Start by asking me for the topic, audience, and any requirements; do not call the one-step GUI Skill Runner for this workflow.`,
+                        autoSend: true,
+                        prepareMode: 'new-agent',
+                    });
+                })
+                .catch((error) => {
+                    console.error('[skills] failed to open agent-guided workflow task', { skillName, error });
+                    finishAgentWorkflowLaunch();
+                })
+                .catch(() => {});
+    }, [agentWorkflowLaunchInFlight, agentWorkflowLaunchQueue, enqueueProjectTabOpen, finishAgentWorkflowLaunch]);
 
     useEffect(() => {
         if (skillRunLaunchInFlight || skillRunPendingRef.current || skillRunQueue.length === 0) return;
@@ -694,6 +752,18 @@ function App() {
 
     const handlePendingProjectTabOpenHandled = useCallback((result: { outcome: "opened" | "rejected"; launchId?: string }) => {
         setPendingProjectTabOpen(null);
+        const pendingAgentWorkflow = agentWorkflowPendingRef.current;
+        if (pendingAgentWorkflow && result.launchId === pendingAgentWorkflow.launchId) {
+            agentWorkflowPendingRef.current = null;
+            if (result.outcome === "rejected") {
+                // A rejected tab has no route back to this task, so do not leave
+                // an inaccessible agent-workflow task in Task Management.
+                void callBackend(() => HideTask(pendingAgentWorkflow.projectPath)).catch((error) => {
+                    console.warn('[skills] failed to hide rejected agent-workflow task', { skillName: pendingAgentWorkflow.skillName, projectPath: pendingAgentWorkflow.projectPath, error });
+                });
+            }
+            finishAgentWorkflowLaunch();
+        }
         const pendingWorkflow = workflowTabLaunchRef.current;
         if (pendingWorkflow && result.launchId === pendingWorkflow.launchId) {
             workflowTabLaunchRef.current = null;
@@ -722,7 +792,7 @@ function App() {
             });
         }
         finishSkillRunLaunch();
-    }, [finishSkillRunLaunch]);
+    }, [finishAgentWorkflowLaunch, finishSkillRunLaunch]);
 
     // Onboarding is a portal rendered outside #App. Route every request
     // through this guard so it cannot appear while the compact environment

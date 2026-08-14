@@ -231,6 +231,9 @@ func explainRepairGate(skill *corelib.NLSkillEntry, ignoreFileBacked bool) (bool
 	if !isRepairEligibleStatus(skill.Status) {
 		return false, "status_not_active"
 	}
+	if IsAgentGuidedWorkflowSkill(skill) {
+		return false, "agent_guided_workflow"
+	}
 	if !ignoreFileBacked && IsFileBackedSkill(*skill) {
 		return false, "file_backed"
 	}
@@ -265,11 +268,19 @@ func explainRepairGate(skill *corelib.NLSkillEntry, ignoreFileBacked bool) (bool
 // max attempts, repairable class) but without the usage-rate threshold.
 // Used by manage_skill(action="trigger_repair", force=true).
 func CanForceAttemptRepair(skill *corelib.NLSkillEntry) bool {
-	return canAttemptRepairBase(skill)
+	return canAttemptRepairBase(skill, false)
+}
+
+// CanForceAttemptFileBackedRepairDraft reports whether a file-backed skill
+// may generate a reviewed repair draft.  It retains every safety gate from a
+// forced repair except the file-backed restriction itself: the draft path
+// never overwrites the on-disk definition.
+func CanForceAttemptFileBackedRepairDraft(skill *corelib.NLSkillEntry) bool {
+	return canAttemptRepairBase(skill, true)
 }
 
 // canAttemptRepairBase is the shared safety gate for auto and forced repair.
-func canAttemptRepairBase(skill *corelib.NLSkillEntry) bool {
+func canAttemptRepairBase(skill *corelib.NLSkillEntry, allowFileBacked bool) bool {
 	if skill == nil {
 		return false
 	}
@@ -279,7 +290,10 @@ func canAttemptRepairBase(skill *corelib.NLSkillEntry) bool {
 	if !isRepairEligibleStatus(skill.Status) {
 		return false
 	}
-	if IsFileBackedSkill(*skill) {
+	if IsAgentGuidedWorkflowSkill(skill) {
+		return false
+	}
+	if !allowFileBacked && IsFileBackedSkill(*skill) {
 		return false
 	}
 	if skill.RepairAttemptCount >= SelfRepairMaxAttempts {

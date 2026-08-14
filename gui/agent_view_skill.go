@@ -24,6 +24,9 @@ func (a *App) emitSkillRunAgentViewForUser(name string, runArgs map[string]inter
 	if target == nil {
 		return false
 	}
+	if cskill.IsAgentGuidedWorkflowSkill(target) {
+		return false
+	}
 	vars := normalizeSkillRunVars(runArgs)
 	params, missing := skillRunParameterContract(target, vars, runArgs)
 	if len(missing) == 0 {
@@ -47,6 +50,9 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 		return &IMAgentResponse{Text: "Skill Runner is not initialized.", Error: "skill runner not initialized", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	target := a.findSkillForAgentView(skillName)
+	if target != nil && cskill.IsAgentGuidedWorkflowSkill(target) {
+		return &IMAgentResponse{Text: "This workflow must be started with the AI Agent, not submitted to the GUI Skill Runner.", Error: "agent-guided workflow; use Start with AI Agent", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
 	baseArgs, _ := data["_run_args"].(map[string]interface{})
 	runArgs := cloneMISInterfaceMap(baseArgs)
 	formArgs, _ := runArgs["args"].(map[string]interface{})

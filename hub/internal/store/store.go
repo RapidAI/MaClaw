@@ -723,6 +723,9 @@ type EmailInviteRepository interface {
 type UserReferralRepository interface {
 	GetActiveCodeForInviter(ctx context.Context, tenantID, inviterUserID string) (*UserReferralCode, error)
 	GetCodeByHash(ctx context.Context, tenantID, codeHash string) (*UserReferralCode, error)
+	// ListActiveCodes returns encrypted source values only for the bounded
+	// legacy case-folded lookup fallback. Callers must never expose them.
+	ListActiveCodes(ctx context.Context, tenantID string) ([]*UserReferralCode, error)
 	CreateCode(ctx context.Context, code *UserReferralCode) error
 	RotateCode(ctx context.Context, tenantID, codeID string, rotatedAt time.Time) error
 	// ReplaceActiveCode atomically retires the current active link and stores

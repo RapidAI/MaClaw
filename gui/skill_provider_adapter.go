@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -34,6 +35,9 @@ func (p *skillExecutorProvider) ListActiveSkills() []tool.SkillSummary {
 		// runnable skills. Keeping them out of this index prevents the agent from
 		// selecting a container that the runner must correctly reject.
 		if skill.IsKnowledgeSkillType(s.Type) || skill.IsInstructionOnlySkillType(s.Type) {
+			continue
+		}
+		if skill.IsAgentGuidedWorkflowSkill(&corelib.NLSkillEntry{Source: s.Source, Steps: s.Steps, SkillDir: s.SkillDir}) {
 			continue
 		}
 		out = append(out, tool.SkillSummary{

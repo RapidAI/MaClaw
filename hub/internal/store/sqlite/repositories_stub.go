@@ -1378,6 +1378,27 @@ func (r *userReferralRepo) GetCodeByHash(ctx context.Context, tenantID, codeHash
 	return scanUserReferralCode(row)
 }
 
+func (r *userReferralRepo) ListActiveCodes(ctx context.Context, tenantID string) ([]*store.UserReferralCode, error) {
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, tenant_id, inviter_user_id, code_hash, encrypted_code, status, created_at, rotated_at
+		FROM user_referral_codes WHERE tenant_id = ? AND status = 'active'`, normalizeTenantID(tenantID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*store.UserReferralCode, 0)
+	for rows.Next() {
+		item, scanErr := scanUserReferralCode(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func scanUserReferralCode(row rowScanner) (*store.UserReferralCode, error) {
 	var item store.UserReferralCode
 	var createdAt string

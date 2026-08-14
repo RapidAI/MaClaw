@@ -625,6 +625,32 @@ func TestSkillHealthLabelsFlagLegacyRequiredArgsContract(t *testing.T) {
 	}
 }
 
+func TestToolListSkillsMarksAgentGuidedWorkflowForAgentStart(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	h := &IMMessageHandler{app: app}
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Source: "clawhub",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{
+				"instructions": "Phase 1 research with multiple background agents; confirm with the user; use templates/ and scripts/; maintain version.json.",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	output := h.toolListSkills()
+	if !strings.Contains(output, "[agent_guided_workflow] [start_with_ai_agent] [do_not_run_gui_runner]") {
+		t.Fatalf("toolListSkills() missing agent-guided start marker: %s", output)
+	}
+}
+
 func TestToolPatchSkillRefreshesLoadedSkillCache(t *testing.T) {
 	tempHome := t.TempDir()
 	externalRoot := filepath.Join(tempHome, "external-skills")

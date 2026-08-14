@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -177,6 +178,14 @@ func userReferralRegistrationSessionTokenHash(tenantID, token string) string {
 func userReferralHandoffTokenHash(token string) string {
 	digest := sha256.Sum256([]byte("maclaw-user-referral-handoff-v1\x00" + strings.TrimSpace(token)))
 	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+func newUserReferralOpaqueToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func userReferralRegistrationSessionToken(r *http.Request) (string, bool) {
@@ -389,14 +398,13 @@ func newUserReferralRegistrationSession(ctx context.Context, repo store.UserRefe
 }
 
 func newUserReferralRegistrationSessionToken(ctx context.Context, repo store.UserReferralRepository, r *http.Request, tenantID, codeHash, configEpoch string) (string, error) {
-	raw, err := newUserReferralCode()
+	token, err := newUserReferralOpaqueToken()
 	if err != nil {
 		return "", err
 	}
 	// The session token is unrelated to the referral code. Only the code HMAC
 	// is retained server-side, so a memory dump or request header cannot recover
 	// the invitation link.
-	token := strings.TrimPrefix(raw, "rf_")
 	now := time.Now().UTC()
 	if repo == nil {
 		return "", errors.New("referral session store is unavailable")
@@ -844,16 +852,96 @@ func GetUserReferralConfigHandler(system store.SystemSettingsRepository) http.Ha
 }
 
 func userReferralCodeHash(tenantID, code string) string {
+	return userReferralCodeHashForValue(tenantID, strings.ToUpper(strings.TrimSpace(code)))
+}
+
+// legacyUserReferralCodeHash preserves the case-sensitive hash format used
+// before this change. It is used only while looking up links that were already
+// issued, whose stored hashes cannot be migrated without their encrypted source
+// values.
+func legacyUserReferralCodeHash(tenantID, code string) string {
+	return userReferralCodeHashForValue(tenantID, strings.TrimSpace(code))
+}
+
+func userReferralCodeHashForValue(tenantID, code string) string {
 	mac := hmac.New(sha256.New, []byte("maclaw-user-referral-v1:"+strings.TrimSpace(tenantID)))
-	_, _ = mac.Write([]byte(strings.TrimSpace(code)))
+	_, _ = mac.Write([]byte(code))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
+
+// userReferralCodeHashCandidates keeps legacy links valid when a sharing
+// client uppercases only the rf_ marker. New Base32 codes are wholly
+// case-insensitive through userReferralCodeHash.
+func userReferralCodeHashCandidates(tenantID, code string) []string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return nil
+	}
+	values := []string{code}
+	if len(code) >= 3 && strings.EqualFold(code[:3], "rf_") {
+		values = append(values, "rf_"+code[3:], "RF_"+code[3:])
+	}
+	values = append(values, strings.ToUpper(code))
+	hashes := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		hash := legacyUserReferralCodeHash(tenantID, value)
+		if _, ok := seen[hash]; !ok {
+			seen[hash] = struct{}{}
+			hashes = append(hashes, hash)
+		}
+	}
+	return hashes
+}
+
+func findPublicReferralCode(ctx context.Context, repo store.UserReferralRepository, tenantID, code string) (*store.UserReferralCode, error) {
+	for _, hash := range userReferralCodeHashCandidates(tenantID, code) {
+		found, err := repo.GetCodeByHash(ctx, tenantID, hash)
+		if err != nil || found != nil {
+			return found, err
+		}
+	}
+	if !userReferralIsPotentialLegacyCode(code) {
+		return nil, nil
+	}
+	// Old Base64 codes encoded entropy in letter case, so a whole-link case
+	// transformation cannot be reversed from the stored HMAC. This fallback is
+	// reached only after indexed lookups miss and compares encrypted values
+	// server-side; public referral requests are already rate-limited.
+	active, err := repo.ListActiveCodes(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range active {
+		if item != nil && strings.EqualFold(llmservice.DecryptCardCode(item.EncryptedCode), code) {
+			return item, nil
+		}
+	}
+	return nil, nil
+}
+
+// userReferralIsPotentialLegacyCode restricts the compatibility scan to the
+// exact shape issued by the previous generator: `rf_` plus 24 random bytes
+// encoded as unpadded Base64. Without this guard, arbitrary invalid public
+// paths could force a decrypt-and-compare scan of every active invitation.
+func userReferralIsPotentialLegacyCode(code string) bool {
+	code = strings.TrimSpace(code)
+	if len(code) != len("rf_")+base64.RawURLEncoding.EncodedLen(24) || !strings.EqualFold(code[:3], "rf_") {
+		return false
+	}
+	_, err := base64.RawURLEncoding.DecodeString(code[3:])
+	return err == nil
+}
+
 func newUserReferralCode() (string, error) {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return "rf_" + base64.RawURLEncoding.EncodeToString(b), nil
+	// Base32 gives each code one canonical spelling: unlike base64, it does not
+	// use case to encode entropy. A copied code is therefore safe to paste into
+	// clients that normalize text casing.
+	return "RF_" + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b), nil
 }
 func userReferralURL(r *http.Request, code string) string {
 	if r == nil || strings.TrimSpace(code) == "" {
@@ -1491,7 +1579,7 @@ func PublicUserReferralRegistrationStatusHandler(identity *auth.IdentityService,
 			rejectUserReferralRateLimit(w)
 			return
 		}
-		if identity == nil {
+		if identity == nil || identity.UsersRepo() == nil {
 			clearUserReferralRegistrationSessionCookie(w, r)
 			writeError(w, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", "Registration is unavailable")
 			return
@@ -1571,7 +1659,7 @@ func PublicUserReferralAccountCheckHandler(identity *auth.IdentityService, repo 
 			rejectUserReferralRateLimit(w)
 			return
 		}
-		if identity == nil {
+		if identity == nil || identity.UsersRepo() == nil {
 			clearUserReferralRegistrationSessionCookie(w, r)
 			writeError(w, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", "Registration is unavailable")
 			return
@@ -1715,25 +1803,36 @@ func writePublicReferralLandingHTML(w http.ResponseWriter, r *http.Request, code
 	if logoURL != "" {
 		brand = `<div class="brand"><img class="brand-logo" src="` + html.EscapeString(logoURL) + `" alt="` + html.EscapeString(name) + ` logo" onerror="this.remove()">` + brand + `</div>`
 	}
+	// Some embedded webviews do not include a browser default stylesheet. Make
+	// the HTML `hidden` contract explicit so switching registration methods
+	// never leaves both contact fields visible.
+	brand += `<style id="referral-hidden-state">[hidden]{display:none!important}</style>`
+	brand += `<style id="referral-registration-switch">#email-wrap[hidden]{display:none!important}#phone-wrap[hidden]{display:none!important}</style>`
+	brand += `<style id="referral-primary-action">.button-primary{width:auto;min-width:144px;justify-self:start}@media(max-width:620px){.button-primary{width:100%;justify-self:stretch}}</style>`
+	// The public registration flow already requires JavaScript for localized
+	// copy and verification. This server-rendered button group replaces the
+	// native selector while retaining the page's existing language state.
+	brand += `<style id="referral-language-buttons">.language{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;opacity:0;pointer-events:none}.language-switch{display:flex;align-items:center;gap:2px;padding:3px;border:1px solid #dce4ee;border-radius:9px;background:#f6f8fb}.language-button{min-height:32px;border:0;border-radius:6px;padding:0 9px;background:transparent;color:#516179;font:inherit;font-size:12px;font-weight:700;cursor:pointer}.language-button:hover{background:#eaf0f8;color:#284d7c}.language-button[aria-pressed="true"]{background:#fff;color:#28598f;box-shadow:0 1px 2px rgba(23,32,51,.1)}.button{border-color:#b6c9e3;background:#fff;color:#2c5c91}.button:hover:not(:disabled){border-color:#7e9fc9;background:#f2f6fb;color:#244e7e}.button-primary{border-color:#3e6fb4;background:#3e6fb4;color:#fff}.button-primary:hover:not(:disabled){border-color:#2f5f9f;background:#2f5f9f;color:#fff}.open-app{border-color:#c6d5e7;background:#f3f6fb;color:#294f7d}.open-app:hover:not(:disabled){border-color:#9fb7d4;background:#eaf0f7;color:#254a76}.button:focus-visible,.language-button:focus-visible{outline:3px solid rgba(62,111,180,.27);outline-offset:2px}@media(pointer:coarse){.language-button{min-width:44px;min-height:44px}}</style><div id="language-switch" class="language-switch" role="group" aria-label="Language"><button type="button" class="language-button" data-language="en" aria-label="English" aria-pressed="false">EN</button><button type="button" class="language-button" data-language="zh-CN" aria-label="简体中文" aria-pressed="false">简</button><button type="button" class="language-button" data-language="zh-TW" aria-label="繁體中文" aria-pressed="false">繁</button></div><script>(function(){var select=document.getElementById('language'),group=document.getElementById('language-switch'),header=document.querySelector('.topbar');if(!select||!group||!header)return;header.appendChild(group);select.tabIndex=-1;select.setAttribute('aria-hidden','true');group.addEventListener('click',function(event){var button=event.target.closest('.language-button');if(!button)return;select.value=button.dataset.language;select.dispatchEvent(new Event('change'))})})();</script>`
+	brand += `<script id="referral-language-selection">document.addEventListener('DOMContentLoaded',function(){var select=document.getElementById('language'),summary=document.getElementById('summary'),titles={en:'Join {tenant} on MaClaw','zh-CN':'在 MaClaw 中加入 {tenant}','zh-TW':'在 MaClaw 中加入 {tenant}'};if(!select)return;function sync(){document.querySelectorAll('.language-button').forEach(function(button){button.setAttribute('aria-pressed',String(button.dataset.language===select.value))});var tenant=summary&&summary.dataset.tenant||'';document.title=(titles[select.value]||titles.en).replace('{tenant}',tenant)}select.addEventListener('change',sync);sync()});</script>`
 	download := func(label, value string) string {
 		return `<a href="` + html.EscapeString(value) + `" target="_blank" rel="noopener noreferrer">` + html.EscapeString(label) + `</a>`
 	}
 	recommendedLabel, recommendedURL := referralRecommendedDownload(r, cfg.Downloads)
 	recommendedDownload := ""
 	if recommendedLabel != "" && recommendedURL != "" {
-		recommendedDownload = `<p class="recommend">Recommended for this device: ` + download(recommendedLabel, recommendedURL) + `</p>`
+		recommendedDownload = `<p class="recommend" id="recommended" data-download-label="` + html.EscapeString(recommendedLabel) + `">` + download(recommendedLabel, recommendedURL) + `</p>`
 	}
-	form := `<p class="notice">Registration is currently unavailable. You can still download the client below.</p>`
+	form := `<p class="notice" data-i18n="unavailable">Registration is currently unavailable. You can still download the client below.</p>`
 	if available && method == registrationAuthMethodMixed {
-		form = `<form id="register" data-mixed="1"><label>Registration method<select id="mode"><option value="email">Email</option><option value="phone">Phone</option></select></label><label id="email-wrap">Email<input id="email" type="email" required autocomplete="email"></label><label id="phone-wrap" hidden>Phone<input id="phone" type="tel" autocomplete="tel"></label><div class="verify"><input id="verify" inputmode="numeric" placeholder="Verification code" required><button type="button" id="send">Send code</button></div><button type="submit">Create account</button><p id="message" role="status"></p></form>`
+		form = `<form id="register" data-mixed="1"><label><span data-i18n="registrationMethod">Registration method</span><select id="mode"><option value="email" data-i18n="email">Email</option><option value="phone" data-i18n="phone">Phone</option></select></label><label id="email-wrap"><span data-i18n="email">Email</span><input id="email" type="email" required autocomplete="email"></label><label id="phone-wrap" hidden><span data-i18n="phone">Phone</span><input id="phone" type="tel" inputmode="tel" autocomplete="tel"></label><div class="verify"><input id="verify" inputmode="numeric" autocomplete="one-time-code" placeholder="Verification code" data-i18n-placeholder="verificationCode" required><button class="button" type="button" id="send" data-i18n="sendCode">Send code</button></div><button class="button button-primary" type="submit" data-i18n="createAccount">Create account</button><p id="message" role="status"></p></form>`
 	} else if available && method != registrationAuthMethodPhone {
-		form = `<form id="register"><label>Email<input id="email" type="email" required autocomplete="email"></label><div class="verify"><input id="verify" inputmode="numeric" placeholder="Verification code" required><button type="button" id="send">Send code</button></div><button type="submit">Create account</button><p id="message" role="status"></p></form>`
+		form = `<form id="register"><label><span data-i18n="email">Email</span><input id="email" type="email" required autocomplete="email"></label><div class="verify"><input id="verify" inputmode="numeric" autocomplete="one-time-code" placeholder="Verification code" data-i18n-placeholder="verificationCode" required><button class="button" type="button" id="send" data-i18n="sendCode">Send code</button></div><button class="button button-primary" type="submit" data-i18n="createAccount">Create account</button><p id="message" role="status"></p></form>`
 	} else if available {
-		form = `<form id="register" data-phone="1"><label>Phone<input id="phone" type="tel" required autocomplete="tel"></label><div class="verify"><input id="verify" inputmode="numeric" placeholder="SMS verification code" required><button type="button" id="send">Send code</button></div><button type="submit">Create account</button><p id="message" role="status"></p></form>`
+		form = `<form id="register" data-phone="1"><label><span data-i18n="phone">Phone</span><input id="phone" type="tel" inputmode="tel" required autocomplete="tel"></label><div class="verify"><input id="verify" inputmode="numeric" autocomplete="one-time-code" placeholder="SMS verification code" data-i18n-placeholder="smsVerificationCode" required><button class="button" type="button" id="send" data-i18n="sendCode">Send code</button></div><button class="button button-primary" type="submit" data-i18n="createAccount">Create account</button><p id="message" role="status"></p></form>`
 	}
 	handoff := ""
 	if available {
-		handoff = `<button type="button" class="open-app" id="open-app">Open MaClaw</button><p class="open-app-note" id="open-app-note">Already installed? Continue registration in MaClaw.</p>`
+		handoff = `<section class="open-app-section"><button type="button" class="button open-app" id="open-app" data-i18n="openMaclaw">Open MaClaw</button><p class="open-app-note" id="open-app-note" data-i18n="openMaclawNote">Already installed? Continue registration in MaClaw.</p></section>`
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Referrer-Policy", "no-referrer")
@@ -1745,7 +1844,10 @@ func writePublicReferralLandingHTML(w http.ResponseWriter, r *http.Request, code
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; connect-src 'self'; img-src "+imageSource+"; script-src 'unsafe-inline'; style-src 'unsafe-inline'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
-	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Join %s</title><style>body{margin:0;background:#f6f7f9;color:#262b36;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}.page{max-width:720px;margin:8vh auto;padding:24px}.card{background:#fff;border:1px solid #e5e8ef;border-radius:14px;padding:28px}h1{margin:0 0 8px;font-size:26px}p{line-height:1.55;color:#5f6878}.brand{display:flex;align-items:center;gap:10px;margin-bottom:12px}.brand-logo{width:36px;height:36px;object-fit:contain;border-radius:8px}.tenant{margin:0;color:#a83f59;font-weight:700}.inviter{font-family:ui-monospace,monospace;color:#707684}form{display:grid;gap:12px;margin-top:22px}label{display:grid;gap:6px;font-size:13px;font-weight:650}input,select{box-sizing:border-box;width:100%%;height:42px;padding:0 12px;border:1px solid #dfe3eb;border-radius:10px;font:inherit;background:#fff}.verify{display:grid;grid-template-columns:1fr auto;gap:8px}button{height:42px;padding:0 15px;border:0;border-radius:10px;background:#e55468;color:#fff;font:inherit;font-weight:700;cursor:pointer}button[disabled]{opacity:.55;cursor:not-allowed}.open-app{width:100%%;margin-top:14px;background:#253857}.open-app-note{font-size:13px;margin:7px 0 0}.downloads{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px;padding-top:18px;border-top:1px solid #edf0f4}.downloads a{font-size:13px;color:#9f3651;text-decoration:none}.recommend{margin:18px 0 -8px;padding:10px 12px;background:#fff5f6;border-radius:8px}.notice{padding:12px;background:#fbfcfd;border:1px solid #dfe3eb;border-radius:10px}@media(max-width:560px){.page{margin:0;padding:14px}.card{padding:20px}.verify{grid-template-columns:1fr}}</style></head><body><main class="page"><section class="card">%s<h1>Join this tenant on MaClaw</h1><p>You will register under <strong>%s</strong>. Invited by <span class="inviter">%s</span>.</p><p>Complete registration to receive %s Credits, valid for %d days.</p>%s%s%s<div class="downloads">%s%s%s%s%s%s</div></section></main><script>(function(){var path=location.pathname,form=document.getElementById('register'),email=document.getElementById('email'),phone=document.getElementById('phone'),mode=document.getElementById('mode'),verify=document.getElementById('verify'),message=document.getElementById('message'),send=document.getElementById('send'),openApp=document.getElementById('open-app'),openAppNote=document.getElementById('open-app-note');function isPhone(){return!!(form&&(form.dataset.phone||(form.dataset.mixed&&mode.value==='phone')))}function sync(){if(!form||!form.dataset.mixed)return;var p=isPhone(),ew=document.getElementById('email-wrap'),pw=document.getElementById('phone-wrap');ew.hidden=p;pw.hidden=!p;email.required=!p;phone.required=p;verify.value='';tell('')}if(mode)mode.onchange=sync;sync();function tell(t){if(message)message.textContent=t}function contact(){return isPhone()?{phone:(phone.value||'')}:{email:(email.value||'')}}function downloadNotice(d){var links=d&&d.downloads?d.downloads:null;if(!links)return '';var values=[['Windows x64',links.windows_amd64],['Windows ARM64',links.windows_arm64],['macOS Intel',links.macos_amd64],['macOS Apple Silicon',links.macos_arm64],['Linux x64',links.linux_amd64],['Linux ARM64',links.linux_arm64]],html='';for(var i=0;i<values.length;i++)if(values[i][1])html+='<a href="'+values[i][1]+'" target="_blank" rel="noopener noreferrer">'+values[i][0]+'</a> ';return html?'<div class="downloads">'+html+'</div>':''}function recoveryMessage(s){return s==='registered_rewarded'?'Registration completed. Your invitation reward has been issued.':s==='approval_pending'?'Registration completed. Your invitation reward is awaiting review.':s==='registered_expired'?'Registration completed, but the invitation review window expired before the reward could be issued.':s==='registered_rejected'?'Registration completed, but this invitation is not eligible for a reward.':s==='registered_revoked'?'Registration completed, but this invitation reward has been revoked.':s==='registered_reward_failed'?'Registration completed. Your invitation reward is still being processed.':'Registration completed. Your invitation reward is being processed.'}async function restore(){if(!form)return;try{var r=await fetch(path+'/registration/status'),d=await r.json();if(!r.ok||d.registration_status==='continue')return;form.innerHTML='<p class="notice">'+recoveryMessage(d.registration_status)+' Download MaClaw using a link below.</p>'}catch(e){}}void restore();async function checkAccount(){var r=await fetch(path+'/registration/account-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(contact())}),d=await r.json();if(r.status===409&&d.reason==='existing_user'){form.innerHTML='<p class="notice">This invitation is only for new users. Sign in with your existing MaClaw account, or download the client below.</p>'+downloadNotice(d);return false}if(!r.ok)throw new Error(d.message||'Could not verify this account');return true}if(openApp)openApp.onclick=async function(){openApp.disabled=true;try{var r=await fetch(path+'/handoff',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json();if(!r.ok)throw new Error(d.message||'Could not open MaClaw');location.href='maclaw://onboarding?referral_handoff='+encodeURIComponent(d.handoff);if(openAppNote)openAppNote.textContent='MaClaw should open shortly. You can continue on this page if it does not.'}catch(e){if(openAppNote)openAppNote.textContent=e.message||'Could not open MaClaw. Continue registration in this browser.'}finally{openApp.disabled=false}};if(send)send.onclick=async function(){send.disabled=true;try{if(!await checkAccount())return;var p=isPhone()?'/phone/send-code':'/email/send-code',body=contact(),r=await fetch(path+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),d=await r.json();if(!r.ok)throw new Error(d.message||'Could not send code');tell(isPhone()?'Code sent by SMS.':'Code sent. Check your email.')}catch(e){tell(e.message)}finally{send.disabled=false}};if(form)form.onsubmit=async function(e){e.preventDefault();var b=form.querySelector('button[type=submit]');b.disabled=true;try{if(!await checkAccount())return;var p=isPhone()?'/phone/register':'/register',body=contact();body.verify_code=verify.value;var r=await fetch(path+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),d=await r.json();if(!r.ok)throw new Error(d.message||'Registration failed');var status=d.reward_status==='reserved'?'Your invitation reward is awaiting review.':d.reward_status==='reward_failed'?'Your invitation reward is pending and will be processed shortly.':'Your invitation Credits have been applied.';form.innerHTML='<p class="notice">Registration completed. '+status+' Download MaClaw using a link below.</p>'}catch(e){tell(e.message)}finally{b.disabled=false}}})();</script></body></html>`, html.EscapeString(name), brand, html.EscapeString(name), html.EscapeString(maskReferralID(inviter.InviterUserID)), formatReferralCredits(cfg.InviteeCredits), cfg.DurationDays, form, handoff, recommendedDownload, download("Windows x64", cfg.Downloads.WindowsAMD64), download("Windows ARM64", cfg.Downloads.WindowsARM64), download("macOS Intel", cfg.Downloads.MacOSAMD64), download("macOS Apple Silicon", cfg.Downloads.MacOSARM64), download("Linux x64", cfg.Downloads.LinuxAMD64), download("Linux ARM64", cfg.Downloads.LinuxARM64))
+	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Join %s</title><style>
+:root{color-scheme:light;--ink:#172033;--muted:#5f6f86;--line:#dce4ee;--surface:#fff;--soft:#f5f8fc;--primary:#2563eb;--primary-strong:#1d4ed8;--primary-soft:#edf4ff;--success:#147d58;--shadow:0 18px 42px rgba(23,32,51,.09)}*{box-sizing:border-box}body{min-width:320px;margin:0;background:#f5f7fa;color:var(--ink);font-family:"Segoe UI","PingFang SC","Microsoft JhengHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased}.page{width:min(920px,100%%);margin:0 auto;padding:44px 24px 56px}.shell{overflow:hidden;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:var(--shadow)}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:17px 28px;border-bottom:1px solid var(--line);background:#fff}.wordmark{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:800;letter-spacing:-.01em}.wordmark-mark{display:grid;width:28px;height:28px;place-items:center;border-radius:8px;background:#2563eb;color:#fff;font-size:12px;letter-spacing:.04em}.language{height:34px;border:1px solid var(--line);border-radius:8px;background:#fff;color:#34435a;padding:0 9px;font:inherit;font-size:13px;font-weight:650}.content{padding:32px 36px 28px}.tenant-block{display:flex;align-items:center;gap:10px;margin-bottom:18px;min-width:0}.brand{display:flex;align-items:center;gap:10px;min-width:0}.brand-logo{display:block;width:28px;height:28px;flex:0 0 auto;border-radius:7px;background:var(--soft);object-fit:contain}.tenant{min-width:0;margin:0;overflow:hidden;color:#315784;font-size:13px;font-weight:750;text-overflow:ellipsis;white-space:nowrap}.tenant::before{content:"";display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:50%%;background:var(--success)}h1{max-width:22ch;margin:0;font-size:30px;line-height:1.18;letter-spacing:-.025em;text-wrap:balance}.lede{max-width:65ch;margin:13px 0 0;color:var(--muted);font-size:15px;line-height:1.65}.inviter{font-family:ui-monospace,"SFMono-Regular",Consolas,monospace;font-size:.91em;color:#43546d}.reward{display:flex;align-items:flex-start;gap:10px;margin:22px 0 0;padding:12px 14px;border:1px solid #d7e6ff;border-radius:10px;background:var(--primary-soft);color:#244b7a;font-size:13px;line-height:1.5}.reward-icon{display:grid;place-items:center;width:20px;height:20px;flex:0 0 auto;border-radius:6px;background:#2563eb;color:#fff;font-size:12px;font-weight:800}form{display:grid;gap:14px;margin-top:26px}label{display:grid;gap:7px;color:#26354a;font-size:13px;font-weight:750}input,select{width:100%%;height:44px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);padding:0 12px;font:inherit;font-size:15px;transition:border-color .16s ease,box-shadow .16s ease}input:focus,select:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.14)}.verify{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px}.button{height:44px;border:1px solid transparent;border-radius:9px;padding:0 15px;background:var(--primary);color:#fff;font:inherit;font-size:14px;font-weight:750;cursor:pointer;transition:background-color .16s ease,border-color .16s ease}.button:hover:not(:disabled){background:var(--primary-strong)}.button:focus-visible,.language:focus-visible,.downloads a:focus-visible{outline:3px solid rgba(37,99,235,.3);outline-offset:2px}.button:disabled{opacity:.58;cursor:wait}.button-primary{width:100%%}.notice,#message{margin:0;color:var(--muted);font-size:13px;line-height:1.5}.notice{padding:12px 14px;border:1px solid var(--line);border-radius:9px;background:var(--soft)}#message:not(:empty){padding:10px 12px;border-radius:8px;background:#fff7e8;color:#855d12}.open-app-section{margin-top:24px;padding-top:22px;border-top:1px solid var(--line)}.open-app{width:100%%;background:#233c63}.open-app:hover:not(:disabled){background:#1b3151}.open-app-note{margin:9px 0 0;color:var(--muted);font-size:13px;line-height:1.5}.recommend{margin:20px 0 0;padding:11px 13px;border-radius:9px;background:#f7fafc;color:#485a72;font-size:13px;line-height:1.45}.recommend a{color:#1d4ed8;font-weight:750}.downloads{display:flex;flex-wrap:wrap;gap:7px 9px;margin-top:18px;padding-top:19px;border-top:1px solid var(--line)}.downloads a{padding:6px 0;color:#315784;font-size:12px;font-weight:700;text-decoration:none}.downloads a:hover{text-decoration:underline}@media(max-width:620px){.page{padding:0}.shell{min-height:100vh;border:0;border-radius:0;box-shadow:none}.topbar{padding:15px 18px}.content{padding:26px 18px}h1{font-size:27px}.verify{grid-template-columns:1fr}.verify .button{width:100%%}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style></head><body><main class="page"><section class="shell"><header class="topbar"><div class="wordmark"><span class="wordmark-mark">M</span><span>MaClaw</span></div><select class="language" id="language" aria-label="Language"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option></select></header><div class="content"><div class="tenant-block">%s</div><h1 data-i18n="title">Join this tenant on MaClaw</h1><p class="lede" id="summary" data-tenant="%s" data-inviter="%s"></p><div class="reward"><span class="reward-icon">+</span><span id="reward" data-credits="%s" data-days="%d"></span></div>%s%s%s<div class="downloads" id="downloads">%s%s%s%s%s%s</div></div></section></main><script>(function(){var path=location.pathname,form=document.getElementById('register'),email=document.getElementById('email'),phone=document.getElementById('phone'),mode=document.getElementById('mode'),verify=document.getElementById('verify'),message=document.getElementById('message'),send=document.getElementById('send'),openApp=document.getElementById('open-app'),openAppNote=document.getElementById('open-app-note'),language=document.getElementById('language'),summary=document.getElementById('summary'),reward=document.getElementById('reward'),recommended=document.getElementById('recommended'),notice=null;var copy={en:{title:'Join this tenant on MaClaw',summary:'You will register under <strong>{tenant}</strong>. Invited by <span class="inviter">{inviter}</span>.',reward:'Complete registration to receive <strong>{credits} Credits</strong>, valid for {days} days.',registrationMethod:'Registration method',email:'Email',phone:'Phone',verificationCode:'Verification code',smsVerificationCode:'SMS verification code',sendCode:'Send code',createAccount:'Create account',openMaclaw:'Open MaClaw',openMaclawNote:'Already installed? Continue registration in MaClaw.',unavailable:'Registration is currently unavailable. You can still download the client below.',recommended:'Recommended for this device: {download}',existing:'This invitation is only for new users. Sign in with your existing MaClaw account, or download the client below.',codeSentEmail:'Code sent. Check your email.',codeSentPhone:'Code sent by SMS.',registrationComplete:'Registration completed. {status} Download MaClaw using a link below.',rewardIssued:'Your invitation Credits have been applied.',approvalPending:'Your invitation reward is awaiting review.',rewardPending:'Your invitation reward is pending and will be processed shortly.',loadFailed:'Could not verify this account',registrationFailed:'Registration failed',openError:'Could not open MaClaw',openStarting:'MaClaw should open shortly. You can continue on this page if it does not.',openFailed:'Could not open MaClaw. Continue registration in this browser.'},'zh-CN':{title:'在 MaClaw 中加入此租户',summary:'你将在 <strong>{tenant}</strong> 下注册。邀请人：<span class="inviter">{inviter}</span>。',reward:'完成注册后可获得 <strong>{credits} Credits</strong>，有效期 {days} 天。',registrationMethod:'注册方式',email:'邮箱',phone:'手机号',verificationCode:'验证码',smsVerificationCode:'短信验证码',sendCode:'发送验证码',createAccount:'创建账号',openMaclaw:'打开 MaClaw',openMaclawNote:'已安装 MaClaw？可在客户端继续注册。',unavailable:'当前暂不支持注册，仍可下载下方客户端。',recommended:'推荐此设备下载：{download}',existing:'该邀请仅限新用户使用。请使用已有 MaClaw 账号登录，或下载下方客户端。',codeSentEmail:'验证码已发送，请查收邮件。',codeSentPhone:'验证码已通过短信发送。',registrationComplete:'注册完成。{status} 请使用下方链接下载 MaClaw。',rewardIssued:'邀请 Credits 已发放。',approvalPending:'邀请奖励正在等待审核。',rewardPending:'邀请奖励正在处理中，将尽快发放。',loadFailed:'无法核验该账号',registrationFailed:'注册失败',openError:'无法打开 MaClaw',openStarting:'MaClaw 即将打开；若未打开，可继续在此页面注册。',openFailed:'无法打开 MaClaw，请继续在此页面注册。'},'zh-TW':{title:'在 MaClaw 中加入此租戶',summary:'你將在 <strong>{tenant}</strong> 下註冊。邀請人：<span class="inviter">{inviter}</span>。',reward:'完成註冊後可獲得 <strong>{credits} Credits</strong>，有效期 {days} 天。',registrationMethod:'註冊方式',email:'電子郵件',phone:'手機號碼',verificationCode:'驗證碼',smsVerificationCode:'簡訊驗證碼',sendCode:'發送驗證碼',createAccount:'建立帳號',openMaclaw:'開啟 MaClaw',openMaclawNote:'已安裝 MaClaw？可在用戶端繼續註冊。',unavailable:'目前暫不支援註冊，仍可下載下方用戶端。',recommended:'建議此裝置下載：{download}',existing:'此邀請僅限新使用者使用。請使用既有 MaClaw 帳號登入，或下載下方用戶端。',codeSentEmail:'驗證碼已發送，請查看電子郵件。',codeSentPhone:'驗證碼已透過簡訊發送。',registrationComplete:'註冊完成。{status} 請使用下方連結下載 MaClaw。',rewardIssued:'邀請 Credits 已發放。',approvalPending:'邀請獎勵正在等待審核。',rewardPending:'邀請獎勵正在處理中，將儘快發放。',loadFailed:'無法驗證此帳號',registrationFailed:'註冊失敗',openError:'無法開啟 MaClaw',openStarting:'MaClaw 即將開啟；若未開啟，可繼續在此頁面註冊。',openFailed:'無法開啟 MaClaw，請繼續在此頁面註冊。'}};function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}function detect(){var n=((navigator.languages&&navigator.languages[0])||navigator.language||'en').toLowerCase();return n.indexOf('zh')===0?(/tw|hk|mo|hant/.test(n)?'zh-TW':'zh-CN'):'en'}var lang=detect();function tr(key){return copy[lang][key]||copy.en[key]||key}function fill(s,v){return String(s).replace(/\{(\w+)\}/g,function(_,k){return v[k]===undefined?'':v[k]})}function apply(){document.documentElement.lang=lang;language.value=lang;document.querySelectorAll('[data-i18n]').forEach(function(e){e.textContent=tr(e.getAttribute('data-i18n'))});document.querySelectorAll('[data-i18n-placeholder]').forEach(function(e){e.placeholder=tr(e.getAttribute('data-i18n-placeholder'))});summary.innerHTML=fill(tr('summary'),{tenant:esc(summary.dataset.tenant),inviter:esc(summary.dataset.inviter)});reward.innerHTML=fill(tr('reward'),{credits:esc(reward.dataset.credits),days:esc(reward.dataset.days)});if(recommended){var a=recommended.querySelector('a');recommended.innerHTML=fill(tr('recommended'),{download:a?a.outerHTML:''})}if(notice)renderNotice()}language.onchange=function(){lang=language.value;apply()};function isPhone(){return !!(form&&(form.dataset.phone||(form.dataset.mixed&&mode.value==='phone')))}function tell(s){if(message)message.textContent=s||''}function sync(){if(!form||!form.dataset.mixed)return;var p=isPhone();document.getElementById('email-wrap').hidden=p;document.getElementById('phone-wrap').hidden=!p;email.required=!p;phone.required=p;verify.value='';tell('')}if(mode)mode.onchange=sync;function contact(){return isPhone()?{phone:phone.value||''}:{email:email.value||''}}function links(d){var x=d&&d.downloads,out='',m=[['Windows x64','windows_amd64'],['Windows ARM64','windows_arm64'],['macOS Intel','macos_amd64'],['macOS Apple Silicon','macos_arm64'],['Linux x64','linux_amd64'],['Linux ARM64','linux_arm64']];if(!x)return '';for(var i=0;i<m.length;i++)if(x[m[i][1]])out+='<a href="'+esc(x[m[i][1]])+'" target="_blank" rel="noopener noreferrer">'+m[i][0]+'</a> ';return out?'<div class="downloads">'+out+'</div>':''}function status(s){return s==='registered_rewarded'?tr('rewardIssued'):s==='approval_pending'?tr('approvalPending'):tr('rewardPending')}function renderNotice(){form.innerHTML='<p class="notice" role="status">'+(notice.kind==='existing'?tr('existing'):fill(tr('registrationComplete'),{status:status(notice.status)}))+'</p>'+links(notice.data)}async function check(){var r=await fetch(path+'/registration/account-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(contact())}),d=await r.json();if(r.status===409&&d.reason==='existing_user'){notice={kind:'existing',data:d};renderNotice();return false}if(!r.ok)throw new Error(d.message||tr('loadFailed'));return true}async function restore(){if(!form)return;try{var r=await fetch(path+'/registration/status'),d=await r.json();if(r.ok&&d.registration_status!=='continue'){notice={kind:'done',status:d.registration_status,data:d};renderNotice()}}catch(e){}}if(openApp)openApp.onclick=async function(){openApp.disabled=true;try{var r=await fetch(path+'/handoff',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json();if(!r.ok)throw new Error(d.message||tr('openError'));location.href='maclaw://onboarding?referral_handoff='+encodeURIComponent(d.handoff);openAppNote.textContent=tr('openStarting')}catch(e){openAppNote.textContent=e.message||tr('openFailed')}finally{openApp.disabled=false}};if(send)send.onclick=async function(){send.disabled=true;try{if(!await check())return;var r=await fetch(path+(isPhone()?'/phone/send-code':'/email/send-code'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(contact())}),d=await r.json();if(!r.ok)throw new Error(d.message||tr('sendCode'));tell(isPhone()?tr('codeSentPhone'):tr('codeSentEmail'))}catch(e){tell(e.message)}finally{send.disabled=false}};if(form)form.onsubmit=async function(e){e.preventDefault();var b=form.querySelector('button[type=submit]');b.disabled=true;try{if(!await check())return;var p=isPhone()?'/phone/register':'/register',v=contact();v.verify_code=verify.value;var r=await fetch(path+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(v)}),d=await r.json();if(!r.ok)throw new Error(d.message||tr('registrationFailed'));notice={kind:'done',status:d.reward_status==='reserved'?'approval_pending':d.reward_status==='reward_failed'?'registered_reward_failed':'registered_rewarded',data:d};renderNotice()}catch(e){tell(e.message)}finally{b.disabled=false}};sync();apply();void restore()})();</script></body></html>`, html.EscapeString(name), brand, html.EscapeString(name), html.EscapeString(maskReferralID(inviter.InviterUserID)), formatReferralCredits(cfg.InviteeCredits), cfg.DurationDays, form, handoff, recommendedDownload, download("Windows x64", cfg.Downloads.WindowsAMD64), download("Windows ARM64", cfg.Downloads.WindowsARM64), download("macOS Intel", cfg.Downloads.MacOSAMD64), download("macOS Apple Silicon", cfg.Downloads.MacOSARM64), download("Linux x64", cfg.Downloads.LinuxAMD64), download("Linux ARM64", cfg.Downloads.LinuxARM64))
+
 }
 
 func tenantReferralLogoURL(tenant *store.Tenant) string {
@@ -1797,7 +1899,7 @@ func PublicUserReferralLandingHandler(identity *auth.IdentityService, repo store
 			rejectUserReferralRateLimit(w)
 			return
 		}
-		if identity == nil {
+		if identity == nil || identity.UsersRepo() == nil {
 			writeError(w, 503, "IDENTITY_UNAVAILABLE", "Registration is unavailable")
 			return
 		}
@@ -1856,7 +1958,7 @@ func PublicUserReferralHandoffHandler(identity *auth.IdentityService, repo store
 			rejectUserReferralRateLimit(w)
 			return
 		}
-		if identity == nil {
+		if identity == nil || identity.UsersRepo() == nil {
 			writeError(w, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", "Registration is unavailable")
 			return
 		}
@@ -1877,13 +1979,13 @@ func PublicUserReferralHandoffHandler(identity *auth.IdentityService, repo store
 			writeError(w, http.StatusForbidden, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
 			return
 		}
-		raw, err := newUserReferralCode()
+		raw, err := newUserReferralOpaqueToken()
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "REFERRAL_HANDOFF_UNAVAILABLE", "Unable to open MaClaw right now")
 			return
 		}
 		now := time.Now().UTC()
-		handoff := &store.UserReferralHandoff{TokenHash: userReferralHandoffTokenHash(strings.TrimPrefix(raw, "rf_")), TenantID: tenantID, CodeHash: inviterCode.CodeHash, ReferralCodeID: inviterCode.ID, InviterUserID: inviterCode.InviterUserID, ConfigEpoch: cfg.SessionEpoch, ServiceGroupID: cfg.ServiceGroupID, InviterCredits: cfg.InviterCredits, InviteeCredits: cfg.InviteeCredits, DurationDays: cfg.DurationDays, ExpiresAt: now.Add(userReferralHandoffTTL), CreatedAt: now}
+		handoff := &store.UserReferralHandoff{TokenHash: userReferralHandoffTokenHash(raw), TenantID: tenantID, CodeHash: inviterCode.CodeHash, ReferralCodeID: inviterCode.ID, InviterUserID: inviterCode.InviterUserID, ConfigEpoch: cfg.SessionEpoch, ServiceGroupID: cfg.ServiceGroupID, InviterCredits: cfg.InviterCredits, InviteeCredits: cfg.InviteeCredits, DurationDays: cfg.DurationDays, ExpiresAt: now.Add(userReferralHandoffTTL), CreatedAt: now}
 		if err := repo.CreateHandoff(r.Context(), handoff); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "REFERRAL_HANDOFF_UNAVAILABLE", "Unable to open MaClaw right now")
 			return
@@ -1892,7 +1994,7 @@ func PublicUserReferralHandoffHandler(identity *auth.IdentityService, repo store
 		// `handoff` remains a single deep-link value. Its random first component
 		// is the only value accepted by the claim endpoint; the URL component is
 		// merely the issuer location needed to reach that endpoint.
-		writeJSON(w, http.StatusCreated, map[string]any{"handoff": strings.TrimPrefix(raw, "rf_") + "?hub_url=" + url.QueryEscape(base), "expires_in_seconds": int(userReferralHandoffTTL.Seconds())})
+		writeJSON(w, http.StatusCreated, map[string]any{"handoff": raw + "?hub_url=" + url.QueryEscape(base), "expires_in_seconds": int(userReferralHandoffTTL.Seconds())})
 	}
 }
 
@@ -2019,7 +2121,7 @@ func PublicUserReferralEmailSendCodeHandler(identity *auth.IdentityService, repo
 		// Do not dereference identity until after its availability has been
 		// checked. This public endpoint must return a normal service error while
 		// Hub is starting or a dependency is intentionally disabled.
-		if identity == nil || mailer == nil {
+		if identity == nil || identity.UsersRepo() == nil || mailer == nil {
 			writeError(w, http.StatusServiceUnavailable, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
 			return
 		}
@@ -2107,9 +2209,14 @@ func PublicUserReferralPhoneSendCodeHandler(identity *auth.IdentityService, repo
 			rejectUserReferralRateLimit(w)
 			return
 		}
+		if identity == nil || identity.UsersRepo() == nil {
+			clearUserReferralRegistrationSessionCookie(w, r)
+			writeError(w, http.StatusServiceUnavailable, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
+			return
+		}
 		code := strings.TrimSpace(r.PathValue("code"))
 		tenantID, _, cfg, inviterCode, err := resolvePublicReferralRequest(r.Context(), r, code, repo, system, tenants, identity.UsersRepo())
-		if err != nil || identity == nil {
+		if err != nil {
 			clearUserReferralRegistrationSessionCookie(w, r)
 			writeError(w, 404, "INVITATION_UNAVAILABLE", "This invitation is unavailable")
 			return
@@ -2167,9 +2274,14 @@ func PublicUserReferralPhoneRegisterHandler(identity *auth.IdentityService, repo
 			rejectUserReferralRateLimit(w)
 			return
 		}
+		if identity == nil || identity.UsersRepo() == nil {
+			clearUserReferralRegistrationSessionCookie(w, r)
+			writeError(w, http.StatusServiceUnavailable, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
+			return
+		}
 		code := strings.TrimSpace(r.PathValue("code"))
 		tenantID, _, cfg, inviterCode, err := resolvePublicReferralRequest(r.Context(), r, code, repo, system, tenants, identity.UsersRepo())
-		if err != nil || identity == nil {
+		if err != nil {
 			clearUserReferralRegistrationSessionCookie(w, r)
 			writeError(w, 404, "INVITATION_UNAVAILABLE", "This invitation is unavailable")
 			return
@@ -2237,9 +2349,14 @@ func PublicUserReferralPhoneRegisterHandler(identity *auth.IdentityService, repo
 // never be reused merely to create a machine.
 func PublicUserReferralPhoneEnrollHandler(identity *auth.IdentityService, repo store.UserReferralRepository, system store.SystemSettingsRepository, tenants store.TenantRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if identity == nil || identity.UsersRepo() == nil {
+			clearUserReferralRegistrationSessionCookie(w, r)
+			writeError(w, http.StatusServiceUnavailable, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
+			return
+		}
 		code := strings.TrimSpace(r.PathValue("code"))
 		tenantID, _, cfg, inviterCode, err := resolvePublicReferralRequest(r.Context(), r, code, repo, system, tenants, identity.UsersRepo())
-		if err != nil || identity == nil {
+		if err != nil {
 			writeError(w, http.StatusNotFound, "INVITATION_UNAVAILABLE", "This invitation is unavailable")
 			return
 		}
@@ -2288,7 +2405,7 @@ func PublicUserReferralPhoneEnrollHandler(identity *auth.IdentityService, repo s
 // general existing-account enrollment route.
 func PublicUserReferralEmailEnrollHandler(identity *auth.IdentityService, repo store.UserReferralRepository, system store.SystemSettingsRepository, tenants store.TenantRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if identity == nil {
+		if identity == nil || identity.UsersRepo() == nil {
 			writeError(w, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", "Desktop enrollment is unavailable")
 			return
 		}
@@ -2341,6 +2458,11 @@ func PublicUserReferralRegisterHandler(identity *auth.IdentityService, repo stor
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !allowUserReferralPublicRequest(r, "registration", userReferralRegistrationLimit) {
 			rejectUserReferralRateLimit(w)
+			return
+		}
+		if identity == nil || identity.UsersRepo() == nil {
+			clearUserReferralRegistrationSessionCookie(w, r)
+			writeError(w, http.StatusServiceUnavailable, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
 			return
 		}
 		code := strings.TrimSpace(r.PathValue("code"))
@@ -2739,7 +2861,7 @@ func resolvePublicReferral(ctx context.Context, code string, repo store.UserRefe
 		if tenant == nil || tenant.DeletedAt != nil || !strings.EqualFold(tenant.Status, "active") {
 			continue
 		}
-		found, lookupErr := repo.GetCodeByHash(ctx, tenant.ID, userReferralCodeHash(tenant.ID, code))
+		found, lookupErr := findPublicReferralCode(ctx, repo, tenant.ID, code)
 		if lookupErr != nil {
 			return "", "", UserReferralConfig{}, nil, lookupErr
 		}
