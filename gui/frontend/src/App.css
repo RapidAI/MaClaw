@@ -90,11 +90,16 @@
 .hub-invitation-dialog__backdrop {
     position: fixed;
     inset: 0;
-    z-index: var(--z-modal, 1200);
+    /* The invitation dialog is portalled beside the scaled app layer, so its
+       backdrop covers the physical WebView rather than only the sidebar's
+       transformed containing block. Keep it above normal app chrome. */
+    z-index: 120000;
     display: grid;
     place-items: center;
     padding: var(--space-4);
     background: rgba(15, 23, 42, 0.48);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .hub-invitation-dialog {

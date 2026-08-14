@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { GetHubUserInvitationsPage, RotateHubUserInvitation } from '../../wailsjs/go/main/App';
+import { usePortalThemeAttributes } from '../hooks/usePortalThemeAttributes';
 
 type Invitee = { user_id?: string; contact?: string; registered_at?: string; status?: string };
 type InvitationData = {
@@ -27,6 +29,7 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
   const [rotating, setRotating] = useState(false);
   const [rotateError, setRotateError] = useState<string | null>(null);
   const [copyUnavailable, setCopyUnavailable] = useState(false);
+  const portalThemeAttributes = usePortalThemeAttributes(open);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -160,10 +163,11 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
   const total = Math.max(0, data?.total || 0);
   const totalPages = Math.max(1, Math.ceil(total / 20));
 
-  return (
+  const dialog = (
     <div
       className="hub-invitation-dialog__backdrop"
       role="presentation"
+      {...portalThemeAttributes}
       onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}
     >
       <section ref={dialogRef} className="hub-invitation-dialog" role="dialog" aria-modal="true" aria-labelledby="hub-invitation-dialog-title" tabIndex={-1}>
@@ -233,4 +237,13 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
       </section>
     </div>
   );
+
+  // This component is triggered from the sidebar, beneath the DPI scaling
+  // layer. A fixed overlay inside that transformed ancestor is positioned
+  // against the scaled layer instead of the window, leaving parts of the
+  // background uncovered. Render beside that layer so the backdrop always
+  // owns the whole application viewport.
+  if (typeof document === 'undefined') return dialog;
+  const overlayHost = document.querySelector<HTMLElement>('.app-viewport') || document.body;
+  return createPortal(dialog, overlayHost);
 }
