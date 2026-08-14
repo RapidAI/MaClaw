@@ -5489,10 +5489,10 @@ static void load_meeting_recovery(void) {
     s_meeting_phase = 0;
     s_meeting_recording_id[0] = '\0';
     meeting_recovery_snapshot_t snapshot;
-    esp_err_t load_err = meeting_recovery_service_load(&snapshot);
-    if (load_err != ESP_OK) {
-        ESP_LOGW(TAG, "meeting recovery metadata unavailable: %s",
-                 esp_err_to_name(load_err));
+    device_status_t load_status = meeting_recovery_service_load(&snapshot);
+    if (load_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "meeting recovery metadata unavailable: device status=%d",
+                 (int)load_status);
         return;
     }
     s_meeting_next_chunk = snapshot.next_chunk;
@@ -5518,15 +5518,15 @@ static esp_err_t save_meeting_recovery(bool pending, const char *recording_id,
     };
     strlcpy(snapshot.recording_id, recording_id ? recording_id : "",
             sizeof(snapshot.recording_id));
-    esp_err_t err = meeting_recovery_service_save(&snapshot);
-    if (err == ESP_OK) {
+    device_status_t status = meeting_recovery_service_save(&snapshot);
+    if (status == DEVICE_STATUS_OK) {
         s_meeting_pending = pending;
         s_meeting_next_chunk = next_chunk;
         s_meeting_phase = phase;
         strlcpy(s_meeting_recording_id, recording_id ? recording_id : "",
                 sizeof(s_meeting_recording_id));
     }
-    return err;
+    return device_status_to_platform_error(status);
 }
 
 static esp_err_t clear_meeting_recovery(bool delete_audio) {
@@ -11986,10 +11986,10 @@ static void startup_stop_local_workers(void) {
         return;
     }
     STARTUP_ROLLBACK_NEXT_TIMEOUT("meeting recovery metadata");
-    esp_err_t meeting_recovery_stop_err = meeting_recovery_service_deinit(timeout_ms);
-    if (meeting_recovery_stop_err != ESP_OK) {
-        ESP_LOGW(TAG, "meeting recovery metadata did not stop during startup rollback: %s",
-                 esp_err_to_name(meeting_recovery_stop_err));
+    device_status_t meeting_recovery_stop_status = meeting_recovery_service_deinit(timeout_ms);
+    if (meeting_recovery_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "meeting recovery metadata did not stop during startup rollback: status=%d",
+                 (int)meeting_recovery_stop_status);
         startup_rollback_step_blocked("meeting recovery metadata", NULL);
         return;
     }
@@ -12328,10 +12328,10 @@ void app_main(void) {
                                "weather cache service");
         return;
     }
-    esp_err_t meeting_recovery_init_err = meeting_recovery_service_init();
-    if (meeting_recovery_init_err != ESP_OK) {
+    device_status_t meeting_recovery_init_status = meeting_recovery_service_init();
+    if (meeting_recovery_init_status != DEVICE_STATUS_OK) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
-                               startup_status_from_esp_err(meeting_recovery_init_err),
+                               meeting_recovery_init_status,
                                "meeting recovery service");
         return;
     }

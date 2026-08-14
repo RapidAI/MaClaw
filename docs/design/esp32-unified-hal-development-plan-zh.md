@@ -3573,3 +3573,13 @@ Resource Pressure 本身没有 worker，但会在任意可选媒体/宠物下载
 - 已执行 HAL 边界门禁、`git diff --check`，并完成 Bread Compact、EchoEar-2ST、Fangtang-4G、Waveshare AMOLED 1.75C 的 profile build。固件 App 余量分别为 Bread 10%、EchoEar 13%、Fangtang 11%、Waveshare 10%。
 
 后续仍需继续 Phase 7B 的 Power `PREPARE → COMMIT` 深度休眠事务、各板可验证 wake matrix、Fake Clock / DST 回拨、以及 Alarm 的 Clock 驱动全量验证；本增量不应被视为这些项目完成。
+## 实施增量：Weather Cache Service 公共结果收敛（四 profile，2026-08-14）
+
+本增量继续 Phase 7A-a 的公共 Service contract 去 SDK 化：
+
+- `weather_cache_service.h` 的 init/deinit/load/save 已统一改为 `device_status_t`，不再公开 `esp_err_t` 或 `esp_err.h`。
+- Service 内部保留历史四 key 的一次性迁移兼容；仅迁移 helper 在私有 `.c` 中将旧的 ESP-IDF 结果翻译为 Device API 结果。新 blob 读写直接使用 Persistence Service 的稳定 `DEVICE_STATUS_NOT_FOUND` 语义。
+- `main.c` 的环境天气保存、缓存恢复和启动/回滚编排已改为消费 `device_status_t`；缓存损坏仍是 fail-closed，缓存缺失或旧 key 缺失仍保留原有非关键 UI 缓存语义，不改变持久化格式、显示策略或具体硬件。
+- 已执行 HAL boundary gate、`git diff --check`，并完成 Bread Compact、EchoEar-2ST、Fangtang-4G、Waveshare AMOLED 1.75C profile build。App 余量为 Bread 10%、EchoEar 13%、Fangtang 11%、Waveshare 10%。
+
+后续继续审计其他共享 Service 的公共结果与生命周期边界；本项不替代 Storage/NVS 异常、缓存损坏、旧 key 迁移或 shutdown 竞态的 COM3/COM4/COM5/COM6 HIL 验证。
