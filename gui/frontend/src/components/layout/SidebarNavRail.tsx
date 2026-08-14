@@ -5,7 +5,7 @@ import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEm
 import { SystemIcon, AboutIcon, SettingsIcon, MonitorIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarLinkedMedal, SidebarPrimaryNav } from './SidebarNavRailPieces';
 import { IconRankBadge } from '../ai/WorkbenchIcons';
-import { GetHubUserRanking } from '../../../wailsjs/go/main/App';
+import { GetHubUserInvitationStatus, GetHubUserRanking } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
@@ -37,6 +37,7 @@ type SidebarNavRailProps = {
 
 const HUB_RANKING_REFRESH_INTERVAL_MS = 30 * 60_000;
 const HUB_RANKING_STARTUP_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 8 * 60_000] as const;
+const HUB_INVITATION_STATUS_REFRESH_INTERVAL_MS = 30_000;
 
 function InviteGiftIcon() {
     return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"/><path d="M2 8h20v4H2z"/><path d="M12 8v12"/><path d="M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8"/><path d="M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8"/></svg>;
@@ -102,6 +103,7 @@ export const SidebarNavRail = ({
     const [medal, setMedal] = useState<{ rank: number; tokenRank: number; durationRank: number; totalUsers: number; rankChange?: number; trophyThreshold: number } | null>(null);
     const rankingRequestSeqRef = useRef(0);
     const rankingLoadedRef = useRef(false);
+    const invitationRequestSeqRef = useRef(0);
     const showRegisteredRankingMark = showRanking && !medal && !!remoteActivationStatus?.activated;
     const openUserRanking = () => {
         const url = buildUserRankingURL(config?.remote_hub_url || '', config?.remote_tenant_id);
@@ -201,13 +203,43 @@ export const SidebarNavRail = ({
     }, [showRanking]);
     // The server is authoritative: a disabled tenant deliberately renders no
     // invitation button or separator, rather than a disabled-looking control.
+    // Hub administrators can change the switch while MaClaw is open, so refresh
+    // when the window returns to the foreground and on a short interval.
     useEffect(() => {
-        if (!remoteActivationStatus?.activated) { setInvitationEnabled(false); return; }
+        if (!remoteActivationStatus?.activated) {
+            invitationRequestSeqRef.current += 1;
+            setInvitationEnabled(false);
+            setInvitationDialogOpen(false);
+            return;
+        }
         let cancelled = false;
-        import('../../../wailsjs/go/main/App').then(({ GetHubUserInvitations }) => GetHubUserInvitations()).then((result: any) => {
-            if (!cancelled) setInvitationEnabled(!!result?.enabled && !result?.error);
-        }).catch(() => { if (!cancelled) setInvitationEnabled(false); });
-        return () => { cancelled = true; };
+        const refreshInvitationStatus = () => {
+            // A foreground event performs an immediate refresh, so polling
+            // while the desktop app is hidden only wastes Hub requests.
+            if (document.visibilityState === 'hidden') return;
+            const requestSeq = ++invitationRequestSeqRef.current;
+            GetHubUserInvitationStatus().then((result: { enabled?: boolean; error?: string } | null) => {
+                if (cancelled || requestSeq !== invitationRequestSeqRef.current) return;
+                const enabled = !!result?.enabled && !result?.error;
+                setInvitationEnabled(enabled);
+                if (!enabled) setInvitationDialogOpen(false);
+            }).catch(() => {
+                if (cancelled || requestSeq !== invitationRequestSeqRef.current) return;
+                setInvitationEnabled(false);
+                setInvitationDialogOpen(false);
+            });
+        };
+        const onVisibilityChange = () => {
+            if (document.visibilityState === 'visible') refreshInvitationStatus();
+        };
+        refreshInvitationStatus();
+        const interval = window.setInterval(refreshInvitationStatus, HUB_INVITATION_STATUS_REFRESH_INTERVAL_MS);
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+            document.removeEventListener('visibilitychange', onVisibilityChange);
+        };
     }, [remoteActivationStatus?.activated, config?.remote_hub_url, config?.remote_viewer_token, config?.remote_tenant_id]);
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = miniAppShortLabel(lang);

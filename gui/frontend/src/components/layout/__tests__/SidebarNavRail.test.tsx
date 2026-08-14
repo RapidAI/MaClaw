@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type React from 'react';
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
+    GetHubUserInvitationStatus: vi.fn().mockResolvedValue({ enabled: false }),
     GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
 }));
 
@@ -13,7 +14,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { SidebarNavRail } from '../SidebarNavRail';
-import { GetHubUserRanking } from '../../../../wailsjs/go/main/App';
+import { GetHubUserInvitationStatus, GetHubUserRanking } from '../../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../../wailsjs/runtime';
 import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 
@@ -29,16 +30,21 @@ const rankingError = (error: string) => ({
     error,
 });
 
+const invitationStatus = (enabled: boolean) => ({ enabled } as Awaited<ReturnType<typeof GetHubUserInvitationStatus>>);
+
 beforeEach(() => {
     vi.mocked(BrowserOpenURL).mockClear();
     vi.mocked(EventsOn).mockClear();
     vi.mocked(EventsOn).mockReturnValue(() => {});
     vi.mocked(GetHubUserRanking).mockReset();
     vi.mocked(GetHubUserRanking).mockResolvedValue(rankingError('hub not configured'));
+    vi.mocked(GetHubUserInvitationStatus).mockReset();
+    vi.mocked(GetHubUserInvitationStatus).mockResolvedValue(invitationStatus(false));
 });
 
 afterEach(() => {
     vi.useRealTimers();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
 });
 
 function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRail>> = {}) {
@@ -64,6 +70,56 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRai
 }
 
 describe('SidebarNavRail favorite employees', () => {
+    it('removes the invitation button after Hub disables invitations while MaClaw is open', async () => {
+        vi.useFakeTimers();
+        vi.mocked(GetHubUserInvitationStatus)
+            .mockResolvedValueOnce(invitationStatus(true))
+            .mockResolvedValueOnce(invitationStatus(false));
+
+        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(screen.getByTitle('Invite friends')).toBeTruthy();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(30_000);
+        });
+
+        expect(screen.queryByTitle('Invite friends')).toBeNull();
+    });
+
+    it('shows the invitation button again when Hub re-enables invitations', async () => {
+        vi.mocked(GetHubUserInvitationStatus)
+            .mockResolvedValueOnce(invitationStatus(false))
+            .mockResolvedValueOnce(invitationStatus(true));
+        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
+
+        await waitFor(() => expect(screen.queryByTitle('Invite friends')).toBeNull());
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        await waitFor(() => expect(screen.getByTitle('Invite friends')).toBeTruthy());
+    });
+
+    it('does not poll invitation status while MaClaw is in the background', async () => {
+        vi.useFakeTimers();
+        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(GetHubUserInvitationStatus).toHaveBeenCalledTimes(1);
+
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(2 * 60_000);
+        });
+
+        expect(GetHubUserInvitationStatus).toHaveBeenCalledTimes(1);
+    });
+
     it('renders and opens the Utilities entry when enabled', () => {
         const props = renderRail({ utilitiesLabel: 'Utilities' });
 

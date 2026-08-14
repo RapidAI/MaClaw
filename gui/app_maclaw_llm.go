@@ -2017,6 +2017,10 @@ func (a *App) markMaclawLLMProviderConnectionTestPassed(providerName string, tes
 	if providerName == "" {
 		return fmt.Errorf("provider name is required")
 	}
+	// Legacy entries receive a durable ID only on a controlled write. The
+	// post-login capability probe may therefore hold their deterministic
+	// read-only alias while the stored provider still has no ID; compare via
+	// maclawLLMProviderIDForRead below so this is not mistaken for a race.
 	testedProviderID := strings.TrimSpace(tested.ProviderID)
 	testedModel := strings.TrimSpace(tested.Model)
 	found := false
@@ -2033,7 +2037,7 @@ func (a *App) markMaclawLLMProviderConnectionTestPassed(providerName string, tes
 			// are deliberately excluded: managed OAuth/SSO credentials can live
 			// outside this config record and are materialized separately.
 			provider := cfg.MaclawLLMProviders[i]
-			if (testedProviderID != "" && strings.TrimSpace(provider.ID) != testedProviderID) ||
+			if (testedProviderID != "" && maclawLLMProviderIDForRead(provider) != testedProviderID) ||
 				(testedModel != "" && !strings.EqualFold(strings.TrimSpace(provider.Model), testedModel)) ||
 				!strings.EqualFold(strings.TrimRight(strings.TrimSpace(provider.URL), "/"), strings.TrimRight(strings.TrimSpace(tested.URL), "/")) ||
 				!strings.EqualFold(strings.TrimSpace(provider.Protocol), strings.TrimSpace(tested.Protocol)) ||

@@ -622,6 +622,7 @@ func NewRouter(
 	// Referral links deliberately use a separate path from legacy admission
 	// invitation codes: they never bypass allow_user_registration.
 	if hubDB != nil && identity != nil && tenantRepo != nil {
+		mux.HandleFunc("GET /api/me/invitations/status", GetMyUserInvitationStatusHandler(identity, system))
 		mux.HandleFunc("GET /api/me/invitations", GetMyUserInvitationsHandler(identity, userReferralRepo, system))
 		mux.HandleFunc("POST /api/me/invitations/rotate", RotateMyUserInvitationHandler(identity, userReferralRepo, system))
 		mux.HandleFunc("GET /api/admin/user-referrals/config", requireTenantAdmin(GetUserReferralConfigHandler(system)))

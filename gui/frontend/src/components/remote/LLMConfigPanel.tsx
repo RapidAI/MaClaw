@@ -27,6 +27,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const { showAlert, showConfirm, showPrompt } = useDialog();
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
+    // Keep the assignment-specific provider directory synchronized with a
+    // successful Provider management Test & Save. Wails events remain useful
+    // for other surfaces, but must not be the only refresh mechanism here.
+    const [providerListRevision, setProviderListRevision] = useState(0);
     // An empty list is valid data. Track readiness separately so a slow local
     // config read is never rendered as if the user selected "None".
     const [providerListReady, setProviderListReady] = useState(false);
@@ -46,7 +50,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [dlgSelectedIdx, setDlgSelectedIdx] = useState<number | null>(null);
     const [dlgHubSelected, setDlgHubSelected] = useState(false);
     const [dlgSaving, setDlgSaving] = useState(false);
-    const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+    const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string; retryable?: boolean } | null>(null);
     const [dlgToast, setDlgToast] = useState<LLMConfigToastData | null>(null);
     const [dlgDirty, setDlgDirty] = useState(false);
     const [dlgTested, setDlgTested] = useState(false);
@@ -65,6 +69,16 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+
+    const refreshProviderList = useCallback(async (): Promise<LLMProvider[] | null> => {
+        const data = await GetMaclawLLMProviders();
+        if (!Array.isArray(data?.providers)) return null;
+        const fresh = data.providers.map((provider: LLMProvider) => ({ ...provider }));
+        setDlgProviders(fresh);
+        setProviders(fresh.map((provider: LLMProvider) => ({ ...provider })));
+        setCurrentName(data.current || NONE_PROVIDER);
+        return fresh;
+    }, []);
 
     const cancelActiveOAuth = useCallback((providerName?: string) => {
         oauthAttemptRef.current += 1;
@@ -171,18 +185,35 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
             if (oauthAttempt !== oauthAttemptRef.current) return;
 
-            const data = await GetMaclawLLMProviders();
-            if (data?.providers) {
-                const fresh = data.providers.map((p: LLMProvider) => ({ ...p }));
-                setDlgProviders(fresh);
-                setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
-                setCurrentName(data.current || NONE_PROVIDER);
+            const fresh = await refreshProviderList();
+            if (fresh) {
+                // Authentication and model connectivity are separate states.
+                // The backend keeps OAuth providers out of profile assignments
+                // until a real model probe has persisted this flag.
+                const authenticatedProvider = fresh.find((p: LLMProvider) => p.name === providerName);
+                const connectionVerified = !!authenticatedProvider?.connection_test_passed;
                 loadHubServiceStatus().catch(() => {});
                 const oaIdx = fresh.findIndex((p: LLMProvider) => p.name === providerName);
                 if (oaIdx >= 0) setDlgSelectedIdx(oaIdx);
-                setDlgDirty(false);
+                setDlgDirty(!connectionVerified);
+                setDlgTested(connectionVerified);
                 onStatusChange?.(true, true);
                 onProviderChanged?.();
+                if (!connectionVerified) {
+                    setDlgTestResult({
+                        // Credentials are saved, but the provider is not yet
+                        // assignable. This is an actionable warning, not a
+                        // failed OAuth login.
+                        ok: true,
+                        retryable: true,
+                        msg: t(
+                            "OAuth authenticated, but the model connection is not verified. Click Test & Save to retry.",
+                            "OAuth 已认证，但模型连接尚未验证。请点击“检测并保存”重试。",
+                        ),
+                    });
+                    return;
+                }
+                setProviderListRevision(revision => revision + 1);
                 setDlgTestResult({
                     ok: true,
                     msg: loginMessage || t("OAuth login successful", "OAuth 登录成功"),
@@ -195,7 +226,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         } finally {
             setOauthBusy(false);
         }
-    }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, showPrompt]);
+    }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, refreshProviderList, showPrompt]);
 
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
@@ -370,6 +401,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         const isSavedOnly = raw === saved || raw === "Saved" || raw === "\u5df2\u4fdd\u5b58";
         const title = dlgHubSelected
             ? raw
+            : dlgTestResult.retryable
+                ? t("Model test required", "需要检测模型连接")
             : dlgTestResult.ok
                 ? (isSavedOnly ? saved : t("Connection OK, saved", "\u8fde\u63a5\u6210\u529f\uff0c\u5df2\u4fdd\u5b58"))
                 : t("Connection failed, not saved", "\u8fde\u63a5\u5931\u8d25\uff0c\u672a\u4fdd\u5b58");
@@ -602,9 +635,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgSaving(true);
         setDlgTestResult(null);
 
-        // OAuth completion performs its own backend probe. SSO, by contrast,
-        // only authenticates: it continues through the normal Test & Save path
-        // below so the selected model must accept a real inference request.
+        // OAuth login performs an initial best-effort probe, but it can fail
+        // after credentials have already been saved. A later Test & Save must
+        // therefore execute the same authoritative probe as every provider.
         if (sp.auth_type === "oauth") {
             if (!sp.key) {
                 setDlgSaving(false);
@@ -616,13 +649,29 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             }
             try {
                 const saveName = sp.name;
-                await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], saveName);
+                const testResult = await TestAndSaveMaclawLLMProviders(
+                    dlgProviders as corelib.MaclawLLMProvider[], saveName, saveName,
+                );
+                const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
+                try {
+                    await refreshProviderList();
+                } catch {
+                    // Test & Save already persisted the authoritative result.
+                }
                 setDlgDirty(false);
-                setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
+                setProviderListRevision(revision => revision + 1);
+                setDlgTested(true);
                 onStatusChange?.(!!sp.key, !!sp.key);
                 onProviderChanged?.();
-                setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
+                setDlgTestResult({
+                    ok: true,
+                    msg: `${testResult.message}\n${visionProbeInconclusive
+                        ? t("Vision support: not confirmed; please retry", "图片理解：未确认，请重试")
+                        : testResult.supports_vision
+                            ? t("Vision support: enabled", "图片理解：支持")
+                            : t("Vision support: disabled", "图片理解：不支持")}`,
+                });
                 setTimeout(() => setDlgOpen(false), 800);
                 return;
             } catch (e) {
@@ -640,8 +689,17 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 const saveName = sp.name;
                 await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], saveName);
                 setDlgDirty(false);
-                setProviders(dlgProviders.map(p => ({ ...p })));
+                try {
+                    if (!await refreshProviderList()) {
+                        setProviders(dlgProviders.map(p => ({ ...p })));
+                    }
+                } catch {
+                    // The save is durable even if this read fails; retain the
+                    // current editable snapshot until the next refresh.
+                    setProviders(dlgProviders.map(p => ({ ...p })));
+                }
                 setCurrentName(saveName);
+                setProviderListRevision(revision => revision + 1);
                 onStatusChange?.(true, true);
                 onProviderChanged?.();
                 setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
@@ -662,14 +720,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 				await SaveCodeGenModelChoice(sp.model, sp.model).catch(() => {});
 			}
 
-            // Refresh providers to pick up persisted supports_vision from backend
+            // Refresh the provider snapshot from the backend so all persisted
+            // fields (including connection_test_passed and capability data)
+            // are reflected before model assignments refresh.
             try {
-                const freshData = await GetMaclawLLMProviders();
-                if (freshData?.providers) {
-                    const fresh = freshData.providers.map((p: LLMProvider) => ({ ...p }));
-                    setDlgProviders(fresh);
-                    setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
-                } else {
+                if (!await refreshProviderList()) {
                     setDlgProviders(dlgProviders);
                     setProviders(dlgProviders.map((p: LLMProvider) => ({ ...p })));
                 }
@@ -681,6 +736,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             }
             setDlgDirty(false);
             setCurrentName(saveName);
+            setProviderListRevision(revision => revision + 1);
 
             setDlgTested(true);
             setDlgTestResult({
@@ -731,7 +787,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 </div>
             </div>
 
-            <LLMProfileAssignments lang={lang} onSaved={handleProfilesSaved} />
+            <LLMProfileAssignments lang={lang} onSaved={handleProfilesSaved} providerListRevision={providerListRevision} />
 
             {/* Legacy compatibility summary. The profile assignment above is
                 the source of truth; this remains useful provider-management

@@ -932,4 +932,58 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
     });
 
+    it('runs the authoritative connection test for an authenticated OAuth provider', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    id: 'xai', name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: 'managed-oauth-token',
+                    model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses',
+                    connection_test_passed: false,
+                },
+            ],
+            current: 'xAI-Grok',
+        });
+        StartXAIOAuthMock.mockResolvedValue('OAuth authenticated; model probe needs retry');
+        TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: false });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Re-login' }));
+        expect(await screen.findByText(/model connection is not verified/i)).toBeTruthy();
+        expect((await screen.findByRole('status')).textContent).toMatch(/model test required/i);
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => {
+            expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ id: 'xai', name: 'xAI-Grok', auth_type: 'oauth' })],
+                'xAI-Grok',
+                'xAI-Grok',
+            );
+        });
+        expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
+    });
+
+    it('refreshes provider state after a successful OAuth Test & Save', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    id: 'xai', name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: 'managed-oauth-token',
+                    model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses',
+                    connection_test_passed: false,
+                },
+            ],
+            current: 'xAI-Grok',
+        });
+        StartXAIOAuthMock.mockResolvedValue('OAuth authenticated');
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Re-login' }));
+        expect(await screen.findByText(/model connection is not verified/i)).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalled());
+        await waitFor(() => expect(GetMaclawLLMProvidersMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+    });
+
 });

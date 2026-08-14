@@ -643,6 +643,8 @@ export function GetHubUserRanking():Promise<main.HubUserRanking>;
 
 export function GetHubUserInvitations():Promise<main.HubUserInvitation>;
 
+export function GetHubUserInvitationStatus():Promise<main.HubUserInvitation>;
+
 export function GetHubUserInvitationsPage(arg1:number):Promise<main.HubUserInvitation>;
 
 export function RotateHubUserInvitation():Promise<main.HubUserInvitation>;

@@ -274,26 +274,30 @@ type App struct {
 	capabilitySyncNextAttempt         atomic.Value // stores time.Time; throttles heartbeat-triggered managed sync retries and steady-state re-syncs
 	hubMarketplaceUnsupported         atomic.Bool  // capability discovery: hub doesn't have marketplace API
 	hubMarketplace404URL              atomic.Value // stores the hub URL (string) that returned 404
-	managedDeploymentIDs              sync.Map     // capability_ref (string) -> true; cached from last sync
-	contextBridge                     *ContextBridge
-	aiTrace                           *AITraceService
-	taskOrchestrator2                 *TaskOrchestrator2
-	qqBotGateway                      *qqBotGatewayManager
-	telegramGateway                   *telegramGatewayManager
-	weixinGateway                     *weixinGatewayManager
-	lansengerGateway                  *lansengerGatewayManager
-	lansengerGateways                 *lansengerGatewayRegistry
-	localStartMenu                    *localStartMenuService
-	localStartMenuMu                  sync.Mutex
-	lansengerWatch                    *lansengerWatchService
-	lansengerWatchOnce                sync.Once
-	thirdPartyGateway                 *thirdPartyGatewayManager
-	acpHost                           *acpHost // Mode B: loopback ACP for VS Code programming agent
-	acpHostMu                         sync.Mutex
-	imGatewaySyncMu                   sync.Mutex
-	passthroughRegistry               *PassthroughRegistry
-	iworkerGoalWatch                  *IWorkerGoalWatchService
-	iworkerGoalWatchMu                sync.Mutex
+	// hubInvitationStatusRouteFallback records Hub URLs that do not yet expose
+	// the lightweight invitation-status endpoint. It avoids a 404 before every
+	// compatibility poll during rolling deployments.
+	hubInvitationStatusRouteFallback sync.Map // hub URL (string) -> expiry time.Time
+	managedDeploymentIDs             sync.Map // capability_ref (string) -> true; cached from last sync
+	contextBridge                    *ContextBridge
+	aiTrace                          *AITraceService
+	taskOrchestrator2                *TaskOrchestrator2
+	qqBotGateway                     *qqBotGatewayManager
+	telegramGateway                  *telegramGatewayManager
+	weixinGateway                    *weixinGatewayManager
+	lansengerGateway                 *lansengerGatewayManager
+	lansengerGateways                *lansengerGatewayRegistry
+	localStartMenu                   *localStartMenuService
+	localStartMenuMu                 sync.Mutex
+	lansengerWatch                   *lansengerWatchService
+	lansengerWatchOnce               sync.Once
+	thirdPartyGateway                *thirdPartyGatewayManager
+	acpHost                          *acpHost // Mode B: loopback ACP for VS Code programming agent
+	acpHostMu                        sync.Mutex
+	imGatewaySyncMu                  sync.Mutex
+	passthroughRegistry              *PassthroughRegistry
+	iworkerGoalWatch                 *IWorkerGoalWatchService
+	iworkerGoalWatchMu               sync.Mutex
 	// configMu serializes writers (load/mutate/publish). Hot-path readers do NOT
 	// take configMu: they copy from configSnap (atomic.Pointer to an immutable
 	// AppConfig). Writers always publish a fresh heap snapshot via

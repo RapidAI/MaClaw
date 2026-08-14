@@ -19,6 +19,11 @@ type PanelState = {
 type Props = {
     lang?: string;
     onSaved?: () => void;
+    // Provider management owns the connection-test workflow. This revision is
+    // bumped by the parent after a successful Test & Save so this independent
+    // assignment read model refreshes even if a Wails event was missed while
+    // the provider dialog was open.
+    providerListRevision?: number;
 };
 
 const cloneProfiles = (profiles: PanelState["profiles"]): PanelState["profiles"] => ({
@@ -27,7 +32,7 @@ const cloneProfiles = (profiles: PanelState["profiles"]): PanelState["profiles"]
     coding: { ...profiles.coding },
 });
 
-export function LLMProfileAssignments({ lang, onSaved }: Props) {
+export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0 }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant = zhHans) =>
         lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en, [lang]);
     const [state, setState] = useState<PanelState | null>(null);
@@ -39,6 +44,10 @@ export function LLMProfileAssignments({ lang, onSaved }: Props) {
     const [probeResults, setProbeResults] = useState<Partial<Record<"assistant" | "coding", ProbeResult>>>({});
     const dirtyRef = useRef(false);
     const loadGenerationRef = useRef(0);
+    const eligibilityRefreshQueuedRef = useRef(false);
+    const eligibilityRefreshRunningRef = useRef(false);
+    const eligibilityRefreshRerunRef = useRef(false);
+    const eligibilityRefreshCancelledRef = useRef(false);
     // A probe is asynchronous while its draft remains editable. Bump the
     // generation whenever a selection changes so a late response cannot label
     // a newer provider/model as connected (or unavailable).
@@ -72,6 +81,68 @@ export function LLMProfileAssignments({ lang, onSaved }: Props) {
 
     useEffect(() => { void load(); }, [load]);
 
+    const refreshEligibleProviders = useCallback(async (): Promise<void> => {
+        const generation = ++loadGenerationRef.current;
+        try {
+            const next = await GetMaclawLLMProfilePanelState() as unknown as PanelState;
+            if (generation !== loadGenerationRef.current) return;
+
+            if (dirtyRef.current) {
+                // A successful Provider management test changes eligibility,
+                // not the user's assignment. Replace only the directory and
+                // revision so the new provider is selectable without losing a
+                // draft that is already being edited in this panel.
+                setState(previous => previous ? { ...next, profiles: previous.profiles } : next);
+                return;
+            }
+            setState(next);
+            setDraft(cloneProfiles(next.profiles));
+            invalidateProbeResults("assistant", "coding");
+        } catch {
+            // The existing state remains usable. A later profile-change event
+            // or an explicit refresh will retry the read.
+        }
+    }, []);
+
+    const scheduleEligibleProviderRefresh = useCallback(() => {
+        // Test & Save invokes both the direct parent callback and the backend
+        // event. Coalesce same-turn signals, but remember a distinct update
+        // that arrives while a read is already in flight; otherwise it could
+        // be lost if the backend snapshot was taken before that later save.
+        if (eligibilityRefreshRunningRef.current) {
+            eligibilityRefreshRerunRef.current = true;
+            return;
+        }
+        if (eligibilityRefreshQueuedRef.current) return;
+        eligibilityRefreshQueuedRef.current = true;
+        queueMicrotask(() => {
+            eligibilityRefreshQueuedRef.current = false;
+            if (eligibilityRefreshCancelledRef.current) {
+                eligibilityRefreshCancelledRef.current = false;
+                return;
+            }
+            eligibilityRefreshRunningRef.current = true;
+            void refreshEligibleProviders().finally(() => {
+                eligibilityRefreshRunningRef.current = false;
+                if (eligibilityRefreshRerunRef.current) {
+                    eligibilityRefreshRerunRef.current = false;
+                    scheduleEligibleProviderRefresh();
+                }
+            });
+        });
+    }, [refreshEligibleProviders]);
+
+    useEffect(() => {
+        // The initial load above already covers revision zero. Subsequent
+        // revisions are authoritative post-save signals from Provider
+        // management, not merely optimistic UI edits.
+        if (providerListRevision > 0) scheduleEligibleProviderRefresh();
+    }, [providerListRevision, scheduleEligibleProviderRefresh]);
+
+    const refreshProvidersPreservingDraft = useCallback(() => {
+        scheduleEligibleProviderRefresh();
+    }, [scheduleEligibleProviderRefresh]);
+
     const providers = state?.providers || [];
     const providerByID = useMemo(() => new Map(providers.map(p => [p.id, p])), [providers]);
     const assistant = draft?.assistant;
@@ -93,7 +164,16 @@ export function LLMProfileAssignments({ lang, onSaved }: Props) {
     dirtyRef.current = dirty;
 
     useEffect(() => {
-        const onProfilesChanged = () => {
+        const onProfilesChanged = (payload?: { changed?: string }) => {
+            if (payload?.changed === "providers" || payload?.changed === "hub-provider") {
+                refreshProvidersPreservingDraft();
+                return;
+            }
+            // A real assignment change supersedes a queued provider-only
+            // refresh from the same event turn. Without this cancellation the
+            // delayed directory read could invalidate the newer assignment
+            // read before it applies.
+            eligibilityRefreshCancelledRef.current = true;
             // Do not overwrite an unsaved assignment draft from the bottom
             // picker or another settings window. Instead make the conflict
             // explicit and let the user refresh intentionally.
@@ -105,10 +185,14 @@ export function LLMProfileAssignments({ lang, onSaved }: Props) {
         };
         const cleanup = EventsOn("llm-profiles-changed", onProfilesChanged);
         return () => { if (typeof cleanup === "function") cleanup(); else EventsOff("llm-profiles-changed"); };
-    }, [load, t]);
+    }, [load, refreshProvidersPreservingDraft, t]);
 
     useEffect(() => () => {
         loadGenerationRef.current += 1;
+        eligibilityRefreshQueuedRef.current = false;
+        eligibilityRefreshRunningRef.current = false;
+        eligibilityRefreshRerunRef.current = false;
+        eligibilityRefreshCancelledRef.current = true;
     }, []);
 
     useEffect(() => {

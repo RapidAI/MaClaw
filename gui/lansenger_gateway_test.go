@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -41,6 +42,61 @@ func TestLansengerStatusNeedsWatchdogRestart(t *testing.T) {
 		if lansengerStatusNeedsWatchdogRestart(status) {
 			t.Fatalf("status %q should not trigger stale-status watchdog restart", status)
 		}
+	}
+}
+
+func TestSendLansengerScreenshotUsesImageAttachment(t *testing.T) {
+	var message struct {
+		MsgType string `json:"msgType"`
+		MsgData struct {
+			Text struct {
+				Content   string   `json:"content"`
+				MediaType int      `json:"mediaType"`
+				MediaIDs  []string `json:"mediaIds"`
+			} `json:"text"`
+		} `json:"msgData"`
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apptoken/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"appToken": "token", "expiresIn": 3600}})
+		case "/v1/app/medias/create":
+			if got := r.URL.Query().Get("type"); got != "image" {
+				t.Fatalf("upload type = %q, want image", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"mediaId": "image-1"}})
+		case "/v1/bot/messages/create":
+			if err := json.NewDecoder(r.Body).Decode(&message); err != nil {
+				t.Fatalf("decode message: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	gw := lansenger.NewGateway(lansenger.Config{AppID: "app", AppSecret: "secret", ApiGatewayURL: api.URL}, nil)
+	if err := sendLansengerScreenshot(context.Background(), gw, lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user"}, testOnePixelPNGBase64); err != nil {
+		t.Fatalf("sendLansengerScreenshot: %v", err)
+	}
+	if message.MsgType != "text" || message.MsgData.Text.Content != "screenshot.png" || message.MsgData.Text.MediaType != 2 || len(message.MsgData.Text.MediaIDs) != 1 || message.MsgData.Text.MediaIDs[0] != "image-1" {
+		t.Fatalf("screenshot message payload = %#v", message)
+	}
+}
+
+func TestSendLansengerScreenshotRejectsMalformedPayload(t *testing.T) {
+	gw := lansenger.NewGateway(lansenger.Config{}, nil)
+	if err := sendLansengerScreenshot(context.Background(), gw, lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user"}, "not-base64"); err == nil || !strings.Contains(err.Error(), "decode screenshot") {
+		t.Fatalf("malformed screenshot error = %v", err)
+	}
+}
+
+func TestSendLansengerScreenshotRejectsNonPNGPayload(t *testing.T) {
+	gw := lansenger.NewGateway(lansenger.Config{}, nil)
+	payload := base64.StdEncoding.EncodeToString([]byte("not a png"))
+	if err := sendLansengerScreenshot(context.Background(), gw, lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user"}, payload); err == nil || !strings.Contains(err.Error(), "not a PNG") {
+		t.Fatalf("non-PNG screenshot error = %v", err)
 	}
 }
 

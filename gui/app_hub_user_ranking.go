@@ -3,9 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+const hubInvitationStatusRouteFallbackTTL = 5 * time.Minute
 
 // HubUserRanking is returned by GetHubUserRanking to the frontend.
 type HubUserRanking struct {
@@ -73,6 +77,45 @@ func (a *App) GetHubUserRanking() HubUserRanking {
 // invitation entry completely.
 func (a *App) GetHubUserInvitations() HubUserInvitation {
 	return a.getHubUserInvitations(1)
+}
+
+// GetHubUserInvitationStatus returns only whether invitations are enabled for
+// the active tenant and viewer. The navigation rail polls this lightweight
+// endpoint so checking the switch never creates a referral code or loads an
+// invitation-history page.
+func (a *App) GetHubUserInvitationStatus() HubUserInvitation {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return HubUserInvitation{Error: "config load failed"}
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return HubUserInvitation{Error: "hub not configured"}
+	}
+	if fallbackUntil, ok := a.hubInvitationStatusRouteFallback.Load(hubURL); ok {
+		if until, valid := fallbackUntil.(time.Time); valid && time.Now().Before(until) {
+			return a.getHubUserInvitations(1)
+		}
+		a.hubInvitationStatusRouteFallback.Delete(hubURL)
+	}
+	data, err := a.getHubJSON(hubURL, viewerToken, "/api/me/invitations/status")
+	if err != nil {
+		// Preserve the visibility contract for a rolling deployment where the
+		// desktop app reaches an older Hub before its lightweight status route is
+		// available. The existing endpoint remains authoritative; this fallback
+		// can be removed once mixed-version Hub deployments are no longer served.
+		if statusErr, ok := err.(veHubStatusError); ok && statusErr.statusCode == http.StatusNotFound {
+			a.hubInvitationStatusRouteFallback.Store(hubURL, time.Now().Add(hubInvitationStatusRouteFallbackTTL))
+			return a.getHubUserInvitations(1)
+		}
+		return HubUserInvitation{Error: fmt.Sprintf("hub request failed: %v", err)}
+	}
+	var resp HubUserInvitation
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return HubUserInvitation{Error: "invalid response from hub"}
+	}
+	return resp
 }
 
 // GetHubUserInvitationsPage returns one 20-item page of the current viewer's

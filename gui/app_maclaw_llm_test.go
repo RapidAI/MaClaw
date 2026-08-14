@@ -1890,6 +1890,9 @@ func TestOAuthProviderCapabilityCheckPersistsVisionResult(t *testing.T) {
 	}
 	for _, provider := range providers.Providers {
 		if provider.Name == "OAuth Test" {
+			if !provider.ConnectionTestPassed {
+				t.Fatal("OAuth Test connection_test_passed = false, want true after successful text probe")
+			}
 			if !provider.SupportsVision {
 				t.Fatal("persisted SupportsVision = false, want true")
 			}

@@ -579,6 +579,77 @@ func TestSendMediaUsesCurrentUploadEndpoint(t *testing.T) {
 	}
 }
 
+func TestSendMediaImageUsesDefaultPNGName(t *testing.T) {
+	var uploadedName string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apptoken/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"appToken": "token", "expiresIn": 3600}})
+		case "/v1/app/medias/create":
+			if err := r.ParseMultipartForm(1024 * 1024); err != nil {
+				t.Fatalf("ParseMultipartForm: %v", err)
+			}
+			file, header, err := r.FormFile("media")
+			if err != nil {
+				t.Fatalf("FormFile(media): %v", err)
+			}
+			_ = file.Close()
+			uploadedName = header.Filename
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"mediaId": "image-1"}})
+		case "/v1/bot/messages/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	gw := NewGateway(Config{AppID: "app", AppSecret: "secret", ApiGatewayURL: api.URL}, nil)
+	if err := gw.SendMedia(context.Background(), OutgoingMedia{ToUserID: "user", FileData: []byte("png"), MediaType: "image"}); err != nil {
+		t.Fatalf("SendMedia image: %v", err)
+	}
+	if uploadedName != "image.png" {
+		t.Fatalf("uploaded image filename = %q, want image.png", uploadedName)
+	}
+}
+
+func TestSendMediaImageUsesImageAttachmentMetadata(t *testing.T) {
+	var message struct {
+		MsgType string `json:"msgType"`
+		MsgData struct {
+			Text struct {
+				Content   string   `json:"content"`
+				MediaType int      `json:"mediaType"`
+				MediaIDs  []string `json:"mediaIds"`
+			} `json:"text"`
+		} `json:"msgData"`
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apptoken/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"appToken": "token", "expiresIn": 3600}})
+		case "/v1/app/medias/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"mediaId": "image-1"}})
+		case "/v1/bot/messages/create":
+			if err := json.NewDecoder(r.Body).Decode(&message); err != nil {
+				t.Fatalf("decode image message: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	gw := NewGateway(Config{AppID: "app", AppSecret: "secret", ApiGatewayURL: api.URL}, nil)
+	if err := gw.SendMedia(context.Background(), OutgoingMedia{ToUserID: "user", FileData: []byte("png"), FileName: "screenshot.png", MediaType: "image"}); err != nil {
+		t.Fatalf("SendMedia image: %v", err)
+	}
+	if message.MsgType != "text" || message.MsgData.Text.Content != "screenshot.png" || message.MsgData.Text.MediaType != 2 || len(message.MsgData.Text.MediaIDs) != 1 || message.MsgData.Text.MediaIDs[0] != "image-1" {
+		t.Fatalf("image message payload = %#v", message)
+	}
+}
+
 func TestSendMediaStrictReturnsUploadError(t *testing.T) {
 	var textSent bool
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

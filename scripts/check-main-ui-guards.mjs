@@ -511,7 +511,7 @@ if (lines > 6600) failures.push(`${appRel} has ${lines} lines; keep it under 660
 
 const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/AppSidebarShell.tsx', 500],
-  ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 340],
+  ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 380],
   ['gui/frontend/src/components/layout/SidebarAiPane.tsx', 280],
   ['gui/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],

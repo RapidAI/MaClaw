@@ -767,18 +767,20 @@ export const LansengerSettings = ({
                             <label className="im-settings-toggle"><input type="checkbox" checked={!!botDraft.allow_web_search} onChange={(e) => setBotDraft({ ...botDraft, allow_web_search: e.target.checked })} /><span>{textForLang(lang, 'Allow public web search', '允许公开网络检索', '允許公開網路檢索')}</span></label>
                         </div>
                         <div className="lansenger-bots__answer-cache">
-                            <div>
+                            <div className="lansenger-bots__answer-cache-copy">
                                 <strong>{textForLang(lang, 'Reply cache for this bot', '当前机器人回复缓存', '目前機器人回覆快取')}</strong>
                                 <p>{textForLang(lang, 'This setting applies only to this bot instance. Cached answers remain isolated by bot, and group chats are additionally isolated by group. Refresh requests and follow-up questions always generate a new answer.', '此设置仅对当前机器人实例生效。缓存答案仍按机器人隔离，群聊还会按群组进一步隔离；要求更新或追问时始终重新生成。', '此設定僅對目前機器人實例生效。快取答案仍依機器人隔離，群組聊天還會依群組進一步隔離；要求更新或追問時一律重新產生。')}</p>
                             </div>
-                            <label className="im-settings-toggle">
-                                <input type="checkbox" checked={answerCache.enabled} onChange={(e) => setBotDraft({ ...botDraft, answer_cache: { ...answerCache, enabled: e.target.checked } })} />
-                                <span>{textForLang(lang, 'Enable reply cache', '启用回复缓存', '啟用回覆快取')}</span>
-                            </label>
-                            <label className="im-settings-field lansenger-bots__answer-cache-ttl">
-                                <span>{textForLang(lang, 'Validity (days)', '有效期（天）', '有效期（天）')}</span>
-                                <input type="number" min={0} max={365} inputMode="numeric" disabled={!answerCache.enabled} aria-describedby="lansenger-answer-cache-status" value={answerCache.ttl_days} onChange={(e) => setBotDraft({ ...botDraft, answer_cache: { ...answerCache, ttl_days: Math.max(0, Math.min(365, Number(e.currentTarget.value) || 0)) } })} />
-                            </label>
+                            <div className="lansenger-bots__answer-cache-controls">
+                                <label className="im-settings-toggle">
+                                    <input type="checkbox" checked={answerCache.enabled} onChange={(e) => setBotDraft({ ...botDraft, answer_cache: { ...answerCache, enabled: e.target.checked } })} />
+                                    <span>{textForLang(lang, 'Enable reply cache', '启用回复缓存', '啟用回覆快取')}</span>
+                                </label>
+                                <label className="lansenger-bots__answer-cache-ttl">
+                                    <span>{textForLang(lang, 'Validity (days)', '有效期（天）', '有效期（天）')}</span>
+                                    <input type="number" min={0} max={365} inputMode="numeric" disabled={!answerCache.enabled} aria-describedby="lansenger-answer-cache-status" value={answerCache.ttl_days} onChange={(e) => setBotDraft({ ...botDraft, answer_cache: { ...answerCache, ttl_days: Math.max(0, Math.min(365, Number(e.currentTarget.value) || 0)) } })} />
+                                </label>
+                            </div>
                             <p id="lansenger-answer-cache-status" className="lansenger-bots__answer-cache-status" role="status">{answerCacheReuseActive
                                 ? textForLang(lang, `Reply cache is active for ${answerCache.ttl_days} days.`, `回复缓存已启用，有效期为 ${answerCache.ttl_days} 天。`, `回覆快取已啟用，有效期為 ${answerCache.ttl_days} 天。`)
                                 : !answerCache.enabled

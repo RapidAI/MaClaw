@@ -82,6 +82,29 @@ describe("LLMProfileAssignments", () => {
         expect((await screen.findByRole("status")).textContent).toContain("No tested providers yet. Test and save a provider in Provider management first.");
     });
 
+    it("refreshes the eligible provider directory after Provider management confirms a test without discarding a draft", async () => {
+        getState
+            .mockResolvedValueOnce({ ...state, providers: [state.providers[0]] })
+            .mockResolvedValueOnce({ ...state, revision: "rev-after-test" })
+            // Save reloads the authoritative snapshot once more; retain the
+            // new revision in this response so the test exercises a complete
+            // successful save rather than falling through to an empty mock.
+            .mockResolvedValueOnce({ ...state, revision: "rev-after-test" });
+        saveProfiles.mockResolvedValue(undefined);
+        const view = render(<LLMProfileAssignments lang="en" providerListRevision={0} />);
+
+        fireEvent.change(await screen.findByLabelText("Coding provider"), { target: { value: "assistant" } });
+        view.rerender(<LLMProfileAssignments lang="en" providerListRevision={1} />);
+
+        await waitFor(() => expect(getState).toHaveBeenCalledTimes(2));
+        expect(Array.from((screen.getByLabelText("Assistant provider") as HTMLSelectElement).options).map(option => option.text))
+            .toEqual(["Select provider", "OpenAI", "DeepSeek"]);
+        expect((screen.getByLabelText("Coding provider") as HTMLSelectElement).value).toBe("assistant");
+        expect(screen.getByText("Unsaved changes")).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+        await waitFor(() => expect(saveProfiles).toHaveBeenCalledWith(expect.anything(), "rev-after-test"));
+    });
+
     it("keeps coding independent and sends the profile revision on save", async () => {
         getState.mockResolvedValue(state);
         saveProfiles.mockResolvedValue(undefined);
@@ -196,5 +219,100 @@ describe("LLMProfileAssignments", () => {
         fireEvent.click(screen.getByRole("button", { name: "Refresh draft" }));
         await waitFor(() => expect(getState).toHaveBeenCalledTimes(2));
         expect((screen.getByLabelText("Coding provider") as HTMLSelectElement).value).toBe("coding");
+    });
+
+    it("updates provider maintenance events without treating them as assignment conflicts", async () => {
+        let onProfilesChanged: ((payload?: { changed?: string }) => void) | undefined;
+        eventsOn.mockImplementation((name: string, handler: (payload?: { changed?: string }) => void) => {
+            if (name === "llm-profiles-changed") onProfilesChanged = handler;
+            return vi.fn();
+        });
+        getState
+            .mockResolvedValueOnce({ ...state, providers: [state.providers[0]] })
+            .mockResolvedValueOnce(state);
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Coding provider"), { target: { value: "assistant" } });
+        act(() => { onProfilesChanged?.({ changed: "providers" }); });
+
+        await waitFor(() => expect(getState).toHaveBeenCalledTimes(2));
+        expect(screen.queryByText("Model assignments changed elsewhere. Refresh before saving.")).toBeNull();
+        expect((screen.getByLabelText("Coding provider") as HTMLSelectElement).value).toBe("assistant");
+        expect(Array.from((screen.getByLabelText("Assistant provider") as HTMLSelectElement).options).map(option => option.text))
+            .toEqual(["Select provider", "OpenAI", "DeepSeek"]);
+    });
+
+    it("coalesces the Test & Save callback and provider event into one refresh", async () => {
+        let onProfilesChanged: ((payload?: { changed?: string }) => void) | undefined;
+        eventsOn.mockImplementation((name: string, handler: (payload?: { changed?: string }) => void) => {
+            if (name === "llm-profiles-changed") onProfilesChanged = handler;
+            return vi.fn();
+        });
+        getState
+            .mockResolvedValueOnce({ ...state, providers: [state.providers[0]] })
+            .mockResolvedValueOnce(state);
+        const view = render(<LLMProfileAssignments lang="en" providerListRevision={0} />);
+
+        await screen.findByRole("heading", { name: "Model assignments" });
+        act(() => {
+            view.rerender(<LLMProfileAssignments lang="en" providerListRevision={1} />);
+            onProfilesChanged?.({ changed: "providers" });
+        });
+
+        await waitFor(() => expect(getState).toHaveBeenCalledTimes(2));
+    });
+
+    it("re-reads eligibility when another provider update arrives during a refresh", async () => {
+        let onProfilesChanged: ((payload?: { changed?: string }) => void) | undefined;
+        let resolveFirstRefresh: ((value: typeof state) => void) | undefined;
+        let resolveSecondRefresh: ((value: typeof state) => void) | undefined;
+        eventsOn.mockImplementation((name: string, handler: (payload?: { changed?: string }) => void) => {
+            if (name === "llm-profiles-changed") onProfilesChanged = handler;
+            return vi.fn();
+        });
+        getState
+            .mockResolvedValueOnce(state)
+            .mockImplementationOnce(() => new Promise(resolve => { resolveFirstRefresh = resolve; }))
+            .mockImplementationOnce(() => new Promise(resolve => { resolveSecondRefresh = resolve; }));
+        saveProfiles.mockResolvedValue(undefined);
+        render(<LLMProfileAssignments lang="en" />);
+
+        await screen.findByRole("heading", { name: "Model assignments" });
+        act(() => { onProfilesChanged?.({ changed: "providers" }); });
+        await waitFor(() => expect(getState).toHaveBeenCalledTimes(2));
+        act(() => { onProfilesChanged?.({ changed: "providers" }); });
+        expect(getState).toHaveBeenCalledTimes(2);
+
+        await act(async () => { resolveFirstRefresh?.({ ...state, revision: "rev-2" }); });
+        await waitFor(() => expect(getState).toHaveBeenCalledTimes(3));
+        await act(async () => { resolveSecondRefresh?.({ ...state, revision: "rev-3" }); });
+
+        fireEvent.change(screen.getByLabelText("Coding provider"), { target: { value: "assistant" } });
+        fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+        await waitFor(() => expect(saveProfiles).toHaveBeenCalledWith(expect.anything(), "rev-3"));
+    });
+
+    it("keeps a provider maintenance refresh from replacing a later profile change", async () => {
+        let onProfilesChanged: ((payload?: { changed?: string }) => void) | undefined;
+        let resolveProfileRefresh: ((value: typeof state) => void) | undefined;
+        eventsOn.mockImplementation((name: string, handler: (payload?: { changed?: string }) => void) => {
+            if (name === "llm-profiles-changed") onProfilesChanged = handler;
+            return vi.fn();
+        });
+        getState
+            .mockResolvedValueOnce(state)
+            .mockImplementationOnce(() => new Promise(resolve => { resolveProfileRefresh = resolve; }));
+        render(<LLMProfileAssignments lang="en" />);
+
+        await screen.findByRole("heading", { name: "Model assignments" });
+        act(() => { onProfilesChanged?.({ changed: "providers" }); });
+        act(() => { onProfilesChanged?.({ changed: "profiles" }); });
+        await waitFor(() => expect(getState).toHaveBeenCalledTimes(2));
+
+        await act(async () => { resolveProfileRefresh?.({ ...state, revision: "rev-2" }); });
+
+        fireEvent.change(screen.getByLabelText("Coding provider"), { target: { value: "assistant" } });
+        fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+        await waitFor(() => expect(saveProfiles).toHaveBeenCalledWith(expect.anything(), "rev-2"));
     });
 });

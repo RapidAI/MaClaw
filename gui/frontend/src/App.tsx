@@ -3465,10 +3465,14 @@ function App() {
 
     const handleLLMProviderChanged = useCallback(() => {
         void refreshSidebarTokenUsage();
+        // Provider management can make a just-tested provider eligible for
+        // execution profiles. Refresh this independent, filtered directory
+        // directly instead of relying solely on the asynchronous Wails event.
+        void refreshLLMProfilePanelState();
         void callBackend(() => LoadConfigForUI()).then((freshConfig) => setConfig(freshConfig)).catch((err) => {
             console.warn('Failed to reload config after LLM provider change:', err);
         });
-    }, [refreshSidebarTokenUsage]);
+    }, [refreshLLMProfilePanelState, refreshSidebarTokenUsage]);
 
     const openHubCreditsPage = useCallback(() => {
         const url = buildHubCreditsURL((config as any)?.remote_hub_url, (config as any)?.remote_viewer_token, (config as any)?.remote_tenant_id, (config as any)?.remote_email, (config as any)?.remote_user_id, (config as any)?.remote_mobile);

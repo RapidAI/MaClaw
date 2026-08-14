@@ -577,16 +577,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		SessionKey:     userID,
 		ResponseSource: "shared_agent_loop",
 	}
-	// Attach files materialized during send_file/send_to_im so the desktop UI
-	// can show the local path and diagnostics report file_materialize > 0.
-	if len(cb.deliveredPaths) > 0 {
-		resp.LocalFilePaths = append([]string(nil), cb.deliveredPaths...)
-		resp.LocalFilePath = cb.deliveredPaths[0]
-		resp.FileMaterializeNanos = cb.fileMaterializeNanos
-		if cb.filesForwarded > 0 {
-			resp.ResponseSource = imResponseSourceFileDelivery.String()
-		}
-	}
+	attachSharedLoopArtifacts(resp, cb)
 	if loopResult.AskUser != nil {
 		resp.Text = loopResult.Text
 		// Mark interactive pause for UI/telemetry (parity with record_audio + legacy ask_user).
@@ -666,6 +657,30 @@ func sharedLoopDisplayReasoning(result agent.LoopResult) string {
 	return ""
 }
 
+// attachSharedLoopArtifacts projects artifacts recorded while executing the
+// shared agent loop into the final gateway response. Gateway implementations
+// use ImageKey to upload an image reply (including Lansenger), while local file
+// paths are delivered as regular attachment messages.
+func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) {
+	if resp == nil || cb == nil {
+		return
+	}
+	// Attach files materialized during send_file/send_to_im so the desktop UI
+	// can show the local path and diagnostics report file_materialize > 0.
+	if len(cb.deliveredPaths) > 0 {
+		resp.LocalFilePaths = append([]string(nil), cb.deliveredPaths...)
+		resp.LocalFilePath = cb.deliveredPaths[0]
+		resp.FileMaterializeNanos = cb.fileMaterializeNanos
+		if cb.filesForwarded > 0 {
+			resp.ResponseSource = imResponseSourceFileDelivery.String()
+		}
+	}
+	if cb.screenshotImageKey != "" {
+		resp.ImageKey = cb.screenshotImageKey
+		resp.ResponseSource = imResponseSourceScreenshot.String()
+	}
+}
+
 // sharedAgentLoopCallbacks adapts IMMessageHandler to agent.LoopCallbacks.
 type sharedAgentLoopCallbacks struct {
 	handler  *IMMessageHandler
@@ -711,7 +726,11 @@ type sharedAgentLoopCallbacks struct {
 	deliveredPaths       []string
 	fileMaterializeNanos int64
 	filesForwarded       int
-	inputBreakdown       agent.LoopInputBreakdown
+	// screenshotImageKey holds the latest screenshot produced by the shared
+	// loop. Unlike the legacy loop, the shared loop has no post-tool artifact
+	// branch, so it must explicitly carry the image into the final IM response.
+	screenshotImageKey string
+	inputBreakdown     agent.LoopInputBreakdown
 	// firstRequestBudgetApplied prevents a latency-oriented history cap from
 	// constraining later tool rounds, which may legitimately need more context.
 	firstRequestBudgetApplied bool
@@ -987,6 +1006,16 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		exec.Outcome = toolOutcomeFailed
 		exec.FailureKind = toolFailureHandlerReported
 	}
+	// A screenshot is an outbound artifact, not model context. Preserve it for
+	// the final gateway response and replace the base64 body with the same small
+	// observation used by the legacy loop. Without this, Lansenger receives only
+	// the model's text claiming the screenshot was sent.
+	screenshot := parseToolPayloadResultForPlatformLang(exec.Text, platform, c.handler.imUILangOrZh())
+	if screenshot.ImageKey != "" {
+		c.screenshotImageKey = screenshot.ImageKey
+		return c.finishSharedToolExecution(requestID, toolCallID, name, argsJSON, screenshot.ToolContent, true, nil)
+	}
+
 	// Materialize [file_base64|…|im] before truncating: shared RunLoop has no
 	// post-tool artifact branch, so this is the only place desktop→WeChat runs.
 	// Pass originating platform so WeChat/Feishu channel turns report channel
@@ -1022,29 +1051,34 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		// RunLoop invokes ProjectToolResult exactly once before model commit.
 		outText = mat.Text
 	}
-	trimOut := strings.TrimSpace(outText)
-	if strings.HasPrefix(trimOut, "[system rejected]") ||
-		strings.HasPrefix(strings.ToLower(trimOut), "error:") {
+	return c.finishSharedToolExecution(requestID, toolCallID, name, argsJSON, outText, ok, mat.LocalPaths)
+}
+
+// finishSharedToolExecution emits the ACP end event for every post-execution
+// return path. Keeping this centralized prevents artifact shortcuts (notably
+// screenshots) from leaving ACP tool chips permanently in progress.
+func (c *sharedAgentLoopCallbacks) finishSharedToolExecution(requestID, toolCallID, name, argsJSON, result string, ok bool, artifactPaths []string) string {
+	trimmed := strings.TrimSpace(result)
+	if strings.HasPrefix(trimmed, "[system rejected]") || strings.HasPrefix(strings.ToLower(trimmed), "error:") {
 		ok = false
 	}
-	if isACPProgrammingRequestID(requestID) {
-		paths := acpPathsFromToolArgs(name, argsJSON)
-		if mat.Handled && len(mat.LocalPaths) > 0 {
-			paths = append(paths, mat.LocalPaths...)
-		}
-		emitACPToolEventForRequest(requestID, ACPToolEvent{
-			Phase:      "end",
-			ToolCallID: toolCallID,
-			Name:       name,
-			ArgsJSON:   argsJSON,
-			Result:     outText,
-			OK:         ok,
-			Kind:       acpToolKind(name),
-			Paths:      paths,
-			Title:      acpToolTitle(name, argsJSON),
-		})
+	if !isACPProgrammingRequestID(requestID) {
+		return result
 	}
-	return outText
+	paths := append([]string(nil), acpPathsFromToolArgs(name, argsJSON)...)
+	paths = appendUniqueStrings(paths, artifactPaths...)
+	emitACPToolEventForRequest(requestID, ACPToolEvent{
+		Phase:      "end",
+		ToolCallID: toolCallID,
+		Name:       name,
+		ArgsJSON:   argsJSON,
+		Result:     result,
+		OK:         ok,
+		Kind:       acpToolKind(name),
+		Paths:      paths,
+		Title:      acpToolTitle(name, argsJSON),
+	})
+	return result
 }
 
 func sharedToolInterruptedText(ctx context.Context) string {

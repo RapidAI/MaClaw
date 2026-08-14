@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -1710,12 +1711,49 @@ func shouldSendLansengerIMDetail(chatType string) bool {
 	return !strings.EqualFold(strings.TrimSpace(chatType), "group")
 }
 
+const lansengerScreenshotDeliveryFailureText = "截图发送失败，请稍后重试。"
+
+// sendLansengerScreenshot uploads a captured PNG as a native Lansenger image
+// attachment. It is deliberately strict: reporting that a screenshot was sent
+// when the upload failed is worse than returning an error to the caller.
+func sendLansengerScreenshot(ctx context.Context, gw *lansenger.Gateway, msg lansenger.IncomingMessage, imageBase64 string) error {
+	if gw == nil {
+		return fmt.Errorf("Lansenger gateway is unavailable")
+	}
+	imageData, err := base64.StdEncoding.DecodeString(strings.TrimSpace(imageBase64))
+	if err != nil {
+		return fmt.Errorf("decode screenshot: %w", err)
+	}
+	if len(imageData) == 0 {
+		return fmt.Errorf("screenshot is empty")
+	}
+	// All screenshot producers currently return PNG. Verify the signature here
+	// so an upstream malformed/tool payload cannot be labelled screenshot.png
+	// and handed to Lansenger as a misleading image attachment.
+	if len(imageData) < 8 || !bytes.Equal(imageData[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		return fmt.Errorf("screenshot is not a PNG image")
+	}
+	if err := gw.SendMedia(ctx, lansenger.OutgoingMedia{
+		ToUserID:  lansengerReplyTarget(msg),
+		FileData:  imageData,
+		FileName:  "screenshot.png",
+		MediaType: imMediaImage.String(),
+		IsGroup:   isLansengerGroupMessage(msg),
+		Strict:    true,
+	}); err != nil {
+		return fmt.Errorf("send screenshot: %w", err)
+	}
+	return nil
+}
+
 func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg lansenger.IncomingMessage, resp *IMAgentResponse) {
+	if resp == nil {
+		return
+	}
 	ctx := context.Background()
 	toUserID := lansengerReplyTarget(msg)
 	isGroup := isLansengerGroupMessage(msg)
 	opts := m.currentGroupOpts()
-
 	if resp.Text != "" {
 		text := textutil.StripMarkdown(resp.Text)
 		// Lanxin (蓝信) does not support interactive buttons/cards.
@@ -1758,15 +1796,15 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 		_ = gw.SendText(ctx, buildLansengerOutgoingTextEx(msg, textutil.StripMarkdown(resp.Error), opts, true))
 	}
 
-	if resp.ImageKey != "" {
-		imgData, err := base64.StdEncoding.DecodeString(resp.ImageKey)
-		if err == nil && len(imgData) > 0 {
-			_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
-				ToUserID:  toUserID,
-				FileData:  imgData,
-				MediaType: "image",
-				IsGroup:   isGroup,
-			})
+	// Preserve the established response order (text, then attachments), while
+	// making image upload failure visible instead of letting "截图已发" stand as
+	// the final user-facing claim.
+	if strings.TrimSpace(resp.ImageKey) != "" {
+		if err := sendLansengerScreenshot(ctx, gw, msg, resp.ImageKey); err != nil {
+			log.Printf("[lansenger-mgr] SendMedia response image failed (to=%s): %v", toUserID, err)
+			_ = gw.SendText(ctx, buildLansengerOutgoingTextEx(msg, lansengerScreenshotDeliveryFailureText, opts, true))
+		} else {
+			log.Printf("[lansenger-mgr] SendMedia response image OK (to=%s)", toUserID)
 		}
 	}
 
@@ -1900,18 +1938,12 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 			log.Printf("[lansenger-mgr] HandleGatewayReply SendText failed (to=%s group=%v): %v", reply.PlatformUID, isGroup, err)
 		}
 	case gatewayReplyTypeImage:
-		data, err := base64.StdEncoding.DecodeString(reply.ImageData)
-		if err != nil {
-			log.Printf("[lansenger-mgr] HandleGatewayReply image decode: %v", err)
-			return
-		}
-		if err := gw.SendMedia(ctx, lansenger.OutgoingMedia{
-			ToUserID:  reply.PlatformUID,
-			FileData:  data,
-			MediaType: imMediaImage.String(),
-			IsGroup:   isGroup,
-		}); err != nil {
-			log.Printf("[lansenger-mgr] HandleGatewayReply SendMedia image failed: %v", err)
+		outbound := lansenger.IncomingMessage{ChatType: reply.ChatType, FromUserID: reply.PlatformUID, GroupID: reply.PlatformUID}
+		if err := sendLansengerScreenshot(ctx, gw, outbound, reply.ImageData); err != nil {
+			log.Printf("[lansenger-mgr] HandleGatewayReply SendMedia image failed (to=%s): %v", reply.PlatformUID, err)
+			_ = gw.SendText(ctx, lansenger.OutgoingText{ToUserID: reply.PlatformUID, Text: lansengerScreenshotDeliveryFailureText, IsGroup: isGroup})
+		} else {
+			log.Printf("[lansenger-mgr] HandleGatewayReply SendMedia image OK (to=%s)", reply.PlatformUID)
 		}
 	case gatewayReplyTypeFile:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)

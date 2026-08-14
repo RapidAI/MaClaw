@@ -1258,6 +1258,10 @@ export function GetHubUserInvitations() {
   return window['go']['main']['App']['GetHubUserInvitations']();
 }
 
+export function GetHubUserInvitationStatus() {
+  return window['go']['main']['App']['GetHubUserInvitationStatus']();
+}
+
 export function GetHubUserInvitationsPage(arg1) {
   return window['go']['main']['App']['GetHubUserInvitationsPage'](arg1);
 }

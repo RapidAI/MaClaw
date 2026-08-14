@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { GetHubUserInvitationsPage, RotateHubUserInvitation } from '../../wailsjs/go/main/App';
 import { usePortalThemeAttributes } from '../hooks/usePortalThemeAttributes';
+import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 
 type Invitee = { user_id?: string; contact?: string; registered_at?: string; status?: string };
 type InvitationData = {
@@ -66,7 +67,11 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
     }
   };
 
-  const close = () => onCloseRef.current();
+  const close = () => {
+    requestSerialRef.current += 1;
+    onCloseRef.current();
+  };
+  const { backdropProps, dialogProps } = useSafeBackdropDismiss<HTMLElement>(close);
 
   useEffect(() => {
     if (!open) return;
@@ -168,9 +173,9 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
       className="hub-invitation-dialog__backdrop"
       role="presentation"
       {...portalThemeAttributes}
-      onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}
+      {...backdropProps}
     >
-      <section ref={dialogRef} className="hub-invitation-dialog" role="dialog" aria-modal="true" aria-labelledby="hub-invitation-dialog-title" tabIndex={-1}>
+      <section ref={dialogRef} className="hub-invitation-dialog" role="dialog" aria-modal="true" aria-labelledby="hub-invitation-dialog-title" tabIndex={-1} {...dialogProps}>
         <header className="hub-invitation-dialog__header">
           <div>
             <h2 id="hub-invitation-dialog-title">{t('Invite friends', '邀请好友')}</h2>

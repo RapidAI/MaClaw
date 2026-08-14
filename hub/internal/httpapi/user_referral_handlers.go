@@ -1056,6 +1056,36 @@ func GetMyUserInvitationsHandler(identity *auth.IdentityService, repo store.User
 	}
 }
 
+// GetMyUserInvitationStatusHandler is the inexpensive availability probe used
+// by desktop navigation. It deliberately does not create or decrypt a referral
+// code, nor load invitation history; those operations belong to the dialog
+// opened after the navigation entry is visible.
+func GetMyUserInvitationStatusHandler(identity *auth.IdentityService, system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if identity == nil || identity.UsersRepo() == nil || system == nil {
+			writeError(w, http.StatusServiceUnavailable, "USER_REFERRAL_UNAVAILABLE", "Invitations are temporarily unavailable")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil || principal == nil {
+			writeError(w, http.StatusUnauthorized, "VIEWER_UNAUTHORIZED", "viewer authorization required")
+			return
+		}
+		cfg, err := loadUserReferralConfig(r.Context(), system, principal.TenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "USER_REFERRAL_LOAD_FAILED", err.Error())
+			return
+		}
+		if !cfg.Enabled {
+			writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+			return
+		}
+		viewer, viewerErr := identity.UsersRepo().GetByID(r.Context(), principal.UserID)
+		enabled := viewerErr == nil && viewer != nil && store.NormalizeTenantID(viewer.TenantID) == store.NormalizeTenantID(principal.TenantID) && strings.EqualFold(strings.TrimSpace(viewer.Status), "active")
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled})
+	}
+}
+
 // RotateMyUserInvitationHandler invalidates the caller's prior link before it
 // issues a replacement. The raw code only ever exists in this authenticated
 // response and is never written to an audit payload.

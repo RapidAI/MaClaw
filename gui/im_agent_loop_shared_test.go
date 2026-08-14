@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
@@ -62,6 +64,104 @@ func TestSharedProjectToolResultUsesRuntimePolicyOwner(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(maclawpath.ToolResultsDir(), toolresult.SessionDirectoryName("remote:mobile")))
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("projection was not stored under runtime policy owner: entries=%d err=%v", len(entries), err)
+	}
+}
+
+func TestSharedExecuteToolCarriesScreenshotIntoFinalResponse(t *testing.T) {
+	imageData := testOnePixelPNGBase64
+	h := &IMMessageHandler{
+		registry: NewToolRegistry(),
+		client:   &http.Client{},
+	}
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "screenshot",
+		Description: "test screenshot",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(map[string]interface{}, tool.ProgressCallback) string {
+			return "[screenshot_base64]" + imageData
+		},
+	}); err != nil {
+		t.Fatalf("Register screenshot tool: %v", err)
+	}
+
+	cb := &sharedAgentLoopCallbacks{handler: h, platform: "lansenger"}
+	if got := cb.ExecuteTool("screenshot", "{}"); got != toolPayloadPreparedMessage {
+		t.Fatalf("ExecuteTool() = %q, want %q", got, toolPayloadPreparedMessage)
+	}
+	if cb.screenshotImageKey != imageData {
+		t.Fatalf("screenshotImageKey = %q, want screenshot payload", cb.screenshotImageKey)
+	}
+
+	resp := &IMAgentResponse{ResponseSource: "shared_agent_loop"}
+	attachSharedLoopArtifacts(resp, cb)
+	if resp.ImageKey != imageData || resp.ResponseSource != imResponseSourceScreenshot.String() {
+		t.Fatalf("final response lost screenshot: %+v", resp)
+	}
+}
+
+func TestAttachSharedLoopArtifactsKeepsFileDeliveryResponseSource(t *testing.T) {
+	cb := &sharedAgentLoopCallbacks{
+		deliveredPaths:       []string{"C:\\artifacts\\report.pdf"},
+		fileMaterializeNanos: 123,
+		filesForwarded:       1,
+	}
+	resp := &IMAgentResponse{ResponseSource: "shared_agent_loop"}
+	attachSharedLoopArtifacts(resp, cb)
+	if resp.ResponseSource != imResponseSourceFileDelivery.String() {
+		t.Fatalf("ResponseSource = %q, want file delivery", resp.ResponseSource)
+	}
+	if resp.LocalFilePath != "C:\\artifacts\\report.pdf" || len(resp.LocalFilePaths) != 1 || resp.FileMaterializeNanos != 123 {
+		t.Fatalf("file artifact response = %+v", resp)
+	}
+}
+
+func TestAttachSharedLoopArtifactsPrefersScreenshotResponseSource(t *testing.T) {
+	cb := &sharedAgentLoopCallbacks{
+		deliveredPaths:     []string{"C:\\artifacts\\report.pdf"},
+		filesForwarded:     1,
+		screenshotImageKey: testOnePixelPNGBase64,
+	}
+	resp := &IMAgentResponse{ResponseSource: "shared_agent_loop"}
+	attachSharedLoopArtifacts(resp, cb)
+	if resp.ResponseSource != imResponseSourceScreenshot.String() {
+		t.Fatalf("ResponseSource = %q, want screenshot", resp.ResponseSource)
+	}
+	if resp.ImageKey != testOnePixelPNGBase64 || resp.LocalFilePath == "" {
+		t.Fatalf("combined artifact response = %+v", resp)
+	}
+}
+
+func TestSharedScreenshotCompletesACPToolEvent(t *testing.T) {
+	const requestID = "acp-screenshot-event"
+	var events []ACPToolEvent
+	clear := globalACPToolSinks.set(requestID, func(ev ACPToolEvent) {
+		events = append(events, ev)
+	})
+	defer clear()
+
+	h := &IMMessageHandler{
+		registry: NewToolRegistry(),
+		client:   &http.Client{},
+	}
+	if err := h.registry.Register(RegisteredTool{
+		Name: "screenshot", Category: ToolCategoryBuiltin, Status: RegToolAvailable, Source: "test",
+		HandlerProg: func(map[string]interface{}, tool.ProgressCallback) string {
+			return "[screenshot_base64]" + testOnePixelPNGBase64
+		},
+	}); err != nil {
+		t.Fatalf("Register screenshot tool: %v", err)
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: "acp-user", platform: "lansenger", loopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: requestID, PolicyOwnerID: "acp-user"}}}
+	if got := cb.ExecuteTool("screenshot", "{}"); got != toolPayloadPreparedMessage {
+		t.Fatalf("ExecuteTool() = %q, want %q", got, toolPayloadPreparedMessage)
+	}
+	if len(events) != 2 || events[0].Phase != "start" || events[1].Phase != "end" || !events[1].OK {
+		t.Fatalf("ACP events = %#v, want successful start/end pair", events)
+	}
+	if events[1].Result != toolPayloadPreparedMessage {
+		t.Fatalf("ACP end result = %q, want prepared result", events[1].Result)
 	}
 }
 

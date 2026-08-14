@@ -31,9 +31,59 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  document.querySelectorAll('.app-viewport').forEach((element) => element.remove());
 });
 
 describe('HubInvitationDialog', () => {
+  it('mounts its backdrop outside the scaled app layer', async () => {
+    const viewport = document.createElement('div');
+    viewport.className = 'app-viewport';
+    const scaleLayer = document.createElement('div');
+    scaleLayer.className = 'app-scale-layer';
+    const trigger = document.createElement('button');
+    trigger.textContent = 'Open invitation dialog';
+    scaleLayer.appendChild(trigger);
+    viewport.appendChild(scaleLayer);
+    document.body.appendChild(viewport);
+
+    const { unmount } = render(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
+    const backdrop = document.querySelector<HTMLElement>('.hub-invitation-dialog__backdrop');
+    expect(backdrop?.parentElement).toBe(viewport);
+    expect(backdrop?.parentElement).not.toBe(scaleLayer);
+    expect(backdrop?.getAttribute('data-portal-theme')).toBe('true');
+
+    unmount();
+    viewport.remove();
+  });
+
+  it('only dismisses after a complete click starts and ends on the backdrop', async () => {
+    const onClose = vi.fn();
+    render(<HubInvitationDialog open onClose={onClose} lang="en" />);
+    const backdrop = document.querySelector<HTMLElement>('.hub-invitation-dialog__backdrop')!;
+    const dialog = screen.getByRole('dialog');
+
+    fireEvent.mouseDown(dialog);
+    fireEvent.click(backdrop);
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(backdrop);
+    fireEvent.click(backdrop);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidates a request as soon as a close action is requested', async () => {
+    let resolveRequest: (value: ReturnType<typeof invitationPage>) => void = () => {};
+    vi.mocked(GetHubUserInvitationsPage).mockReturnValueOnce(new Promise((resolve) => { resolveRequest = resolve; }));
+    const onClose = vi.fn();
+    render(<HubInvitationDialog open onClose={onClose} lang="en" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await act(async () => { resolveRequest(invitationPage()); });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByDisplayValue('https://hub.example/invite/demo')).toBeNull();
+  });
+
   it('keeps focus inside the dialog and restores it to its trigger on close', async () => {
     const onClose = vi.fn();
     const { rerender } = render(<><button type="button">Open invitation dialog</button><HubInvitationDialog open={false} onClose={onClose} lang="en" /></>);
