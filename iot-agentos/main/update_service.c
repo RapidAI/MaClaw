@@ -5,7 +5,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "nvs.h" /* ESP_ERR_NVS_NOT_FOUND for legacy-key migration */
 #include "persistence_service.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -127,30 +126,30 @@ static esp_err_t load_legacy_store(update_service_store_t *store, bool *out_foun
     int64_t *values[] = {&store->release_sequence, &store->remind_after_epoch,
                          &store->dismissed_sequence, &store->dismissed_until_epoch};
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
-        esp_err_t err = persistence_service_read_i64(UPDATE_SERVICE_NAMESPACE,
-                                                     keys[i], values[i]);
+        esp_err_t err = device_status_to_platform_error(persistence_service_read_i64(UPDATE_SERVICE_NAMESPACE,
+                                                     keys[i], values[i]));
         if (err == ESP_OK) {
             *out_found = true;
-        } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        } else if (err != ESP_ERR_NOT_FOUND) {
             return err;
         }
     }
     size_t digest_size = sizeof(store->manifest_sha256);
-    esp_err_t err = persistence_service_read_string(UPDATE_SERVICE_NAMESPACE,
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_string(UPDATE_SERVICE_NAMESPACE,
                                                     "upd_digest", store->manifest_sha256,
-                                                    &digest_size);
+                                                    &digest_size));
     if (err == ESP_OK) {
         *out_found = true;
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+    } else if (err != ESP_ERR_NOT_FOUND) {
         return err;
     }
     digest_size = sizeof(store->dismissed_digest);
-    err = persistence_service_read_string(UPDATE_SERVICE_NAMESPACE,
+    err = device_status_to_platform_error(persistence_service_read_string(UPDATE_SERVICE_NAMESPACE,
                                           "upd_ddigest", store->dismissed_digest,
-                                          &digest_size);
+                                          &digest_size));
     if (err == ESP_OK) {
         *out_found = true;
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+    } else if (err != ESP_ERR_NOT_FOUND) {
         return err;
     }
     return ESP_OK;
@@ -163,17 +162,17 @@ static esp_err_t load_store(update_service_store_t *store) {
     if (!store || !persistence_service_is_initialized()) return ESP_ERR_INVALID_STATE;
     reset_store(store);
     size_t size = sizeof(*store);
-    esp_err_t err = persistence_service_read_blob(UPDATE_SERVICE_NAMESPACE,
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_blob(UPDATE_SERVICE_NAMESPACE,
                                                   UPDATE_SERVICE_STORE_KEY,
-                                                  store, &size);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
+                                                  store, &size));
+    if (err == ESP_ERR_NOT_FOUND) {
         bool legacy_found = false;
         err = load_legacy_store(store, &legacy_found);
         if (err != ESP_OK) return err;
         if (legacy_found) {
-            err = persistence_service_write_blob(UPDATE_SERVICE_NAMESPACE,
+            err = device_status_to_platform_error(persistence_service_write_blob(UPDATE_SERVICE_NAMESPACE,
                                                  UPDATE_SERVICE_STORE_KEY,
-                                                 store, sizeof(*store));
+                                                 store, sizeof(*store)));
             if (err != ESP_OK) return err;
         }
         return ESP_OK;
@@ -187,9 +186,9 @@ static esp_err_t load_store(update_service_store_t *store) {
 static esp_err_t save_store(const update_service_store_t *store) {
     if (!store || store->magic != UPDATE_SERVICE_STORE_MAGIC ||
         store->version != UPDATE_SERVICE_STORE_VERSION) return ESP_ERR_INVALID_ARG;
-    return persistence_service_write_blob(UPDATE_SERVICE_NAMESPACE,
+    return device_status_to_platform_error(persistence_service_write_blob(UPDATE_SERVICE_NAMESPACE,
                                           UPDATE_SERVICE_STORE_KEY,
-                                          store, sizeof(*store));
+                                          store, sizeof(*store)));
 }
 
 static int64_t reminder_interval(cJSON *metadata, bool critical) {

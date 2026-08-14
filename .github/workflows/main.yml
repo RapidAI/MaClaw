@@ -2540,7 +2540,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Upload release assets to Cloudflare R2
-        if: env.ESP32_FIRMWARE_ENABLED == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
@@ -2576,7 +2575,6 @@ jobs:
           wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
 
       - name: Upload release assets to Tencent COS
-        if: env.ESP32_FIRMWARE_ENABLED == 'true'
         env:
           COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
           COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
@@ -2598,6 +2596,17 @@ jobs:
           fi
           python3 -m pip install -q cos-python-sdk-v5
           python3 .github/scripts/sync_cos_release.py
+
+      - name: Verify desktop update publication on Cloudflare R2 and Tencent COS
+        env:
+          R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
+          COS_PUBLIC_BASE_URL: https://maclaw-1252723594.cos.ap-beijing.myqcloud.com
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+          MANIFEST_NAME: ${{ env.MANIFEST_NAME }}
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+        run: python3 .github/scripts/verify_update_mirror.py
 
       - name: Verify firmware publication on Cloudflare R2 and Tencent COS
         if: env.ESP32_FIRMWARE_ENABLED == 'true'

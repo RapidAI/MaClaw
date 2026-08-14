@@ -810,6 +810,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/routing/delete-email-route", RequireAdmin(adminService, AdminDeleteEmailRouteHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/routing/restore-email-route", RequireAdmin(adminService, AdminRestoreEmailRouteHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/routing/verify-email-route", RequireAdmin(adminService, AdminVerifyEmailRouteHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/routing/reconcile-stale-routes", RequireAdmin(adminService, AdminReconcileStaleRoutesHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/server/config", RequireAdmin(adminService, GetAdminServerConfigHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/server/config", RequireAdmin(adminService, UpdateAdminServerConfigHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/ha/status", RequireAdmin(adminService, AdminHAStatusHandler(haSvc)))

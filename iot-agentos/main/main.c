@@ -23,10 +23,8 @@
 #include "mbedtls/platform_util.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
-#include "esp_partition.h"
 #include "esp_random.h"
 #include "esp_system.h"
-#include "esp_spiffs.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -34,8 +32,6 @@
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
-#include "nvs.h"
-#include "nvs_flash.h"
 #include "psa/crypto.h"
 #include "qrcode.h"
 
@@ -58,10 +54,12 @@
 #include "persistence_service.h"
 #include "provisioning_failure_injection.h"
 #include "task_registry.h"
+#include "storage_service.h"
 #include "weather_cache_service.h"
 #include "meeting_recovery_service.h"
 #include "configuration_service.h"
 #include "platform_lifecycle.h"
+#include "platform_nvs.h"
 
 #define WIFI_CONNECT_TIMEOUT_MS 20000
 // 多热点逐个尝试时每个候选的连接超时，避免 5 个候选把启动拖得过长。
@@ -472,7 +470,6 @@ static TaskHandle_t s_command_cancel_task;
 static SemaphoreHandle_t s_command_cancel_stopped;
 static bool s_command_cancel_stop_requested;
 static SemaphoreHandle_t s_interaction_lock;
-static SemaphoreHandle_t s_nvs_mutex;
 // The outgoing long-poll worker deliberately has a PSRAM-backed stack so it
 // can decode audio replies without consuming the small internal-RAM budget.
 // Flash writes temporarily disable caches, however, and ESP-IDF requires the
@@ -519,23 +516,6 @@ static esp_err_t stop_setup_portal_transaction(uint32_t timeout_ms,
                                                bool restore_wake_word);
 static esp_err_t stop_setup_portal_transaction_locked(uint32_t timeout_ms,
                                                       bool restore_wake_word);
-
-// NVS may contain Wi-Fi credentials, the pairing token, alarms and the
-// meeting-recovery cursor.  ESP-IDF suggests erasing the whole partition for
-// these two errors, but doing so silently converts a recoverable storage or
-// schema fault into data loss.  Keep the partition untouched until a future
-// versioned persistence migration or the explicit, authenticated recovery
-// workflow can make that decision with the user.
-static esp_err_t initialize_nvs_preserving_user_data(void) {
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGE(TAG,
-                 "NVS unavailable (%s); preserving user data and entering diagnostic recovery",
-                 esp_err_to_name(err));
-        return err;
-    }
-    return err;
-}
 
 static void setup_restart_task(void *arg) {
     (void)arg;
@@ -4855,9 +4835,9 @@ static void save_ambient_weather(void) {
     };
     strlcpy(snapshot.summary, s_weather_summary, sizeof(snapshot.summary));
     strlcpy(snapshot.location, s_weather_location, sizeof(snapshot.location));
-    esp_err_t err = weather_cache_service_save(&snapshot);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "weather cache save deferred: %s", esp_err_to_name(err));
+    device_status_t status = weather_cache_service_save(&snapshot);
+    if (status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "weather cache save deferred: device status=%d", (int)status);
     }
 }
 
@@ -5056,9 +5036,9 @@ static void schedule_wake_restart(void) {
 
 static void load_ambient_weather(void) {
     weather_cache_snapshot_t snapshot;
-    esp_err_t err = weather_cache_service_load(&snapshot);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "weather cache unavailable: %s", esp_err_to_name(err));
+    device_status_t status = weather_cache_service_load(&snapshot);
+    if (status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "weather cache unavailable: device status=%d", (int)status);
         return;
     }
     strlcpy(s_weather_summary, snapshot.summary, sizeof(s_weather_summary));
@@ -5149,9 +5129,9 @@ static esp_err_t save_output_volume(unsigned percent) {
 
 static esp_err_t save_display_brightness(unsigned percent) {
     if (percent > 100) return ESP_ERR_INVALID_ARG;
-    return persistence_service_write_u8(DISPLAY_BRIGHTNESS_NVS_NAMESPACE,
+    return device_status_to_platform_error(persistence_service_write_u8(DISPLAY_BRIGHTNESS_NVS_NAMESPACE,
                                         DISPLAY_BRIGHTNESS_NVS_KEY,
-                                        (uint8_t)percent);
+                                        (uint8_t)percent));
 }
 
 static bool valid_screen_sleep_seconds(int seconds) {
@@ -5166,8 +5146,8 @@ static bool valid_screen_sleep_seconds(int seconds) {
 
 static esp_err_t save_screen_sleep_seconds(unsigned seconds) {
 	uint32_t value = seconds;
-	return persistence_service_write_blob(DISPLAY_BRIGHTNESS_NVS_NAMESPACE,
-								  DISPLAY_SLEEP_NVS_KEY, &value, sizeof(value));
+	return device_status_to_platform_error(persistence_service_write_blob(DISPLAY_BRIGHTNESS_NVS_NAMESPACE,
+                                                      DISPLAY_SLEEP_NVS_KEY, &value, sizeof(value)));
 }
 
 static void output_volume_persist_task(void *arg) {
@@ -5501,98 +5481,6 @@ static void load_device_id(void) {
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
     if (!s_device_id[0]) snprintf(s_device_id, sizeof(s_device_id), "%s", CONFIG_MACLAW_CLIENT_ID);
-}
-
-static bool meeting_storage_partition_is_blank(void) {
-    const esp_partition_t *partition = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "storage");
-    if (!partition || partition->size == 0) return false;
-
-    // Prove that the complete partition is factory-erased before allowing an
-    // automatic format. Sampling only its first sector is unsafe: after wear
-    // leveling or interrupted metadata updates that sector can be blank while
-    // later SPIFFS blocks still contain recoverable meeting audio.
-    uint8_t sample[1024];
-    for (size_t offset = 0; offset < partition->size; offset += sizeof(sample)) {
-        size_t count = partition->size - offset;
-        if (count > sizeof(sample)) count = sizeof(sample);
-        if (esp_partition_read(partition, offset, sample, count) != ESP_OK) {
-            return false;
-        }
-        for (size_t i = 0; i < count; ++i) {
-            if (sample[i] != 0xff) return false;
-        }
-    }
-    return true;
-}
-
-/* 启动存储清单：逐文件记录 /storage 占用，最后一行给总用量/剩余。
- * 小容量分区（如 waveshare 的 3MB）容量门禁失败时，靠这段日志直接定位
- * 空间去向。长期保留。这里运行在主任务内置栈上，VFS 遍历是安全的。 */
-static void log_storage_inventory(void) {
-    DIR *dir = opendir("/storage");
-    if (dir) {
-        struct dirent *entry;
-        while ((entry = readdir(dir)) != NULL) {
-            if (entry->d_name[0] == '.') continue;
-            // d_name 按 POSIX 上限 255 字节声明，缓冲留足避免截断告警。
-            char path[9 + 256];
-            snprintf(path, sizeof(path), "/storage/%s", entry->d_name);
-            struct stat info;
-            if (stat(path, &info) == 0) {
-                ESP_LOGI(TAG, "storage file: %s size=%ld",
-                         entry->d_name, (long)info.st_size);
-            } else {
-                ESP_LOGW(TAG, "storage file: %s stat failed errno=%d",
-                         entry->d_name, errno);
-            }
-        }
-        closedir(dir);
-    } else {
-        ESP_LOGW(TAG, "storage inventory: opendir failed errno=%d", errno);
-    }
-    size_t total = 0;
-    size_t used = 0;
-    if (esp_spiffs_info("storage", &total, &used) == ESP_OK && used <= total) {
-        ESP_LOGI(TAG, "storage usage: total=%u used=%u free=%u",
-                 (unsigned)total, (unsigned)used, (unsigned)(total - used));
-    }
-}
-
-static esp_err_t mount_meeting_storage(void) {
-    esp_vfs_spiffs_conf_t config = {
-        .base_path = "/storage",
-        .partition_label = "storage",
-        // The pet cache keeps one metadata file plus up to eight animation
-        // frames open over its save/load lifetime. Four descriptors was enough
-        // for meeting audio, but it makes fopen() fail partway through a full
-        // eight-frame pet update while the HTTP/audio tasks also hold files.
-        .max_files = 16,
-        .format_if_mount_failed = false,
-    };
-    esp_err_t err = esp_vfs_spiffs_register(&config);
-    if (err != ESP_OK && meeting_storage_partition_is_blank()) {
-        // Production flashing preserves the recording partition. Initialize a
-        // genuinely factory-blank device once, but never use mount failure by
-        // itself as permission to erase potentially recoverable recordings.
-        ESP_LOGW(TAG, "blank meeting storage detected; formatting once");
-        config.format_if_mount_failed = true;
-        err = esp_vfs_spiffs_register(&config);
-    }
-    if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
-        s_storage_mounted = true;
-        size_t total = 0;
-        size_t used = 0;
-        if (esp_spiffs_info("storage", &total, &used) == ESP_OK) {
-            ESP_LOGI(TAG, "meeting storage mounted: total=%u used=%u",
-                     (unsigned)total, (unsigned)used);
-        }
-        log_storage_inventory();
-        return ESP_OK;
-    }
-    ESP_LOGE(TAG, "meeting storage mount failed; preserving existing contents: %s",
-             esp_err_to_name(err));
-    return err;
 }
 
 static void load_meeting_recovery(void) {
@@ -12090,10 +11978,10 @@ static void startup_stop_local_workers(void) {
      * consumers. Close their admission after connectivity/meeting workers have
      * stopped, but before the shared NVS request boundary can be closed. */
     STARTUP_ROLLBACK_NEXT_TIMEOUT("weather cache");
-    esp_err_t weather_cache_stop_err = weather_cache_service_deinit(timeout_ms);
-    if (weather_cache_stop_err != ESP_OK) {
-        ESP_LOGW(TAG, "weather cache did not stop during startup rollback: %s",
-                 esp_err_to_name(weather_cache_stop_err));
+    device_status_t weather_cache_stop_status = weather_cache_service_deinit(timeout_ms);
+    if (weather_cache_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "weather cache did not stop during startup rollback: status=%d",
+                 (int)weather_cache_stop_status);
         startup_rollback_step_blocked("weather cache", NULL);
         return;
     }
@@ -12118,6 +12006,22 @@ static void startup_stop_local_workers(void) {
         return;
     }
 
+    /* At this point the last VFS users are proven stopped: the startup-pet
+     * worker and cache writer joined above, while the Audio owner sweep joined
+     * the meeting WAV recorder/uploader. Cached restore is synchronous during
+     * boot and cannot outlive its starter. Resource Pressure has also stopped
+     * its SPIFFS sampling, so Storage may now close new admission and detach
+     * the VFS. Any failure leaves the mounted volume and its consumers
+     * fail-closed rather than unmounting below a possible file handle. */
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Storage Service");
+    device_status_t storage_deinit_status = storage_service_deinit();
+    if (storage_deinit_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "storage service did not unmount during startup rollback: %d",
+                 (int)storage_deinit_status);
+        startup_rollback_step_blocked("Storage Service", NULL);
+        return;
+    }
+    s_storage_mounted = false;
     /* These workers have their own admission, stop sentinel and completion
      * contracts. Registry ownership keeps this coordinator from reaching into
      * task handles and preserves an entry when a bounded join times out. */
@@ -12167,10 +12071,10 @@ static void startup_stop_local_workers(void) {
         return;
     } else if (alarm_stop_err == ESP_OK) {
         STARTUP_ROLLBACK_NEXT_TIMEOUT("wake deadline dispatcher");
-        esp_err_t deadline_stop_err = wake_deadline_service_deinit(timeout_ms);
-        if (deadline_stop_err != ESP_OK) {
-            ESP_LOGW(TAG, "wake deadline dispatcher did not stop during startup rollback: %s",
-                     esp_err_to_name(deadline_stop_err));
+        device_status_t deadline_stop_status = wake_deadline_service_deinit(timeout_ms);
+        if (deadline_stop_status != DEVICE_STATUS_OK) {
+            ESP_LOGW(TAG, "wake deadline dispatcher did not stop during startup rollback: status=%d",
+                     (int)deadline_stop_status);
             startup_rollback_step_blocked("wake deadline dispatcher", NULL);
             return;
         }
@@ -12204,14 +12108,21 @@ static void startup_stop_local_workers(void) {
     }
     /* The registry is the ordinary owner path. Call the service boundary once
      * more so a stop that raced self-unregistration can finish its closed
-     * generation and reclaim its queue/semaphores. It intentionally does not
-     * destroy main.c's shared NVS transaction mutex. */
+     * generation and reclaim its queue/semaphores. */
     STARTUP_ROLLBACK_NEXT_TIMEOUT("Persistence Service");
-    esp_err_t persistence_deinit_err = persistence_service_deinit(timeout_ms);
-    if (persistence_deinit_err != ESP_OK) {
-        ESP_LOGW(TAG, "persistence service did not fully deinitialize during startup rollback: %s",
-                 esp_err_to_name(persistence_deinit_err));
+    device_status_t persistence_deinit_status = persistence_service_deinit(timeout_ms);
+    if (persistence_deinit_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "persistence service did not fully deinitialize during startup rollback: status=%d",
+                 (int)persistence_deinit_status);
         startup_rollback_step_blocked("Persistence Service", NULL);
+        return;
+    }
+    STARTUP_ROLLBACK_NEXT_TIMEOUT("Platform NVS");
+    device_status_t nvs_deinit_status = platform_nvs_deinit();
+    if (nvs_deinit_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "Platform NVS did not deinitialize during startup rollback: %d",
+                 (int)nvs_deinit_status);
+        startup_rollback_step_blocked("Platform NVS", NULL);
         return;
     }
 
@@ -12277,15 +12188,15 @@ void app_main(void) {
         return;
     }
     lifecycle_service_reach(DEVICE_RUNTIME_PHASE_IDENTITY_READY);
-    esp_err_t nvs_err = initialize_nvs_preserving_user_data();
-    if (nvs_err != ESP_OK) {
+    device_status_t nvs_status = platform_nvs_init();
+    if (nvs_status != DEVICE_STATUS_OK) {
         // firmware_identity_start() intentionally remains available so a
         // service tool can inspect the board/profile and perform an explicit
         // recovery. Do not start Wi-Fi, audio or writers against an NVS
-        // partition whose contents we deliberately chose not to destroy.
-        ESP_LOGE(TAG, "startup stopped before user-data writes: %s", esp_err_to_name(nvs_err));
+        // partition whose contents Platform NVS deliberately chose not to destroy.
+        ESP_LOGE(TAG, "startup stopped before user-data writes: NVS status=%d", (int)nvs_status);
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_STORAGE_READY,
-                               startup_status_from_esp_err(nvs_err), "NVS initialization");
+                               nvs_status, "NVS initialization");
         return;
     }
 	 lifecycle_service_reach(DEVICE_RUNTIME_PHASE_STORAGE_READY);
@@ -12300,8 +12211,14 @@ void app_main(void) {
                                DEVICE_STATUS_INTERNAL_ERROR, "PSA crypto initialization");
         return;
     }
-    (void)mount_meeting_storage();
-    device_status_t pressure_status = resource_pressure_service_init("storage", s_storage_mounted);
+    device_status_t storage_mount_status = storage_service_init();
+    s_storage_mounted = storage_service_is_available();
+    if (storage_mount_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "durable storage unavailable; preserving existing contents: %d",
+                 (int)storage_mount_status);
+    }
+    device_status_t pressure_status = resource_pressure_service_init(
+        storage_service_label(), s_storage_mounted);
     if (pressure_status != DEVICE_STATUS_OK) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
                                pressure_status, "resource pressure service");
@@ -12397,19 +12314,17 @@ void app_main(void) {
     taskEXIT_CRITICAL(&s_task_state_lock);
     s_startup_welcome_done = xSemaphoreCreateBinary();
     if (!s_startup_welcome_done) goto startup_core_no_memory;
-    s_nvs_mutex = xSemaphoreCreateMutex();
-    if (!s_nvs_mutex) goto startup_core_no_memory;
-    esp_err_t persistence_init_err = persistence_service_init(s_nvs_mutex);
-    if (persistence_init_err != ESP_OK) {
+    device_status_t persistence_init_status = persistence_service_init();
+    if (persistence_init_status != DEVICE_STATUS_OK) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
-                               startup_status_from_esp_err(persistence_init_err),
+                               persistence_init_status,
                                "persistence service");
         return;
     }
-    esp_err_t weather_cache_init_err = weather_cache_service_init();
-    if (weather_cache_init_err != ESP_OK) {
+    device_status_t weather_cache_init_status = weather_cache_service_init();
+    if (weather_cache_init_status != DEVICE_STATUS_OK) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
-                               startup_status_from_esp_err(weather_cache_init_err),
+                               weather_cache_init_status,
                                "weather cache service");
         return;
     }
@@ -12561,11 +12476,11 @@ void app_main(void) {
         ESP_LOGW(TAG, "cannot start suspected-fall service: device status=%d",
                  (int)fall_detection_status);
     }
-    esp_err_t deadline_init_err = wake_deadline_service_init();
-    if (deadline_init_err != ESP_OK) {
+    device_status_t deadline_init_status = wake_deadline_service_init();
+    if (deadline_init_status != DEVICE_STATUS_OK) {
         (void)app_intent_service_stop(500);
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
-                               startup_status_from_esp_err(deadline_init_err),
+                               deadline_init_status,
                                "wake deadline service");
         return;
     }
@@ -12591,10 +12506,10 @@ void app_main(void) {
     // 亮度是独立 scalar key（不走 versioned 配置 blob），找到才恢复；
     // 未找到时保持各板默认亮度（waveshare/echoear/fangtang 100，bread 50）。
     uint8_t restored_brightness = 0;
-    esp_err_t brightness_err = persistence_service_read_u8(
+    device_status_t brightness_status = persistence_service_read_u8(
         DISPLAY_BRIGHTNESS_NVS_NAMESPACE, DISPLAY_BRIGHTNESS_NVS_KEY,
         &restored_brightness);
-    if (brightness_err == ESP_OK && restored_brightness <= 100) {
+    if (brightness_status == DEVICE_STATUS_OK && restored_brightness <= 100) {
         device_status_t brightness_status =
             device_display_set_brightness(restored_brightness);
         if (brightness_status == DEVICE_STATUS_OK) {
@@ -12608,10 +12523,10 @@ void app_main(void) {
 
     uint32_t restored_screen_sleep_seconds = 0;
     size_t screen_sleep_size = sizeof(restored_screen_sleep_seconds);
-    esp_err_t screen_sleep_err = persistence_service_read_blob(
+    device_status_t screen_sleep_status = persistence_service_read_blob(
         DISPLAY_BRIGHTNESS_NVS_NAMESPACE, DISPLAY_SLEEP_NVS_KEY,
         &restored_screen_sleep_seconds, &screen_sleep_size);
-	if (screen_sleep_err == ESP_OK && screen_sleep_size == sizeof(restored_screen_sleep_seconds) &&
+	if (screen_sleep_status == DEVICE_STATUS_OK && screen_sleep_size == sizeof(restored_screen_sleep_seconds) &&
 		valid_screen_sleep_seconds((int)restored_screen_sleep_seconds)) {
         app_ui_set_display_off_idle_ms(restored_screen_sleep_seconds * 1000u);
         ESP_LOGI(TAG, "restored screen sleep timeout: %lu seconds",

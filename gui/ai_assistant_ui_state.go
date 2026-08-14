@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func (a *App) LoadAIAssistantUIState() (AIAssistantUIState, error) {
 		return AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}, StoragePath: path}, err
 	}
 	normalizeAIAssistantUIState(&state)
-	if aiAssistantUIStateNeedsSanitizedRewrite(data) {
+	if aiAssistantUIStateNeedsSanitizedRewrite(data, state) {
 		state.StoragePath = ""
 		if err := configfile.AtomicWriteJSON(path, state); err != nil {
 			return AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}, StoragePath: path}, err
@@ -222,20 +223,58 @@ func normalizeAIAssistantUIMessage(message map[string]interface{}) {
 	if strings.TrimSpace(role) != "assistant" {
 		return
 	}
-	content, ok := message["content"].(string)
-	if !ok || content == "" {
-		return
+	if content, ok := message["content"].(string); ok && content != "" {
+		message["content"] = sanitizeAIAssistantUIPersistedText(llm.StripAllExtra(content))
 	}
-	message["content"] = llm.StripAllExtra(content)
+	if reasoning, ok := message["reasoning"].(string); ok && reasoning != "" {
+		message["reasoning"] = sanitizeAIAssistantUIPersistedText(reasoning)
+	}
 }
 
-func aiAssistantUIStateNeedsSanitizedRewrite(data []byte) bool {
+func sanitizeAIAssistantUIPersistedText(value string) string {
+	value = strings.TrimPrefix(value, "\x01")
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\t':
+			return r
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, value)
+}
+
+func aiAssistantUIStateNeedsSanitizedRewrite(data []byte, state AIAssistantUIState) bool {
 	lower := strings.ToLower(string(data))
-	return strings.Contains(lower, "<details") ||
+	if strings.Contains(lower, "<details") ||
 		strings.Contains(lower, "<think>") ||
 		strings.Contains(lower, "<tool_call") ||
 		strings.Contains(lower, "<turn: tool_call") ||
-		strings.Contains(lower, "<|functioncallbegin|>")
+		strings.Contains(lower, "<|functioncallbegin|>") {
+		return true
+	}
+	for r := rune(0); r <= 0x9f; r++ {
+		if r == '\n' || r == '\r' || r == '\t' || (r > 0x1f && r < 0x7f) {
+			continue
+		}
+		if strings.Contains(lower, fmt.Sprintf(`\u%04x`, r)) {
+			return true
+		}
+	}
+	return aiAssistantUIStateContainsForbiddenControls(state)
+}
+
+func aiAssistantUIStateContainsForbiddenControls(state AIAssistantUIState) bool {
+	for _, message := range state.Messages {
+		for _, field := range []string{"content", "reasoning"} {
+			value, _ := message[field].(string)
+			if value != sanitizeAIAssistantUIPersistedText(value) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isPersistableAIAssistantUIMessage(message map[string]interface{}) bool {

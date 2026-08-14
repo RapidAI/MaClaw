@@ -2,7 +2,6 @@
 
 #include <string.h>
 
-#include "nvs.h" /* legacy store import error code */
 #include "persistence_service.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -79,29 +78,29 @@ static esp_err_t load_legacy(meeting_recovery_snapshot_t *snapshot, bool *out_fo
     clear_snapshot(snapshot);
     *out_found = false;
     int32_t value = 0;
-    esp_err_t err = persistence_service_read_i32(MEETING_RECOVERY_NAMESPACE, "meet_next", &value);
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_i32(MEETING_RECOVERY_NAMESPACE, "meet_next", &value));
     if (err == ESP_OK) {
         snapshot->next_chunk = value;
         *out_found = true;
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) return err;
-    err = persistence_service_read_i32(MEETING_RECOVERY_NAMESPACE, "meet_phase", &value);
+    } else if (err != ESP_ERR_NOT_FOUND) return err;
+    err = device_status_to_platform_error(persistence_service_read_i32(MEETING_RECOVERY_NAMESPACE, "meet_phase", &value));
     if (err == ESP_OK) {
         snapshot->phase = value;
         *out_found = true;
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) return err;
+    } else if (err != ESP_ERR_NOT_FOUND) return err;
     size_t size = sizeof(snapshot->recording_id);
-    err = persistence_service_read_string(MEETING_RECOVERY_NAMESPACE, "meet_id",
-                                          snapshot->recording_id, &size);
+    err = device_status_to_platform_error(persistence_service_read_string(MEETING_RECOVERY_NAMESPACE, "meet_id",
+                                          snapshot->recording_id, &size));
     if (err == ESP_OK) {
         *out_found = true;
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) return err;
+    } else if (err != ESP_ERR_NOT_FOUND) return err;
     uint8_t pending = 0;
-    err = persistence_service_read_u8(MEETING_RECOVERY_NAMESPACE, "meet_pending", &pending);
+    err = device_status_to_platform_error(persistence_service_read_u8(MEETING_RECOVERY_NAMESPACE, "meet_pending", &pending));
     if (err == ESP_OK) {
         if (pending > 1) return ESP_ERR_INVALID_STATE;
         snapshot->pending = pending != 0;
         *out_found = true;
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) return err;
+    } else if (err != ESP_ERR_NOT_FOUND) return err;
     if (*out_found && (snapshot->next_chunk < 0 || snapshot->phase < 0 || snapshot->phase > 2)) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -179,10 +178,10 @@ esp_err_t meeting_recovery_service_load(meeting_recovery_snapshot_t *out_snapsho
     clear_snapshot(out_snapshot);
     meeting_recovery_store_t store = {0};
     size_t size = sizeof(store);
-    esp_err_t err = persistence_service_read_blob(MEETING_RECOVERY_NAMESPACE,
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_blob(MEETING_RECOVERY_NAMESPACE,
                                                   MEETING_RECOVERY_STORE_KEY,
-                                                  &store, &size);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
+                                                  &store, &size));
+    if (err == ESP_ERR_NOT_FOUND) {
         bool legacy_found = false;
         err = load_legacy(out_snapshot, &legacy_found);
         if (err != ESP_OK || !legacy_found) {
@@ -198,9 +197,9 @@ esp_err_t meeting_recovery_service_load(meeting_recovery_snapshot_t *out_snapsho
         };
         strlcpy(legacy_store.recording_id, out_snapshot->recording_id,
                 sizeof(legacy_store.recording_id));
-        result = persistence_service_write_blob(MEETING_RECOVERY_NAMESPACE,
+        result = device_status_to_platform_error(persistence_service_write_blob(MEETING_RECOVERY_NAMESPACE,
                                                 MEETING_RECOVERY_STORE_KEY,
-                                                &legacy_store, sizeof(legacy_store));
+                                                &legacy_store, sizeof(legacy_store)));
         goto done;
     }
     if (err != ESP_OK) {
@@ -234,9 +233,9 @@ esp_err_t meeting_recovery_service_save(const meeting_recovery_snapshot_t *snaps
         .phase = snapshot->phase,
     };
     strlcpy(store.recording_id, snapshot->recording_id, sizeof(store.recording_id));
-    esp_err_t err = persistence_service_write_blob(MEETING_RECOVERY_NAMESPACE,
+    esp_err_t err = device_status_to_platform_error(persistence_service_write_blob(MEETING_RECOVERY_NAMESPACE,
                                                     MEETING_RECOVERY_STORE_KEY,
-                                                    &store, sizeof(store));
+                                                    &store, sizeof(store)));
     admission_exit();
     return err;
 }

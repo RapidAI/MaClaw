@@ -52,7 +52,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
+import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
 import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
@@ -1710,6 +1710,28 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].reasoning).toBe('go style thought');
     });
 
+    it('filters control characters from terminal response text and reasoning', async () => {
+        const pending = deferred<{ text: string; reasoning: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+        await act(async () => {
+            void result.current.sendMessage('sanitize terminal response');
+        });
+
+        await act(async () => {
+            pending.resolve({ text: 'visible\u0000 answer', reasoning: '\x01private\u0085 thought', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('visible answer');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('private thought');
+    });
+
+    it('filters control characters from terminal response errors', async () => {
+        expect(sanitizeAIAssistantStreamText('backend\u0000 error')).toBe('backend error');
+    });
+
     it('stream-done clears visual busy before the request promise resolves', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
@@ -2008,6 +2030,11 @@ describe('useAIAssistant property tests', () => {
             (req: { request_id: string; text: string }) => ({ RequestID: req.request_id, SessionKey: 'desktop-user', Text: '__heartbeat__' }),
             { expectAlive: true, prompt: 'long legacy event task' },
         );
+    });
+
+    it('filters control characters from streamed ACP content', async () => {
+        expect(sanitizeAIAssistantStreamText('visible\u0000 text\u0085')).toBe('visible text');
+        expect(sanitizeAIAssistantStreamText('\x01private\u0000 reasoning')).toBe('\x01private reasoning');
     });
 
     it('parses Wails JSON-string heartbeats before applying timeout activity', async () => {
@@ -5555,6 +5582,46 @@ describe('useAIAssistant property tests', () => {
         expect(assistant?.reasoning).toContain('• Task received');
         expect(assistant?.reasoning).toContain('• Preparing the execution path');
         expect(result.current.progressMessages).toEqual([]);
+    });
+
+    it('separates a system status milestone from the first streamed reasoning token', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('separate status from reasoning');
+        });
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[Status] Building the request' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, text: '\x01The model is now reasoning.' });
+        });
+
+        expect(assistantMessages(result.current.messages)[0]?.reasoning).toBe('• Building the request\nThe model is now reasoning.');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('retains model reasoning when a later status milestone arrives', async () => {
+        mockSendResponse = { deferred: true, text: '', error: '', fields: null, actions: null };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('preserve reasoning around status updates');
+        });
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, text: '\x01The model examined the repository.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[Status] Step complete' });
+        });
+
+        const reasoning = assistantMessages(result.current.messages)[0]?.reasoning || '';
+        expect(reasoning).toContain('The model examined the repository.');
+        expect(reasoning).toContain('• Step complete');
     });
 
     it('keeps live progress scoped to the active session key', async () => {

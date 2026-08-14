@@ -626,6 +626,84 @@ foreach ($adapter in $adapterOwners.Keys) {
     }
 }
 
+# Durable-volume mounting and unmounting are physical Storage port concerns.
+# The composition
+# root may consume only Storage Service availability; it must not grow a second
+# SPIFFS mount/format path simply because one current product calls it meeting
+# storage.  The service itself likewise stays policy-only and delegates VFS,
+# partition and blank-media facts to Platform Storage.
+$storagePhysicalTokens = @(
+    '\besp_vfs_spiffs_', '\besp_spiffs_', '\besp_partition_(find_first|read)',
+    '\besp_partition_t\b', '\besp_vfs_spiffs_conf_t\b'
+)
+foreach ($token in $storagePhysicalTokens) {
+    foreach ($source in @($allSourceFiles | Where-Object {
+        $_.FullName -notmatch 'main[\\/]platform_storage\.c$' -and
+        $_.FullName -notmatch 'main[\\/]platform_resource\.c$' -and
+        (Select-String -Path $_.FullName -Pattern $token -Quiet)
+    })) {
+        $relative = $source.FullName.Substring($projectRoot.Length + 1).Replace('\','/')
+        $violations += "${relative}: SPIFFS/partition mount facts must be owned only by main/platform_storage.c"
+    }
+}
+foreach ($forbiddenMainStorage in @(
+    '\bmount_meeting_storage\s*\(', '\bmeeting_storage_partition_is_blank\s*\(',
+    '\blog_storage_inventory\s*\('
+)) {
+    foreach ($match in Select-String -Path $mainConnectivitySource -Pattern $forbiddenMainStorage) {
+        $violations += "main/main.c:$($match.LineNumber): storage lifecycle belongs to Storage Service: $($match.Line.Trim())"
+    }
+}
+# NVS is a physical persistence port.  The composition root may consume only
+# its normalized status, while Persistence Service owns request lifecycle and
+# Platform NVS is the unique SDK owner.  This prevents an otherwise convenient
+# direct NVS call from bypassing cache-safe stack routing or destructive-data
+# recovery policy.
+$platformNvsSource = 'main/platform_nvs.c'
+$platformNvsHeader = 'main/platform_nvs.h'
+if (-not (Test-Path -LiteralPath (Join-Path $projectRoot $platformNvsSource)) -or
+    -not (Test-Path -LiteralPath (Join-Path $projectRoot $platformNvsHeader))) {
+    $violations += 'main/platform_nvs.[c|h]: Platform NVS source owner is missing'
+} else {
+    $nvsPhysicalTokens = @('\bnvs_flash_', '\bnvs_(open|close|get_|set_|commit|erase)',
+                           '\bnvs_handle_t\b')
+    foreach ($token in $nvsPhysicalTokens) {
+        foreach ($source in @($allSourceFiles | Where-Object {
+            $_.FullName -notmatch 'main[\\/]platform_nvs\.c$' -and
+            (Select-String -Path $_.FullName -Pattern $token -Quiet)
+        })) {
+            $relative = $source.FullName.Substring($projectRoot.Length + 1).Replace('\\','/')
+            $violations += "${relative}: NVS SDK access must be owned only by main/platform_nvs.c"
+        }
+    }
+    foreach ($forbiddenMainNvs in @('\bplatform_nvs_(read|write)_[A-Za-z0-9_]+\s*\(',
+                                    '\bnvs_flash_', '\bnvs_(open|close|get_|set_|commit|erase)')) {
+        foreach ($match in Select-String -Path $mainConnectivitySource -Pattern $forbiddenMainNvs) {
+            $violations += "main/main.c:$($match.LineNumber): main.c may only initialize/deinitialize Platform NVS: $($match.Line.Trim())"
+        }
+    }
+    $nvsHeaderText = Get-Content -LiteralPath (Join-Path $projectRoot $platformNvsHeader) -Raw
+    if ($nvsHeaderText -match 'esp_|freertos/|nvs_handle_t|SemaphoreHandle_t') {
+        $violations += 'main/platform_nvs.h: Platform NVS public contract must not leak SDK/RTOS types'
+    }
+    $persistenceHeader = Join-Path $projectRoot 'main/persistence_service.h'
+    if (-not (Test-Path -LiteralPath $persistenceHeader)) {
+        $violations += 'main/persistence_service.h: Persistence Service public contract is missing'
+    } else {
+        $persistenceHeaderText = Get-Content -LiteralPath $persistenceHeader -Raw
+        if ($persistenceHeaderText -match '\besp_err_t\b|\bESP_ERR_|\bnvs_|SemaphoreHandle_t|#include\s*[<"](?:esp_|freertos/|nvs\.h)') {
+            $violations += 'main/persistence_service.h: Persistence Service public contract must expose only Device value types'
+        }
+    }
+    foreach ($source in @($allSourceFiles | Where-Object {
+        $_.FullName -notmatch 'main[\\/]platform_nvs\.c$' -and
+        (Select-String -Path $_.FullName -Pattern '#include\s*[<"]nvs\.h[>"]|\bESP_ERR_NVS_' -Quiet)
+    })) {
+        $relative = $source.FullName.Substring($projectRoot.Length + 1).Replace('\','/')
+        $violations += "${relative}: NVS-specific SDK errors/includes must remain only in main/platform_nvs.c"
+    }
+}
+
 # ML307 is a Fangtang-specific physical Connectivity port.  Keeping both its
 # implementation and contract beneath the Fangtang adapter prevents a future
 # compact renderer or shared Connectivity facade from acquiring a direct modem

@@ -11,6 +11,7 @@ const indexPath = path.join(root, 'index.html');
 const expectedScripts = [
   'admin.js',
   'admin-tabs.js',
+  'admin-lazy-module-loader.js',
   'tenant-tab.js',
   'admin-ui.js',
   'center-tab.js',
@@ -39,6 +40,7 @@ const expectedScripts = [
   'overview-config-agent.js',
   'admin-bootstrap.js'
 ];
+const lazyAdminScripts = new Set(['security-tab.js', 'digital-assets-tab.js', 'llm-provider-tab.js', 'llm-service-tabs.js']);
 const removedLegacyFiles = [
   'llmproviders.js',
   'usagestats.js',
@@ -130,7 +132,11 @@ function assertScriptOrder() {
     fail('index.html must not reference legacy /admin/js/ assets.');
   }
   let lastIndex = -1;
-  expectedScripts.forEach(function(name) {
+  const deferredModulePrefix = '<script defer src="/admin/';
+  expectedScripts.filter(function(name) { return !lazyAdminScripts.has(name); }).forEach(function(name) {
+    if (!html.includes(deferredModulePrefix + name)) {
+      fail('index.html must defer-load admin module: ' + name);
+    }
     const scriptPattern = new RegExp('src="/admin/' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:\\?[^"]*)?"');
     const match = scriptPattern.exec(html);
     const idx = match ? match.index : -1;
@@ -144,6 +150,27 @@ function assertScriptOrder() {
     }
     lastIndex = idx;
   });
+}
+
+function assertLazyScriptLoading() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const loader = read('admin-lazy-module-loader.js');
+  lazyAdminScripts.forEach(function(name) {
+    if (html.includes('/admin/' + name)) {
+      fail('index.html must not eagerly load lazy admin module: ' + name);
+    }
+    if (!loader.includes("'" + name + "'")) {
+      fail('admin-lazy-module-loader.js must register lazy module: ' + name);
+    }
+  });
+  ['global.openTab = function(name)', 'global.loadAdminLazyModule = loadModule', 'global.isAdminLazyModuleLoaded', "script.async = false"].forEach(function(marker) {
+    if (!loader.includes(marker)) {
+      fail('admin-lazy-module-loader.js is missing lazy loading behavior: ' + marker);
+    }
+  });
+  if (!read('admin.js').includes('window.openTab(normalizeAdminTab(')) {
+    fail('admin.js restoreTab must use the lazy-aware openTab entry point.');
+  }
 }
 
 function assertHealthHook() {
@@ -260,6 +287,15 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js is missing tenant migration settings marker: ' + marker);
     }
   });
+  const responseMigrationSettings = extractNamedFunction(system, 'tenantMigrationSettingsFromResponse');
+  const applyMigrationSettings = extractNamedFunction(system, 'applyTenantMigrationSettings');
+  const saveMigrationSettings = extractNamedFunction(system, 'saveTenantMigrationSettings');
+  if (!responseMigrationSettings.includes('data && data.max_package_bytes') || !saveMigrationSettings.includes('max_package_bytes: valueMB * 1024 * 1024')) {
+    fail('system-tab.js must use the migration API max_package_bytes contract.');
+  }
+  if (responseMigrationSettings.includes('max_compressed_bytes') || applyMigrationSettings.includes('max_compressed_bytes') || saveMigrationSettings.includes('max_compressed_bytes')) {
+    fail('system-tab.js must not use the obsolete max_compressed_bytes migration field.');
+  }
   ['loadTenantDigitalAssetsSettings', 'toggleTenantDigitalAssetsEnabled', 'toggleTenantDigitalAssetsSync', '/api/admin/digital-assets/settings', 'TENANT_DIGITAL_ASSETS_SETTINGS_I18N'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing tenant digital assets settings marker: ' + marker);
@@ -429,6 +465,28 @@ function assertTenantSystemLLMDefaultBehavior() {
     new vm.Script(code, { filename: 'system-tab-tenant-system-free-behavior.js' }).runInNewContext({});
   } catch (err) {
     fail('system-tab.js tenant system-free behavior regression: ' + err.message);
+  }
+}
+
+function assertTenantMigrationSettingsBehavior() {
+  const system = read('system-tab.js');
+  const code = [
+    'var TENANT_MIGRATION_MIN_MB = 100;',
+    'var TENANT_MIGRATION_MAX_MB = 1024;',
+    'var migrationInput = {};',
+    'var document = { getElementById: function(id) { return id === "tenantMigrationMaxMB" ? migrationInput : null; } };',
+    extractNamedFunction(system, 'tenantMigrationBytesToMB'),
+    extractNamedFunction(system, 'tenantMigrationSettingsFromResponse'),
+    extractNamedFunction(system, 'applyTenantMigrationSettings'),
+    'applyTenantMigrationSettings({ min_bytes: 200 * 1024 * 1024, max_bytes: 512 * 1024 * 1024, max_package_bytes: 300 * 1024 * 1024 });',
+    'if (migrationInput.min !== "200" || migrationInput.max !== "512" || migrationInput.value !== "300") throw new Error("API response was not applied: " + JSON.stringify(migrationInput));',
+    'var clamped = tenantMigrationSettingsFromResponse({ min_bytes: 200 * 1024 * 1024, max_bytes: 512 * 1024 * 1024, max_package_bytes: 900 * 1024 * 1024 });',
+    'if (clamped.valueMB !== 512) throw new Error("response value was not clamped to server range");'
+  ].join('\n');
+  try {
+    new vm.Script(code, { filename: 'system-tab-tenant-migration-settings-behavior.js' }).runInNewContext({});
+  } catch (err) {
+    fail('system-tab.js tenant migration settings behavior regression: ' + err.message);
   }
 }
 
@@ -848,6 +906,41 @@ function assertModuleExports(name) {
   });
 }
 
+function assertUserReferralNavigationI18nLifecycle() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const admin = read('admin.js');
+  const content = read('user-referrals-tab.js');
+  const languageListener = 'global.AdminTabRegistry.onLanguageChange(applyText);';
+  const initialRender = '\n  applyText();\n})(window);';
+  [
+    'id="navUserReferrals" data-i18n="navUserReferrals"',
+    'id="navUserReferralsDesc" data-i18n="navUserReferralsDesc"'
+  ].forEach(function(marker) {
+    if (!html.includes(marker)) {
+      fail('index.html must register User referrals navigation text with core i18n: ' + marker);
+    }
+  });
+  [
+    "I18N.en.navUserReferrals = 'User referrals';",
+    "I18N.en.navUserReferralsDesc = 'Rewards and activity';",
+    "I18N.zh.navUserReferrals = '\\u7528\\u6237\\u9080\\u8bf7';",
+    "I18N.zh.navUserReferralsDesc = '\\u5956\\u52b1\\u4e0e\\u9080\\u8bf7\\u8bb0\\u5f55';"
+  ].forEach(function(marker) {
+    if (!admin.includes(marker)) {
+      fail('admin.js is missing User referrals core i18n text: ' + marker);
+    }
+  });
+  if (!content.includes("setText('navUserReferrals', zh('User referrals'")) {
+    fail('user-referrals-tab.js must localize the User referrals navigation label.');
+  }
+  if (!content.includes("setText('navUserReferralsDesc', zh('Rewards and activity'")) {
+    fail('user-referrals-tab.js must localize the User referrals navigation description.');
+  }
+  if (content.indexOf(initialRender) <= content.indexOf(languageListener)) {
+    fail('user-referrals-tab.js must render navigation i18n when the module loads, after registering language changes.');
+  }
+}
+
 function assertLegacyMirrorRemoved() {
   const legacyDir = path.join(root, 'js');
   if (fs.existsSync(legacyDir)) {
@@ -1090,6 +1183,8 @@ function assertApprovalRolesHooks() {
 expectedScripts.concat(['MODULES.md', 'check-admin.ps1']).forEach(assertExists);
 expectedScripts.forEach(assertJavaScriptSyntax);
 expectedScripts.forEach(assertModuleExports);
+assertLazyScriptLoading();
+assertUserReferralNavigationI18nLifecycle();
 // Legacy modules may still contain pre-existing localized source. Keep the
 // invitation module in the same ASCII-only contract as the other modern admin
 // modules (Chinese copy must be expressed with \u escapes).
@@ -1099,6 +1194,7 @@ assertScriptOrder();
 assertHealthHook();
 assertTenantAdminUIHooks();
 assertTenantSystemLLMDefaultBehavior();
+assertTenantMigrationSettingsBehavior();
 assertEmptyTextNodesAreOwned();
 assertBlankPlaceholdersAreOwned();
 assertBlankControlsAreOwned();

@@ -253,6 +253,12 @@ function appendThoughtChunk(text: string): void {
   scrollToBottomIfStuck();
 }
 
+// The shared agent loop prefixes private reasoning with \x01. It is a
+// transport marker, not user-visible text; Chromium renders it as a square.
+function sanitizeStreamText(text: string): string {
+  return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
+}
+
 /** Debounce markdown re-render while chunks stream in. */
 const pendingRender = new Set<{ body: HTMLElement; raw: string }>();
 
@@ -646,11 +652,19 @@ function handleEvent(msg: { type: string; [key: string]: unknown }): void {
           | { type?: string; text?: string }
           | { type?: string; text?: string }[]
           | undefined;
-        const text = Array.isArray(c) ? c[0]?.text ?? "" : c?.text ?? "";
-        if (kind === "agent_message_chunk") {
-          appendAgentChunk(text);
+        const text = Array.isArray(c) ? c[0]?.text : c?.text;
+        // ACP payloads arrive from a process boundary. Do not let a malformed
+        // content block throw while handling a stream update.
+        const rawText = typeof text === "string" ? text : "";
+        // Accept older hosts that sent internal reasoning on the message lane.
+        // New hosts route it as agent_thought_chunk, but this keeps a stale
+        // bridge from placing control-character squares into the transcript.
+        if (kind === "agent_message_chunk" && rawText.startsWith("\x01")) {
+          appendThoughtChunk(sanitizeStreamText(rawText.slice(1)));
+        } else if (kind === "agent_message_chunk") {
+          appendAgentChunk(sanitizeStreamText(rawText));
         } else {
-          appendThoughtChunk(text);
+          appendThoughtChunk(sanitizeStreamText(rawText));
         }
       } else if (kind === "tool_call") {
         renderToolCall(update);

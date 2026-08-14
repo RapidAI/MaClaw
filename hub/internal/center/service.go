@@ -2046,15 +2046,13 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 	}
 	if s != nil && s.admins != nil {
 		if admins, err := s.admins.ListAllTenantAdmins(ctx); err == nil {
-			tenantEmails, _ := caps["tenant_user_emails"].(map[string][]string)
-			if tenantEmails == nil {
-				tenantEmails = map[string][]string{}
-			}
-			tenantCounts, _ := caps["tenant_user_counts"].(map[string]int)
-			if tenantCounts == nil {
-				tenantCounts = map[string]int{}
-			}
-			userEmails, _ := caps["user_emails"].([]string)
+			// Tenant administrators are identities with a different routing
+			// purpose from ordinary product users.  Do not put them in the
+			// user inventory: HubCenter uses that inventory for normal
+			// onboarding/login routing, where an administrator-only address
+			// must never preempt a public fallback tenant.
+			tenantAdminEmails := map[string][]string{}
+			tenantAdminCounts := map[string]int{}
 			for _, admin := range admins {
 				if admin == nil || !strings.EqualFold(strings.TrimSpace(admin.Scope), "tenant") || !strings.EqualFold(strings.TrimSpace(admin.Status), "active") {
 					continue
@@ -2064,20 +2062,11 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 				if tenantID == "" || email == "" {
 					continue
 				}
-				before := len(tenantEmails[tenantID])
-				tenantEmails[tenantID] = appendUniqueSortedEmail(tenantEmails[tenantID], email)
-				userEmails = appendUniqueSortedEmail(userEmails, email)
-				if len(tenantEmails[tenantID]) != before {
-					tenantCounts[tenantID] = len(tenantEmails[tenantID])
-				}
+				tenantAdminEmails[tenantID] = appendUniqueSortedEmail(tenantAdminEmails[tenantID], email)
+				tenantAdminCounts[tenantID] = len(tenantAdminEmails[tenantID])
 			}
-			// Keep the aggregate inventory consistent with the tenant inventory.
-			// HubCenter uses tenant_user_emails for exact routes, while user_emails
-			// is also surfaced by legacy and aggregate consumers.
-			caps["user_emails"] = userEmails
-			caps["user_count"] = len(userEmails)
-			caps["tenant_user_emails"] = tenantEmails
-			caps["tenant_user_counts"] = tenantCounts
+			caps["tenant_admin_emails"] = tenantAdminEmails
+			caps["tenant_admin_counts"] = tenantAdminCounts
 		}
 	}
 	if s != nil && s.tenants != nil {

@@ -155,6 +155,25 @@ export interface VEConversationState {
     reconnectAttempt: number;
 }
 
+/**
+ * VE chat does not render a reasoning panel. The shared agent loop prefixes
+ * private reasoning deltas with \x01, which Chromium displays as a square when
+ * it leaks through an older backend or a remote Hub. Drop those deltas and any
+ * remaining non-whitespace control characters as a client-side safety net.
+ */
+export function visibleVEStreamContent(value: unknown): string {
+    const content = typeof value === "string" ? value : "";
+    if (content.startsWith("\x01")) return "";
+    return content.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
+}
+
+function firstVEStreamText(...values: unknown[]): unknown {
+    for (const value of values) {
+        if (typeof value === "string" && value !== "") return value;
+    }
+    return values[0];
+}
+
 export type VEConversationError =
     | { type: "hub_disconnected"; message: string }
     | { type: "ve_offline"; message: string }
@@ -1237,7 +1256,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     useEffect(() => {
         const handleStreamChunk = (data: any) => {
             const sessionId = data?.session_id || data?.sessionId;
-            const content = String(data?.content || data?.chunk || "");
+            // Some older Hub payloads send an empty `content` plus the actual
+            // delta in `chunk`; retain that compatibility while sanitizing.
+            const content = visibleVEStreamContent(firstVEStreamText(data?.content, data?.chunk));
             if (sessionId && sessionId !== sessionIdRef.current) return;
             if (!mountedRef.current) return;
             const attachments = normalizeVEMessageAttachments(data?.attachments);
@@ -2480,7 +2501,10 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
         const kind = String(message.kind || message.Kind || "").trim().toLowerCase();
         const fromId = String(message.from_id || message.fromId || message.FromID || "").trim();
         const attachments = normalizeVEHistoryAttachments(message);
-        const content = String(message.content || message.Content || "");
+        // Older Hub records may contain raw streamed reasoning deltas. Apply the
+        // same boundary filter used for live chunks so reopening a session cannot
+        // reintroduce the control-character square into the transcript.
+        const content = visibleVEStreamContent(firstVEStreamText(message.content, message.Content));
         if (kind === "stream_end") {
             if (streamIndex >= 0 && (!fromId || sameHistorySender(streamFromId, fromId))) {
                 const existing = out[streamIndex];

@@ -13,7 +13,6 @@
 #include "esp_check.h"
 #include "compact_visual_profile_service.h"
 #include "esp_log.h"
-#include "nvs.h"
 #include "esp_timer.h"
 #include "provisioning_failure_injection.h"
 #include "freertos/FreeRTOS.h"

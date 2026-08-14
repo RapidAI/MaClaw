@@ -149,7 +149,7 @@ func TestSyncUserRouteReportsMissingCenterRegistration(t *testing.T) {
 	}
 }
 
-func TestRegistrationCapabilitiesIncludeActiveTenantAdmins(t *testing.T) {
+func TestRegistrationCapabilitiesSeparateActiveTenantAdminsFromUsers(t *testing.T) {
 	svc := NewService(config.Default(), newFakeSettingsRepo())
 	svc.SetStatsProviders(fakeCenterUsers{items: []*store.User{
 		{TenantID: "tenant_acme", Email: "member@acme.example"},
@@ -165,18 +165,26 @@ func TestRegistrationCapabilitiesIncludeActiveTenantAdmins(t *testing.T) {
 	if !ok {
 		t.Fatalf("tenant_user_emails type=%T", caps["tenant_user_emails"])
 	}
-	if got := byTenant["tenant_acme"]; len(got) != 2 || got[0] != "admin@acme.example" || got[1] != "member@acme.example" {
-		t.Fatalf("tenant admin inventory=%#v", byTenant)
+	if got := byTenant["tenant_acme"]; len(got) != 1 || got[0] != "member@acme.example" {
+		t.Fatalf("tenant user inventory=%#v", byTenant)
 	}
 	counts, ok := caps["tenant_user_counts"].(map[string]int)
-	if !ok || counts["tenant_acme"] != 2 {
+	if !ok || counts["tenant_acme"] != 1 {
 		t.Fatalf("tenant user counts=%#v", caps["tenant_user_counts"])
 	}
-	if got, ok := caps["user_emails"].([]string); !ok || len(got) != 2 || got[0] != "admin@acme.example" || got[1] != "member@acme.example" {
+	if got, ok := caps["user_emails"].([]string); !ok || len(got) != 1 || got[0] != "member@acme.example" {
 		t.Fatalf("aggregate user inventory=%#v", caps["user_emails"])
 	}
-	if got, ok := caps["user_count"].(int); !ok || got != 2 {
+	if got, ok := caps["user_count"].(int); !ok || got != 1 {
 		t.Fatalf("aggregate user count=%#v", caps["user_count"])
+	}
+	adminsByTenant, ok := caps["tenant_admin_emails"].(map[string][]string)
+	if !ok || len(adminsByTenant["tenant_acme"]) != 1 || adminsByTenant["tenant_acme"][0] != "admin@acme.example" {
+		t.Fatalf("tenant admin inventory=%#v", caps["tenant_admin_emails"])
+	}
+	adminCounts, ok := caps["tenant_admin_counts"].(map[string]int)
+	if !ok || adminCounts["tenant_acme"] != 1 {
+		t.Fatalf("tenant admin counts=%#v", caps["tenant_admin_counts"])
 	}
 }
 

@@ -32,6 +32,7 @@ os.environ.setdefault("COS_PUBLIC_BASE_URL", "https://cos.example")
 os.environ.setdefault("RELEASE_TAG", "v-test")
 sync = load_module("sync_cos_release")
 verify = load_module("verify_firmware_mirrors")
+update_verify = load_module("verify_update_mirror")
 
 
 OFFICIAL_FIRMWARE_PROFILES = {
@@ -201,6 +202,31 @@ class FirmwareReleaseContractTest(unittest.TestCase):
             for key, value in previous.items():
                 setattr(sync, key, value)
 
+    def test_desktop_update_mirror_verifier_requires_exact_mirror_urls(self):
+        name = "MaClaw-Setup.exe"
+        path = self.assets / name
+        path.write_bytes(b"desktop installer")
+        digest = contract.sha256_file(path)
+        prefix = "latest"
+        entry = {
+            "name": name,
+            "size": path.stat().st_size,
+            "sha256": digest,
+            "urls": [
+                f"{contract.R2_PUBLIC_BASE_URL}/{prefix}/{name}",
+                f"{contract.COS_PUBLIC_BASE_URL}/{prefix}/{name}",
+            ],
+            "url": f"{contract.COS_PUBLIC_BASE_URL}/{prefix}/{name}",
+        }
+        manifest = {"tag": "v1.2.3", "version": "v1.2.3", "assets": {name: entry}}
+        with mock.patch.object(update_verify, "read_json", return_value=manifest), mock.patch.object(
+            update_verify, "public_content_length", return_value=path.stat().st_size
+        ):
+            update_verify.verify_mirror("R2", contract.R2_PUBLIC_BASE_URL, "latest.json", "v1.2.3", prefix, self.assets, [name])
+            entry["urls"] = [entry["urls"][0]]
+            with self.assertRaisesRegex(RuntimeError, "mirror URLs differ"):
+                update_verify.verify_mirror("R2", contract.R2_PUBLIC_BASE_URL, "latest.json", "v1.2.3", prefix, self.assets, [name])
+
     def test_public_mirror_bases_must_match_desktop_allowlist(self):
         self.assertEqual(
             "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev",
@@ -271,6 +297,8 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertLess(workflow.index(command), workflow.index("- name: Generate release manifest"))
         self.assertIn("Verify firmware publication on Cloudflare R2 and Tencent COS", workflow)
         self.assertLess(workflow.index("Verify firmware publication on Cloudflare R2 and Tencent COS"), workflow.index("- name: Create GitHub Release"))
+        self.assertIn("Verify desktop update publication on Cloudflare R2 and Tencent COS", workflow)
+        self.assertLess(workflow.index("Verify desktop update publication on Cloudflare R2 and Tencent COS"), workflow.index("- name: Create GitHub Release"))
         self.assertIn("- name: Verify GitHub update manifest is published", workflow)
         self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("- name: Verify GitHub update manifest is published"))
         self.assertIn("releases/latest/download/{manifest_name}", workflow)
@@ -301,6 +329,11 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertNotIn("build-esp32-firmware", release_job.split("runs-on:", 1)[0])
         self.assertIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", release_job)
         self.assertIn("- name: Generate release manifest", release_job)
+        r2_step = release_job[release_job.index("- name: Upload release assets to Cloudflare R2") : release_job.index("- name: Upload release assets to Tencent COS")]
+        self.assertNotIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", r2_step)
+        cos_step = release_job[release_job.index("- name: Upload release assets to Tencent COS") : release_job.index("- name: Verify firmware publication on Cloudflare R2 and Tencent COS")]
+        self.assertNotIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", cos_step)
+        self.assertIn("- name: Verify desktop update publication on Cloudflare R2 and Tencent COS", cos_step)
         manifest_step = release_job[release_job.index("- name: Generate release manifest") : release_job.index("- name: Set up Node.js for Cloudflare R2")]
         self.assertNotIn("if: env.ESP32_FIRMWARE_ENABLED == 'true'", manifest_step)
 

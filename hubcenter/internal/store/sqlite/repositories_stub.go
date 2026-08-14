@@ -1114,7 +1114,10 @@ func (r *hubUserLinkRepo) ListUserCountsByHubTenant(ctx context.Context) ([]stor
 		       COUNT(DISTINCT lower(trim(email))),
 		       0
 		FROM hub_user_links
-		WHERE trim(hub_id) <> '' AND trim(email) <> ''
+		WHERE trim(hub_id) <> ''
+		  AND trim(email) <> ''
+		  AND id NOT LIKE 'hul_owner_%'
+		  AND id NOT LIKE 'hul_hub_admin_%'
 		GROUP BY hub_id, CASE WHEN trim(tenant_id) = 'tenant_default' THEN '' ELSE trim(tenant_id) END
 		UNION ALL
 		SELECT hub_id,
@@ -1122,7 +1125,10 @@ func (r *hubUserLinkRepo) ListUserCountsByHubTenant(ctx context.Context) ([]stor
 		       COUNT(DISTINCT lower(trim(email))),
 		       1
 		FROM hub_user_links
-		WHERE trim(hub_id) <> '' AND trim(email) <> ''
+		WHERE trim(hub_id) <> ''
+		  AND trim(email) <> ''
+		  AND id NOT LIKE 'hul_owner_%'
+		  AND id NOT LIKE 'hul_hub_admin_%'
 		GROUP BY hub_id
 	`)
 	if err != nil {
@@ -1152,6 +1158,8 @@ func (r *hubUserLinkRepo) ListUserDomainsByHubTenant(ctx context.Context) ([]sto
 		  AND trim(l.email) <> ''
 		  AND instr(l.email, '@') > 0
 		  AND instr(l.email, '*') = 0
+		  AND l.id NOT LIKE 'hul_owner_%'
+		  AND l.id NOT LIKE 'hul_hub_admin_%'
 		  AND lower(trim(l.email)) <> lower(trim(coalesce(h.owner_email, '')))
 		ORDER BY hub_id, tenant_id, domain
 	`)
@@ -1386,7 +1394,7 @@ func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubI
 		return nil, nil, err
 	}
 	var remove []*store.HubUserLink
-	targetExists := false
+	targetMigrationLinkExists := false
 	targetTenantID := normalizeStoreTenantID(link.TenantID)
 	sourceTenantID = normalizeStoreTenantID(sourceTenantID)
 	for rows.Next() {
@@ -1402,11 +1410,14 @@ func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubI
 		if sourceTenantID != "" && itemTenantID != sourceTenantID {
 			continue
 		}
-		if itemTenantID == targetTenantID && strings.TrimSpace(item.HubID) == strings.TrimSpace(link.HubID) {
-			targetExists = true
+		if strings.TrimSpace(item.ID) == strings.TrimSpace(link.ID) {
+			targetMigrationLinkExists = true
 			continue
 		}
-		if strings.TrimSpace(item.ID) == strings.TrimSpace(link.ID) {
+		// Keep any existing route for the exact target scope. The migration link is
+		// stored alongside it as an ownership lock; replacing the existing link
+		// would make an administrative migration unexpectedly discard target data.
+		if itemTenantID == targetTenantID && strings.TrimSpace(item.HubID) == strings.TrimSpace(link.HubID) {
 			continue
 		}
 		if strings.TrimSpace(fromHubID) != "" && strings.TrimSpace(item.HubID) != strings.TrimSpace(fromHubID) {
@@ -1422,7 +1433,7 @@ func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubI
 	}
 
 	var upserted *store.HubUserLink
-	if !targetExists || len(remove) > 0 {
+	if !targetMigrationLinkExists || len(remove) > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO hub_user_links (id, hub_id, tenant_id, email, is_default, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)

@@ -410,13 +410,13 @@ config MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
 
 config MACLAW_FANGTANG_DISPLAY_TEST_TRANSFER_ROWS
     int "Fangtang display rows per DMA transaction (test only)"
-    range 1 32
+    range 1 64
     default 1
     depends on MACLAW_BOARD_FANGTANG_4G
     help
         Selects the maximum number of adjacent NV3023 rows in one colour-DMA
         transaction for a dedicated Fangtang hardware test artifact. Production
-        firmware remains fixed at 32 rows, the electrically qualified setting.
+        firmware remains fixed at 64 rows, the electrically qualified setting.
         The test range intentionally includes that production bound so COM5
         qualification can reproduce it exactly as well as compare smaller
         blocks. This value is unavailable outside MACLAW_TEST_BUILD and never

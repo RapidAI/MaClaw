@@ -52,6 +52,21 @@ static SemaphoreHandle_t s_timer_callback_drained;
 static uint32_t s_timer_callbacks_inflight;
 static bool s_timer_callback_admission_open;
 static portMUX_TYPE s_timer_callback_lock = portMUX_INITIALIZER_UNLOCKED;
+/* ESP-IDF remains an implementation detail of the dispatcher. Its public
+ * service contract exposes only the hardware-neutral Device API result values
+ * used by Alarm, Sleep Schedule and future Clock consumers. */
+static device_status_t platform_status_to_device_status(esp_err_t status) {
+    switch (status) {
+        case ESP_OK: return DEVICE_STATUS_OK;
+        case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
+        case ESP_ERR_NOT_SUPPORTED: return DEVICE_STATUS_UNAVAILABLE;
+        case ESP_ERR_INVALID_STATE: return DEVICE_STATUS_BUSY;
+        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
+        case ESP_ERR_NOT_FOUND: return DEVICE_STATUS_NOT_FOUND;
+        case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        default: return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+}
 
 /* Lifecycle stop has one caller-owned budget.  The dispatcher may need to
  * serialize with both a public schedule mutation and its worker exit, so each
@@ -208,37 +223,37 @@ static void deadline_task(void *arg) {
     vTaskDelete(NULL);
 }
 
-esp_err_t wake_deadline_service_init(void) {
-    if (s_initialized) return ESP_OK;
+device_status_t wake_deadline_service_init(void) {
+    if (s_initialized) return DEVICE_STATUS_OK;
     /* A bounded stop remains closed until its original task/timer generation
      * has been joined and reclaimed.  Never create a second dispatcher while
      * the previous STOP transition is still in flight. */
-    if (s_stop_requested) return ESP_ERR_INVALID_STATE;
+    if (s_stop_requested) return DEVICE_STATUS_BUSY;
     if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_storage);
     if (!s_deinit_lock) s_deinit_lock = xSemaphoreCreateMutexStatic(&s_deinit_lock_storage);
-    if (!s_lock || !s_deinit_lock) return ESP_ERR_NO_MEM;
+    if (!s_lock || !s_deinit_lock) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     if (xSemaphoreTake(s_deinit_lock, pdMS_TO_TICKS(3000)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
+        return DEVICE_STATUS_TIMEOUT;
     }
     if (s_initialized) {
         xSemaphoreGive(s_deinit_lock);
-        return ESP_OK;
+        return DEVICE_STATUS_OK;
     }
     if (s_stop_requested || s_stopped || s_timer || s_task) {
         xSemaphoreGive(s_deinit_lock);
-        return ESP_ERR_INVALID_STATE;
+        return DEVICE_STATUS_BUSY;
     }
     s_stopped = xSemaphoreCreateBinary();
     if (!s_stopped) {
         xSemaphoreGive(s_deinit_lock);
-        return ESP_ERR_NO_MEM;
+        return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     }
     s_timer_callback_drained = xSemaphoreCreateBinary();
     if (!s_timer_callback_drained) {
         vSemaphoreDelete(s_stopped);
         s_stopped = NULL;
         xSemaphoreGive(s_deinit_lock);
-        return ESP_ERR_NO_MEM;
+        return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     }
     esp_timer_create_args_t timer_args = {
         .callback = timer_callback,
@@ -251,7 +266,7 @@ esp_err_t wake_deadline_service_init(void) {
         vSemaphoreDelete(s_stopped);
         s_stopped = NULL;
         xSemaphoreGive(s_deinit_lock);
-        return err;
+        return platform_status_to_device_status(err);
     }
     if (xTaskCreate(deadline_task, "maclaw_deadline", 3072, NULL, 6, &s_task) != pdPASS) {
         esp_timer_delete(s_timer);
@@ -261,7 +276,7 @@ esp_err_t wake_deadline_service_init(void) {
         vSemaphoreDelete(s_stopped);
         s_stopped = NULL;
         xSemaphoreGive(s_deinit_lock);
-        return ESP_ERR_NO_MEM;
+        return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     }
     taskENTER_CRITICAL(&s_timer_callback_lock);
     s_timer_callbacks_inflight = 0;
@@ -270,27 +285,27 @@ esp_err_t wake_deadline_service_init(void) {
     s_initialized = true;
     xSemaphoreGive(s_deinit_lock);
     ESP_LOGI(TAG, "service ready: slots=%u", WAKE_DEADLINE_MAX_SLOTS);
-    return ESP_OK;
+    return DEVICE_STATUS_OK;
 }
 
-esp_err_t wake_deadline_service_deinit(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    if (!s_lock) return ESP_OK;
-    if (s_task && xTaskGetCurrentTaskHandle() == s_task) return ESP_ERR_INVALID_STATE;
+device_status_t wake_deadline_service_deinit(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!s_lock) return DEVICE_STATUS_OK;
+    if (s_task && xTaskGetCurrentTaskHandle() == s_task) return DEVICE_STATUS_BUSY;
     const TickType_t started = xTaskGetTickCount();
     const TickType_t budget = stop_timeout_ticks(timeout_ms);
     if (!s_deinit_lock || xSemaphoreTake(s_deinit_lock, budget) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
+        return DEVICE_STATUS_TIMEOUT;
     }
     TickType_t remaining = stop_remaining_ticks(started, budget);
     if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
         xSemaphoreGive(s_deinit_lock);
-        return ESP_ERR_TIMEOUT;
+        return DEVICE_STATUS_TIMEOUT;
     }
     if (!s_initialized && !s_stop_requested) {
         xSemaphoreGive(s_lock);
         xSemaphoreGive(s_deinit_lock);
-        return ESP_OK;
+        return DEVICE_STATUS_OK;
     }
     const bool already_stopping = s_stop_requested;
     s_stop_requested = true;
@@ -311,7 +326,7 @@ esp_err_t wake_deadline_service_deinit(uint32_t timeout_ms) {
         if (!s_timer_callback_drained || remaining == 0 ||
             xSemaphoreTake(s_timer_callback_drained, remaining) != pdTRUE) {
             xSemaphoreGive(s_deinit_lock);
-            return ESP_ERR_TIMEOUT;
+            return DEVICE_STATUS_TIMEOUT;
         }
     }
     if (task) {
@@ -319,7 +334,7 @@ esp_err_t wake_deadline_service_deinit(uint32_t timeout_ms) {
         remaining = stop_remaining_ticks(started, budget);
         if (remaining == 0 || xSemaphoreTake(s_stopped, remaining) != pdTRUE) {
             xSemaphoreGive(s_deinit_lock);
-            return ESP_ERR_TIMEOUT;
+            return DEVICE_STATUS_TIMEOUT;
         }
     } else if (already_stopping && s_stopped) {
         /* A previous caller timed out after the dispatcher had exited but
@@ -328,14 +343,14 @@ esp_err_t wake_deadline_service_deinit(uint32_t timeout_ms) {
         remaining = stop_remaining_ticks(started, budget);
         if (remaining == 0 || xSemaphoreTake(s_stopped, remaining) != pdTRUE) {
             xSemaphoreGive(s_deinit_lock);
-            return ESP_ERR_TIMEOUT;
+            return DEVICE_STATUS_TIMEOUT;
         }
     }
     if (s_timer) {
         esp_err_t timer_err = esp_timer_delete(s_timer);
         if (timer_err != ESP_OK) {
             xSemaphoreGive(s_deinit_lock);
-            return timer_err;
+            return platform_status_to_device_status(timer_err);
         }
         s_timer = NULL;
     }
@@ -343,7 +358,7 @@ esp_err_t wake_deadline_service_deinit(uint32_t timeout_ms) {
     remaining = stop_remaining_ticks(started, budget);
     if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
         xSemaphoreGive(s_deinit_lock);
-        return ESP_ERR_TIMEOUT;
+        return DEVICE_STATUS_TIMEOUT;
     }
     s_stop_requested = false;
     xSemaphoreGive(s_lock);
@@ -356,18 +371,18 @@ esp_err_t wake_deadline_service_deinit(uint32_t timeout_ms) {
     s_timer_callback_drained = NULL;
     xSemaphoreGive(s_deinit_lock);
     ESP_LOGI(TAG, "service stopped");
-    return ESP_OK;
+    return DEVICE_STATUS_OK;
 }
 
-esp_err_t wake_deadline_service_register(wake_deadline_callback_t callback, void *arg,
+device_status_t wake_deadline_service_register(wake_deadline_callback_t callback, void *arg,
                                          wake_deadline_handle_t *out_handle) {
-    if (!callback || !out_handle || !s_lock) return ESP_ERR_INVALID_ARG;
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    if (!callback || !out_handle || !s_lock) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return DEVICE_STATUS_TIMEOUT;
     if (!s_initialized || s_stop_requested) {
         xSemaphoreGive(s_lock);
-        return ESP_ERR_INVALID_STATE;
+        return DEVICE_STATUS_BUSY;
     }
-    esp_err_t result = ESP_ERR_NO_MEM;
+    device_status_t result = DEVICE_STATUS_RESOURCE_EXHAUSTED;
     for (size_t i = 0; i < WAKE_DEADLINE_MAX_SLOTS; ++i) {
         deadline_slot_t *slot = &s_slots[i];
         /* An unregistering client may already have cleared `registered` while
@@ -383,30 +398,30 @@ esp_err_t wake_deadline_service_register(wake_deadline_callback_t callback, void
             .arg = arg,
         };
         *out_handle = ((uint32_t)generation << 8) | (uint32_t)(i + 1u);
-        result = ESP_OK;
+        result = DEVICE_STATUS_OK;
         break;
     }
     xSemaphoreGive(s_lock);
     return result;
 }
 
-esp_err_t wake_deadline_service_arm(wake_deadline_handle_t handle, int64_t epoch_ms) {
-    if (!s_lock || epoch_ms <= 0) return ESP_ERR_INVALID_ARG;
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return ESP_ERR_TIMEOUT;
+device_status_t wake_deadline_service_arm(wake_deadline_handle_t handle, int64_t epoch_ms) {
+    if (!s_lock || epoch_ms <= 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return DEVICE_STATUS_TIMEOUT;
     if (!s_initialized || s_stop_requested) {
         xSemaphoreGive(s_lock);
-        return ESP_ERR_INVALID_STATE;
+        return DEVICE_STATUS_BUSY;
     }
     size_t index = 0;
     if (!valid_handle(handle, &index)) {
         xSemaphoreGive(s_lock);
-        return ESP_ERR_NOT_FOUND;
+        return DEVICE_STATUS_NOT_FOUND;
     }
     s_slots[index].epoch_ms = epoch_ms;
     s_slots[index].armed = true;
     rearm_timer_locked(current_epoch_ms());
     xSemaphoreGive(s_lock);
-    return ESP_OK;
+    return DEVICE_STATUS_OK;
 }
 
 void wake_deadline_service_cancel(wake_deadline_handle_t handle) {
@@ -424,24 +439,24 @@ void wake_deadline_service_cancel(wake_deadline_handle_t handle) {
     xSemaphoreGive(s_lock);
 }
 
-esp_err_t wake_deadline_service_unregister_with_timeout(wake_deadline_handle_t handle,
+device_status_t wake_deadline_service_unregister_with_timeout(wake_deadline_handle_t handle,
                                                         uint32_t timeout_ms) {
-    if (!handle || timeout_ms == 0 || !s_lock) return ESP_ERR_INVALID_ARG;
-    if (s_task && xTaskGetCurrentTaskHandle() == s_task) return ESP_ERR_INVALID_STATE;
+    if (!handle || timeout_ms == 0 || !s_lock) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (s_task && xTaskGetCurrentTaskHandle() == s_task) return DEVICE_STATUS_BUSY;
     const TickType_t started = xTaskGetTickCount();
     const TickType_t budget = stop_timeout_ticks(timeout_ms);
     TickType_t remaining = stop_remaining_ticks(started, budget);
     if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
+        return DEVICE_STATUS_TIMEOUT;
     }
     if (!s_initialized || s_stop_requested) {
         xSemaphoreGive(s_lock);
-        return ESP_ERR_INVALID_STATE;
+        return DEVICE_STATUS_BUSY;
     }
     size_t index = 0;
     if (!handle_matches_generation(handle, &index)) {
         xSemaphoreGive(s_lock);
-        return ESP_ERR_NOT_FOUND;
+        return DEVICE_STATUS_NOT_FOUND;
     }
     const uint16_t generation = s_slots[index].generation;
     deadline_slot_t *slot = &s_slots[index];
@@ -461,13 +476,13 @@ esp_err_t wake_deadline_service_unregister_with_timeout(wake_deadline_handle_t h
     for (;;) {
         remaining = stop_remaining_ticks(started, budget);
         if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
-            return ESP_ERR_TIMEOUT;
+            return DEVICE_STATUS_TIMEOUT;
         }
         const bool drained = s_slots[index].generation == generation &&
                              !s_slots[index].callback_inflight;
         xSemaphoreGive(s_lock);
-        if (drained) return ESP_OK;
-        if (stop_remaining_ticks(started, budget) == 0) return ESP_ERR_TIMEOUT;
+        if (drained) return DEVICE_STATUS_OK;
+        if (stop_remaining_ticks(started, budget) == 0) return DEVICE_STATUS_TIMEOUT;
         vTaskDelay(1);
     }
 }

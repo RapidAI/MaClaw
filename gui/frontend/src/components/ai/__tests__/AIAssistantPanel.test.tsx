@@ -1763,6 +1763,130 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
+    it('immediately scrolls to a newly rendered system progress message before reasoning starts', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'user', content: 'Start the task' }),
+            makeMsg({ role: 'assistant', content: '' }),
+        ];
+        const progress: ChatMessage[] = [makeMsg({ role: 'progress', content: 'Preparing the execution environment' })];
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages, progressMessages: [], sending: true, streaming: false, ready: true },
+        };
+        const { rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, progressMessages: progress }}
+            />,
+        );
+
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto' });
+    });
+
+    it('does not scroll when an incoming tool status is rendered only in the existing processing indicator', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'user', content: 'Start the task' }),
+            makeMsg({ role: 'assistant', content: '' }),
+        ];
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages, progressMessages: [], sending: true, streaming: false, ready: true },
+        };
+        const { rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, progressMessages: [makeMsg({ role: 'progress', content: 'Running Shell / rg' })] }}
+            />,
+        );
+
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    });
+
+    it('does not override a user who has scrolled up when system progress arrives', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'user', content: 'Earlier question' }),
+            makeMsg({ role: 'assistant', content: 'Earlier answer' }),
+        ];
+        const initialProgress: ChatMessage[] = [makeMsg({ role: 'progress', content: 'Checking files' })];
+        const nextProgress: ChatMessage[] = [...initialProgress, makeMsg({ role: 'progress', content: 'Reading configuration' })];
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages, progressMessages: initialProgress, sending: true, streaming: false, ready: true },
+        };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+        const output = getByTestId('ai-output-container');
+        Object.defineProperties(output, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.scroll(output);
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, progressMessages: nextProgress }}
+            />,
+        );
+
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    });
+
+    it('does not let a settled progress scroll override a user who scrolls up after the first frame', () => {
+        let settledFrame: FrameRequestCallback | undefined;
+        vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+            settledFrame = callback;
+            return 1;
+        });
+        vi.stubGlobal('cancelAnimationFrame', vi.fn());
+
+        try {
+            const messages: ChatMessage[] = [
+                makeMsg({ role: 'user', content: 'Earlier question' }),
+                makeMsg({ role: 'assistant', content: 'Earlier answer' }),
+            ];
+            const props = defaultPanelProps();
+            const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+                ...props,
+                state: { ...props.state, messages, progressMessages: [], sending: true, streaming: false, ready: true },
+            };
+            const { getByTestId, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+            const output = getByTestId('ai-output-container');
+            Object.defineProperties(output, {
+                clientHeight: { configurable: true, value: 100 },
+                scrollHeight: { configurable: true, value: 400 },
+                scrollTop: { configurable: true, value: 0, writable: true },
+            });
+
+            scrollIntoViewMock.mockClear();
+            rerender(
+                <AIAssistantPanel
+                    {...initialProps}
+                    state={{ ...initialProps.state, progressMessages: [makeMsg({ role: 'progress', content: 'Reading configuration' })] }}
+                />,
+            );
+            expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
+            expect(settledFrame).toBeTypeOf('function');
+
+            fireEvent.scroll(output);
+            act(() => settledFrame?.(0));
+
+            expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
     it('shows welcome view with pinned news when only news messages exist', () => {
         const messages: ChatMessage[] = [
             makeNews('1'),

@@ -5,7 +5,6 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "nvs.h" /* legacy schema import error code */
 #include "persistence_service.h"
 
 #define CONFIGURATION_NAMESPACE "maclaw"
@@ -229,12 +228,12 @@ static bool valid_store(const configuration_store_t *store) {
 static esp_err_t read_optional_string(const char *key, char *out, size_t capacity,
                                       bool *out_found) {
     size_t size = capacity;
-    esp_err_t err = persistence_service_read_string(CONFIGURATION_NAMESPACE, key, out, &size);
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_string(CONFIGURATION_NAMESPACE, key, out, &size));
     if (err == ESP_OK) {
         *out_found = true;
         return ESP_OK;
     }
-    return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
+    return err == ESP_ERR_NOT_FOUND ? ESP_OK : err;
 }
 
 /* Import only the historical product configuration keys.  Device identity is
@@ -268,28 +267,28 @@ static esp_err_t load_legacy(configuration_snapshot_t *snapshot, bool *out_found
         if (err != ESP_OK) return err;
     }
     uint8_t volume = 0;
-    esp_err_t err = persistence_service_read_u8(CONFIGURATION_NAMESPACE, "output_vol", &volume);
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_u8(CONFIGURATION_NAMESPACE, "output_vol", &volume));
     if (err == ESP_OK) {
         if (volume > 100) return ESP_ERR_INVALID_STATE;
         snapshot->output_volume = volume;
         snapshot->output_volume_saved = true;
         *out_found = true;
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) return err;
+    } else if (err != ESP_ERR_NOT_FOUND) return err;
     uint8_t force_setup = 0;
-    err = persistence_service_read_u8(CONFIGURATION_NAMESPACE, "force_setup", &force_setup);
+    err = device_status_to_platform_error(persistence_service_read_u8(CONFIGURATION_NAMESPACE, "force_setup", &force_setup));
     if (err == ESP_OK) {
         if (force_setup > 1) return ESP_ERR_INVALID_STATE;
         *out_force_setup = force_setup != 0;
         *out_found = true;
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) return err;
+    } else if (err != ESP_ERR_NOT_FOUND) return err;
     uint8_t transport = 0;
-    err = persistence_service_read_u8(CONFIGURATION_NAMESPACE, "net_transport", &transport);
+    err = device_status_to_platform_error(persistence_service_read_u8(CONFIGURATION_NAMESPACE, "net_transport", &transport));
     if (err == ESP_OK) {
         if (transport > 1) return ESP_ERR_INVALID_STATE;
         snapshot->cellular_transport_selected = transport != 0;
         snapshot->cellular_transport_selection_saved = true;
         *out_found = true;
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) return err;
+    } else if (err != ESP_ERR_NOT_FOUND) return err;
     return valid_snapshot(snapshot) ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
@@ -301,9 +300,9 @@ static esp_err_t migrate_v1_locked(configuration_store_t *store) {
         heap_caps_calloc(1, sizeof(*legacy), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!legacy) return ESP_ERR_NO_MEM;
     size_t size = sizeof(*legacy);
-    esp_err_t err = persistence_service_read_blob(CONFIGURATION_NAMESPACE,
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_blob(CONFIGURATION_NAMESPACE,
                                                   CONFIGURATION_STORE_KEY,
-                                                  legacy, &size);
+                                                  legacy, &size));
     if (err != ESP_OK || legacy->magic != CONFIGURATION_STORE_MAGIC ||
         legacy->version != 1u || legacy->force_setup > 1) {
         heap_caps_free(legacy);
@@ -321,18 +320,18 @@ static esp_err_t migrate_v1_locked(configuration_store_t *store) {
      * transitional scalar key.  Fold it into the expanded snapshot during
      * the same schema migration, without exposing that key to callers. */
     uint8_t transport = 0;
-    esp_err_t transport_err = persistence_service_read_u8(
-        CONFIGURATION_NAMESPACE, "net_transport", &transport);
+    esp_err_t transport_err = device_status_to_platform_error(persistence_service_read_u8(
+        CONFIGURATION_NAMESPACE, "net_transport", &transport));
     if (transport_err == ESP_OK) {
         if (transport > 1) return ESP_ERR_INVALID_STATE;
         store->snapshot.cellular_transport_selected = transport != 0;
         store->snapshot.cellular_transport_selection_saved = true;
-    } else if (transport_err != ESP_ERR_NVS_NOT_FOUND) {
+    } else if (transport_err != ESP_ERR_NOT_FOUND) {
         return transport_err;
     }
-    return persistence_service_write_blob(CONFIGURATION_NAMESPACE,
+    return device_status_to_platform_error(persistence_service_write_blob(CONFIGURATION_NAMESPACE,
                                           CONFIGURATION_STORE_KEY,
-                                          store, sizeof(*store));
+                                          store, sizeof(*store)));
 }
 
 /* V2 -> V3：快照尾部追加多热点列表。store 已被调用方清零，前缀整体拷贝后
@@ -342,9 +341,9 @@ static esp_err_t migrate_v2_locked(configuration_store_t *store) {
         heap_caps_calloc(1, sizeof(*legacy), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!legacy) return ESP_ERR_NO_MEM;
     size_t size = sizeof(*legacy);
-    esp_err_t err = persistence_service_read_blob(CONFIGURATION_NAMESPACE,
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_blob(CONFIGURATION_NAMESPACE,
                                                   CONFIGURATION_STORE_KEY,
-                                                  legacy, &size);
+                                                  legacy, &size));
     if (err != ESP_OK || legacy->magic != CONFIGURATION_STORE_MAGIC ||
         legacy->version != 2u || legacy->force_setup > 1) {
         heap_caps_free(legacy);
@@ -357,9 +356,9 @@ static esp_err_t migrate_v2_locked(configuration_store_t *store) {
     heap_caps_free(legacy);
     if (!valid_snapshot(&store->snapshot)) return ESP_ERR_INVALID_STATE;
     sync_networks_from_primary(&store->snapshot);
-    return persistence_service_write_blob(CONFIGURATION_NAMESPACE,
+    return device_status_to_platform_error(persistence_service_write_blob(CONFIGURATION_NAMESPACE,
                                           CONFIGURATION_STORE_KEY,
-                                          store, sizeof(*store));
+                                          store, sizeof(*store)));
 }
 
 static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
@@ -377,10 +376,10 @@ static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
      * smaller V1 blob when given the larger V2 buffer, which would otherwise
      * make a valid expand migration indistinguishable from corruption. */
     size_t size = 0;
-    esp_err_t err = persistence_service_read_blob(CONFIGURATION_NAMESPACE,
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_blob(CONFIGURATION_NAMESPACE,
                                                   CONFIGURATION_STORE_KEY,
-                                                  NULL, &size);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
+                                                  NULL, &size));
+    if (err == ESP_ERR_NOT_FOUND) {
         bool legacy_found = false;
         err = load_legacy(inout_snapshot, &legacy_found, out_force_setup);
         if (err == ESP_OK && legacy_found) {
@@ -390,9 +389,9 @@ static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
             store->version = CONFIGURATION_STORE_VERSION;
             store->snapshot = *inout_snapshot;
             store->force_setup = *out_force_setup ? 1u : 0u;
-            err = persistence_service_write_blob(CONFIGURATION_NAMESPACE,
+            err = device_status_to_platform_error(persistence_service_write_blob(CONFIGURATION_NAMESPACE,
                                                  CONFIGURATION_STORE_KEY,
-                                                 store, sizeof(*store));
+                                                 store, sizeof(*store)));
         }
         return err;
     }
@@ -404,9 +403,9 @@ static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
         err = migrate_v2_locked(store);
         if (err != ESP_OK) return err;
     } else if (size == sizeof(*store)) {
-        err = persistence_service_read_blob(CONFIGURATION_NAMESPACE,
+        err = device_status_to_platform_error(persistence_service_read_blob(CONFIGURATION_NAMESPACE,
                                             CONFIGURATION_STORE_KEY,
-                                            store, &size);
+                                            store, &size));
         if (err != ESP_OK || !valid_store(store)) return ESP_ERR_INVALID_STATE;
     } else {
         return ESP_ERR_INVALID_STATE;
@@ -426,9 +425,9 @@ static esp_err_t write_locked(const configuration_snapshot_t *snapshot, bool for
         .snapshot = *snapshot,
         .force_setup = force_setup ? 1u : 0u,
     };
-    return persistence_service_write_blob(CONFIGURATION_NAMESPACE,
+    return device_status_to_platform_error(persistence_service_write_blob(CONFIGURATION_NAMESPACE,
                                           CONFIGURATION_STORE_KEY,
-                                          store, sizeof(*store));
+                                          store, sizeof(*store)));
 }
 
 static void seed_snapshot(configuration_snapshot_t *snapshot) {

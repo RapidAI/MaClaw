@@ -203,3 +203,48 @@ func TestAIAssistantUIStateStripsAssistantHiddenAndToolCallContent(t *testing.T)
 		t.Fatalf("sanitized file still contains assistant hidden/tool content: %s", sanitized)
 	}
 }
+
+func TestNormalizeAIAssistantUIMessageRemovesControlCharacters(t *testing.T) {
+	message := map[string]interface{}{
+		"role":      "assistant",
+		"content":   "visible\x00 answer",
+		"reasoning": "\x01private\u0085 thought",
+	}
+	normalizeAIAssistantUIMessage(message)
+	if got := message["content"]; got != "visible answer" {
+		t.Fatalf("content = %#v", got)
+	}
+	if got := message["reasoning"]; got != "private thought" {
+		t.Fatalf("reasoning = %#v", got)
+	}
+}
+
+func TestLoadAIAssistantUIStateRewritesControlCharacters(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	path := app.aiAssistantUIStatePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	raw := "{\"messages\":[{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"visible\\u0000 answer\",\"reasoning\":\"\\u0001private\\u0085 thought\"}]}"
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatalf("LoadAIAssistantUIState() error = %v", err)
+	}
+	if got := loaded.Messages[0]["content"]; got != "visible answer" {
+		t.Fatalf("content = %#v", got)
+	}
+	if got := loaded.Messages[0]["reasoning"]; got != "private thought" {
+		t.Fatalf("reasoning = %#v", got)
+	}
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if strings.Contains(string(rewritten), "\\u0000") || strings.Contains(string(rewritten), "\\u0001") || strings.Contains(string(rewritten), "\\u0085") {
+		t.Fatalf("rewritten state still contains controls: %s", rewritten)
+	}
+}

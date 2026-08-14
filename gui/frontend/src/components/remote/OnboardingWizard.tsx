@@ -1051,6 +1051,10 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         const target = normalizeEmailVerificationTarget(regEmail);
         if (!target || emailCodeSending || emailCodeCountdown > 0) return;
         const requestID = emailCodeRequestRef.current + 1;
+        // Keep the resolved endpoint available to the failure UI. A HubCenter
+        // route may differ from the Hub shown before identity resolution, so
+        // generic mail errors otherwise send administrators to the wrong Hub.
+        let attemptedHubURL = "";
         emailCodeRequestRef.current = requestID;
         setEmailCodeSending(true);
         setEmailCodeTarget("");
@@ -1076,10 +1080,16 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                 setRegistrationTenantID(targetTenantID);
                 setRegistrationHubID(targetHubID);
             }
+            attemptedHubURL = targetHubURL;
             const result = referralActive
                 ? await SendReferralRegistrationEmail(targetHubURL, target, targetTenantID, referralSession) as any
                 : await SendRemoteRegistrationEmail(targetHubURL, target, targetTenantID) as any;
             if (emailCodeRequestRef.current !== requestID) return;
+            // A successful send is authoritative. Older Hubs may omit `ok`,
+            // while newer ones return it explicitly; neither shape should
+            // leave an obsolete MAIL_NOT_CONFIGURED error visible after the
+            // recipient has actually received the code.
+            if (result?.ok === false) throw new Error(String(result?.code || result?.message || "EMAIL_CODE_SEND_FAILED"));
             const length = Number(result?.code_length || 6);
             setEmailCodeLength(Number.isFinite(length) && length >= 4 && length <= 8 ? length : 6);
             const confirmedTenantID = String(result?.tenant_id || result?.TenantID || targetTenantID).trim();
@@ -1087,21 +1097,25 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             setEmailCodeTarget(target);
 			setVerificationInvitationCode(invCode.trim().toUpperCase());
 			setEmailCodeCountdown(emailVerificationCooldownSeconds(result?.resend_cooldown_seconds));
+			setEmailCodeError("");
         } catch (e) {
             if (emailCodeRequestRef.current !== requestID) return;
-			setEmailCodeError(localizeEmailVerificationError(e));
+			setEmailCodeError(localizeEmailVerificationError(e, attemptedHubURL));
         } finally {
             if (emailCodeRequestRef.current === requestID) setEmailCodeSending(false);
         }
     };
 
-    const localizeEmailVerificationError = (error: unknown) => {
+    const localizeEmailVerificationError = (error: unknown, hubURL = "") => {
         const message = String(error || "");
+        let hubHost = "";
+        try { hubHost = new URL(hubURL).host; } catch { hubHost = hubURL.replace(/^https?:\/\//i, "").replace(/\/$/, ""); }
+        const hubLabel = hubHost ? ` (${hubHost})` : "";
         if (/INVALID_VERIFY_CODE/i.test(message)) return t("验证码不正确或已过期，请重新输入", "The verification code is incorrect or expired.");
         if (/VERIFY_LOCKED/i.test(message)) return t("错误次数过多，请重新获取验证码", "Too many attempts. Request a new code.");
         if (/RATE_LIMITED/i.test(message)) return t("验证码发送过于频繁，请稍后重试", "Please wait before requesting another code.");
-        if (/MAIL_NOT_CONFIGURED/i.test(message)) return t("该 Hub 尚未配置邮件服务，请联系管理员", "This Hub has not configured email delivery. Contact an administrator.");
-        if (/MAIL_SEND_FAILED/i.test(message)) return t("Hub 邮件服务器未能投递验证码。请让管理员检查 SMTP 日志或发送测试邮件", "The Hub mail server could not deliver the code. Ask an administrator to check SMTP logs or send a test email.");
+        if (/MAIL_NOT_CONFIGURED/i.test(message)) return t(`该 Hub${hubLabel} 尚未配置邮件服务，请联系管理员`, `This Hub${hubLabel} has not configured email delivery. Contact an administrator.`);
+        if (/MAIL_SEND_FAILED/i.test(message)) return t(`Hub${hubLabel} 邮件服务器未能投递验证码。请让管理员检查 SMTP 日志或发送测试邮件`, `The Hub${hubLabel} mail server could not deliver the code. Ask an administrator to check SMTP logs or send a test email.`);
         if (/INVITATION_CODE_NOT_ROUTED|INVALID_INVITATION_CODE/i.test(message)) return t("邀请码无效或无法找到对应 Hub", "The invitation code is invalid or cannot be routed to a Hub.");
         return message;
     };

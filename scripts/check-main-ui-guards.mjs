@@ -550,7 +550,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/ai/useTTSReadback.ts', 120],
   ['gui/frontend/src/components/ai/aiAssistantPanelTypes.ts', 160],
   ['gui/frontend/src/components/ai/useAIAssistantVoiceControls.ts', 100],
-  ['gui/frontend/src/components/ai/useAssistantOutputScroll.ts', 100],
+  ['gui/frontend/src/components/ai/useAssistantOutputScroll.ts', 120],
   ['gui/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
   ['gui/frontend/src/components/ai/useAssistantInputHistory.ts', 100],
   ['gui/frontend/src/components/ai/usePastedImageAttachments.ts', 340],

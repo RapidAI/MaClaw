@@ -87,6 +87,55 @@ func TestMigrationHubBytesLimitedRejectsOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestCheckMigrationPackageLimitUsesEncryptedUploadSize(t *testing.T) {
+	limit := int64(100 * 1024 * 1024)
+	if err := checkMigrationPackageLimit(limit, limit); err != nil {
+		t.Fatalf("package at limit rejected: %v", err)
+	}
+	err := checkMigrationPackageLimit(limit+1, limit)
+	if err == nil || !strings.Contains(err.Error(), "encrypted migration package") || !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("over-limit encrypted package error = %v", err)
+	}
+}
+
+func TestMigrationHubGetCurrentFailureStopsExportBeforeCreate(t *testing.T) {
+	var createCalls int32
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/migration/exports/current":
+			http.Error(w, "temporary Hub failure", http.StatusServiceUnavailable)
+		case "/api/v1/migration/exports":
+			atomic.AddInt32(&createCalls, 1)
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			t.Fatalf("unexpected hub path: %s", r.URL.Path)
+		}
+	}))
+	defer hub.Close()
+
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	_, err = (&HTTPServer{svc: svc}).runMigrationExport(context.Background(), agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, migrationClientConfig{
+		HubURL: hub.URL, ViewerToken: "viewer-token", MachineID: "machine-1",
+	}, "migration-password", func(float64, string) {})
+	if err == nil || !strings.Contains(err.Error(), "get Hub migration package limit") {
+		t.Fatalf("Hub limit lookup error = %v", err)
+	}
+	if atomic.LoadInt32(&createCalls) != 0 {
+		t.Fatalf("export create was called after limit lookup failed")
+	}
+}
+
 func TestDecodeMigrationJSONRejectsTrailingValues(t *testing.T) {
 	var out map[string]interface{}
 	if err := decodeMigrationJSON([]byte(`{"ok":true}{"extra":true}`), &out); err == nil {

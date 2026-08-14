@@ -8,7 +8,6 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "nvs.h"
 #include "persistence_service.h"
 
 /* Raw samples arrive at 125 Hz on the current COM6 adapter.  Sampling the
@@ -193,18 +192,18 @@ static esp_err_t load_store(fall_detection_store_t *out_store, bool *out_migrate
         .revision = 1,
     };
     size_t size = 0;
-    esp_err_t err = persistence_service_read_blob(FALL_DETECTION_NAMESPACE,
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_blob(FALL_DETECTION_NAMESPACE,
                                                   FALL_DETECTION_STORE_KEY,
-                                                  NULL, &size);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
+                                                  NULL, &size));
+    if (err == ESP_ERR_NOT_FOUND) {
         *out_store = store;
         return ESP_OK;
     }
     if (err != ESP_OK) return err;
     if (size == sizeof(fall_detection_store_v1_t)) {
         fall_detection_store_v1_t legacy = {0};
-        err = persistence_service_read_blob(FALL_DETECTION_NAMESPACE,
-                                            FALL_DETECTION_STORE_KEY, &legacy, &size);
+        err = device_status_to_platform_error(persistence_service_read_blob(FALL_DETECTION_NAMESPACE,
+                                            FALL_DETECTION_STORE_KEY, &legacy, &size));
         if (err != ESP_OK || legacy.magic != FALL_DETECTION_STORE_MAGIC ||
             legacy.version != 1u || legacy.enabled > 1) return ESP_ERR_INVALID_STATE;
         store = (fall_detection_store_t){
@@ -215,8 +214,8 @@ static esp_err_t load_store(fall_detection_store_t *out_store, bool *out_migrate
         };
         if (out_migrated) *out_migrated = true;
     } else if (size == sizeof(store)) {
-        err = persistence_service_read_blob(FALL_DETECTION_NAMESPACE,
-                                            FALL_DETECTION_STORE_KEY, &store, &size);
+        err = device_status_to_platform_error(persistence_service_read_blob(FALL_DETECTION_NAMESPACE,
+                                            FALL_DETECTION_STORE_KEY, &store, &size));
         if (err != ESP_OK || !valid_store(&store)) return ESP_ERR_INVALID_STATE;
     } else {
         return ESP_ERR_INVALID_SIZE;
@@ -238,9 +237,9 @@ static bool valid_idempotency_key(const char *key) {
 
 static esp_err_t save_store(const fall_detection_store_t *store) {
     if (!valid_store(store)) return ESP_ERR_INVALID_ARG;
-    return persistence_service_write_blob(FALL_DETECTION_NAMESPACE,
+    return device_status_to_platform_error(persistence_service_write_blob(FALL_DETECTION_NAMESPACE,
                                           FALL_DETECTION_STORE_KEY,
-                                          store, sizeof(*store));
+                                          store, sizeof(*store)));
 }
 
 static int64_t square_i32(int32_t value) {

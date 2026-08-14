@@ -48,6 +48,7 @@ type snapshotCandidate struct {
 	routePriority              int
 	rank                       int
 	ownerLink                  bool
+	routeKind                  string
 	registrationPolicyFallback bool
 	legacyHubPublicSignup      bool
 }
@@ -63,6 +64,7 @@ type routeSnapshot struct {
 	blockedIPs           map[string]struct{}
 	defaultHubIDs        map[string]string
 	adminUserRoutes      map[string]struct{}
+	migrationUserRoutes  map[string]struct{}
 	emailRoutes          map[string][]snapshotCandidate
 	domainRoutes         map[string][]snapshotCandidate
 	publicHubs           []snapshotCandidate
@@ -202,6 +204,7 @@ func buildRouteSnapshotFromItems(hubItems []*store.HubInstance, linkItems []*sto
 		blockedIPs:           map[string]struct{}{},
 		defaultHubIDs:        map[string]string{},
 		adminUserRoutes:      map[string]struct{}{},
+		migrationUserRoutes:  map[string]struct{}{},
 		emailRoutes:          map[string][]snapshotCandidate{},
 		domainRoutes:         map[string][]snapshotCandidate{},
 		publicHubs:           make([]snapshotCandidate, 0),
@@ -234,6 +237,9 @@ func buildRouteSnapshotFromItems(hubItems []*store.HubInstance, linkItems []*sto
 		email := strings.TrimSpace(strings.ToLower(link.Email))
 		if email != "" {
 			adminUserLinks[emailTenantRouteKey(email, strings.TrimSpace(link.TenantID))] = struct{}{}
+			if isAdminMigrationUserLink(link) {
+				snap.migrationUserRoutes[email] = struct{}{}
+			}
 		}
 	}
 
@@ -249,12 +255,25 @@ func buildRouteSnapshotFromItems(hubItems []*store.HubInstance, linkItems []*sto
 		if hub == nil {
 			continue
 		}
-		candidate := snapshotCandidate{hub: hub, tenantID: normalizeCapabilityTenantID(link.TenantID), rank: rankLinkedHub, routePriority: 0, ownerLink: ownerLink}
+		candidate := snapshotCandidate{hub: hub, tenantID: normalizeCapabilityTenantID(link.TenantID), rank: rankLinkedHub, routePriority: 0, ownerLink: ownerLink, routeKind: linkRouteKind(link)}
 		email := strings.TrimSpace(strings.ToLower(link.Email))
+		if _, migrated := snap.migrationUserRoutes[email]; migrated && !isAdminMigrationUserLink(link) {
+			// A migration route represents an explicit identity-wide ownership
+			// decision. Historic inventory and generic admin routes can remain in
+			// storage for audit purposes, but must never compete with it.
+			continue
+		}
 		if candidate.tenantID == "" {
 			candidate.tenantID = tenantIDForHubEmail(hub, email)
 		}
 		if _, adminManaged := adminUserLinks[emailTenantRouteKey(email, candidate.tenantID)]; adminManaged && !isAdminUserLink(link) {
+			continue
+		}
+		// Hub-reported tenant administrators are diagnostic/admin candidates,
+		// never normal user routes.  Keep HubCenter administrator overrides and
+		// explicit migration locks in normal resolution: those are deliberate
+		// routing decisions, not role inventory.
+		if !includeOwnerLinks && candidate.routeKind == "hub_admin" {
 			continue
 		}
 		snap.emailRoutes[email] = append(snap.emailRoutes[email], candidate)
@@ -268,7 +287,7 @@ func buildRouteSnapshotFromItems(hubItems []*store.HubInstance, linkItems []*sto
 				if email == "" {
 					continue
 				}
-				snap.emailRoutes[email] = append(snap.emailRoutes[email], snapshotCandidate{hub: hub, tenantID: tenantIDForHubEmail(hub, email), rank: rankLinkedHub, routePriority: 0})
+				snap.emailRoutes[email] = append(snap.emailRoutes[email], snapshotCandidate{hub: hub, tenantID: tenantIDForHubEmail(hub, email), rank: rankLinkedHub, routePriority: 0, routeKind: "user"})
 			}
 		}
 	}
@@ -468,23 +487,20 @@ func hubInventoryEmails(hub *store.HubInstance) []string {
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0)
-	values, ok := caps["user_emails"].([]any)
-	if ok {
-		for _, value := range values {
-			email := strings.TrimSpace(strings.ToLower(fmt.Sprint(value)))
-			if email == "" {
-				continue
-			}
-			if _, ok := seen[email]; ok {
-				continue
-			}
-			seen[email] = struct{}{}
-			out = append(out, email)
+	for _, value := range capabilityStringList(caps["user_emails"]) {
+		email := strings.TrimSpace(strings.ToLower(fmt.Sprint(value)))
+		if email == "" {
+			continue
 		}
+		if _, ok := seen[email]; ok {
+			continue
+		}
+		seen[email] = struct{}{}
+		out = append(out, email)
 	}
-	if tenantEmails, ok := caps["tenant_user_emails"].(map[string]any); ok {
+	if tenantEmails, ok := capabilityStringListMap(caps["tenant_user_emails"]); ok {
 		for _, rawEmails := range tenantEmails {
-			for _, rawEmail := range capabilityStringList(rawEmails) {
+			for _, rawEmail := range rawEmails {
 				email := strings.TrimSpace(strings.ToLower(rawEmail))
 				if email == "" {
 					continue
@@ -509,7 +525,7 @@ func tenantIDForHubEmail(hub *store.HubInstance, email string) string {
 	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
 		return ""
 	}
-	tenantEmails, ok := caps["tenant_user_emails"].(map[string]any)
+	tenantEmails, ok := capabilityStringListMap(caps["tenant_user_emails"])
 	if !ok {
 		return ""
 	}
@@ -518,7 +534,7 @@ func tenantIDForHubEmail(hub *store.HubInstance, email string) string {
 		if tenantID == "" {
 			continue
 		}
-		for _, rawEmail := range capabilityStringList(rawEmails) {
+		for _, rawEmail := range rawEmails {
 			if strings.TrimSpace(strings.ToLower(rawEmail)) == email {
 				return tenantID
 			}
@@ -556,18 +572,40 @@ func tenantNameForHubTenant(hub *store.HubInstance, tenantID string) string {
 }
 
 func capabilityStringList(value any) []string {
-	items, ok := value.([]any)
-	if !ok {
+	switch items := value.(type) {
+	case []string:
+		return append([]string(nil), items...)
+	case []any:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			text := strings.TrimSpace(fmt.Sprint(item))
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
 		return nil
 	}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		text := strings.TrimSpace(fmt.Sprint(item))
-		if text != "" {
-			out = append(out, text)
+}
+
+func capabilityStringListMap(value any) (map[string][]string, bool) {
+	switch items := value.(type) {
+	case map[string]any:
+		out := make(map[string][]string, len(items))
+		for tenantID, emails := range items {
+			out[tenantID] = capabilityStringList(emails)
 		}
+		return out, true
+	case map[string][]string:
+		out := make(map[string][]string, len(items))
+		for tenantID, emails := range items {
+			out[tenantID] = append([]string(nil), emails...)
+		}
+		return out, true
+	default:
+		return nil, false
 	}
-	return out
 }
 
 func isAdminDomainRoute(route *store.HubDomainRoute) bool {
@@ -589,6 +627,35 @@ func isAdminUserLink(link *store.HubUserLink) bool {
 		return false
 	}
 	return strings.HasPrefix(strings.TrimSpace(link.ID), "hul_admin_")
+}
+
+func isAdminMigrationUserLink(link *store.HubUserLink) bool {
+	if link == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(link.ID), "hul_admin_migration_")
+}
+
+func isHubTenantAdminLink(link *store.HubUserLink) bool {
+	if link == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(link.ID), "hul_hub_admin_")
+}
+
+func linkRouteKind(link *store.HubUserLink) string {
+	switch {
+	case isAdminMigrationUserLink(link):
+		return "admin_migration"
+	case isAdminUserLink(link):
+		return "admin_override"
+	case isHubTenantAdminLink(link):
+		return "hub_admin"
+	case isOwnerLink(link):
+		return "hub_owner"
+	default:
+		return "user"
+	}
 }
 
 func isPhoneRouteIdentity(value string) bool {
@@ -832,10 +899,23 @@ func (s *routeSnapshot) mergeCandidate(resultsByHub map[string]resolvedCandidate
 	if candidate.hub == nil {
 		return
 	}
+	routeKind := candidate.routeKind
+	if routeKind == "" {
+		switch candidate.rank {
+		case rankDefaultLink:
+			routeKind = "invitation"
+		case rankDomainRoute:
+			routeKind = "domain"
+		case rankPublicHub:
+			routeKind = "public_fallback"
+		default:
+			routeKind = "user"
+		}
+	}
 	key := virtualHubCandidateKey(candidate)
 	current, ok := resultsByHub[key]
 	next := resolvedCandidate{
-		view:          hubToAccessView(candidate.hub, email, candidate.routeDomain, candidate.tenantID),
+		view:          hubToAccessViewWithRouteKind(candidate.hub, email, candidate.routeDomain, routeKind, candidate.tenantID),
 		routePriority: candidate.routePriority,
 		rank:          candidate.rank,
 	}
@@ -1015,7 +1095,7 @@ func (s *routeSnapshot) resolveDomain(domain string) *ResolveResult {
 		}
 		seen[key] = struct{}{}
 		items = append(items, resolvedCandidate{
-			view:          hubToAccessView(candidate.hub, "", candidate.routeDomain, candidate.tenantID),
+			view:          hubToAccessViewWithRouteKind(candidate.hub, "", candidate.routeDomain, routeKindForCandidate(candidate), candidate.tenantID),
 			routePriority: candidate.routePriority,
 			rank:          candidate.rank,
 		})
@@ -1037,5 +1117,21 @@ func (s *routeSnapshot) resolveDomain(domain string) *ResolveResult {
 		Mode:         mode,
 		DefaultHubID: views[0].HubID,
 		Hubs:         views,
+	}
+}
+
+func routeKindForCandidate(candidate snapshotCandidate) string {
+	if candidate.routeKind != "" {
+		return candidate.routeKind
+	}
+	switch candidate.rank {
+	case rankDomainRoute:
+		return "domain"
+	case rankPublicHub:
+		return "public_fallback"
+	case rankDefaultLink:
+		return "invitation"
+	default:
+		return "user"
 	}
 }

@@ -264,14 +264,9 @@ func (s *HTTPServer) runMigrationExport(ctx context.Context, p agentservice.Prin
 	if err != nil {
 		return nil, err
 	}
-	plainHash, plainSize, err := fileSHA256(plainPath)
+	plainHash, _, err := fileSHA256(plainPath)
 	if err != nil {
 		return nil, err
-	}
-	current, maxBytes, _ := s.migrationHubGetCurrent(ctx, cfg)
-	_ = current
-	if maxBytes > 0 && plainSize > maxBytes {
-		return nil, fmt.Errorf("compressed migration package is %s, exceeds limit %s", formatBytes(plainSize), formatBytes(maxBytes))
 	}
 	progress(0.22, "encrypting migration package")
 	encryptedPath := filepath.Join(workDir, "migration.mlawenc")
@@ -280,6 +275,13 @@ func (s *HTTPServer) runMigrationExport(ctx context.Context, p agentservice.Prin
 	}
 	encryptedHash, encryptedSize, err := fileSHA256(encryptedPath)
 	if err != nil {
+		return nil, err
+	}
+	_, maxBytes, err := s.migrationHubGetCurrent(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("get Hub migration package limit: %w", err)
+	}
+	if err := checkMigrationPackageLimit(encryptedSize, maxBytes); err != nil {
 		return nil, err
 	}
 	chunkCount := int((encryptedSize + migrationChunkSize - 1) / migrationChunkSize)
@@ -307,6 +309,13 @@ func (s *HTTPServer) runMigrationExport(ctx context.Context, p agentservice.Prin
 	}
 	progress(1, "export completed")
 	return map[string]interface{}{"export_id": exportID, "encrypted_size": encryptedSize, "chunk_count": chunkCount}, nil
+}
+
+func checkMigrationPackageLimit(packageSize, maxBytes int64) error {
+	if maxBytes > 0 && packageSize > maxBytes {
+		return fmt.Errorf("encrypted migration package is %s, exceeds limit %s", formatBytes(packageSize), formatBytes(maxBytes))
+	}
+	return nil
 }
 
 func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Principal, cfg migrationClientConfig, exportID, password string, progress func(float64, string)) (result map[string]interface{}, err error) {

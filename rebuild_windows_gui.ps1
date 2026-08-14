@@ -9,11 +9,23 @@ if (-not (Test-Path $goversioninfo)) {
   throw "Windows GUI rebuild requires goversioninfo at $goversioninfo. Install it with: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest"
 }
 $cfg = Get-Content (Join-Path $root 'wails.json') -Raw | ConvertFrom-Json
-$version = $cfg.info.productVersion
+$productVersion = [string]$cfg.info.productVersion
 $buildNumber = (Get-Content (Join-Path $root 'build_number') -Raw).Trim()
-if ([string]::IsNullOrWhiteSpace($version) -or [string]::IsNullOrWhiteSpace($buildNumber)) {
+if ([string]::IsNullOrWhiteSpace($productVersion) -or [string]::IsNullOrWhiteSpace($buildNumber)) {
   throw 'wails.json productVersion and build_number must both be set.'
 }
+$versionParts = $productVersion.Split('.')
+if ($versionParts.Count -lt 3 -or $versionParts[0..2] | Where-Object { $_ -notmatch '^\d+$' }) {
+  throw "wails.json productVersion must start with major.minor.patch, got: $productVersion"
+}
+if ($buildNumber -notmatch '^\d+$') {
+  throw "build_number must be numeric, got: $buildNumber"
+}
+# Keep the linked runtime version and Windows file metadata aligned with the
+# installer/release convention (major.minor.patch.build).  Previously this
+# script read build_number but silently discarded it, producing local binaries
+# reported as 7.1.0 while the installed build was 7.1.0.11864.
+$version = "$($versionParts[0]).$($versionParts[1]).$($versionParts[2]).$buildNumber"
 $parts = $version.Split('.')
 
 Remove-Item (Join-Path $root 'gui\resource_windows_amd64.syso') -ErrorAction SilentlyContinue

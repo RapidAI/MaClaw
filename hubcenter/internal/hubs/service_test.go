@@ -1109,7 +1109,7 @@ func TestHeartbeatTenantInventoryAdminRouteOnlySuppressesSameTenant(t *testing.T
 	}
 }
 
-func TestHeartbeatTenantInventoryMakesTenantAdminEmailVerifiable(t *testing.T) {
+func TestHeartbeatSeparatesTenantAdminInventoryFromNormalUserRoutes(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
 	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
@@ -1125,7 +1125,7 @@ func TestHeartbeatTenantInventoryMakesTenantAdminEmailVerifiable(t *testing.T) {
 		Visibility:     "private",
 		EnrollmentMode: "open",
 		Capabilities: map[string]any{
-			"tenant_user_emails": map[string]any{
+			"tenant_admin_emails": map[string]any{
 				"tenant_acme": []any{"Admin@Acme.Example"},
 			},
 		},
@@ -1138,8 +1138,136 @@ func TestHeartbeatTenantInventoryMakesTenantAdminEmailVerifiable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmailHasHubTenantLink: %v", err)
 	}
-	if !ok {
-		t.Fatal("tenant admin email advertised only in tenant_user_emails should be verifiable after heartbeat")
+	if ok {
+		t.Fatal("tenant admin inventory must not satisfy a normal-user tenant link check")
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "admin@acme.example")
+	if err != nil || len(links) != 1 || !isHubTenantAdminLink(links[0]) {
+		t.Fatalf("expected dedicated Hub tenant admin link, got %+v err=%v", links, err)
+	}
+	if err := entrySvc.Rebuild(ctx); err != nil {
+		t.Fatalf("rebuild entry snapshot: %v", err)
+	}
+	resolved, err := entrySvc.ResolveByEmail(ctx, "admin@acme.example")
+	if err != nil {
+		t.Fatalf("resolve normal user route: %v", err)
+	}
+	if resolved.Mode != "none" {
+		t.Fatalf("Hub tenant admin inventory must not route normal onboarding, got %+v", resolved)
+	}
+}
+
+func TestHeartbeatUpgradesLegacyAdminUserInventoryRoute(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_upgrade_admin_inventory", OwnerEmail: "owner@example.com", Name: "Upgrade Admin Inventory", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	legacyID := primaryUserLinkIDForTenant(hub.ID, "tenant_acme", "admin@acme.example")
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: legacyID, HubID: hub.ID, TenantID: "tenant_acme", Email: "admin@acme.example", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed legacy user link: %v", err)
+	}
+
+	if err := svc.HeartbeatHubWithSecret(ctx, hub.ID, "secret", nil, &HeartbeatHubUpdate{Capabilities: map[string]any{
+		"tenant_user_emails":  map[string]any{"tenant_acme": []any{}},
+		"tenant_admin_emails": map[string]any{"tenant_acme": []any{"admin@acme.example"}},
+	}}); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "admin@acme.example")
+	if err != nil || len(links) != 1 || !isHubTenantAdminLink(links[0]) {
+		t.Fatalf("legacy ordinary link should be upgraded to dedicated admin link, got %+v err=%v", links, err)
+	}
+}
+
+func TestLegacyHeartbeatDoesNotClearHubTenantAdminInventory(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_legacy_admin_inventory", OwnerEmail: "owner@example.com", Name: "Legacy Admin Inventory", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	admin := &store.HubUserLink{ID: hubTenantAdminLinkIDForTenant(hub.ID, "tenant_acme", "admin@example.com"), HubID: hub.ID, TenantID: "tenant_acme", Email: "admin@example.com", CreatedAt: now, UpdatedAt: now}
+	if err := st.HubUserLinks.Upsert(ctx, admin); err != nil {
+		t.Fatalf("seed Hub admin inventory: %v", err)
+	}
+	// This models a Hub that has not yet been upgraded to publish the new
+	// tenant_admin_emails capability.
+	if err := svc.HeartbeatHubWithSecret(ctx, hub.ID, "secret", nil, &HeartbeatHubUpdate{Capabilities: map[string]any{
+		"tenant_user_emails": map[string]any{"tenant_acme": []any{}},
+	}}); err != nil {
+		t.Fatalf("legacy heartbeat: %v", err)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "admin@example.com")
+	if err != nil || len(links) != 1 || !isHubTenantAdminLink(links[0]) {
+		t.Fatalf("legacy heartbeat must not clear unknown admin inventory, got %+v err=%v", links, err)
+	}
+}
+
+func TestAdvertisedEmptyTenantAdminInventoryClearsRemovedAdmins(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_empty_admin_inventory", OwnerEmail: "owner@example.com", Name: "Empty Admin Inventory", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	admin := &store.HubUserLink{ID: hubTenantAdminLinkIDForTenant(hub.ID, "tenant_acme", "admin@example.com"), HubID: hub.ID, TenantID: "tenant_acme", Email: "admin@example.com", CreatedAt: now, UpdatedAt: now}
+	if err := st.HubUserLinks.Upsert(ctx, admin); err != nil {
+		t.Fatalf("seed Hub admin inventory: %v", err)
+	}
+	if err := svc.HeartbeatHubWithSecret(ctx, hub.ID, "secret", nil, &HeartbeatHubUpdate{Capabilities: map[string]any{
+		"tenant_user_emails":  map[string]any{"tenant_acme": []any{}},
+		"tenant_admin_emails": map[string]any{},
+	}}); err != nil {
+		t.Fatalf("authoritative empty heartbeat: %v", err)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "admin@example.com")
+	if err != nil || len(links) != 0 {
+		t.Fatalf("advertised empty admin inventory must clear removed admins, got %+v err=%v", links, err)
+	}
+}
+
+func TestSyncHubUserLinkPreservesHubTenantAdminInventory(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_preserve_admin_inventory", OwnerEmail: "owner@example.com", Name: "Preserve Admin Inventory", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	admin := &store.HubUserLink{ID: hubTenantAdminLinkIDForTenant(hub.ID, "tenant_acme", "admin@example.com"), HubID: hub.ID, TenantID: "tenant_acme", Email: "admin@example.com", CreatedAt: now, UpdatedAt: now}
+	if err := st.HubUserLinks.Upsert(ctx, admin); err != nil {
+		t.Fatalf("seed Hub admin inventory: %v", err)
+	}
+	if err := svc.SyncHubUserLink(ctx, hub.ID, "secret", "admin@example.com", false, false, "tenant_acme"); err != nil {
+		t.Fatalf("normal user sync: %v", err)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "admin@example.com")
+	if err != nil {
+		t.Fatalf("list links: %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("normal user sync must preserve Hub admin inventory, got %+v", links)
+	}
+	foundAdmin, foundUser := false, false
+	for _, link := range links {
+		foundAdmin = foundAdmin || isHubTenantAdminLink(link)
+		foundUser = foundUser || link.ID == primaryUserLinkIDForTenant(hub.ID, "tenant_acme", "admin@example.com")
+	}
+	if !foundAdmin || !foundUser {
+		t.Fatalf("expected distinct admin and user identities, got %+v", links)
 	}
 }
 
@@ -1836,12 +1964,8 @@ func TestMigrateUserCanTargetOneTenantForSameEmail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveByEmail: %v", err)
 	}
-	seen := map[string]string{}
-	for _, item := range resolved.Hubs {
-		seen[item.TenantID] = item.HubID
-	}
-	if seen["tenant_a"] != "hub_b" || seen["tenant_b"] != "hub_a" {
-		t.Fatalf("expected tenant_a migrated and tenant_b preserved, got %+v", resolved.Hubs)
+	if len(resolved.Hubs) != 1 || resolved.Hubs[0].TenantID != "tenant_a" || resolved.Hubs[0].HubID != "hub_b" {
+		t.Fatalf("expected identity migration lock to expose only the migrated tenant, got %+v", resolved.Hubs)
 	}
 }
 
@@ -1910,12 +2034,8 @@ func TestMigrateUserExactEmailCanMoveSourceTenantToDifferentTargetTenant(t *test
 	if err != nil {
 		t.Fatalf("ResolveByEmail: %v", err)
 	}
-	seen := map[string]string{}
-	for _, item := range resolved.Hubs {
-		seen[item.TenantID] = item.HubID
-	}
-	if seen["tenant_source"] != "" || seen["tenant_target"] != "hub_target" || seen["tenant_other"] != "hub_source" {
-		t.Fatalf("expected tenant_source moved to tenant_target and tenant_other preserved, got %+v", resolved.Hubs)
+	if len(resolved.Hubs) != 1 || resolved.Hubs[0].TenantID != "tenant_target" || resolved.Hubs[0].HubID != "hub_target" {
+		t.Fatalf("expected identity migration lock to expose only the target tenant, got %+v", resolved.Hubs)
 	}
 }
 
@@ -2043,6 +2163,145 @@ func TestMigrateUserSurvivesSourceHubResync(t *testing.T) {
 		t.Fatalf("expected admin migration to keep hub_b after source resync, got %+v", resolved)
 	}
 }
+
+func TestMigrateUserIdentityLockSurvivesCrossTenantSourceResync(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	svc.SetRouteSnapshotRefresher(entrySvc)
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_legacy", OwnerEmail: "owner-legacy@example.com", Name: "Legacy Hub", BaseURL: "https://legacy.example.com", Status: "online", HubSecretHash: hashToken("legacy-secret"), CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_target", OwnerEmail: "owner-target@example.com", Name: "Target Hub", BaseURL: "https://target.example.com", Status: "online", HubSecretHash: hashToken("target-secret"), CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: primaryUserLinkIDForTenant("hub_legacy", "", "user@example.com"), HubID: "hub_legacy", Email: "user@example.com", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed legacy default route: %v", err)
+	}
+
+	if _, err := svc.MigrateUser(ctx, MigrateUserRequest{Email: "user@example.com", FromHubID: "hub_legacy", SourceTenantID: "tenant_default", ToHubID: "hub_target", TargetTenantID: "tenant_target"}); err != nil {
+		t.Fatalf("MigrateUser: %v", err)
+	}
+	if err := svc.SyncHubUserLink(ctx, "hub_legacy", "legacy-secret", "user@example.com", true, false, "tenant_default"); err != nil {
+		t.Fatalf("legacy cross-tenant resync: %v", err)
+	}
+	if err := entrySvc.Rebuild(ctx); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	resolved, err := entrySvc.ResolveByEmail(ctx, "user@example.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if resolved.DefaultHubID != "hub_target" || len(resolved.Hubs) != 1 || resolved.Hubs[0].HubID != "hub_target" || resolved.Hubs[0].TenantID != "tenant_target" {
+		t.Fatalf("identity migration lock must keep the target tenant after legacy default resync, got %+v", resolved)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	if len(links) != 1 || !isAdminMigrationUserLink(links[0]) || links[0].HubID != "hub_target" || links[0].TenantID != "tenant_target" {
+		t.Fatalf("expected only the target migration link, got %+v", links)
+	}
+}
+
+func TestMigrateUserCreatesDistinctIdentityLockLinksPerTargetTenant(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_source", OwnerEmail: "owner-source@example.com", Name: "Source Hub", BaseURL: "https://source.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_target", OwnerEmail: "owner-target@example.com", Name: "Target Hub", BaseURL: "https://target.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	for _, tenantID := range []string{"tenant_a", "tenant_b"} {
+		if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: primaryUserLinkIDForTenant("hub_source", tenantID, "user@example.com"), HubID: "hub_source", TenantID: tenantID, Email: "user@example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatalf("seed source link for %s: %v", tenantID, err)
+		}
+	}
+
+	if _, err := svc.MigrateUser(ctx, MigrateUserRequest{Email: "user@example.com", FromHubID: "hub_source", ToHubID: "hub_target"}); err != nil {
+		t.Fatalf("MigrateUser: %v", err)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("expected one migration link per target tenant, got %+v", links)
+	}
+	seen := map[string]bool{}
+	for _, link := range links {
+		if !isAdminMigrationUserLink(link) || link.HubID != "hub_target" {
+			t.Fatalf("expected target migration links, got %+v", links)
+		}
+		seen[link.TenantID] = true
+	}
+	if !seen["tenant_a"] || !seen["tenant_b"] || links[0].ID == links[1].ID {
+		t.Fatalf("migration links must preserve both tenants with distinct ids, got %+v", links)
+	}
+}
+
+func TestMigrateUserPatternCreatesIdentityLocksThatBlockLegacyResync(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	svc.SetRouteSnapshotRefresher(entrySvc)
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_legacy", OwnerEmail: "owner-legacy@example.com", Name: "Legacy Hub", BaseURL: "https://legacy.example.com", Status: "online", HubSecretHash: hashToken("legacy-secret"), CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_target", OwnerEmail: "owner-target@example.com", Name: "Target Hub", BaseURL: "https://target.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	for _, email := range []string{"alice@example.com", "bob@example.com"} {
+		if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: primaryUserLinkIDForTenant("hub_legacy", "", email), HubID: "hub_legacy", Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatalf("seed legacy route for %s: %v", email, err)
+		}
+	}
+
+	result, err := svc.MigrateUser(ctx, MigrateUserRequest{Email: "*@example.com", FromHubID: "hub_legacy", SourceTenantID: "tenant_default", ToHubID: "hub_target", TargetTenantID: "tenant_target"})
+	if err != nil {
+		t.Fatalf("MigrateUser pattern: %v", err)
+	}
+	if len(result.UpsertedIDs) != 2 {
+		t.Fatalf("expected two migration locks, got %+v", result)
+	}
+	for _, email := range []string{"alice@example.com", "bob@example.com"} {
+		if err := svc.SyncHubUserLink(ctx, "hub_legacy", "legacy-secret", email, true, false, "tenant_default"); err != nil {
+			t.Fatalf("legacy resync %s: %v", email, err)
+		}
+	}
+	if err := entrySvc.Rebuild(ctx); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	for _, email := range []string{"alice@example.com", "bob@example.com"} {
+		resolved, err := entrySvc.ResolveByEmail(ctx, email)
+		if err != nil {
+			t.Fatalf("ResolveByEmail %s: %v", email, err)
+		}
+		if len(resolved.Hubs) != 1 || resolved.Hubs[0].HubID != "hub_target" || resolved.Hubs[0].TenantID != "tenant_target" {
+			t.Fatalf("pattern migration lock should keep %s on target, got %+v", email, resolved.Hubs)
+		}
+	}
+}
+
 func TestMigrateUserPatternMovesMatchingUsers(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
@@ -3833,5 +4092,199 @@ func TestReadLimitedHubResponseRejectsOversizedBody(t *testing.T) {
 	}
 	if string(body) != "abcde" {
 		t.Fatalf("body = %q, want abcde", string(body))
+	}
+}
+
+func TestReconcileStaleUserRoutesRemovesOnlyConfirmedScopedRoutes(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/center/user-exists" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Email    string `json:"email"`
+			TenantID string `json:"tenant_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode probe: %v", err)
+		}
+		exists := req.Email != "stale@example.com" || req.TenantID != "tenant_a"
+		_ = json.NewEncoder(w).Encode(map[string]bool{"exists": exists})
+	}))
+	t.Cleanup(remote.Close)
+
+	hub := &store.HubInstance{ID: "hub_reconcile", OwnerEmail: "owner@example.com", Name: "Reconcile", BaseURL: remote.URL, Status: "online", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	links := []*store.HubUserLink{
+		{ID: primaryUserLinkIDForTenant(hub.ID, "tenant_a", "stale@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "stale@example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: primaryUserLinkIDForTenant(hub.ID, "tenant_b", "stale@example.com"), HubID: hub.ID, TenantID: "tenant_b", Email: "stale@example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: primaryUserLinkIDForTenant(hub.ID, "tenant_a", "keep@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "keep@example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: adminUserLinkIDForTenant("tenant_a", "admin@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "admin@example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: primaryOwnerLinkID(hub.ID), HubID: hub.ID, Email: "owner@example.com", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, link := range links {
+		if err := st.HubUserLinks.Upsert(ctx, link); err != nil {
+			t.Fatalf("seed link %s: %v", link.ID, err)
+		}
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	result, err := svc.ReconcileStaleUserRoutes(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileStaleUserRoutes: %v", err)
+	}
+	if result.Checked != 3 || result.Cleaned != 1 || result.Skipped != 2 || result.Failed != 0 {
+		t.Fatalf("unexpected reconciliation result: %+v", result)
+	}
+	remaining, err := st.HubUserLinks.ListByEmail(ctx, "stale@example.com")
+	if err != nil || len(remaining) != 1 || remaining[0].TenantID != "tenant_b" {
+		t.Fatalf("expected only other-tenant route to remain, links=%+v err=%v", remaining, err)
+	}
+	for _, email := range []string{"keep@example.com", "admin@example.com", "owner@example.com"} {
+		items, listErr := st.HubUserLinks.ListByEmail(ctx, email)
+		if listErr != nil || len(items) != 1 {
+			t.Fatalf("route %s should remain, links=%+v err=%v", email, items, listErr)
+		}
+	}
+}
+
+func TestReconcileStaleUserRoutesSkipsHubTenantAdminInventory(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]bool{"exists": false})
+	}))
+	t.Cleanup(remote.Close)
+	hub := &store.HubInstance{ID: "hub_reconcile_admin", OwnerEmail: "owner@example.com", Name: "Reconcile Admin", BaseURL: remote.URL, Status: "online", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	admin := &store.HubUserLink{ID: hubTenantAdminLinkIDForTenant(hub.ID, "tenant_a", "admin@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "admin@example.com", CreatedAt: now, UpdatedAt: now}
+	if err := st.HubUserLinks.Upsert(ctx, admin); err != nil {
+		t.Fatalf("seed Hub admin inventory: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	result, err := svc.ReconcileStaleUserRoutes(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileStaleUserRoutes: %v", err)
+	}
+	if result.Checked != 0 || result.Cleaned != 0 || result.Skipped != 1 || result.Failed != 0 {
+		t.Fatalf("Hub admin inventory must be skipped, got %+v", result)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "admin@example.com")
+	if err != nil || len(links) != 1 || !isHubTenantAdminLink(links[0]) {
+		t.Fatalf("Hub admin inventory must remain after reconciliation, got %+v err=%v", links, err)
+	}
+}
+
+func TestAdminDeleteEmailRoutesPreservesAdministratorIdentityInventory(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_admin_delete_roles", OwnerEmail: "owner@example.com", Name: "Delete Roles", BaseURL: "https://hub.example.com", Status: "online", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	links := []*store.HubUserLink{
+		{ID: primaryUserLinkIDForTenant(hub.ID, "tenant_a", "shared@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "shared@example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: hubTenantAdminLinkIDForTenant(hub.ID, "tenant_a", "shared@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "shared@example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: adminUserLinkIDForTenant("tenant_b", "shared@example.com"), HubID: hub.ID, TenantID: "tenant_b", Email: "shared@example.com", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, link := range links {
+		if err := st.HubUserLinks.Upsert(ctx, link); err != nil {
+			t.Fatalf("seed link %s: %v", link.ID, err)
+		}
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	deleted, err := svc.AdminDeleteEmailRoutes(ctx, "shared@example.com", hub.ID)
+	if err != nil || deleted != 1 {
+		t.Fatalf("expected only normal user route deleted, deleted=%d err=%v", deleted, err)
+	}
+	remaining, err := st.HubUserLinks.ListByEmail(ctx, "shared@example.com")
+	if err != nil || len(remaining) != 2 {
+		t.Fatalf("administrator inventories must remain, links=%+v err=%v", remaining, err)
+	}
+	for _, link := range remaining {
+		if !isHubTenantAdminLink(link) && !isAdminUserLink(link) {
+			t.Fatalf("unexpected remaining ordinary link: %+v", link)
+		}
+	}
+}
+
+func TestDashboardUserMetricsExcludeHubAdministratorInventory(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_dashboard_roles", OwnerEmail: "owner@example.com", Name: "Dashboard Roles", BaseURL: "https://hub.example.com", Status: "online", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	links := []*store.HubUserLink{
+		{ID: primaryUserLinkIDForTenant(hub.ID, "tenant_a", "member@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "member@example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: hubTenantAdminLinkIDForTenant(hub.ID, "tenant_a", "admin@admin-only.example"), HubID: hub.ID, TenantID: "tenant_a", Email: "admin@admin-only.example", CreatedAt: now, UpdatedAt: now},
+		{ID: primaryOwnerLinkID(hub.ID), HubID: hub.ID, Email: "owner@owner-only.example", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, link := range links {
+		if err := st.HubUserLinks.Upsert(ctx, link); err != nil {
+			t.Fatalf("seed link %s: %v", link.ID, err)
+		}
+	}
+	counts, err := svc.dashboardUserCounts(ctx)
+	if err != nil {
+		t.Fatalf("dashboardUserCounts: %v", err)
+	}
+	if counts[hub.ID]["tenant_a"] != 1 || counts[hub.ID][""] != 1 {
+		t.Fatalf("dashboard counts must include only normal users, got %+v", counts)
+	}
+	domains, err := svc.dashboardGuestDomains(ctx, hubOwnerEmails([]*store.HubInstance{hub}))
+	if err != nil {
+		t.Fatalf("dashboardGuestDomains: %v", err)
+	}
+	if got := domains[hub.ID]["tenant_a"]; len(got) != 1 || got[0] != "example.com" {
+		t.Fatalf("dashboard domains must exclude role-only identities, got %+v", domains)
+	}
+}
+
+func TestReconcileStaleUserRoutesKeepsRoutesWhenProbeFails(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(remote.Close)
+	hub := &store.HubInstance{ID: "hub_unavailable", OwnerEmail: "owner@example.com", Name: "Unavailable", BaseURL: remote.URL, Status: "online", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	link := &store.HubUserLink{ID: primaryUserLinkID(hub.ID, "keep@example.com"), HubID: hub.ID, Email: "keep@example.com", CreatedAt: now, UpdatedAt: now}
+	if err := st.HubUserLinks.Upsert(ctx, link); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	result, err := svc.ReconcileStaleUserRoutes(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileStaleUserRoutes: %v", err)
+	}
+	if result.Checked != 1 || result.Cleaned != 0 || result.Failed != 1 {
+		t.Fatalf("unexpected reconciliation result: %+v", result)
+	}
+	items, err := st.HubUserLinks.ListByEmail(ctx, "keep@example.com")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("failed probe must preserve route, links=%+v err=%v", items, err)
 	}
 }

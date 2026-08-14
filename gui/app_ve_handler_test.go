@@ -45,6 +45,18 @@ func TestGroupDiscussionMessage_StreamChunk_Construction(t *testing.T) {
 	}
 }
 
+func TestVisibleVEStreamDeltaDropsReasoningMarkersAndControls(t *testing.T) {
+	if got := visibleVEStreamDelta("\x01internal reasoning"); got != "" {
+		t.Fatalf("reasoning delta = %q, want empty", got)
+	}
+	if got := visibleVEStreamDelta("visible\x00 text\nnext"); got != "visible text\nnext" {
+		t.Fatalf("visible delta = %q", got)
+	}
+	if got := visibleVEStreamDelta("\x01\x00private reasoning"); got != "" {
+		t.Fatalf("reasoning delta with controls = %q, want empty", got)
+	}
+}
+
 func TestGroupDispatcherRespondsToAttachmentOnlyStatement(t *testing.T) {
 	msg := a2a.GroupDiscussionMessage{
 		Kind: a2a.MessageStatement,

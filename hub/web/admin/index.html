@@ -241,7 +241,7 @@
           <div class="nav-group-label" id="nav-group-label-users" data-i18n="navGroupUsers">Users & Org</div>
           <button data-tab="tenants" onclick="openTab('tenants')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M8 9h8"></path><path d="M8 13h5"></path><path d="M8 17h3"></path></svg></span><div class="nav-copy"><span id="navTenants"></span><small id="navTenantsDesc"></small></div></div></button>
           <button data-tab="governance" onclick="openTab('governance')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14"></path><path d="M7 12h10"></path><path d="M9 18h6"></path><path d="M12 6v12"></path></svg></span><div class="nav-copy"><span data-i18n="navGovernance"></span><small data-i18n="navGovernanceDesc"></small></div></div></button>
-          <button data-tab="userreferrals" onclick="openTab('userreferrals')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"></path><path d="M2 8h20v4H2z"></path><path d="M12 8v12"></path><path d="M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8"></path><path d="M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8"></path></svg></span><div class="nav-copy"><span id="navUserReferrals">User referrals</span><small id="navUserReferralsDesc">Rewards and activity</small></div></div></button>
+          <button data-tab="userreferrals" onclick="openTab('userreferrals')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"></path><path d="M2 8h20v4H2z"></path><path d="M12 8v12"></path><path d="M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8"></path><path d="M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8"></path></svg></span><div class="nav-copy"><span id="navUserReferrals" data-i18n="navUserReferrals">User referrals</span><small id="navUserReferralsDesc" data-i18n="navUserReferralsDesc">Rewards and activity</small></div></div></button>
           <button data-tab="security" onclick="openTab('security')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 6 6v5c0 4.2 2.6 7.8 6 10 3.4-2.2 6-5.8 6-10V6l-6-3Z"></path><path d="m9.5 12 1.7 1.7 3.3-3.4"></path></svg></span><div class="nav-copy"><span id="navSecurity" data-i18n="navSecurity"></span><small id="navSecurityDesc" data-i18n="navSecurityDesc"></small></div></div></button>
           <button data-tab="invitationcodes" onclick="openTab('invitationcodes')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9Z"></path><path d="M12 10v8"></path><path d="M9 13h6"></path></svg></span><div class="nav-copy"><span id="navInvitationCodes"></span><small id="navInvitationCodesDesc"></small></div></div></button>
           <button data-tab="pwarequests" onclick="openTab('pwarequests')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 7h4"></path><path d="M12 17h.01"></path></svg></span><div class="nav-copy"><span id="navPwaRequests"></span><small id="navPwaRequestsDesc"></small></div></div></button>
@@ -1574,35 +1574,32 @@
 
     </main>
   </div>
-<script src="/admin/admin.js"></script>
-<script src="/admin/admin-tabs.js"></script>
-<script src="/admin/tenant-tab.js"></script>
-<script src="/admin/admin-ui.js"></script>
-<script src="/admin/center-tab.js"></script>
-<script src="/admin/governance-tab.js"></script>
-<script src="/admin/marketplace-tab.js?v=skill-name-20260711-4"></script>
-<script src="/admin/security-tab.js"></script>
-<script src="/admin/machines-tab.js"></script>
-<script src="/admin/ve-tab.js"></script>
-<script src="/admin/im-tab.js"></script>
-<script src="/admin/feishu-tab.js"></script>
-<script src="/admin/invitation-tab.js"></script>
-<script src="/admin/user-referrals-tab.js"></script>
-<script src="/admin/pwa-tab.js"></script>
-<script src="/admin/system-tab.js"></script>
-<script src="/admin/compute-tab.js"></script>
-<script src="/admin/llm-provider-tab.js"></script>
-<script src="/admin/llm-service-tabs.js"></script>
-<script src="/admin/maclaw-compute-module.js"></script>
-<script src="/admin/card-store-tab.js"></script>
-<script src="/admin/usage-stats-tab.js"></script>
-<script src="/admin/failure-logs-tab.js"></script>
-<script src="/admin/knowledge-management-tab.js"></script>
-<script src="/admin/digital-assets-tab.js"></script>
-<script src="/admin/notification-tab.js"></script>
-<script src="/admin/admin-module-health.js"></script>
-<script src="/admin/overview-tenant-info.js"></script>
-<script src="/admin/overview-config-agent.js"></script>
-<script src="/admin/admin-bootstrap.js"></script>
+<script defer src="/admin/admin.js"></script>
+<script defer src="/admin/admin-tabs.js"></script>
+<script defer src="/admin/admin-lazy-module-loader.js"></script>
+<script defer src="/admin/tenant-tab.js"></script>
+<script defer src="/admin/admin-ui.js"></script>
+<script defer src="/admin/center-tab.js"></script>
+<script defer src="/admin/governance-tab.js"></script>
+<script defer src="/admin/marketplace-tab.js?v=skill-name-20260711-4"></script>
+<script defer src="/admin/machines-tab.js"></script>
+<script defer src="/admin/ve-tab.js"></script>
+<script defer src="/admin/im-tab.js"></script>
+<script defer src="/admin/feishu-tab.js"></script>
+<script defer src="/admin/invitation-tab.js"></script>
+<script defer src="/admin/user-referrals-tab.js"></script>
+<script defer src="/admin/pwa-tab.js"></script>
+<script defer src="/admin/system-tab.js"></script>
+<script defer src="/admin/compute-tab.js"></script>
+<script defer src="/admin/maclaw-compute-module.js"></script>
+<script defer src="/admin/card-store-tab.js"></script>
+<script defer src="/admin/usage-stats-tab.js"></script>
+<script defer src="/admin/failure-logs-tab.js"></script>
+<script defer src="/admin/knowledge-management-tab.js"></script>
+<script defer src="/admin/notification-tab.js"></script>
+<script defer src="/admin/admin-module-health.js"></script>
+<script defer src="/admin/overview-tenant-info.js"></script>
+<script defer src="/admin/overview-config-agent.js"></script>
+<script defer src="/admin/admin-bootstrap.js"></script>
 </body>
 </html>

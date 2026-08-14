@@ -765,7 +765,32 @@ async function loadMailConfig() { try { const data = await api('/api/admin/mail/
 async function saveMailConfig() { try { const payload = collectMailConfig(); const data = await api('/api/admin/mail/config', { method: 'POST', body: JSON.stringify(payload) }); renderMailConfig(data || payload); const msg = tr('mailConfigSaved'); setOutput(msg); showToast(msg, 'success'); return data || payload; } catch (err) { const msg = tr('mailConfigSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
 async function loadTenantMailSenderName() { applyTenantMailSenderI18n(); try { const data = await api('/api/admin/mail/sender-name'); const input = document.getElementById('tenantMailFromName'); if (input) input.value = (data && data.from_name) || ''; return data || {}; } catch (err) { const msg = tmsx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function saveTenantMailSenderName() { try { const input = document.getElementById('tenantMailFromName'); const fromName = normalizeTenantMailSenderName(input ? input.value : ''); if (input) input.value = fromName; const data = await api('/api/admin/mail/sender-name', { method: 'POST', body: JSON.stringify({ from_name: fromName }) }); if (input) input.value = (data && data.from_name) || fromName; const msg = tmsx('saved'); setOutput(msg); showToast(msg, 'success'); return data || { from_name: fromName }; } catch (err) { const msg = tmsx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
-async function loadTenantMigrationSettings() { applyTenantMigrationSettingsI18n(); try { const data = await api('/api/admin/migration/settings'); const input = document.getElementById('tenantMigrationMaxMB'); if (input) { input.min = String(tenantMigrationBytesToMB(data && data.min_bytes) || TENANT_MIGRATION_MIN_MB); input.max = String(tenantMigrationBytesToMB(data && data.max_bytes) || TENANT_MIGRATION_MAX_MB); input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); } return data || {}; } catch (err) { const msg = tmgx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
+function tenantMigrationSettingsFromResponse(data) {
+  const minMB = tenantMigrationBytesToMB(data && data.min_bytes) || TENANT_MIGRATION_MIN_MB;
+  const maxMB = tenantMigrationBytesToMB(data && data.max_bytes) || TENANT_MIGRATION_MAX_MB;
+  const valueMB = Math.min(maxMB, Math.max(minMB, tenantMigrationBytesToMB(data && data.max_package_bytes)));
+  return { minMB, maxMB, valueMB };
+}
+function applyTenantMigrationSettings(data) {
+  const input = document.getElementById('tenantMigrationMaxMB');
+  if (!input) return;
+  const settings = tenantMigrationSettingsFromResponse(data);
+  input.min = String(settings.minMB);
+  input.max = String(settings.maxMB);
+  input.value = String(settings.valueMB);
+}
+async function loadTenantMigrationSettings() {
+  applyTenantMigrationSettingsI18n();
+  try {
+    const data = await api('/api/admin/migration/settings');
+    applyTenantMigrationSettings(data);
+    return data || {};
+  } catch (err) {
+    const msg = tmgx('loadFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
 async function loadTenantDigitalAssetsSettings() {
   if (!canManageTenantDigitalAssets()) return null;
   applyTenantDigitalAssetsSettingsI18n();
@@ -833,7 +858,45 @@ async function toggleTenantDigitalAssetsSync(syncEnabled) {
     showToast(msg, 'error');
   }
 }
-async function saveTenantMigrationSettings() { const input = document.getElementById('tenantMigrationMaxMB'); const valueMB = normalizeTenantMigrationMB(input ? input.value : 0); if (valueMB < TENANT_MIGRATION_MIN_MB || valueMB > TENANT_MIGRATION_MAX_MB) { const msg = tmgx('invalid'); setOutput(msg); showToast(msg, 'error'); return; } const btn = document.getElementById('tenantMigrationSettingsSaveBtn'); const previousLabel = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = tmgx('saving'); } try { const data = await api('/api/admin/migration/settings', { method: 'PUT', body: JSON.stringify({ max_compressed_bytes: valueMB * 1024 * 1024 }) }); if (input) input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); const msg = tmgx('saved'); setOutput(msg); showToast(msg, 'success'); return data || {}; } catch (err) { const msg = tmgx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } finally { if (btn) { btn.disabled = false; btn.textContent = previousLabel || tmgx('save'); } } }
+async function saveTenantMigrationSettings() {
+  const input = document.getElementById('tenantMigrationMaxMB');
+  const valueMB = normalizeTenantMigrationMB(input ? input.value : 0);
+  const minMB = normalizeTenantMigrationMB(input ? input.min : TENANT_MIGRATION_MIN_MB) || TENANT_MIGRATION_MIN_MB;
+  const maxMB = normalizeTenantMigrationMB(input ? input.max : TENANT_MIGRATION_MAX_MB) || TENANT_MIGRATION_MAX_MB;
+  if (valueMB < minMB || valueMB > maxMB) {
+    const msg = tmgx('invalid');
+    setOutput(msg);
+    showToast(msg, 'error');
+    return;
+  }
+  const btn = document.getElementById('tenantMigrationSettingsSaveBtn');
+  const previousLabel = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = tmgx('saving');
+  }
+  try {
+    const data = await api('/api/admin/migration/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ max_package_bytes: valueMB * 1024 * 1024 })
+    });
+    applyTenantMigrationSettings(data);
+    const msg = tmgx('saved');
+    setOutput(msg);
+    showToast(msg, 'success');
+    return data || {};
+  } catch (err) {
+    const msg = tmgx('saveFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+    throw err;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = previousLabel || tmgx('save');
+    }
+  }
+}
 function getTenantSystemFreeCache() {
   if (!canManageRegistrationAuth()) {
     clearTenantSystemFreeState();

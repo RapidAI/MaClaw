@@ -51,6 +51,9 @@ def upload_file(client, local_path, key, cache_control):
             Bucket=bucket,
             Key=key,
             Body=body,
+            # The public endpoint is a desktop update mirror. Explicitly set
+            # object ACLs instead of relying on a bucket-default policy.
+            ACL="public-read",
             CacheControl=cache_control,
         )
 

@@ -123,3 +123,20 @@ func AdminVerifyEmailRouteHandler(service *hubs.Service) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, result)
 	}
 }
+
+// AdminReconcileStaleRoutesHandler runs a conservative sweep of every
+// Hub-synchronised user route. It removes a route only when the exact Hub and
+// tenant explicitly report that the user no longer exists there. It never
+// guesses ownership between two still-valid routes.
+//
+// POST /api/admin/routing/reconcile-stale-routes
+func AdminReconcileStaleRoutesHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		result, err := service.ReconcileStaleUserRoutes(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "RECONCILE_ROUTES_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}

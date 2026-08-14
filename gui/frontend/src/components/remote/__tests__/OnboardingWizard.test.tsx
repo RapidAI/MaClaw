@@ -609,6 +609,29 @@ describe('OnboardingWizard registration', () => {
         expect(ActivateRemoteSMSMock).not.toHaveBeenCalled();
     });
 
+    it('clears a stale email-delivery error when a later code request succeeds', async () => {
+        ResolveRemoteRegistrationTargetMock.mockResolvedValue({
+            hub_url: 'http://mixed-hub.example.com',
+            hub_id: 'hub-mixed',
+            tenant_id: 'tenant-mixed',
+            method: 'mixed',
+            code_length: 6,
+        });
+        SendRemoteRegistrationEmailMock
+            .mockRejectedValueOnce(new Error('MAIL_NOT_CONFIGURED: Mail delivery is not configured'))
+            .mockResolvedValueOnce({ ok: true, tenant_id: 'tenant-mixed', code_length: 6, resend_cooldown_seconds: 0 });
+
+        render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity('mixed@example.com');
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+        expect(await screen.findByText(/mixed-hub\.example\.com.*not configured email delivery/i)).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Resend' }));
+
+        await waitFor(() => expect(SendRemoteRegistrationEmailMock).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(screen.queryByText(/not configured email delivery/i)).toBeNull());
+    });
+
 	it('reroutes email verification with an invitation before sending the code', async () => {
 		ResolveRemoteRegistrationTargetMock.mockResolvedValue({
 			hub_url: 'http://generic-hub.example.com',

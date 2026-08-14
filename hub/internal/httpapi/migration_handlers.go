@@ -229,7 +229,7 @@ func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Reque
 	}
 	limit := api.maxPackageBytes(r.Context(), p.TenantID)
 	if req.EncryptedSize > limit {
-		writeError(w, http.StatusRequestEntityTooLarge, "MIGRATION_TOO_LARGE", fmt.Sprintf("encrypted migration package exceeds %d bytes", limit))
+		writeMigrationPackageTooLarge(w, req.EncryptedSize, limit)
 		return
 	}
 	now := time.Now().UTC()
@@ -479,7 +479,7 @@ func (api *migrationAPI) handleCompleteUpload(w http.ResponseWriter, r *http.Req
 	limit := api.maxPackageBytes(r.Context(), row.TenantID)
 	if row.EncryptedSize > limit {
 		_, _ = api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'uploading', updated_at = ? WHERE id = ? AND status = 'finalizing'`, time.Now().UTC().Format(time.RFC3339), row.ID)
-		writeError(w, http.StatusRequestEntityTooLarge, "MIGRATION_TOO_LARGE", fmt.Sprintf("encrypted migration package exceeds %d bytes", limit))
+		writeMigrationPackageTooLarge(w, row.EncryptedSize, limit)
 		return
 	}
 	hash := sha256.New()
@@ -524,6 +524,13 @@ func (api *migrationAPI) handleCompleteUpload(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "ready"})
+}
+
+func writeMigrationPackageTooLarge(w http.ResponseWriter, size, limit int64) {
+	writeErrorWithFields(w, http.StatusRequestEntityTooLarge, "MIGRATION_TOO_LARGE", fmt.Sprintf("encrypted migration package exceeds %d bytes", limit), map[string]any{
+		"encrypted_size":    size,
+		"max_package_bytes": limit,
+	})
 }
 
 func (api *migrationAPI) handleClaimImport(w http.ResponseWriter, r *http.Request) {

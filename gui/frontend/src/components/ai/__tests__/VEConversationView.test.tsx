@@ -13,6 +13,7 @@ import {
     createSessionWithTimeout,
     classifySessionInitError,
     classifySendError,
+    visibleVEStreamContent,
 } from "../VEConversationView";
 import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
@@ -130,6 +131,11 @@ describe("VEConversationView", () => {
         (OpenFileOrShowInFolder as any).mockReset();
         (OpenFileOrShowInFolder as any).mockImplementation(async () => undefined);
         vi.useRealTimers();
+    });
+
+    it("drops private reasoning markers from streamed VE content", () => {
+        expect(visibleVEStreamContent("\x01private reasoning")).toBe("");
+        expect(visibleVEStreamContent("visible\u0000 text\nnext")).toBe("visible text\nnext");
     });
 
     it("does not show the generic coding-agent permission selector", () => {
@@ -1855,6 +1861,17 @@ describe("VEConversationView", () => {
             expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("Hello world!");
         });
 
+        it("uses legacy chunk when stream content is an empty string", async () => {
+            renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ content: "", chunk: "legacy chunk" });
+            });
+
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("legacy chunk");
+        });
+
         it("completes streaming on stream_end event", async () => {
             renderConversation();
             await act(async () => { await vi.runAllTimersAsync(); });
@@ -2458,6 +2475,39 @@ describe("VEConversationView", () => {
             expect(GroupDiscussionGetConsultationDetail).toHaveBeenCalledWith("test-session-1");
             expect(screen.getByText("之前的问题")).toBeTruthy();
             expect(screen.getByText("历史回复")).toBeTruthy();
+        });
+
+        it("filters private reasoning markers while restoring saved messages", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speaker" }] },
+                messages: [
+                    { id: "history-reasoning", from_id: "ve-1", from_name: "Test VE", kind: "stream_chunk", content: "\x01private reasoning", created_at: "2026-05-01T00:00:00Z" },
+                    { id: "history-answer", from_id: "ve-1", from_name: "Test VE", kind: "stream_chunk", content: "visible\u0000 answer", created_at: "2026-05-01T00:00:01Z" },
+                    { id: "history-end", from_id: "ve-1", from_name: "Test VE", kind: "stream_end", created_at: "2026-05-01T00:00:02Z" },
+                ],
+            });
+
+            renderConversation({ existingSessionId: "test-session-1" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(screen.getByText("visible answer")).toBeTruthy();
+            expect(screen.queryByText("private reasoning")).toBeNull();
+        });
+
+        it("uses legacy chunk and Content fallbacks when primary content is empty", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speaker" }] },
+                messages: [
+                    { id: "history-fallback", from_id: "ve-1", from_name: "Test VE", kind: "statement", content: "", Content: "legacy answer", created_at: "2026-05-01T00:00:00Z" },
+                ],
+            });
+
+            renderConversation({ existingSessionId: "test-session-1" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(screen.getByText("legacy answer")).toBeTruthy();
         });
 
         it("falls back to session messages when saved detail has no top-level messages", async () => {

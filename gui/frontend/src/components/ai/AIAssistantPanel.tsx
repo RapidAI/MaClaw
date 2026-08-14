@@ -4213,7 +4213,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setWorkflowStartingLabel(null);
         }
     }, [workflowStartingLabel, hasConversation, workflowAwaitingForm, workflowFormGeneratingDocument, workflowAwaitingReview]);
-    const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages: displayMessages, ready, scrollToTopSeq });
+    const chatProgressMessages = useMemo(
+        () => activeSessionHasWork ? displayProgressMessages.filter((msg: ChatMessage) => !isToolProgressMessage(msg)) : displayProgressMessages,
+        [activeSessionHasWork, displayProgressMessages],
+    );
+    const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(chatProgressMessages), [chatProgressMessages]);
+    // Only use the last progress message when it is actually rendered. Tool
+    // status is displayed by the processing indicator instead of a chat row;
+    // scrolling for it would create a needless jump without new visible text.
+    const lastRenderedProgressMessage = compactProgressMessages.at(-1);
+    const progressActivityKey = lastRenderedProgressMessage?.id || "";
+    const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, hasConversation, messages: displayMessages, ready, scrollToTopSeq });
     useEffect(() => {
         if (activeTab.type !== "project") return;
         latestProjectCloseSnapshotRef.current = {
@@ -5162,11 +5172,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return node;
         });
     }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy, branchPointByDisplayIndex, handleRecordingComplete]);
-    const chatProgressMessages = useMemo(
-        () => activeSessionHasWork ? displayProgressMessages.filter((msg: ChatMessage) => !isToolProgressMessage(msg)) : displayProgressMessages,
-        [activeSessionHasWork, displayProgressMessages],
-    );
-    const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(chatProgressMessages), [chatProgressMessages]);
     // Group consecutive coding-agent tool rows into one activity feed (Codex-style trail).
     const renderedProgressMessages = useMemo(() => {
         const items = groupCodingAgentProgressForRender(compactProgressMessages);

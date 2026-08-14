@@ -10,7 +10,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "nvs.h"
 #include "persistence_service.h"
 #include "wake_deadline_service.h"
 
@@ -110,8 +109,8 @@ static bool clock_is_trusted(int64_t epoch) {
 }
 
 static esp_err_t persist_locked(void) {
-    return persistence_service_write_blob(SLEEP_SCHEDULE_NAMESPACE, "store",
-                                          &s_store, sizeof(s_store));
+    return device_status_to_platform_error(persistence_service_write_blob(SLEEP_SCHEDULE_NAMESPACE, "store",
+                                          &s_store, sizeof(s_store)));
 }
 
 static bool valid_timezone(const char *timezone) {
@@ -222,9 +221,11 @@ static void arm_next_timer_locked(int64_t now_epoch, const schedule_evaluation_t
     /* The dispatcher owns the physical ESP timer.  Schedule policy provides
      * only its next wall-clock transition, which remains re-evaluable after a
      * gateway/SNTP clock correction. */
-    esp_err_t err = wake_deadline_service_arm(
+    device_status_t status = wake_deadline_service_arm(
         s_deadline, evaluation->next_transition_epoch * 1000LL);
-    if (err != ESP_OK) ESP_LOGW(TAG, "cannot arm schedule deadline: %s", esp_err_to_name(err));
+    if (status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "cannot arm schedule deadline: device status=%d", (int)status);
+    }
 }
 
 static void apply_evaluation(const schedule_evaluation_t *evaluation) {
@@ -523,8 +524,8 @@ esp_err_t sleep_schedule_service_init(void) {
     }
     reset_store();
     size_t size = sizeof(s_store);
-    esp_err_t load_err = persistence_service_read_blob(SLEEP_SCHEDULE_NAMESPACE, "store",
-                                                        &s_store, &size);
+    esp_err_t load_err = device_status_to_platform_error(persistence_service_read_blob(SLEEP_SCHEDULE_NAMESPACE, "store",
+                                                        &s_store, &size));
     if (load_err != ESP_OK || size != sizeof(s_store) ||
         s_store.magic != SLEEP_SCHEDULE_STORE_MAGIC ||
         s_store.version != SLEEP_SCHEDULE_STORE_VERSION ||
@@ -532,17 +533,18 @@ esp_err_t sleep_schedule_service_init(void) {
         /* Never retain a partial, incompatible, or corrupt blob.  Missing is
          * normal first boot; other load failures fail closed to default state
          * and are visible in the startup log. */
-        if (load_err != ESP_ERR_NVS_NOT_FOUND) {
+        if (load_err != ESP_ERR_NOT_FOUND) {
             ESP_LOGW(TAG, "ignoring persisted schedule store: %s", esp_err_to_name(load_err));
         }
         reset_store();
     }
-    esp_err_t deadline_err = wake_deadline_service_register(deadline_callback, NULL, &s_deadline);
-    if (deadline_err != ESP_OK) {
+    device_status_t deadline_status = wake_deadline_service_register(
+        deadline_callback, NULL, &s_deadline);
+    if (deadline_status != DEVICE_STATUS_OK) {
         vSemaphoreDelete(s_stopped);
         s_stopped = NULL;
         xSemaphoreGive(s_deinit_lock);
-        return deadline_err;
+        return device_status_to_platform_error(deadline_status);
     }
     if (xTaskCreate(schedule_task, "maclaw_schedule", 4096, NULL, 5, &s_task) != pdPASS) {
         wake_deadline_service_cancel(s_deadline);
@@ -648,7 +650,8 @@ esp_err_t sleep_schedule_service_deinit(uint32_t timeout_ms) {
         remaining = stop_remaining_ticks(started, budget);
         const uint32_t remaining_ms = (uint32_t)pdTICKS_TO_MS(remaining);
         if (remaining == 0 || remaining_ms == 0 ||
-            wake_deadline_service_unregister_with_timeout(s_deadline, remaining_ms) != ESP_OK) {
+            wake_deadline_service_unregister_with_timeout(s_deadline, remaining_ms) !=
+                DEVICE_STATUS_OK) {
             xSemaphoreGive(s_lock);
             xSemaphoreGive(s_deinit_lock);
             return ESP_ERR_TIMEOUT;

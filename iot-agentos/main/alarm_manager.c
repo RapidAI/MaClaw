@@ -12,7 +12,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "nvs.h"
 #include "persistence_service.h"
 #include "wake_deadline_service.h"
 
@@ -109,8 +108,11 @@ static void arm_next_deadline_locked(void) {
         wake_deadline_service_cancel(s_deadline);
         return;
     }
-    esp_err_t err = wake_deadline_service_arm(s_deadline, s_store.items[0].trigger_at_ms);
-    if (err != ESP_OK) ESP_LOGW(TAG, "cannot arm alarm deadline: %s", esp_err_to_name(err));
+    device_status_t status = wake_deadline_service_arm(
+        s_deadline, s_store.items[0].trigger_at_ms);
+    if (status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "cannot arm alarm deadline: device status=%d", (int)status);
+    }
 }
 
 static void alarm_deadline_callback(void *arg) {
@@ -214,8 +216,8 @@ static void sort_alarms(void) {
 }
 
 static esp_err_t persist_locked(void) {
-    return persistence_service_write_blob("alarms", "store",
-                                          &s_store, sizeof(s_store));
+    return device_status_to_platform_error(persistence_service_write_blob("alarms", "store",
+                                          &s_store, sizeof(s_store)));
 }
 
 static void remove_index_locked(size_t index) {
@@ -392,8 +394,8 @@ esp_err_t alarm_manager_init(void) {
     }
     bool store_needs_persist = false;
     size_t size = 0;
-    esp_err_t size_err = persistence_service_read_blob("alarms", "store", NULL, &size);
-    if (size_err != ESP_OK && size_err != ESP_ERR_NVS_NOT_FOUND) {
+    esp_err_t size_err = device_status_to_platform_error(persistence_service_read_blob("alarms", "store", NULL, &size));
+    if (size_err != ESP_OK && size_err != ESP_ERR_NOT_FOUND) {
         ESP_LOGE(TAG, "cannot inspect alarm store: %s", esp_err_to_name(size_err));
         vSemaphoreDelete(s_stopped);
         s_stopped = NULL;
@@ -403,8 +405,8 @@ esp_err_t alarm_manager_init(void) {
     if (size_err == ESP_OK && size == sizeof(alarm_store_t)) {
         alarm_store_t loaded = {0};
         size_t loaded_size = sizeof(loaded);
-        esp_err_t read_err = persistence_service_read_blob("alarms", "store",
-                                                            &loaded, &loaded_size);
+        esp_err_t read_err = device_status_to_platform_error(persistence_service_read_blob("alarms", "store",
+                                                            &loaded, &loaded_size));
         if (read_err != ESP_OK) {
             ESP_LOGE(TAG, "cannot load alarm store: %s", esp_err_to_name(read_err));
             vSemaphoreDelete(s_stopped);
@@ -420,8 +422,8 @@ esp_err_t alarm_manager_init(void) {
     } else if (size_err == ESP_OK && size == sizeof(alarm_store_v1_t)) {
         alarm_store_v1_t loaded = {0};
         size_t loaded_size = sizeof(loaded);
-        esp_err_t read_err = persistence_service_read_blob("alarms", "store",
-                                                            &loaded, &loaded_size);
+        esp_err_t read_err = device_status_to_platform_error(persistence_service_read_blob("alarms", "store",
+                                                            &loaded, &loaded_size));
         if (read_err != ESP_OK) {
             ESP_LOGE(TAG, "cannot load legacy alarm store: %s", esp_err_to_name(read_err));
             vSemaphoreDelete(s_stopped);
@@ -473,13 +475,13 @@ esp_err_t alarm_manager_init(void) {
             return migration_err;
         }
     }
-    esp_err_t deadline_err = wake_deadline_service_register(alarm_deadline_callback, NULL,
-                                                             &s_deadline);
-    if (deadline_err != ESP_OK) {
+    device_status_t deadline_status = wake_deadline_service_register(
+        alarm_deadline_callback, NULL, &s_deadline);
+    if (deadline_status != DEVICE_STATUS_OK) {
         vSemaphoreDelete(s_stopped);
         s_stopped = NULL;
         xSemaphoreGive(s_deinit_lock);
-        return deadline_err;
+        return device_status_to_platform_error(deadline_status);
     }
     esp_err_t task_err = xTaskCreate(alarm_task, "maclaw_alarm", 5120, NULL, 7, &s_task) == pdPASS
                              ? ESP_OK : ESP_ERR_NO_MEM;
@@ -581,7 +583,8 @@ esp_err_t alarm_manager_deinit(uint32_t timeout_ms) {
         remaining = stop_remaining_ticks(started, budget);
         const uint32_t remaining_ms = (uint32_t)pdTICKS_TO_MS(remaining);
         if (remaining == 0 || remaining_ms == 0 ||
-            wake_deadline_service_unregister_with_timeout(s_deadline, remaining_ms) != ESP_OK) {
+            wake_deadline_service_unregister_with_timeout(s_deadline, remaining_ms) !=
+                DEVICE_STATUS_OK) {
             xSemaphoreGive(s_lock);
             xSemaphoreGive(s_deinit_lock);
             return ESP_ERR_TIMEOUT;

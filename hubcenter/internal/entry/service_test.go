@@ -2,6 +2,7 @@ package entry
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -783,6 +784,88 @@ func TestEmailHasHubTenantLinkAllowsDuplicateEmailTargetTenant(t *testing.T) {
 	}
 	if !ok {
 		t.Fatalf("expected tenant_default alias to match the default tenant link")
+	}
+}
+
+func TestResolveAdminByEmailExposesHubTenantAdminRouteKind(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_admin_inventory", OwnerEmail: "owner@example.com", Name: "Admin Inventory", BaseURL: "https://hub.example.com", Status: "online", Visibility: "private", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "hul_hub_admin_" + hub.ID + "_test", HubID: hub.ID, TenantID: "tenant_acme", Email: "admin@example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create hub admin link: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	if err := svc.Rebuild(ctx); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	normal, err := svc.ResolveByEmail(ctx, "admin@example.com")
+	if err != nil || normal.Mode != "none" {
+		t.Fatalf("normal route must ignore Hub admin inventory, got %+v err=%v", normal, err)
+	}
+	admin, err := svc.ResolveAdminByEmail(ctx, "admin@example.com")
+	if err != nil {
+		t.Fatalf("resolve admin: %v", err)
+	}
+	if admin.Mode != "single" || len(admin.Hubs) != 1 || admin.Hubs[0].RouteKind != "hub_admin" {
+		t.Fatalf("admin route must expose hub_admin kind, got %+v", admin)
+	}
+}
+
+func TestResolveAdminByEmailIncludesTypedCapabilityInventory(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	caps, err := json.Marshal(map[string]any{
+		"tenant_user_emails": map[string][]string{"tenant_acme": {"member@example.com"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal capabilities: %v", err)
+	}
+	hub := &store.HubInstance{
+		ID:               "hub_typed_inventory",
+		OwnerEmail:       "owner@example.com",
+		Name:             "Typed Inventory",
+		BaseURL:          "https://hub.example.com",
+		Status:           "online",
+		CapabilitiesJSON: string(caps),
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveAdminByEmail(ctx, "member@example.com")
+	if err != nil {
+		t.Fatalf("ResolveAdminByEmail: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "tenant_acme" || result.Hubs[0].RouteKind != "user" {
+		t.Fatalf("typed inventory must be visible as a normal user route, got %+v", result)
+	}
+}
+
+func TestEmailHasHubTenantLinkRejectsHubTenantAdminInventory(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_admin_verifier", OwnerEmail: "owner@example.com", Name: "Admin Verifier", BaseURL: "https://hub.example.com", Status: "online", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "hul_hub_admin_" + hub.ID + "_test", HubID: hub.ID, TenantID: "tenant_acme", Email: "admin@example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create Hub admin inventory: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	ok, err := svc.EmailHasHubTenantLink(ctx, "admin@example.com", hub.ID, "tenant_acme")
+	if err != nil {
+		t.Fatalf("EmailHasHubTenantLink: %v", err)
+	}
+	if ok {
+		t.Fatal("Hub tenant admin inventory must not authorize normal-user tenant operations")
 	}
 }
 

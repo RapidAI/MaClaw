@@ -20,7 +20,6 @@
 
 #include "driver/gpio.h"
 #include "esp_err.h"
-#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "boards/fangtang_4g/fangtang_ml307_transport.h"
@@ -180,14 +179,14 @@ static inline bool compact_connectivity_adapter_load_transport_selection(
     }
 
     int32_t stock_type = 0;
-    const esp_err_t stock_err = persistence_service_read_i32("network", "type",
+    const device_status_t stock_status = persistence_service_read_i32("network", "type",
                                                               &stock_type);
-    if (stock_err == ESP_OK && (stock_type == 0 || stock_type == 1)) {
+    if (stock_status == DEVICE_STATUS_OK && (stock_type == 0 || stock_type == 1)) {
         cellular = stock_type == 1;
         if (configuration_service_set_transport_selection(cellular) != ESP_OK) {
             return false;
         }
-    } else if (stock_err != ESP_OK && stock_err != ESP_ERR_NVS_NOT_FOUND) {
+    } else if (stock_status != DEVICE_STATUS_OK && stock_status != DEVICE_STATUS_NOT_FOUND) {
         return false;
     }
     *out_cellular = cellular;

@@ -88,6 +88,60 @@ func TestGetRemoteRegistrationAuthDefaultsMissingCodeLengthToSix(t *testing.T) {
 	}
 }
 
+func TestSendRemoteRegistrationEmailIncludesTenantAndAcceptsDefaultTenantResponse(t *testing.T) {
+	var gotEmail, gotTenant string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/email/send-code" {
+			t.Fatalf("unexpected hub path %s", r.URL.Path)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		gotEmail, gotTenant = payload["email"], payload["tenant_id"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"kind":"email","tenant_id":"tenant_default","code_length":6}`))
+	}))
+	defer hub.Close()
+
+	result, err := (&App{}).SendRemoteRegistrationEmail(hub.URL, " User@Example.com ", "tenant_default")
+	if err != nil {
+		t.Fatalf("SendRemoteRegistrationEmail() error = %v", err)
+	}
+	if gotEmail != "user@example.com" || gotTenant != "tenant_default" {
+		t.Fatalf("request email=%q tenant=%q", gotEmail, gotTenant)
+	}
+	if !result.OK || result.TenantID != "tenant_default" || result.CodeLength != 6 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestSendRemoteRegistrationEmailReturnsHubMailConfigurationError(t *testing.T) {
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"MAIL_NOT_CONFIGURED","message":"Mail delivery is not configured"}`))
+	}))
+	defer hub.Close()
+
+	_, err := (&App{}).SendRemoteRegistrationEmail(hub.URL, "user@example.com", "tenant_default")
+	if err == nil || !strings.Contains(err.Error(), "MAIL_NOT_CONFIGURED") {
+		t.Fatalf("error = %v, want MAIL_NOT_CONFIGURED", err)
+	}
+}
+
+func TestRemoteRegistrationIdentityLogValueRedactsContacts(t *testing.T) {
+	for raw, want := range map[string]string{
+		"User@Example.com": "u***r@example.com",
+		"13800138000":      "13***00",
+		"unknown":          "***",
+	} {
+		if got := remoteRegistrationIdentityLogValue(raw); got != want {
+			t.Errorf("remoteRegistrationIdentityLogValue(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestGetRemoteRegistrationAuthClampsInvalidCodeLength(t *testing.T) {
 	for _, codeLength := range []int{0, 3, 9} {
 		t.Run(fmt.Sprintf("length_%d", codeLength), func(t *testing.T) {

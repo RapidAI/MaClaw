@@ -254,6 +254,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		})
 		app.goBackground(ha.NewProber(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second).Run)
 	}
+	app.goBackground(func(ctx context.Context) { runRouteReconciliationLoop(ctx, hubService) })
 
 	// --- LLM Service Module ---
 	nodeID := ""
@@ -283,6 +284,46 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	app.HTTPHandler = router
 	bootOK = true
 	return app, nil
+}
+
+// runRouteReconciliationLoop periodically removes only routes whose target Hub
+// explicitly confirms the user is absent from that tenant. Every HubCenter node
+// may run this loop: deletion is scoped and idempotent, so HA replicas remain
+// safe even if they overlap during a failover.
+func runRouteReconciliationLoop(ctx context.Context, service *hubs.Service) {
+	if service == nil {
+		return
+	}
+	initial := time.NewTimer(2 * time.Minute)
+	defer initial.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-initial.C:
+	}
+
+	run := func() {
+		result, err := service.ReconcileStaleUserRoutes(ctx)
+		if err != nil {
+			log.Printf("[routing] stale-route reconciliation failed: %v", err)
+			return
+		}
+		if result.Cleaned > 0 || result.Failed > 0 {
+			log.Printf("[routing] stale-route reconciliation checked=%d cleaned=%d skipped=%d failed=%d", result.Checked, result.Cleaned, result.Skipped, result.Failed)
+		}
+	}
+	run()
+
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
 }
 
 func runHAHistoryPruner(ctx context.Context, haSvc *ha.Service, retentionDays float64, maxRetainedOps, intervalMinutes, batchSize int) {

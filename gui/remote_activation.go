@@ -159,6 +159,7 @@ func (a *App) SendRemoteRegistrationEmail(hubURL string, email string, tenantID 
 	if email == "" || !strings.Contains(email, "@") {
 		return RemoteRegistrationContactResult{}, fmt.Errorf("INVALID_EMAIL: valid email is required")
 	}
+	log.Printf("[registration-contact] email send begin endpoint=/api/enroll/email/send-code hub=%s tenant=%s email=%s", hubURL, strings.TrimSpace(tenantID), remoteRegistrationEmailLogIdentity(email))
 	payload := map[string]string{"email": email}
 	if strings.TrimSpace(tenantID) != "" {
 		payload["tenant_id"] = strings.TrimSpace(tenantID)
@@ -169,16 +170,20 @@ func (a *App) SendRemoteRegistrationEmail(hubURL string, email string, tenantID 
 	}
 	resp, err := hubHTTPClient.Post(hubURL+"/api/enroll/email/send-code", "application/json", bytes.NewReader(data))
 	if err != nil {
+		log.Printf("[registration-contact] email send failed endpoint=/api/enroll/email/send-code hub=%s tenant=%s email=%s err=%v", hubURL, strings.TrimSpace(tenantID), remoteRegistrationEmailLogIdentity(email), err)
 		return RemoteRegistrationContactResult{}, err
 	}
 	defer resp.Body.Close()
 	var result RemoteRegistrationContactResult
 	if err := remote.DecodeHTTPJSONResponse(resp, &result, "send registration email code"); err != nil {
+		log.Printf("[registration-contact] email send decode failed endpoint=/api/enroll/email/send-code hub=%s tenant=%s email=%s status=%d err=%v", hubURL, strings.TrimSpace(tenantID), remoteRegistrationEmailLogIdentity(email), resp.StatusCode, err)
 		return RemoteRegistrationContactResult{}, err
 	}
 	if resp.StatusCode >= 300 {
+		log.Printf("[registration-contact] email send rejected endpoint=/api/enroll/email/send-code hub=%s tenant=%s email=%s status=%d code=%s message=%q", hubURL, strings.TrimSpace(tenantID), remoteRegistrationEmailLogIdentity(email), resp.StatusCode, strings.TrimSpace(result.Code), strings.TrimSpace(result.Message))
 		return RemoteRegistrationContactResult{}, remoteRegistrationContactError(result, "send email code failed: "+resp.Status)
 	}
+	log.Printf("[registration-contact] email send succeeded endpoint=/api/enroll/email/send-code hub=%s requested_tenant=%s confirmed_tenant=%s email=%s", hubURL, strings.TrimSpace(tenantID), strings.TrimSpace(result.TenantID), remoteRegistrationEmailLogIdentity(email))
 	return result, nil
 }
 
@@ -841,6 +846,7 @@ func (a *App) resolveRemoteRegistrationTarget(identity string, invitationCode st
 	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
+		log.Printf("[registration-route] resolve failed identity=%s invitation=%t err=%v", remoteRegistrationIdentityLogValue(identity), strings.TrimSpace(invitationCode) != "", err)
 		return RemoteRegistrationTargetResult{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -863,19 +869,23 @@ func (a *App) resolveRemoteRegistrationTarget(identity string, invitationCode st
 		}
 		return RemoteRegistrationTargetResult{}, err
 	}
+	log.Printf("[registration-route] resolved identity=%s invitation=%t hub=%s hub_id=%s tenant=%s", remoteRegistrationIdentityLogValue(identity), strings.TrimSpace(invitationCode) != "", strings.TrimRight(strings.TrimSpace(hubURL), "/"), strings.TrimSpace(hubID), strings.TrimSpace(tenantID))
 	return a.resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, tenantID)
 }
 
 func (a *App) resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, tenantID string) (RemoteRegistrationTargetResult, error) {
 	auth, err := getRemoteRegistrationAuth(hubURL, tenantID, identity)
 	if err != nil {
+		log.Printf("[registration-route] auth probe failed identity=%s hub=%s hub_id=%s tenant=%s err=%v", remoteRegistrationIdentityLogValue(identity), strings.TrimRight(strings.TrimSpace(hubURL), "/"), strings.TrimSpace(hubID), strings.TrimSpace(tenantID), err)
 		return RemoteRegistrationTargetResult{}, err
 	}
+	resolvedTenantID := firstNonEmpty(auth.TenantID, tenantID)
+	log.Printf("[registration-route] auth probe succeeded identity=%s hub=%s hub_id=%s requested_tenant=%s confirmed_tenant=%s method=%s", remoteRegistrationIdentityLogValue(identity), strings.TrimRight(strings.TrimSpace(hubURL), "/"), strings.TrimSpace(hubID), strings.TrimSpace(tenantID), strings.TrimSpace(resolvedTenantID), auth.Method)
 	return RemoteRegistrationTargetResult{
 		Identity:                  identity,
 		HubURL:                    strings.TrimRight(strings.TrimSpace(hubURL), "/"),
 		HubID:                     hubID,
-		TenantID:                  firstNonEmpty(auth.TenantID, tenantID),
+		TenantID:                  resolvedTenantID,
 		Method:                    auth.Method,
 		EmailVerificationRequired: auth.EmailVerificationRequired,
 		CodeTTLMinutes:            auth.CodeTTLMinutes,
@@ -1174,6 +1184,33 @@ func remoteRegistrationContactError(result RemoteRegistrationContactResult, fall
 		return fmt.Errorf("%s", result.Message)
 	}
 	return fmt.Errorf("%s", fallback)
+}
+
+// remoteRegistrationEmailLogIdentity keeps client-side enrollment diagnostics
+// useful without storing a full address in the local registration log.
+func remoteRegistrationEmailLogIdentity(email string) string {
+	email = strings.TrimSpace(strings.ToLower(email))
+	at := strings.LastIndex(email, "@")
+	if at <= 0 || at == len(email)-1 {
+		return "***"
+	}
+	local := []rune(email[:at])
+	if len(local) == 1 {
+		return string(local) + "***@" + email[at+1:]
+	}
+	return string(local[:1]) + "***" + string(local[len(local)-1:]) + "@" + email[at+1:]
+}
+
+func remoteRegistrationIdentityLogValue(identity string) string {
+	identity = strings.TrimSpace(strings.ToLower(identity))
+	if strings.Contains(identity, "@") {
+		return remoteRegistrationEmailLogIdentity(identity)
+	}
+	phone := normalizeRemoteRegistrationPhoneNumber(identity)
+	if len(phone) < 4 {
+		return "***"
+	}
+	return phone[:2] + "***" + phone[len(phone)-2:]
 }
 
 func remoteRegistrationProfileError(result RemoteRegistrationProfileResult, fallback string) error {

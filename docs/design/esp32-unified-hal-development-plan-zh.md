@@ -3525,3 +3525,51 @@ Resource Pressure 本身没有 worker，但会在任意可选媒体/宠物下载
 - 构建/边界验证：`build-unified-fangtang` 完整链接成功，app 为 `0x33a9e0`，最小 app 分区余 `0x65620`（11%）；`tools/check-hal-boundaries.ps1` 通过。ESP-SR Kconfig 的 `default False` 输出仍是既有第三方依赖提示。
 - COM5 HIL：已仅写入 app 分区，esptool 返回 `Hash of data verified.`；55 秒串口采样见 `iot-agentos/serial-com5-fangtang-animation-psramcopy-opt-20260814.log`，未见 `startup failed`、panic 或重启。排除启动窗口后 45 个 1 秒窗口平均完整帧间隔约 87.8 ms（80.4--101.8 ms），平均 render 约 53.2 ms（44.2--65.3 ms），全部逻辑 tick 均完成 present。与同一 80 ms 基线约 57.2 ms render 相比，平均 render 下降约 7%；帧间隔仍主要受 40 MHz SPI 的差分矩形传输及其他实时负载影响。
 - 后续原则：若视觉仍需提升，应优先以 pet pack 的有效变化面积、关键帧差异和插帧密度继续做 visual profile 对照；不为此增加第三张 framebuffer，也不把面板/SPI 细节泄漏到业务层。SPI 时钟、队列深度或 transaction 大小的调整必须以独立 COM5 画面稳定性和 Wi-Fi/TLS/4G 并发 HIL 资格为前提。
+## 2026-08-14：Fangtang ML307 Connectivity port 收口（Fangtang-4G）
+
+- 审计确认 ML307 UART/AT/HTTP transport 只服务于 Fangtang-4G；此前位于 `main/` 会暗示共享业务层可直接依赖具体 4G modem。现已迁入 `main/boards/fangtang_4g/fangtang_ml307_transport.[h|cpp]`，并只由 Fangtang cellular adapter 经 Compact Connectivity Service 的统一契约调用。`main/` 不再保留 ML307 transport 文件，Bread、EchoEar 与 Waveshare 无需感知 ML307、UART GPIO、AT 命令、HTTP cancel 或 quiesce 生命周期。
+- `main/CMakeLists.txt` 仅在 Fangtang profile 选中时编译该 board-private source；私有 header 的 include 与 `ml307_transport_*` 调用均被限制在 Fangtang cellular adapter/port。共享 Connectivity Service 仍只表达准备、连通性、请求、取消与静默等语义，不新增设备或 modem 条件分支。
+- HAL boundary gate 已增加反向保护：旧 `main/ml307_transport.[h|cpp]` 重新出现、私有 header 被非 Fangtang port 引用，或其它 C/C++ source 直接调用 `ml307_transport_*`，均会失败。2026-08-14 验证：`tools/check-hal-boundaries.ps1` 通过；`tools/build-profile.cmd fangtang-4g build` 完整链接通过（app `0x33a9e0`，最小 app 分区余约 11%）；`tools/build-profile.cmd bread-compact build` 完整链接通过，证明 Wi-Fi-only profile 未引入 ML307 依赖。EchoEar/Waveshare 仍应在后续完整回归矩阵中独立构建与 HIL 验证；本切片不声称 ML307 网络质量、4G 首次入网、取消时序或断网恢复的实机验收已完成。
+## 2026-08-14：Storage Service / Platform Storage 挂载边界收口（四 profile）
+
+- Phase 7A-a 审计确认，`main.c` 仍直接拥有 SPIFFS partition 查找、全盘 factory-blank 判定、`esp_vfs_spiffs_register()`、允许一次格式化以及 `/storage` inventory。这使会议业务和启动 composition root 同时成为物理 VFS/分区 owner，后续替换存储介质、调整每板分区或恢复策略仍会回流到业务层。
+- 现由 `Storage Service -> Platform Storage` 统一持有 durable-volume 挂载事务：Platform Storage 独占 SPIFFS/VFS、partition read、factory-blank 全盘证明、16-file VFS 容量与挂载 inventory；Storage Service 对上只发布已挂载/不可用、稳定 volume label 与 optional-flash suitability。`main.c` 只请求 Service，并把普通可用性交给 Resource Pressure；其余 meeting、pet-cache 和恢复业务继续只消费既有 `/storage` 文件语义，未改变写入顺序或可选缓存策略。
+- 安全语义保持并明确：挂载失败本身绝不触发格式化；仅每一字节均为 `0xff` 的 factory-blank partition 才允许一次格式化。非空、损坏或不可读分区保持原内容并以 storage unavailable 进入 fail-closed capacity admission；Storage Service 即使不可用仍提供固定 volume label，确保 Resource Pressure 记录“存储不可用”而不会因无 label 跳过初始化。
+- HAL gate 增加反向保护：除 Platform Storage（以及既有只读 Resource observation port）外，任何 source 出现 SPIFFS/VFS mount 或 partition probe 类型/调用即失败；`main.c` 重新引入 `mount_meeting_storage`、blank check 或 inventory 也会失败。Platform header 使用 `device_status_t`，未向公共边界泄漏 ESP-IDF error/driver type。
+- 验证（2026-08-14）：`tools/check-hal-boundaries.ps1` 与 `git diff --check` 通过；四个完整 profile build 均通过。app：Bread `0x33e220`（余 `0x61de0` / 11%）、Fangtang `0x33aaa0`（余 `0x65560` / 11%）、EchoEar `0x329f20`（余 `0x760e0` / 13%）、Waveshare `0x4849e0`（余 `0xbb620` / 14%）。本切片不改屏幕、音频、网络或用户数据格式，故未刷写设备；后续 HIL 需在四设备覆盖已有 storage、有意损坏但非 blank、factory blank、pet cache restore/write、会议录音/恢复与 resource-pressure 降级。它也尚未完成 Storage 文件句柄/原子提交完全迁出会议和宠物业务，或完整 Storage deinit/restart。
+## 2026-08-14：Storage Service 可停止 VFS 生命周期收口（四 profile）
+
+- 在既有 `Storage Service -> Platform Storage` 挂载边界之上，补齐了可停止生命周期：`storage_service_deinit()` 先关闭 Storage availability/admission，再仅通过 `platform_storage_unmount()` 执行 SPIFFS VFS 卸载；平台端使用 `esp_vfs_spiffs_unregister("storage")`，业务层、`main.c` 与公开 Platform header 不接触 SPIFFS/VFS SDK 类型或卸载调用。
+- 卸载不是独立的“强制关闭文件系统”操作。启动回滚先按既有 owner/parent deadline 停止启动宠物下载、pet-cache writer、Audio owner（含 meeting WAV recorder/uploader），并先停止 Resource Pressure 对 SPIFFS 容量的采样；cached-pet restore 为启动期同步 join，不能在其启动者返回后继续访问 VFS。只有这些用户全部成功停止后，才调用 Storage Service 卸载。任一步超时会保持后续资源 fail-closed，绝不在可能仍持有 `FILE *` 的任务下卸载。
+- Platform Storage 记录本次 mount 是否由自身创建；若检测到外部既有挂载，服务可使用但不会将其误认为自身资源而执行 unregister。mount 失败不会把 Service 固化为“已初始化但不可用”，后续仍可重试；unmount 失败保留关闭的 admission 和已挂载物理状态，避免重新接纳新 VFS 用户。
+- HAL gate 继续把 `esp_vfs_spiffs_*`、`esp_spiffs_*`、SPIFFS partition lookup/read 限制为 `main/platform_storage.c`（既有只读资源观测 port 除外），并显式说明 mount/unmount 均属 Platform Storage。`Storage Service` header 只使用 `device_status_t`，没有 ESP-IDF/RTOS 泄漏。
+- 验证（2026-08-14）：`tools/check-hal-boundaries.ps1` 与本切片 `git diff --check` 通过；完整 profile build 均通过：Bread `0x33e4d0`（余 `0x61b30` / 11%）、Fangtang `0x33ad40`（余 `0x652c0` / 11%）、EchoEar `0x32a250`（余 `0x75db0` / 13%）、Waveshare `0x484cc0`（余 `0x7b340` / 10%）。第三方 ESP-SR Kconfig 的 `default False` 提示为既有依赖警告。
+- 尚未把 meeting/pet 的文件事务抽成独立 Storage repository，也未做“运行中的 rollback 导致 VFS 卸载”实机故障注入；本切片证明的是 source ownership、停止顺序、完整编译/链接和 fail-closed 语义，不替代 COM3/COM4/COM5/COM6 的 storage corruption、factory blank、meeting resume 与 pet-cache HIL 矩阵。
+## 2026-08-14：Platform NVS / Persistence 初始化与停止边界收口（四 profile）
+
+- Phase 7A-a 审计确认：此前 `main.c` 直接调用 `nvs_flash_init()` 并持有供 Persistence Service 使用的 NVS transaction mutex。这样 composition root 同时承担物理 NVS 初始化、用户数据恢复决策和事务串行化，新增持久介质、诊断恢复或 profile 时容易绕开 Persistence 的 cache-safe worker。
+- 新增私有 `Platform NVS`：`platform_nvs.[c|h]` 是唯一包含并调用 ESP-IDF NVS SDK 的 physical owner，负责 `nvs_flash_init/deinit`、transaction lock、open/get/set/commit/close 与 SDK error 到硬件中立 `device_status_t` 的翻译。其 header 只使用普通 value type，不泄漏 NVS handle、FreeRTOS handle 或 ESP-IDF 类型。
+- 保持用户数据安全语义：`ESP_ERR_NVS_NO_FREE_PAGES` 和 `ESP_ERR_NVS_NEW_VERSION_FOUND` 均只记录 diagnostic failure 并 fail-closed；绝不调用 erase/format。因而 Wi-Fi 凭据、配对 token、闹钟、会议恢复、天气缓存与配置快照不会被启动路径静默清除，identity diagnostics 仍可用于显式恢复工具。
+- `Persistence Service` 不再接收 `main.c` 创建的 mutex，也不再持有/操作 NVS handle；它只负责请求 admission、PSRAM stack caller 的 internal-stack worker、停止 sentinel 和调用 drain。各域（configuration/weather/alarm/sleep/meeting/fall/update）保持既有 schema、migration 与 `ESP_ERR_NVS_NOT_FOUND` 兼容行为，不改变持久化数据格式。
+- 启动顺序为 `firmware identity -> Platform NVS init -> Storage Service/other core services -> Persistence Service`；回滚则在所有 persistence clients、registry worker 与 Persistence Service 完全关闭后，再执行 `Platform NVS deinit`。若任一 join 超时，后续 owner 保持 fail-closed，绝不在可能仍有事务的 worker 下 deinit NVS。
+- HAL gate 新增 NVS source-owner 约束：除 `main/platform_nvs.c` 外，任何 `nvs_flash_*`、`nvs_open/close/get/set/commit/erase` 或 `nvs_handle_t` 均失败；`main.c` 只能调用 Platform NVS init/deinit，不能恢复读写或 SDK recovery path；Platform NVS header 不得泄漏 SDK/RTOS object type。
+- 验证（2026-08-14）：`tools/check-hal-boundaries.ps1` 与该切片 `git diff --check` 通过；四个完整 profile build 全部通过：Bread `0x33e9b0`（余 `0x61650` / 10%）、Fangtang `0x33b1e0`（余 `0x64e20` / 11%）、EchoEar `0x32a6e0`（余 `0x75920` / 13%）、Waveshare `0x485160`（余 `0x7aea0` / 10%）。ESP-SR `default False` 为既有第三方 Kconfig 提示，不是本切片错误。
+- 限制：本切片没有重写所有 domain service 的 legacy `esp_err_t` 结果表面，也没有实机注入 NVS full/new-version/corruption 与运行中 rollback；后续需要先将持久化 public result 收敛到 `device_status_t + not-found` 语义，再按 COM3/COM4/COM5/COM6 执行无损恢复与 shutdown HIL 矩阵。
+## 实施增量：Persistence Service 公共结果收敛（四 profile，2026-08-14）
+
+- 在既有 `Platform NVS -> Persistence Service` 分层之上，Persistence Service 的公开 `init/deinit/read/write` 合约现统一返回 `device_status_t`；`DEVICE_STATUS_NOT_FOUND` 是稳定的“键不存在”语义，不再向调用方暴露 `ESP_ERR_NVS_NOT_FOUND` 或 NVS SDK 类型。
+- Configuration、Weather Cache、Alarm、Meeting Recovery、Sleep Schedule、Fall Detection、Update Service 及 Fangtang 的旧 4G transport 迁移均保留既有数据 schema 和业务行为；其尚未迁移的 legacy `esp_err_t` 服务表面在调用 Persistence 的边界立即通过 `device_status_to_platform_error()` 映射为通用 `ESP_ERR_NOT_FOUND`。这保证业务层不需要了解 NVS，同时避免一次性扩大所有 domain API 的迁移风险。
+- `main.c` 的 NVS 生命周期、亮度/熄屏设置恢复与保存也已采用 `device_status_t`；仅在仍需返回 legacy ESP-IDF 结果的保存 helper 处进行单点映射。Platform NVS 仍是唯一 `nvs.h`、NVS handle、`nvs_flash_*` 和 NVS 专用错误的 SDK owner。
+- HAL boundary gate 增加反向约束：`persistence_service.h` 不得泄露 `esp_err_t`、`ESP_ERR_*`、NVS 或 FreeRTOS 类型；除 `main/platform_nvs.c` 外，任何 source 出现 `nvs.h` 或 `ESP_ERR_NVS_*` 均失败。这样新增硬件或业务服务只能调用 HAL/Service，而不能回退到物理 NVS SDK。
+- 验证（2026-08-14）：HAL boundary gate 与 `git diff --check` 通过；四个完整 profile 链接通过。app 大小分别为 Bread Compact `0x33ea40`（余 `0x615c0` / 10%）、Fangtang-4G `0x33b2a0`（余 `0x64d60` / 11%）、EchoEar-2ST `0x32a770`（余 `0x75890` / 13%）、Waveshare AMOLED 1.75C `0x4851e0`（余 `0x7ae20` / 10%）。ESP-SR Kconfig 的既有 `default False` 提示不属于本切片失败。
+- 尚待 HIL：在 COM3/COM4/COM5/COM6 分别覆盖现有数据、缺键、NVS 满/新版本/损坏、PSRAM-stack 路由、worker shutdown 与启动回滚交错。该切片证明 source ownership、无损 fail-closed 语义和编译链路，不宣称已完成 NVS 故障注入或完整运行时 restart。
+## 实施增量：Wake Deadline Service 公共结果收敛（四 profile，2026-08-14）
+
+本增量完成了 Phase 7B 中 Wake Deadline Service 的一项可独立验证边界收口：
+
+- `wake_deadline_service.h` 不再公开 `esp_err_t` 或 `esp_err.h`；初始化、注册、arm、带超时 unregister 与 deinit 全部统一返回 `device_status_t`。
+- ESP-IDF timer / FreeRTOS 的错误保持在 `wake_deadline_service.c` 内部映射；Alarm、Sleep Schedule 和启动编排仅接收硬件无关状态，原有仍使用 `esp_err_t` 的领域接口在自己的 legacy 边界立即调用 `device_status_to_platform_error()`。
+- wall-clock deadline 的 earliest-wins、callback drain、shutdown 预算与已关闭 slot 的 fail-closed 行为未改动；此切片没有修改具体板型显示、唤醒源或休眠深度行为。
+- 已执行 HAL 边界门禁、`git diff --check`，并完成 Bread Compact、EchoEar-2ST、Fangtang-4G、Waveshare AMOLED 1.75C 的 profile build。固件 App 余量分别为 Bread 10%、EchoEar 13%、Fangtang 11%、Waveshare 10%。
+
+后续仍需继续 Phase 7B 的 Power `PREPARE → COMMIT` 深度休眠事务、各板可验证 wake matrix、Fake Clock / DST 回拨、以及 Alarm 的 Clock 驱动全量验证；本增量不应被视为这些项目完成。

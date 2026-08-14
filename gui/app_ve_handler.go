@@ -583,6 +583,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	go h.batchHubStreamChunks(sessionID, hubStreamCh, hubStreamDone)
 
 	onToken := func(delta string) {
+		delta = visibleVEStreamDelta(delta)
 		if delta == "" {
 			return
 		}
@@ -630,6 +631,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	// Only send fullResponse as a local chunk if no streaming occurred (e.g. the
 	// streaming path fell back to non-streaming, or the loop produced text without
 	// ever calling onToken).
+	fullResponse = visibleVEStreamDelta(fullResponse)
 	if strings.TrimSpace(fullResponse) != "" {
 		if atomic.LoadInt32(&streamingStarted) == 0 {
 			// No streaming occurred — send final text locally for immediate display
@@ -646,6 +648,26 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	// Sync stream_end to Hub for remote devices.
 	h.SendStreamEnd(sessionID)
 	return nil
+}
+
+// visibleVEStreamDelta removes internal stream markers before a digital-employee
+// message crosses the local Wails or Hub boundary. \x01 prefixes reasoning
+// deltas in the shared agent loop; VE chat has no separate reasoning panel, so
+// showing either the marker (as a square glyph) or its private content is wrong.
+func visibleVEStreamDelta(delta string) string {
+	if strings.HasPrefix(delta, "\x01") {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\t':
+			return r
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, delta)
 }
 
 // runAgentForVE runs the AI agent for a VE session.

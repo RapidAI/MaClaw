@@ -2,17 +2,19 @@ import { useCallback, useEffect, useRef } from "react";
 import type { ChatMessage } from "./useAIAssistant";
 
 interface AssistantOutputScrollOptions {
+    activityKey?: string;
     hasConversation: boolean;
     messages: ChatMessage[];
     ready: boolean;
     scrollToTopSeq?: number;
 }
 
-export function useAssistantOutputScroll({ hasConversation, messages, ready, scrollToTopSeq }: AssistantOutputScrollOptions) {
+export function useAssistantOutputScroll({ activityKey, hasConversation, messages, ready, scrollToTopSeq }: AssistantOutputScrollOptions) {
     const outputEndRef = useRef<HTMLDivElement | null>(null);
     const outputContainerRef = useRef<HTMLDivElement | null>(null);
     const userScrolledUpRef = useRef(false);
     const prevMsgCountRef = useRef(0);
+    const prevActivityKeyRef = useRef(activityKey);
     const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const scrollRafRef = useRef<number | null>(null);
     const prevReadyRef = useRef(ready);
@@ -25,7 +27,14 @@ export function useAssistantOutputScroll({ hasConversation, messages, ready, scr
 
     const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto", force = false, settleFrames = 0) => {
         if (force) userScrolledUpRef.current = false;
-        const scroll = () => outputEndRef.current?.scrollIntoView({ behavior });
+        const scroll = () => {
+            // A follow-up frame is only to account for layout settling. If the
+            // user starts reading older content in the meantime, do not pull
+            // them back down. Explicitly forced scrolls (such as resizing the
+            // input) retain their existing behavior.
+            if (!force && userScrolledUpRef.current) return;
+            outputEndRef.current?.scrollIntoView({ behavior });
+        };
         const scheduleSettledScroll = (remainingFrames: number) => {
             if (remainingFrames <= 0 || typeof requestAnimationFrame !== "function") return;
             scrollRafRef.current = requestAnimationFrame(() => {
@@ -52,8 +61,17 @@ export function useAssistantOutputScroll({ hasConversation, messages, ready, scr
     }, [scrollToBottom]);
 
     useEffect(() => {
+        const activityChanged = !!activityKey && activityKey !== prevActivityKeyRef.current;
+        prevActivityKeyRef.current = activityKey;
         if (userScrolledUpRef.current) {
             prevMsgCountRef.current = messages.length;
+            return;
+        }
+        // System status/progress rows are rendered separately from messages.
+        // Scroll them into view immediately, then once more after layout settles.
+        if (activityChanged) {
+            prevMsgCountRef.current = messages.length;
+            scrollToBottom("auto", false, 1);
             return;
         }
         if (messages.length !== prevMsgCountRef.current) {
@@ -68,7 +86,7 @@ export function useAssistantOutputScroll({ hasConversation, messages, ready, scr
         return () => {
             if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
         };
-    }, [messages, scrollToBottom]);
+    }, [activityKey, messages, scrollToBottom]);
 
     const handleScroll = useCallback(() => {
         const container = outputContainerRef.current;

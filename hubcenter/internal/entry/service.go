@@ -28,6 +28,7 @@ type HubAccessView struct {
 	CorporateEmailDomain   string `json:"corporate_email_domain,omitempty"`
 	Status                 string `json:"status"`
 	InvitationCodeRequired bool   `json:"invitation_code_required"`
+	RouteKind              string `json:"route_kind,omitempty"`
 }
 
 type ResolveResult struct {
@@ -91,10 +92,10 @@ func (s *Service) SetInvitationCodeRoutes(repo store.InvitationCodeRouteReposito
 	s.invitationCodeRoutes = repo
 }
 
-// EmailHasHubTenantLink reports whether an email has an explicit user link to
-// the requested hub and tenant. This is used by flows that already carry an
-// exact hub/tenant context, so duplicate emails across tenants remain valid
-// as long as the target link exists.
+// EmailHasHubTenantLink reports whether an email has an explicit normal-user
+// link to the requested hub and tenant. Hub-owner and tenant-administrator
+// inventory links deliberately do not satisfy this check: callers use it to
+// authorize product-user operations, not administrator identities.
 func (s *Service) EmailHasHubTenantLink(ctx context.Context, email, hubID, tenantID string) (bool, error) {
 	if s == nil || s.links == nil {
 		return false, nil
@@ -111,7 +112,7 @@ func (s *Service) EmailHasHubTenantLink(ctx context.Context, email, hubID, tenan
 		return false, err
 	}
 	for _, link := range links {
-		if link == nil {
+		if link == nil || isOwnerLink(link) || isHubTenantAdminLink(link) {
 			continue
 		}
 		if strings.TrimSpace(link.HubID) == hubID && normalizeCapabilityTenantID(link.TenantID) == tenantID {
@@ -429,6 +430,10 @@ func normalizeViewTenantID(tenantID string) string {
 }
 
 func hubToAccessView(hub *store.HubInstance, email, routeDomain string, tenantIDOpt ...string) HubAccessView {
+	return hubToAccessViewWithRouteKind(hub, email, routeDomain, "", tenantIDOpt...)
+}
+
+func hubToAccessViewWithRouteKind(hub *store.HubInstance, email, routeDomain, routeKind string, tenantIDOpt ...string) HubAccessView {
 	corporateDomain := normalizeCorporateEmailDomain(routeDomain)
 	if corporateDomain == "" {
 		corporateDomain = normalizeCorporateEmailDomain(hub.CorporateEmailDomain)
@@ -453,6 +458,7 @@ func hubToAccessView(hub *store.HubInstance, email, routeDomain string, tenantID
 		CorporateEmailDomain:   corporateDomain,
 		Status:                 hub.Status,
 		InvitationCodeRequired: hub.InvitationCodeRequired,
+		RouteKind:              routeKind,
 	}
 }
 

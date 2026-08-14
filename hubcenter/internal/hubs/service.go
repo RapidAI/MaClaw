@@ -49,6 +49,17 @@ const (
 )
 const adminDomainRoutePrefix = "hdr_admin_"
 const adminUserLinkPrefix = "hul_admin_"
+
+// hubTenantAdminLinkPrefix identifies administrator identities reported by a
+// Hub itself.  They are deliberately distinct from ordinary user inventory
+// links and from HubCenter administrator-maintained routing overrides.
+const hubTenantAdminLinkPrefix = "hul_hub_admin_"
+
+// adminMigrationUserLinkPrefix marks an administrator-approved ownership
+// decision. Unlike a tenant-scoped maintenance link, it is exclusive for the
+// identity and prevents an old Hub from reclaiming that email by resyncing a
+// different tenant after a migration.
+const adminMigrationUserLinkPrefix = "hul_admin_migration_"
 const hubUserMigrationResponseBodyLimit = 128 << 20
 
 type confirmationTokenRecord struct {
@@ -78,16 +89,23 @@ type hubUserLinkScopedDeleter interface {
 	DeleteByHubTenantEmail(ctx context.Context, hubID, tenantID, email string) ([]*store.HubUserLink, error)
 }
 
+// RouteReconciliationResult summarizes a conservative stale-route sweep. A
+// route is deleted only after its target Hub explicitly confirms that the user
+// does not exist in that exact tenant; unavailable Hubs and administrator-owned
+// routes are always retained.
+type RouteReconciliationResult struct {
+	Checked int `json:"checked"`
+	Skipped int `json:"skipped"`
+	Cleaned int `json:"cleaned"`
+	Failed  int `json:"failed"`
+}
+
 type routeSnapshotRefresher interface {
 	Rebuild(ctx context.Context) error
 }
 
 type transactionalUserMigrator interface {
 	MigrateEmailToHub(ctx context.Context, email, fromHubID, sourceTenantID string, link *store.HubUserLink) ([]*store.HubUserLink, *store.HubUserLink, error)
-}
-
-type transactionalUserPatternMigrator interface {
-	MigrateEmailPatternToHub(ctx context.Context, pattern, fromHubID, sourceTenantID, toHubID, targetTenantID string, now time.Time) ([]*store.HubUserLink, []*store.HubUserLink, error)
 }
 
 type transactionalDomainMigrator interface {
@@ -679,7 +697,7 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if err := s.syncDomainRoutes(ctx, hub, corporateEmailDomains, now); err != nil {
 		return nil, err
 	}
-	if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, hub.ID, capabilities, now); err != nil {
+	if err := s.syncHubUserInventoriesFromCapabilities(ctx, hub.ID, capabilities, now); err != nil {
 		return nil, err
 	}
 	if err := s.ensureDefaultHubRegistrationPolicy(ctx, hub.ID); err != nil {
@@ -769,7 +787,7 @@ func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubIn
 	if err := s.syncDomainRoutes(ctx, existing, corporateEmailDomains, now); err != nil {
 		return nil, err
 	}
-	if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, existing.ID, capabilities, now); err != nil {
+	if err := s.syncHubUserInventoriesFromCapabilities(ctx, existing.ID, capabilities, now); err != nil {
 		return nil, err
 	}
 	if err := s.ensureDefaultHubRegistrationPolicy(ctx, existing.ID); err != nil {
@@ -897,7 +915,7 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 			return err
 		}
 		if update.Capabilities != nil {
-			if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, hub.ID, capabilities, now); err != nil {
+			if err := s.syncHubUserInventoriesFromCapabilities(ctx, hub.ID, capabilities, now); err != nil {
 				return err
 			}
 		}
@@ -1293,7 +1311,7 @@ func (s *Service) dashboardGuestDomains(ctx context.Context, ownerEmailsByHub ma
 	}
 	seen := map[string]map[string]map[string]struct{}{}
 	for _, link := range links {
-		if link == nil || strings.TrimSpace(link.HubID) == "" || strings.TrimSpace(link.Email) == "" || strings.Contains(link.Email, "*") {
+		if link == nil || isOwnerLink(link) || isHubTenantAdminLink(link) || strings.TrimSpace(link.HubID) == "" || strings.TrimSpace(link.Email) == "" || strings.Contains(link.Email, "*") {
 			continue
 		}
 		hubID := strings.TrimSpace(link.HubID)
@@ -1430,7 +1448,7 @@ func (s *Service) dashboardUserCounts(ctx context.Context) (map[string]map[strin
 	}
 	seen := map[string]map[string]struct{}{}
 	for _, link := range links {
-		if link == nil || strings.TrimSpace(link.HubID) == "" || strings.TrimSpace(link.Email) == "" {
+		if link == nil || isOwnerLink(link) || isHubTenantAdminLink(link) || strings.TrimSpace(link.HubID) == "" || strings.TrimSpace(link.Email) == "" {
 			continue
 		}
 		hubID := strings.TrimSpace(link.HubID)
@@ -1687,7 +1705,7 @@ func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*Mig
 	if migrator, ok := s.links.(transactionalUserMigrator); ok {
 		for _, pair := range migrationTenantPairs(sources, sourceTenantID, tenantID) {
 			targetTenantID := pair.TargetTenantID
-			link := &store.HubUserLink{ID: adminUserLinkIDForTenant(targetTenantID, email), HubID: toHubID, TenantID: targetTenantID, Email: email, IsDefault: targetTenantID == "", CreatedAt: now, UpdatedAt: now}
+			link := &store.HubUserLink{ID: adminMigrationUserLinkIDForTenant(targetTenantID, email), HubID: toHubID, TenantID: targetTenantID, Email: email, IsDefault: targetTenantID == "", CreatedAt: now, UpdatedAt: now}
 			removed, upserted, err := migrator.MigrateEmailToHub(ctx, email, fromHubID, pair.SourceTenantID, link)
 			if err != nil {
 				return nil, err
@@ -1736,47 +1754,39 @@ func (s *Service) migrateUserPattern(ctx context.Context, pattern, fromHubID, to
 	if err != nil {
 		return nil, err
 	}
-	cleanupLocalUsers, err := s.prepareLocalUserMigration(ctx, sources, toHubID, targetTenantID)
-	if err != nil {
-		return nil, err
-	}
-	migrator, ok := s.links.(transactionalUserPatternMigrator)
-	if !ok {
-		return nil, errors.New("transactional user pattern migration is not supported by this store")
-	}
-	removedLinks, upsertedLinks, err := migrator.MigrateEmailPatternToHub(ctx, pattern, fromHubID, sourceTenantID, toHubID, targetTenantID, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	removed := make([]string, 0, len(removedLinks))
-	for _, item := range removedLinks {
-		if item != nil {
-			removed = append(removed, item.ID)
+	matchedEmails := map[string]struct{}{}
+	for _, source := range sources {
+		for _, email := range source.Emails {
+			matchedEmails[normalizeEmail(email)] = struct{}{}
 		}
 	}
-	upserted := make([]string, 0, len(upsertedLinks))
-	for _, item := range upsertedLinks {
-		if item != nil {
-			upserted = append(upserted, item.ID)
+	result := &MigrationResult{Mode: "email", Email: pattern, ToHubID: toHubID, SourceTenantID: sourceTenantID, TargetTenantID: targetTenantID}
+	for _, email := range sortedMigrationEmails(matchedEmails) {
+		migrated, err := s.MigrateUser(ctx, MigrateUserRequest{
+			Email:          email,
+			SourceTenantID: sourceTenantID,
+			TargetTenantID: targetTenantID,
+			FromHubID:      fromHubID,
+			ToHubID:        toHubID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		result.RemovedIDs = append(result.RemovedIDs, migrated.RemovedIDs...)
+		result.UpsertedIDs = append(result.UpsertedIDs, migrated.UpsertedIDs...)
+	}
+	return result, nil
+}
+
+func sortedMigrationEmails(emails map[string]struct{}) []string {
+	out := make([]string, 0, len(emails))
+	for email := range emails {
+		if email = normalizeEmail(email); email != "" {
+			out = append(out, email)
 		}
 	}
-	if s.sync != nil {
-		for _, item := range removedLinks {
-			if item != nil {
-				s.sync.DeleteHubUserLink(ctx, item.ID)
-			}
-		}
-		for _, item := range upsertedLinks {
-			if item != nil {
-				s.sync.AppendHubUserLink(ctx, item)
-			}
-		}
-	}
-	s.refreshRoutesForce(ctx)
-	if err := cleanupLocalUsers(ctx); err != nil {
-		return nil, err
-	}
-	return &MigrationResult{Mode: "email", Email: pattern, ToHubID: toHubID, SourceTenantID: sourceTenantID, TargetTenantID: targetTenantID, RemovedIDs: removed, UpsertedIDs: upserted}, nil
+	sort.Strings(out)
+	return out
 }
 
 func (s *Service) MigrateDomain(ctx context.Context, req MigrateDomainRequest) (*MigrationResult, error) {
@@ -2405,7 +2415,7 @@ func (s *Service) collectUserMigrationSources(ctx context.Context, pattern, from
 			return nil, err
 		}
 		for _, link := range links {
-			if link == nil || isOwnerLink(link) || isAdminUserLink(link) {
+			if link == nil || isOwnerLink(link) || isAdminUserLink(link) || isHubTenantAdminLink(link) {
 				continue
 			}
 			add(link.HubID, link.TenantID, link.Email)
@@ -3228,16 +3238,27 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 	if err != nil {
 		return err
 	}
+	// A migration route records an explicit, identity-wide ownership decision.
+	// It must win even when a restored/old Hub reports the same address in a
+	// different tenant, otherwise that Hub can recreate a default link and win
+	// route selection by accident.
+	for _, item := range items {
+		if isAdminMigrationUserLink(item) {
+			return nil
+		}
+	}
 	if !replaceAll {
 		// Normal sync: only replace links for the same tenantID.
-		// Admin-managed links for the same tenant are preserved (skip sync).
+		// HubCenter administrator-managed links for the same tenant are
+		// preserved (skip sync). Hub-reported administrator inventory is not
+		// a routing override and must survive separately from this user sync.
 		for _, item := range items {
 			if item != nil && isAdminUserLink(item) && normalizeHubSyncTenantID(item.TenantID) == tenantID {
 				return nil
 			}
 		}
 		for _, item := range items {
-			if item == nil || isOwnerLink(item) {
+			if item == nil || isOwnerLink(item) || isAdminUserLink(item) || isHubTenantAdminLink(item) {
 				continue
 			}
 			if normalizeHubSyncTenantID(item.TenantID) != tenantID {
@@ -3253,9 +3274,10 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 	} else {
 		// ReplaceAll: invitation-code enrollment — remove ALL existing links
 		// for this email (across all hubs and tenants) to fully migrate the user.
-		// Owner links and admin links pointing to the NEW hub are preserved.
+		// Owner links and every administrator inventory/override link are
+		// preserved. Invitation onboarding must never erase a Hub admin record.
 		for _, item := range items {
-			if item == nil || isOwnerLink(item) {
+			if item == nil || isOwnerLink(item) || isHubTenantAdminLink(item) {
 				continue
 			}
 			// Preserve admin links that point to the NEW hub (admin set up the invite).
@@ -3337,7 +3359,7 @@ func (s *Service) deleteHubUserLinksByScope(ctx context.Context, hubID, tenantID
 	}
 	removed := make([]*store.HubUserLink, 0)
 	for _, item := range items {
-		if item == nil || isOwnerLink(item) || isAdminUserLink(item) {
+		if item == nil || isOwnerLink(item) || isAdminUserLink(item) || isHubTenantAdminLink(item) {
 			continue
 		}
 		if strings.TrimSpace(item.HubID) != strings.TrimSpace(hubID) || normalizeHubSyncTenantID(item.TenantID) != normalizeHubSyncTenantID(tenantID) {
@@ -3349,6 +3371,85 @@ func (s *Service) deleteHubUserLinksByScope(ctx context.Context, hubID, tenantID
 		removed = append(removed, item)
 	}
 	return removed, nil
+}
+
+// ReconcileStaleUserRoutes removes only provably stale, Hub-synced routes.
+// It is intentionally centralised in HubCenter: individual Hubs must never
+// replay their complete user database as an ownership repair mechanism, since
+// that turns a transient outage or restored backup into a last-writer-wins
+// route conflict.
+func (s *Service) ReconcileStaleUserRoutes(ctx context.Context) (RouteReconciliationResult, error) {
+	var result RouteReconciliationResult
+	if s == nil || s.links == nil || s.hubs == nil {
+		return result, nil
+	}
+	links, err := s.links.ListAll(ctx)
+	if err != nil {
+		return result, err
+	}
+	hubsByID := make(map[string]*store.HubInstance)
+	seen := make(map[string]struct{})
+	for _, link := range links {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+		if link == nil || isOwnerLink(link) || isAdminUserLink(link) || isHubTenantAdminLink(link) {
+			result.Skipped++
+			continue
+		}
+		email := normalizeEmail(link.Email)
+		tenantID := normalizeHubSyncTenantID(link.TenantID)
+		if email == "" || strings.TrimSpace(link.HubID) == "" {
+			result.Skipped++
+			continue
+		}
+		key := strings.TrimSpace(link.HubID) + "\x00" + tenantID + "\x00" + email
+		if _, ok := seen[key]; ok {
+			result.Skipped++
+			continue
+		}
+		seen[key] = struct{}{}
+		hub, ok := hubsByID[link.HubID]
+		if !ok {
+			hub, err = s.hubs.GetByID(ctx, link.HubID)
+			if err != nil {
+				return result, err
+			}
+			hubsByID[link.HubID] = hub
+		}
+		if hub == nil || hub.IsDisabled || strings.EqualFold(strings.TrimSpace(hub.Status), "disabled") || strings.TrimSpace(hub.BaseURL) == "" {
+			result.Skipped++
+			continue
+		}
+
+		result.Checked++
+		probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		exists, probeErr := s.probeHubUserExists(probeCtx, hub, email, tenantID)
+		cancel()
+		if probeErr != nil {
+			result.Failed++
+			continue
+		}
+		if exists {
+			continue
+		}
+		removed, deleteErr := s.deleteHubUserLinksByScope(ctx, link.HubID, tenantID, email)
+		if deleteErr != nil {
+			result.Failed++
+			continue
+		}
+		for _, item := range removed {
+			if item != nil && s.sync != nil {
+				s.sync.DeleteHubUserLink(ctx, item.ID)
+			}
+		}
+		result.Cleaned += len(removed)
+	}
+	if result.Cleaned > 0 {
+		s.refreshRoutesForce(ctx)
+		log.Printf("[routing] reconciled stale routes checked=%d cleaned=%d skipped=%d failed=%d", result.Checked, result.Cleaned, result.Skipped, result.Failed)
+	}
+	return result, nil
 }
 
 func normalizeHubSyncTenantID(tenantID string) string {
@@ -3399,12 +3500,24 @@ func (s *Service) syncHubUserEmailInventory(ctx context.Context, hubID string, e
 	return s.syncHubTenantUserEmailInventory(ctx, hubID, map[string][]string{"": emails}, now)
 }
 
-func (s *Service) syncHubUserEmailInventoryFromCapabilities(ctx context.Context, hubID string, caps map[string]any, now time.Time) error {
-	return s.syncHubTenantUserEmailInventory(ctx, hubID, tenantUserEmailCapabilityMap(caps), now)
+func (s *Service) syncHubUserInventoriesFromCapabilities(ctx context.Context, hubID string, caps map[string]any, now time.Time) error {
+	users := tenantUserEmailCapabilityMap(caps)
+	if err := s.syncHubTenantUserEmailInventory(ctx, hubID, users, now); err != nil {
+		return err
+	}
+	// Older Hubs do not advertise tenant_admin_emails. Treat an absent key as
+	// "role inventory unknown", not as an empty authoritative inventory: a
+	// rolling upgrade must never erase administrator records just because an
+	// older Hub sent its regular heartbeat. Once the key is present, including
+	// an explicitly empty map, it is authoritative and reconciles removals.
+	if _, advertised := caps["tenant_admin_emails"]; !advertised {
+		return nil
+	}
+	return s.syncHubTenantAdminEmailInventory(ctx, hubID, tenantAdminEmailCapabilityMap(caps), users, now)
 }
 
 func (s *Service) syncHubTenantUserEmailInventory(ctx context.Context, hubID string, tenantEmails map[string][]string, now time.Time) error {
-	if s.links == nil || strings.TrimSpace(hubID) == "" || len(tenantEmails) == 0 {
+	if s.links == nil || strings.TrimSpace(hubID) == "" {
 		return nil
 	}
 	routeChecker, err := s.newUserRouteDomainChecker(ctx)
@@ -3449,6 +3562,10 @@ func (s *Service) syncHubTenantUserEmailInventory(ctx context.Context, hubID str
 			}
 			adminManaged := false
 			for _, item := range items {
+				if isAdminMigrationUserLink(item) {
+					adminManaged = true
+					break
+				}
 				if item != nil && isAdminUserLink(item) && normalizeHubSyncTenantID(item.TenantID) == tenantID {
 					adminManaged = true
 					break
@@ -3485,6 +3602,73 @@ func (s *Service) syncHubTenantUserEmailInventory(ctx context.Context, hubID str
 			continue
 		}
 		if _, ok := seenEmails[normalizeEmail(item.Email)]; ok {
+			continue
+		}
+		if err := s.links.DeleteByID(ctx, item.ID); err != nil {
+			return err
+		}
+		if s.sync != nil {
+			s.sync.DeleteHubUserLink(ctx, item.ID)
+		}
+	}
+	return nil
+}
+
+// syncHubTenantAdminEmailInventory records Hub-reported tenant administrators
+// separately.  A Hub administrator is useful in administrative route
+// diagnostics, but is not evidence that this identity is an ordinary user of
+// the tenant and must not participate in public onboarding routing.
+//
+// The ordinary inventory is supplied to safely remove old hul_user_ records
+// left by versions that incorrectly reported administrators as users.  An
+// email which is genuinely both a user and an administrator keeps its user
+// route.
+func (s *Service) syncHubTenantAdminEmailInventory(ctx context.Context, hubID string, tenantAdmins, tenantUsers map[string][]string, now time.Time) error {
+	if s.links == nil || strings.TrimSpace(hubID) == "" {
+		return nil
+	}
+	seenByTenant := map[string]map[string]struct{}{}
+	for tenantID, emails := range tenantAdmins {
+		tenantID = normalizeHubSyncTenantID(tenantID)
+		if seenByTenant[tenantID] == nil {
+			seenByTenant[tenantID] = map[string]struct{}{}
+		}
+		for _, rawEmail := range emails {
+			email := normalizeEmail(rawEmail)
+			if email == "" {
+				continue
+			}
+			seenByTenant[tenantID][email] = struct{}{}
+			link := &store.HubUserLink{ID: hubTenantAdminLinkIDForTenant(hubID, tenantID, email), HubID: hubID, TenantID: tenantID, Email: email, IsDefault: false, CreatedAt: now, UpdatedAt: now}
+			if err := s.links.Upsert(ctx, link); err != nil {
+				return err
+			}
+			if s.sync != nil {
+				s.sync.AppendHubUserLink(ctx, link)
+			}
+			if containsNormalizedEmail(tenantUsers[tenantID], email) {
+				continue
+			}
+			legacyID := primaryUserLinkIDForTenant(hubID, tenantID, email)
+			if err := s.links.DeleteByID(ctx, legacyID); err != nil {
+				return err
+			}
+			if s.sync != nil {
+				s.sync.DeleteHubUserLink(ctx, legacyID)
+			}
+		}
+	}
+
+	items, err := listHubUserLinksByHub(ctx, s.links, hubID)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item == nil || strings.TrimSpace(item.HubID) != strings.TrimSpace(hubID) || !isHubTenantAdminLink(item) {
+			continue
+		}
+		tenantID := normalizeHubSyncTenantID(item.TenantID)
+		if _, ok := seenByTenant[tenantID][normalizeEmail(item.Email)]; ok {
 			continue
 		}
 		if err := s.links.DeleteByID(ctx, item.ID); err != nil {
@@ -3714,6 +3898,23 @@ func tenantUserEmailCapabilityMap(caps map[string]any) map[string][]string {
 		byTenant[""] = capabilityStringList(caps["user_emails"])
 	}
 	return byTenant
+}
+
+func tenantAdminEmailCapabilityMap(caps map[string]any) map[string][]string {
+	if caps == nil {
+		return map[string][]string{}
+	}
+	return tenantStringListCapabilityMap(caps["tenant_admin_emails"], nil, true)
+}
+
+func containsNormalizedEmail(values []string, want string) bool {
+	want = normalizeEmail(want)
+	for _, value := range values {
+		if normalizeEmail(value) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func tenantDomainCapabilityMap(caps map[string]any) map[string][]string {
@@ -4309,6 +4510,20 @@ func isAdminUserLink(link *store.HubUserLink) bool {
 	return strings.HasPrefix(strings.TrimSpace(link.ID), adminUserLinkPrefix)
 }
 
+func isHubTenantAdminLink(link *store.HubUserLink) bool {
+	if link == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(link.ID), hubTenantAdminLinkPrefix)
+}
+
+func isAdminMigrationUserLink(link *store.HubUserLink) bool {
+	if link == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(link.ID), adminMigrationUserLinkPrefix)
+}
+
 func primaryUserLinkID(hubID, email string) string {
 	return primaryUserLinkIDForTenant(hubID, "", email)
 }
@@ -4321,6 +4536,14 @@ func primaryUserLinkIDForTenant(hubID, tenantID, email string) string {
 	return fmt.Sprintf("hul_user_%s_%s_%s", strings.TrimSpace(hubID), hashToken(tenantID)[:8], hashToken(normalizeEmail(email))[:16])
 }
 
+func hubTenantAdminLinkIDForTenant(hubID, tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return fmt.Sprintf("%s%s_%s", hubTenantAdminLinkPrefix, strings.TrimSpace(hubID), hashToken(normalizeEmail(email))[:16])
+	}
+	return fmt.Sprintf("%s%s_%s_%s", hubTenantAdminLinkPrefix, strings.TrimSpace(hubID), hashToken(tenantID)[:8], hashToken(normalizeEmail(email))[:16])
+}
+
 func adminUserLinkID(email string) string {
 	return adminUserLinkIDForTenant("", email)
 }
@@ -4331,6 +4554,14 @@ func adminUserLinkIDForTenant(tenantID, email string) string {
 		return adminUserLinkPrefix + hashToken(normalizeEmail(email))[:20]
 	}
 	return adminUserLinkPrefix + hashToken(tenantID)[:8] + "_" + hashToken(normalizeEmail(email))[:16]
+}
+
+func adminMigrationUserLinkIDForTenant(tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return adminMigrationUserLinkPrefix + hashToken(normalizeEmail(email))[:20]
+	}
+	return adminMigrationUserLinkPrefix + hashToken(tenantID)[:8] + "_" + hashToken(normalizeEmail(email))[:16]
 }
 
 func startOfDay(t time.Time) time.Time {
@@ -4418,15 +4649,28 @@ func (s *Service) AdminDeleteEmailRoutes(ctx context.Context, email, hubID strin
 	if email == "" {
 		return 0, fmt.Errorf("email is required")
 	}
-	var deleted int64
-	var err error
-	if hubID != "" {
-		deleted, err = s.links.DeleteByHubEmail(ctx, hubID, email)
-	} else {
-		deleted, err = s.links.DeleteByEmail(ctx, email)
-	}
+	links, err := s.links.ListByEmail(ctx, email)
 	if err != nil {
 		return 0, err
+	}
+	var deleted int64
+	for _, link := range links {
+		if link == nil || (hubID != "" && strings.TrimSpace(link.HubID) != strings.TrimSpace(hubID)) {
+			continue
+		}
+		// This maintenance operation deletes normal user routes only. Role
+		// inventory has a different lifecycle and must not disappear because
+		// an operator repairs a user's onboarding route.
+		if isOwnerLink(link) || isAdminUserLink(link) || isHubTenantAdminLink(link) {
+			continue
+		}
+		if err := s.links.DeleteByID(ctx, link.ID); err != nil {
+			return deleted, err
+		}
+		deleted++
+		if s.sync != nil {
+			s.sync.DeleteHubUserLink(ctx, link.ID)
+		}
 	}
 	if deleted > 0 {
 		log.Printf("[admin-route] deleted %d route(s) for email=%s hub_id=%s", deleted, email, hubID)
@@ -4517,8 +4761,8 @@ func (s *Service) AdminVerifyEmailRoute(ctx context.Context, email string) (*Adm
 		// Skip admin-managed links — they are intentionally set by administrators
 		// (e.g. pre-provisioning a route before the user registers) and should not
 		// be auto-cleaned even if the user doesn't exist yet.
-		if isAdminUserLink(link) {
-			entry.Error = "admin-managed link — skipped automatic cleanup"
+		if isAdminUserLink(link) || isOwnerLink(link) || isHubTenantAdminLink(link) {
+			entry.Error = "administrator identity link — skipped automatic cleanup"
 			result.Routes = append(result.Routes, entry)
 			continue
 		}
@@ -4533,11 +4777,19 @@ func (s *Service) AdminVerifyEmailRoute(ctx context.Context, email string) (*Adm
 				entry.UserExists = &exists
 				if !exists {
 					// User confirmed NOT on this Hub — clean up stale route.
-					if _, delErr := s.links.DeleteByHubEmail(ctx, link.HubID, email); delErr == nil {
-						entry.Cleaned = true
-						cleaned = append(cleaned, entry)
-					} else {
+					removed, delErr := s.deleteHubUserLinksByScope(ctx, link.HubID, link.TenantID, email)
+					if delErr != nil {
 						entry.Error = "cleanup failed: " + delErr.Error()
+					} else {
+						for _, item := range removed {
+							if item != nil && s.sync != nil {
+								s.sync.DeleteHubUserLink(ctx, item.ID)
+							}
+						}
+						entry.Cleaned = len(removed) > 0
+						if entry.Cleaned {
+							cleaned = append(cleaned, entry)
+						}
 					}
 				}
 			}

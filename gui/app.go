@@ -8754,6 +8754,22 @@ type updateManifestAsset struct {
 	SHA256 string   `json:"sha256,omitempty"`
 }
 
+func isReleaseMirrorURL(rawURL string, targetFileName string, isBeta bool) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme != "https" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return false
+	}
+	prefix := "latest"
+	if isBeta {
+		prefix = "beta"
+	}
+	expectedPath := "/" + prefix + "/" + targetFileName
+	if parsed.EscapedPath() != expectedPath {
+		return false
+	}
+	return parsed.Hostname() == "pub-c837069cbe31469590a5fea6235b436b.r2.dev" || parsed.Hostname() == "maclaw-1252723594.cos.ap-beijing.myqcloud.com"
+}
+
 func updateHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -8814,15 +8830,14 @@ func combineDownloadURLList(urls ...string) string {
 	return strings.Join(cleaned, "\n")
 }
 
-func combineDownloadURLs(primary, fallback string) string {
-	return combineDownloadURLList(primary, fallback)
-}
-
 func manifestAssetDownloadURLs(manifest updateManifest, targetFileName, tagName string, isBeta bool) []string {
 	urls := []string{}
 	if asset, ok := manifest.Assets[targetFileName]; ok {
-		urls = append(urls, asset.URLs...)
-		urls = append(urls, asset.URL)
+		for _, candidateURL := range append(asset.URLs, asset.URL) {
+			if isReleaseMirrorURL(candidateURL, targetFileName, isBeta) {
+				urls = append(urls, candidateURL)
+			}
+		}
 	}
 	if tagName != "" {
 		urls = append(urls, r2ReleaseAssetURL(targetFileName, isBeta))
@@ -8869,7 +8884,11 @@ func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo
 	}
 	downloadUrl := strings.TrimSpace(release.DownloadURL)
 	if downloadUrl == "" {
-		downloadUrl = combineDownloadURLs(githubDownloadUrl, cosDownloadUrl)
+		downloadUrl = combineDownloadURLList(
+			r2ReleaseAssetURL(targetFileName, isBeta),
+			githubDownloadUrl,
+			cosDownloadUrl,
+		)
 	}
 
 	displayVersion := strings.TrimSpace(tagName)
@@ -9062,15 +9081,15 @@ func (a *App) fetchManifestLatestRelease(source, manifestURL string, timeout tim
 	if tagName != "" {
 		githubURL = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
 	}
-	cosURL := ""
-	if len(mirrorURLs) > 0 {
-		cosURL = mirrorURLs[len(mirrorURLs)-1]
-	}
 	sha256 := ""
 	if asset, ok := manifest.Assets[targetFileName]; ok {
 		sha256 = strings.TrimSpace(asset.SHA256)
 	}
-	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLList(append([]string{githubURL}, mirrorURLs...)...), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL, SHA256: sha256}, nil
+	// The client only accepts the two compiled-in public mirrors from the
+	// manifest; never let remote metadata introduce an arbitrary download host.
+	downloadURLs := append([]string{r2ReleaseAssetURL(targetFileName, isBeta), githubURL, cosReleaseAssetURL(targetFileName, isBeta)}, mirrorURLs...)
+	cosURL := cosReleaseAssetURL(targetFileName, isBeta)
+	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLList(downloadURLs...), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL, SHA256: sha256}, nil
 }
 
 func (a *App) fetchR2LatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
@@ -9129,6 +9148,7 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 	}()
 
 	var lastErr error
+	failures := make([]string, 0, len(urls))
 	for index, candidateURL := range urls {
 		if _, err := os.Stat(destPath); err == nil {
 			_ = os.Remove(destPath)
@@ -9142,16 +9162,26 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 				a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Status: downloadProgressStatusVerifying})
 				if verifyErr := verifySHA256File(path, expectedSHA256); verifyErr != nil {
 					a.log(fmt.Sprintf("DownloadUpdate: SHA256 verification failed for %s: %v", candidateURL, verifyErr))
-					_ = os.Remove(path)
-					lastErr = verifyErr
-					continue
+					err = verifyErr
 				}
-				a.log("DownloadUpdate: SHA256 verification passed")
 			}
-			a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Status: downloadProgressStatusCompleted})
-			return path, nil
+			if err == nil {
+				if expectedSHA256 != "" {
+					a.log("DownloadUpdate: SHA256 verification passed")
+				}
+				a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Status: downloadProgressStatusCompleted})
+				return path, nil
+			}
 		}
+		// Do not leave a truncated or failed installer in Downloads after the
+		// final candidate fails.
+		_ = os.Remove(destPath)
 		lastErr = err
+		host := downloadSourceHost(candidateURL)
+		if host == "" {
+			host = "download source"
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", host, err))
 		a.log(fmt.Sprintf("DownloadUpdate: Source failed, will try fallback if available: %v", err))
 		if ctx.Err() == context.Canceled {
 			break
@@ -9159,6 +9189,8 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("all download sources failed")
+	} else if len(failures) > 1 {
+		lastErr = fmt.Errorf("all download sources failed: %s", strings.Join(failures, "; "))
 	}
 	a.emitEvent("download-progress", DownloadProgress{Status: downloadProgressStatusError, Error: lastErr.Error()})
 	return "", lastErr

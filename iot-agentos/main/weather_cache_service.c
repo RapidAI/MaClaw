@@ -2,7 +2,6 @@
 
 #include <string.h>
 
-#include "nvs.h" /* legacy cache import error code */
 #include "persistence_service.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -27,6 +26,21 @@ static bool s_initialized;
 static bool s_stopping;
 static volatile bool s_initializing;
 static uint32_t s_active_calls;
+/* Persistence already reports Device API status. Keep legacy ESP-IDF error
+ * values local to the migration helper below; Weather Cache callers never
+ * need NVS or platform error vocabulary. */
+static device_status_t platform_status_to_device_status(esp_err_t status) {
+    switch (status) {
+        case ESP_OK: return DEVICE_STATUS_OK;
+        case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
+        case ESP_ERR_NOT_SUPPORTED: return DEVICE_STATUS_UNAVAILABLE;
+        case ESP_ERR_INVALID_STATE: return DEVICE_STATUS_BUSY;
+        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
+        case ESP_ERR_NOT_FOUND: return DEVICE_STATUS_NOT_FOUND;
+        case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        default: return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+}
 
 static TickType_t weather_stop_timeout_ticks(uint32_t timeout_ms) {
     TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
@@ -85,61 +99,61 @@ static esp_err_t load_legacy(weather_cache_snapshot_t *snapshot, bool *out_found
     clear_snapshot(snapshot);
     *out_found = false;
     size_t size = sizeof(snapshot->summary);
-    esp_err_t err = persistence_service_read_string(WEATHER_CACHE_NAMESPACE, "weather",
-                                                    snapshot->summary, &size);
-    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    esp_err_t err = device_status_to_platform_error(persistence_service_read_string(WEATHER_CACHE_NAMESPACE, "weather",
+                                                    snapshot->summary, &size));
+    if (err == ESP_ERR_NOT_FOUND) return ESP_OK;
     if (err != ESP_OK) return err;
     if (!snapshot->summary[0]) return ESP_OK;
     snapshot->valid = true;
     *out_found = true;
     size = sizeof(snapshot->location);
-    err = persistence_service_read_string(WEATHER_CACHE_NAMESPACE, "weather_loc",
-                                          snapshot->location, &size);
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return err;
+    err = device_status_to_platform_error(persistence_service_read_string(WEATHER_CACHE_NAMESPACE, "weather_loc",
+                                          snapshot->location, &size));
+    if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) return err;
     int64_t expiry = 0;
-    err = persistence_service_read_i64(WEATHER_CACHE_NAMESPACE, "weather_exp", &expiry);
+    err = device_status_to_platform_error(persistence_service_read_i64(WEATHER_CACHE_NAMESPACE, "weather_exp", &expiry));
     if (err == ESP_OK) snapshot->expires_at_ms = expiry;
-    else if (err != ESP_ERR_NVS_NOT_FOUND) return err;
+    else if (err != ESP_ERR_NOT_FOUND) return err;
     int32_t temperature = 0;
-    err = persistence_service_read_i32(WEATHER_CACHE_NAMESPACE, "weather_temp", &temperature);
+    err = device_status_to_platform_error(persistence_service_read_i32(WEATHER_CACHE_NAMESPACE, "weather_temp", &temperature));
     if (err == ESP_OK && temperature >= -80 && temperature <= 80) {
         snapshot->temperature_c = temperature;
-    } else if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+    } else if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
         return err;
     }
     return ESP_OK;
 }
 
-esp_err_t weather_cache_service_init(void) {
-    if (!persistence_service_is_initialized()) return ESP_ERR_INVALID_STATE;
+device_status_t weather_cache_service_init(void) {
+    if (!persistence_service_is_initialized()) return DEVICE_STATUS_BUSY;
     bool expected = false;
     if (!__atomic_compare_exchange_n(&s_initializing, &expected, true, false,
                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        return ESP_ERR_INVALID_STATE;
+        return DEVICE_STATUS_BUSY;
     }
     taskENTER_CRITICAL(&s_lifecycle_lock);
     if (s_initialized && !s_stopping) {
         taskEXIT_CRITICAL(&s_lifecycle_lock);
         __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
-        return ESP_OK;
+        return DEVICE_STATUS_OK;
     }
     if (s_stopping) {
         taskEXIT_CRITICAL(&s_lifecycle_lock);
         __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
-        return ESP_ERR_INVALID_STATE;
+        return DEVICE_STATUS_BUSY;
     }
     s_initialized = true;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
-    return ESP_OK;
+    return DEVICE_STATUS_OK;
 }
 
-esp_err_t weather_cache_service_deinit(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+device_status_t weather_cache_service_deinit(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
     const TickType_t started = xTaskGetTickCount();
     const TickType_t budget = weather_stop_timeout_ticks(timeout_ms);
     while (__atomic_load_n(&s_initializing, __ATOMIC_ACQUIRE)) {
-        if (weather_stop_remaining_ticks(started, budget) == 0) return ESP_ERR_TIMEOUT;
+        if (weather_stop_remaining_ticks(started, budget) == 0) return DEVICE_STATUS_TIMEOUT;
         vTaskDelay(pdMS_TO_TICKS(1));
     }
     taskENTER_CRITICAL(&s_lifecycle_lock);
@@ -147,19 +161,19 @@ esp_err_t weather_cache_service_deinit(uint32_t timeout_ms) {
     s_initialized = false;
     s_stopping = true;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
-    if (already_stopped) return ESP_OK;
+    if (already_stopped) return DEVICE_STATUS_OK;
     for (;;) {
         taskENTER_CRITICAL(&s_lifecycle_lock);
         const uint32_t active_calls = s_active_calls;
         taskEXIT_CRITICAL(&s_lifecycle_lock);
         if (active_calls == 0) break;
-        if (weather_stop_remaining_ticks(started, budget) == 0) return ESP_ERR_TIMEOUT;
+        if (weather_stop_remaining_ticks(started, budget) == 0) return DEVICE_STATUS_TIMEOUT;
         vTaskDelay(pdMS_TO_TICKS(1));
     }
     taskENTER_CRITICAL(&s_lifecycle_lock);
     s_stopping = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
-    return ESP_OK;
+    return DEVICE_STATUS_OK;
 }
 
 bool weather_cache_service_is_initialized(void) {
@@ -170,21 +184,21 @@ bool weather_cache_service_is_initialized(void) {
     return initialized;
 }
 
-esp_err_t weather_cache_service_load(weather_cache_snapshot_t *out_snapshot) {
-    if (!out_snapshot) return ESP_ERR_INVALID_ARG;
-    if (!admission_enter()) return ESP_ERR_INVALID_STATE;
-    esp_err_t result = ESP_OK;
+device_status_t weather_cache_service_load(weather_cache_snapshot_t *out_snapshot) {
+    if (!out_snapshot) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!admission_enter()) return DEVICE_STATUS_BUSY;
+
+    device_status_t result = DEVICE_STATUS_OK;
     clear_snapshot(out_snapshot);
     weather_cache_store_t store = {0};
     size_t size = sizeof(store);
-    esp_err_t err = persistence_service_read_blob(WEATHER_CACHE_NAMESPACE,
-                                                  WEATHER_CACHE_STORE_KEY,
-                                                  &store, &size);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
+    device_status_t persistence_status = persistence_service_read_blob(
+        WEATHER_CACHE_NAMESPACE, WEATHER_CACHE_STORE_KEY, &store, &size);
+    if (persistence_status == DEVICE_STATUS_NOT_FOUND) {
         bool legacy_found = false;
-        err = load_legacy(out_snapshot, &legacy_found);
-        if (err != ESP_OK || !legacy_found) {
-            result = err;
+        esp_err_t legacy_status = load_legacy(out_snapshot, &legacy_found);
+        if (legacy_status != ESP_OK || !legacy_found) {
+            result = platform_status_to_device_status(legacy_status);
             goto done;
         }
         weather_cache_store_t legacy_store = {
@@ -200,12 +214,12 @@ esp_err_t weather_cache_service_load(weather_cache_snapshot_t *out_snapshot) {
                                                 &legacy_store, sizeof(legacy_store));
         goto done;
     }
-    if (err != ESP_OK) {
-        result = err;
+    if (persistence_status != DEVICE_STATUS_OK) {
+        result = persistence_status;
         goto done;
     }
     if (size != sizeof(store) || !valid_store(&store)) {
-        result = ESP_ERR_INVALID_STATE;
+        result = DEVICE_STATUS_INTERNAL_ERROR;
         goto done;
     }
     copy_store_to_snapshot(&store, out_snapshot);
@@ -213,11 +227,12 @@ done:
     admission_exit();
     return result;
 }
-
-esp_err_t weather_cache_service_save(const weather_cache_snapshot_t *snapshot) {
+device_status_t weather_cache_service_save(const weather_cache_snapshot_t *snapshot) {
     if (!snapshot || !snapshot->valid || !snapshot->summary[0] ||
-        snapshot->temperature_c < -80 || snapshot->temperature_c > 80 ||
-        !admission_enter()) return ESP_ERR_INVALID_ARG;
+        snapshot->temperature_c < -80 || snapshot->temperature_c > 80) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    if (!admission_enter()) return DEVICE_STATUS_BUSY;
     weather_cache_store_t store = {
         .magic = WEATHER_CACHE_STORE_MAGIC,
         .version = WEATHER_CACHE_STORE_VERSION,
@@ -226,9 +241,9 @@ esp_err_t weather_cache_service_save(const weather_cache_snapshot_t *snapshot) {
     };
     strlcpy(store.summary, snapshot->summary, sizeof(store.summary));
     strlcpy(store.location, snapshot->location, sizeof(store.location));
-    esp_err_t err = persistence_service_write_blob(WEATHER_CACHE_NAMESPACE,
-                                                    WEATHER_CACHE_STORE_KEY,
-                                                    &store, sizeof(store));
+    device_status_t status = persistence_service_write_blob(WEATHER_CACHE_NAMESPACE,
+                                                            WEATHER_CACHE_STORE_KEY,
+                                                            &store, sizeof(store));
     admission_exit();
-    return err;
+    return status;
 }

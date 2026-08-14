@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -327,5 +330,127 @@ func TestUpdateTargetFileNameFor_BrandPackages(t *testing.T) {
 				t.Fatalf("updateTargetFileNameFor(%q, %q) = %q, want %q", tc.brandName, tc.goos, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestManifestAssetDownloadURLsPreservesPublishedMirrors(t *testing.T) {
+	manifest := updateManifest{
+		Assets: map[string]updateManifestAsset{
+			"MaClaw-Setup.exe": {
+				URLs: []string{
+					"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/MaClaw-Setup.exe",
+					"https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest/MaClaw-Setup.exe",
+				},
+			},
+		},
+	}
+	urls := manifestAssetDownloadURLs(manifest, "MaClaw-Setup.exe", "V7.1.0.11864", false)
+	if len(urls) != 2 || urls[0] != "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/MaClaw-Setup.exe" || !strings.Contains(urls[1], "myqcloud.com") {
+		t.Fatalf("manifestAssetDownloadURLs() = %#v, want the published R2 and COS URLs", urls)
+	}
+}
+
+func TestManifestAssetDownloadURLsRejectsUntrustedOrWrongPathURLs(t *testing.T) {
+	manifest := updateManifest{
+		Assets: map[string]updateManifestAsset{
+			"MaClaw-Setup.exe": {
+				URLs: []string{
+					"https://evil.example/latest/MaClaw-Setup.exe",
+					"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/other.exe",
+					"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/MaClaw-Setup.exe?token=untrusted",
+				},
+			},
+		},
+	}
+	urls := manifestAssetDownloadURLs(manifest, "MaClaw-Setup.exe", "", false)
+	if len(urls) != 0 {
+		t.Fatalf("manifestAssetDownloadURLs() = %#v, want no untrusted URLs", urls)
+	}
+}
+
+func TestManifestDownloadOrderUsesR2ThenGitHubThenCOS(t *testing.T) {
+	manifest := updateManifest{
+		Tag: "V7.1.0.11864",
+		Assets: map[string]updateManifestAsset{
+			"MaClaw-Setup.exe": {
+				URLs: []string{
+					"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/MaClaw-Setup.exe",
+					"https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest/MaClaw-Setup.exe",
+				},
+			},
+		},
+	}
+	urls := manifestAssetDownloadURLs(manifest, "MaClaw-Setup.exe", manifest.Tag, false)
+	downloads := combineDownloadURLList(append([]string{r2ReleaseAssetURL("MaClaw-Setup.exe", false), "https://github.com/RapidAI/MaClaw/releases/download/V7.1.0.11864/MaClaw-Setup.exe"}, urls...)...)
+	got := splitDownloadURLs(downloads)
+	if len(got) != 3 || got[0] != r2ReleaseAssetURL("MaClaw-Setup.exe", false) || !strings.Contains(got[1], "github.com/") || !strings.Contains(got[2], "myqcloud.com") {
+		t.Fatalf("download candidate order = %#v, want R2, GitHub, COS", got)
+	}
+}
+
+func TestBuildUpdateResultUsesR2AndGitHubWhenNoManifestURLsExist(t *testing.T) {
+	app := &App{}
+	result, err := app.buildUpdateResult("V7.0.0.1", latestReleaseInfo{TagName: "V7.1.0.11864"}, false)
+	if err != nil {
+		t.Fatalf("buildUpdateResult() error = %v", err)
+	}
+	urls := splitDownloadURLs(result.DownloadUrl)
+	if len(urls) != 3 || urls[0] != r2ReleaseAssetURL("MaClaw-Setup.exe", false) || !strings.Contains(urls[1], "github.com/") || !strings.Contains(urls[2], "myqcloud.com") {
+		t.Fatalf("fallback download candidate order = %#v, want R2, GitHub, COS", urls)
+	}
+}
+
+func TestDownloadUpdateRemovesPartialInstallerAndReportsAllFailedSources(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "6")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("bad"))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusForbidden)
+	}))
+	defer second.Close()
+
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, "Downloads"), 0o755); err != nil {
+		t.Fatalf("create Downloads directory: %v", err)
+	}
+	app := &App{testHomeDir: home, downloadCancelers: make(map[string]context.CancelFunc)}
+	_, err := app.DownloadUpdate(first.URL+"\n"+second.URL, "MaClaw-Setup.exe")
+	if err == nil || !strings.Contains(err.Error(), "all download sources failed") || !strings.Contains(err.Error(), "403 Forbidden") {
+		t.Fatalf("DownloadUpdate() error = %v, want aggregated source failures", err)
+	}
+	downloads := filepath.Join(home, "Downloads")
+	if _, err := os.Stat(filepath.Join(downloads, "MaClaw-Setup.exe")); !os.IsNotExist(err) {
+		t.Fatalf("partial installer remains after failed fallbacks: %v", err)
+	}
+}
+
+func TestDownloadUpdateReportsChecksumFailureBeforeTryingFallback(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", "5242880")
+		_, _ = w.Write(make([]byte, 5*1024*1024))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusForbidden)
+	}))
+	defer second.Close()
+
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, "Downloads"), 0o755); err != nil {
+		t.Fatalf("create Downloads directory: %v", err)
+	}
+	app := &App{testHomeDir: home, downloadCancelers: make(map[string]context.CancelFunc)}
+	_, err := app.DownloadUpdateWithSHA256(first.URL+"\n"+second.URL, "MaClaw-Setup.exe", strings.Repeat("0", 64))
+	if err == nil || !strings.Contains(err.Error(), "integrity verification failed") || !strings.Contains(err.Error(), "403 Forbidden") {
+		t.Fatalf("DownloadUpdateWithSHA256() error = %v, want checksum and fallback failures", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "Downloads", "MaClaw-Setup.exe")); !os.IsNotExist(err) {
+		t.Fatalf("installer remains after checksum failure and failed fallback: %v", err)
 	}
 }

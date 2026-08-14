@@ -212,6 +212,20 @@ interface AIAssistantStreamEvent {
     display_text?: string;
 }
 
+export function sanitizeAIAssistantStreamText(value: string): string {
+    // \x01 is the desktop app's reasoning-lane marker, so preserve it only
+    // when it is the leading byte. All other control characters are unsafe to
+    // render and can otherwise surface as square glyphs.
+    const reasoning = value.startsWith('\x01');
+    const visible = (reasoning ? value.slice(1) : value)
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
+    return reasoning ? `\x01${visible}` : visible;
+}
+
+function sanitizeAIAssistantFinalText(value: string): string {
+    return sanitizeAIAssistantStreamText(value).replace(/^\x01/, '');
+}
+
 const AGENT_VIEW_EVENT = "agent-view";
 const AGENT_VIEW_CLEAR_EVENT = "agent-view-clear";
 const AGENT_VIEW_LIFECYCLE_EVENT = "agent-view:lifecycle";
@@ -574,9 +588,21 @@ function appendProgressToReasoning(message: ChatMessage, progressText: string): 
     if (!statusText) return message;
     const nextLine = `• ${statusText}`;
     const existing = message.reasoning || '';
-    if (existing.split(/\r?\n/).some(line => line.trim() === nextLine)) return message;
-    const lines = existing ? [...existing.split(/\r?\n/), nextLine] : [nextLine];
-    return { ...message, reasoning: lines.slice(-MAX_REASONING_STATUS_MESSAGES).join('\n') };
+    const lines = existing ? existing.split(/\r?\n/) : [];
+    if (lines.some(line => line.trim() === nextLine)) return message;
+    // A status update can arrive after the model has already started
+    // reasoning. Preserve the reasoning text and append a new bullet on its
+    // own line; the cap applies only to consecutive status history, never to
+    // the model's thinking.
+    const firstModelLine = lines.findIndex(line => !line.trim().startsWith('• '));
+    // Before the model starts, the entire reasoning area is status history and
+    // can safely use its compact cap. Once model text exists, line provenance
+    // is intentionally not inferred from its content: a model may legitimately
+    // write bullets, so trimming by appearance could delete its thinking.
+    if (firstModelLine < 0) {
+        return { ...message, reasoning: [...lines, nextLine].slice(-MAX_REASONING_STATUS_MESSAGES).join('\n') };
+    }
+    return { ...message, reasoning: [...lines, nextLine].join('\n') };
 }
 
 function progressSemanticKey(progressText: string): string {
@@ -1217,7 +1243,15 @@ function appendTokenToMessage(message: ChatMessage, delta: string): ChatMessage 
     if (delta.startsWith('\x01')) {
         const reasoningDelta = delta.slice(1);
         if (!reasoningDelta) return message;
-        const rawNextReasoning = message.reasoning ? message.reasoning + reasoningDelta : reasoningDelta;
+        const existingReasoning = message.reasoning || '';
+        // Status milestones are rendered as bullet lines in the same reasoning
+        // panel. When the model begins streaming after one, keep the two sources
+        // on separate lines instead of merging the first token into the status.
+        const lastReasoningLine = existingReasoning.split(/\r?\n/).at(-1)?.trim() || '';
+        const needsStatusBoundary = lastReasoningLine.startsWith('• ') && !reasoningDelta.startsWith('\n');
+        const rawNextReasoning = existingReasoning
+            ? `${existingReasoning}${needsStatusBoundary ? '\n' : ''}${reasoningDelta}`
+            : reasoningDelta;
         const nextReasoning = stripRolePrefixReasoning(rawNextReasoning);
         if (nextReasoning === message.reasoning) return message;
         return { ...message, reasoning: nextReasoning || undefined };
@@ -1610,9 +1644,9 @@ function normalizeSendResponse(response: AIAssistantSendResult | null | undefine
     const turnFields = turnMetaCounterFields(raw, mergeResponseFields(normalizedFields, counterFields));
     return {
         ...raw,
-        text: typeof raw.text === 'string' ? raw.text : (typeof raw.Text === 'string' ? raw.Text : ''),
-        reasoning: typeof raw.reasoning === 'string' ? raw.reasoning : (typeof raw.Reasoning === 'string' ? raw.Reasoning : ''),
-        error: typeof raw.error === 'string' ? raw.error : (typeof raw.Error === 'string' ? raw.Error : ''),
+        text: sanitizeAIAssistantFinalText(typeof raw.text === 'string' ? raw.text : (typeof raw.Text === 'string' ? raw.Text : '')),
+        reasoning: sanitizeAIAssistantFinalText(typeof raw.reasoning === 'string' ? raw.reasoning : (typeof raw.Reasoning === 'string' ? raw.Reasoning : '')),
+        error: sanitizeAIAssistantFinalText(typeof raw.error === 'string' ? raw.error : (typeof raw.Error === 'string' ? raw.Error : '')),
         fields: mergeResponseFields(mergeResponseFields(normalizedFields, counterFields), turnFields),
         actions: raw.actions ?? raw.Actions,
         confirmation: normalizeConfirmation(raw.confirmation ?? raw.Confirmation),
@@ -2386,7 +2420,7 @@ function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
         };
         return {
             request_id: stringField('request_id', 'requestId', 'RequestID'),
-            text: stringField('text', 'Text'),
+            text: sanitizeAIAssistantStreamText(stringField('text', 'Text')),
             session_key: stringField('session_key', 'sessionKey', 'SessionKey'),
             display_text: stringField('display_text', 'displayText', 'DisplayText'),
         };
@@ -2398,10 +2432,10 @@ function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
             try {
                 return normalizeStreamEvent(JSON.parse(trimmed));
             } catch {
-                return { request_id: '', text: raw, session_key: '' };
+                return { request_id: '', text: sanitizeAIAssistantStreamText(raw), session_key: '' };
             }
         }
-        return { request_id: '', text: raw, session_key: '' };
+        return { request_id: '', text: sanitizeAIAssistantStreamText(raw), session_key: '' };
     }
     return { request_id: '', text: '', session_key: '' };
 }

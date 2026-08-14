@@ -2639,3 +2639,49 @@ func TestAdminRouteQuerySupportsWildcardEmailPattern(t *testing.T) {
 		t.Fatalf("expected two matched hubs for wildcard query, got %+v", result)
 	}
 }
+
+func TestAdminReconcileStaleRoutesRequiresAdminAndCleansConfirmedRoute(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/center/user-exists" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"exists": false})
+	}))
+	t.Cleanup(remote.Close)
+	hub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-reconcile@example.com",
+		"name":            "Reconcile Hub",
+		"base_url":        remote.URL,
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	sync := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hub["hub_id"].(string)+"/user-links/sync", map[string]any{
+		"hub_secret": hub["hub_secret"], "email": "stale@example.com",
+	}, "")
+	if sync.Code != http.StatusOK {
+		t.Fatalf("sync route status=%d body=%s", sync.Code, sync.Body.String())
+	}
+
+	unauthorized := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/reconcile-stale-routes", nil, "")
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized reconcile status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+	token := issueAdminToken(t, svc)
+	response := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/reconcile-stale-routes", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("reconcile status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result hubs.RouteReconciliationResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode reconciliation response: %v", err)
+	}
+	if result.Cleaned != 1 {
+		t.Fatalf("expected one cleaned route, got %+v", result)
+	}
+	links, err := svc.store.HubUserLinks.ListByEmail(context.Background(), "stale@example.com")
+	if err != nil || len(links) != 0 {
+		t.Fatalf("expected stale route removed, links=%+v err=%v", links, err)
+	}
+}

@@ -55,19 +55,19 @@
 #define FANGTANG_DISPLAY_IO_QUEUE_DEPTH 10u
 
 /* NV3023's production transport submits an adjacent-row block for each DMA
- * transaction.  Thirty-two rows keep each source below 16 KiB while halving
- * command/fence waits relative to the previously qualified 16-row setting.
- * That matters for the 220 px-wide standby pet: double buffering prevents
- * composition tearing, but a serial SPI panel can still look slow if one
- * frame is fragmented into too many synchronous transfers.  A dedicated test
- * artifact may override this bound while qualifying another value on COM5.
- * Keep the switch below this physical adapter: shared scenes still submit
- * only rectangles and know neither the controller's GRAM origin nor its
- * transport size. */
+ * transaction. Sixty-four rows keep each source below 31 KiB while halving
+ * the command/fence waits of the former 32-row setting. COM5 telemetry shows
+ * those waits, rather than back-buffer composition, were missing the 80 ms pet
+ * deadline. Double buffering prevents composition tearing, but a serial SPI
+ * panel still looks slow if one frame is fragmented into too many synchronous
+ * transfers. A dedicated test artifact may override this bound while qualifying
+ * another value on COM5. Keep the switch below this physical adapter: shared
+ * scenes still submit only rectangles and know neither the controller's GRAM
+ * origin nor its transport size. */
 #if CONFIG_MACLAW_TEST_BUILD && defined(CONFIG_MACLAW_FANGTANG_DISPLAY_TEST_TRANSFER_ROWS)
 #define FANGTANG_DISPLAY_TRANSFER_ROWS CONFIG_MACLAW_FANGTANG_DISPLAY_TEST_TRANSFER_ROWS
 #else
-#define FANGTANG_DISPLAY_TRANSFER_ROWS 32
+#define FANGTANG_DISPLAY_TRANSFER_ROWS 64
 #endif
 
 #define FANGTANG_DISPLAY_MOSI GPIO_NUM_10

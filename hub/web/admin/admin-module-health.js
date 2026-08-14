@@ -9,7 +9,7 @@
     { name: 'TenantTab', ok: function() { return typeof global.loadTenants === 'function' && typeof global.createTenantAdmin === 'function' && typeof global.loadLoginTenants === 'function'; } },
     { name: 'CenterTab', ok: function() { return typeof global.loadCenterStatus === 'function'; } },
     { name: 'GovernanceTab', ok: function() { return typeof global.loadBlockedEmails === 'function' && typeof global.loadBoundUsers === 'function'; } },
-    { name: 'SecurityTab', ok: function() { return typeof global.loadSecurityTab === 'function'; } },
+    { name: 'SecurityTab', ok: function() { return typeof global.loadSecurityTab === 'function' || typeof global.loadAdminLazyModule === 'function'; } },
     { name: 'MachinesTab', ok: function() { return typeof global.loadMachines === 'function' && typeof global.renderMachineList === 'function'; } },
     { name: 'VETab', ok: function() { return typeof global.loadVEList === 'function'; } },
     { name: 'ImTab', ok: function() { return typeof global.openImSub === 'function'; } },
@@ -18,8 +18,8 @@
     { name: 'PwaTab', ok: function() { return typeof global.loadPwaEnrollments === 'function'; } },
     { name: 'SystemTab', ok: function() { return typeof global.loadMailConfig === 'function' && typeof global.loadTlsConfig === 'function'; } },
     { name: 'ComputeTab', ok: function() { return typeof global.openComputePane === 'function'; } },
-    { name: 'LlmProviderTab', ok: function() { return typeof global.openLlmProviderTab === 'function' && typeof global.loadLlmProviders === 'function' && typeof global.saveLLMProviders === 'function'; } },
-    { name: 'LlmServiceTabs', ok: function() { return typeof global.openLlmServiceGroupTab === 'function' && typeof global.loadLlmServiceGroups === 'function' && typeof global.saveLLMServiceAdmin === 'function'; } },
+    { name: 'LlmProviderTab', ok: function() { return (typeof global.openLlmProviderTab === 'function' && typeof global.loadLlmProviders === 'function' && typeof global.saveLLMProviders === 'function') || typeof global.loadAdminLazyModule === 'function'; } },
+    { name: 'LlmServiceTabs', ok: function() { return (typeof global.openLlmServiceGroupTab === 'function' && typeof global.loadLlmServiceGroups === 'function' && typeof global.saveLLMServiceAdmin === 'function') || typeof global.loadAdminLazyModule === 'function'; } },
     { name: 'UsageStatsTab', ok: function() { return typeof global.loadUsageStats === 'function' || typeof global.renderUsageStatsCharts === 'function'; } }
   ];
 

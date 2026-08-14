@@ -852,10 +852,13 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 			tokenChunks.Add(1)
 		}
 	}
-	emitThought := func(chunk string) {
-		chunk = strings.TrimSpace(chunk)
-		if chunk == "" {
+	emitThought := func(chunk string, appendNewline bool) {
+		chunk = visibleACPStreamDelta(chunk)
+		if strings.TrimSpace(chunk) == "" {
 			return
+		}
+		if appendNewline {
+			chunk += "\n"
 		}
 		// Progress as thought — must NOT use agent_message_chunk or clients
 		// treat status lines as the whole assistant answer.
@@ -863,7 +866,7 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 			SessionID: sid,
 			Update: map[string]any{
 				"sessionUpdate": "agent_thought_chunk",
-				"content":       map[string]any{"type": "text", "text": chunk + "\n"},
+				"content":       map[string]any{"type": "text", "text": chunk},
 			},
 		}); err != nil {
 			log.Printf("[acp-host] session/update thought write failed session=%s: %v", sid, err)
@@ -872,6 +875,22 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 
 	onToken := func(delta string) {
 		if strings.TrimSpace(delta) == "" {
+			return
+		}
+		// \x01 is the internal reasoning marker used by the shared agent loop.
+		// Keep it out of normal assistant text: VS Code renders thought updates in
+		// a separate collapsible block, while a raw control code appears as □.
+		if strings.HasPrefix(delta, "\x01") {
+			// Reasoning is streamed token-by-token. Preserve its whitespace and do
+			// not inject line breaks between tokens, otherwise prose is corrupted.
+			emitThought(strings.TrimPrefix(delta, "\x01"), false)
+			if mirrorUI {
+				s.app.mirrorACPToken(requestID, sess.UserID, delta)
+			}
+			return
+		}
+		delta = visibleACPStreamDelta(delta)
+		if delta == "" {
 			return
 		}
 		// Stream deltas with original whitespace (model tokens).
@@ -898,7 +917,7 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 		if !isVisibleAIAssistantProgressText(progressText) {
 			return
 		}
-		emitThought(progressText)
+		emitThought(progressText, true)
 		if mirrorUI {
 			s.app.mirrorACPProgress(requestID, sess.UserID, progressText)
 		}
@@ -956,9 +975,9 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 		return nil, acpErr(acpagent.CodeInternalError, err.Error())
 	}
 	if resp != nil {
-		finalText := strings.TrimSpace(resp.Text)
+		finalText := strings.TrimSpace(visibleACPStreamDelta(resp.Text))
 		if finalText == "" {
-			finalText = strings.TrimSpace(resp.Error)
+			finalText = strings.TrimSpace(visibleACPStreamDelta(resp.Error))
 		}
 		// Non-streaming paths (chit-chat, slash, confirmations, some handlers)
 		// never call onToken — must flush or VS Code shows empty assistant.
@@ -975,6 +994,21 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 		writeContent("(empty response)", true)
 	}
 	return acpagent.SessionPromptResult{StopReason: acpagent.StopEndTurn}, nil
+}
+
+// visibleACPStreamDelta removes non-rendering transport controls at the ACP
+// boundary while preserving the whitespace that streaming markdown needs.
+func visibleACPStreamDelta(delta string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\t':
+			return r
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, delta)
 }
 
 // --- GUI mirror helpers ---
@@ -1084,9 +1118,9 @@ func (a *App) mirrorACPFinal(requestID, sessionKey string, resp *IMAgentResponse
 	})
 	a.emitEvent("acp-mode-b-done", string(meta))
 
-	finalText := strings.TrimSpace(resp.Text)
+	finalText := strings.TrimSpace(visibleACPStreamDelta(resp.Text))
 	if finalText == "" {
-		finalText = strings.TrimSpace(resp.Error)
+		finalText = strings.TrimSpace(visibleACPStreamDelta(resp.Error))
 	}
 	if finalText != "" {
 		a.patchACPAssistantUIState(requestID, finalText)

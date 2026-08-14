@@ -526,7 +526,7 @@ func TestMigrationCleanupFailureKeepsExportVisibleForRetry(t *testing.T) {
 	}
 }
 
-func TestMigrationCreateExportEnforcesOpaquePackageLimit(t *testing.T) {
+func TestMigrationCreateExportEnforcesConfiguredAndAbsolutePackageLimits(t *testing.T) {
 	ctx := context.Background()
 	st, db, cleanup := newMigrationAPITestStore(t)
 	defer cleanup()
@@ -537,7 +537,8 @@ func TestMigrationCreateExportEnforcesOpaquePackageLimit(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-source", "source-token", "Source")
-	setting, _ := json.Marshal(map[string]int64{"value": migrationMaxPackageBytes})
+	configuredLimit := migrationMinPackageBytes
+	setting, _ := json.Marshal(map[string]int64{"value": configuredLimit})
 	if err := scopedSystemSettingsForTenant("tenant-a", st.System).Set(ctx, migrationSettingMaxPackageBytes, string(setting)); err != nil {
 		t.Fatalf("set migration limit: %v", err)
 	}
@@ -548,7 +549,7 @@ func TestMigrationCreateExportEnforcesOpaquePackageLimit(t *testing.T) {
 	chunkSize := int64(4 * 1024 * 1024)
 	hash := hex.EncodeToString(bytes.Repeat([]byte{0xab}, 32))
 
-	atLimit := migrationMaxPackageBytes
+	atLimit := configuredLimit
 	chunkCount := int((atLimit + chunkSize - 1) / chunkSize)
 	resp := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-source", "source-token", map[string]any{
 		"encrypted_size":   atLimit,
@@ -560,7 +561,7 @@ func TestMigrationCreateExportEnforcesOpaquePackageLimit(t *testing.T) {
 		t.Fatalf("at-limit create status=%d body=%s", resp.Code, resp.Body.String())
 	}
 
-	overLimit := migrationMaxPackageBytes + 1
+	overLimit := configuredLimit + 1
 	overCount := int((overLimit + chunkSize - 1) / chunkSize)
 	resp = migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-source", "source-token", map[string]any{
 		"encrypted_size":   overLimit,
@@ -568,7 +569,29 @@ func TestMigrationCreateExportEnforcesOpaquePackageLimit(t *testing.T) {
 		"chunk_size":       chunkSize,
 		"chunk_count":      overCount,
 	})
-	if resp.Code != http.StatusBadRequest {
+	if resp.Code != http.StatusRequestEntityTooLarge || !bytes.Contains(resp.Body.Bytes(), []byte("MIGRATION_TOO_LARGE")) {
+		t.Fatalf("configured-limit create status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var tooLarge map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &tooLarge); err != nil {
+		t.Fatalf("decode configured-limit response: %v", err)
+	}
+	if got := int64(tooLarge["encrypted_size"].(float64)); got != overLimit {
+		t.Fatalf("encrypted_size = %d, want %d", got, overLimit)
+	}
+	if got := int64(tooLarge["max_package_bytes"].(float64)); got != configuredLimit {
+		t.Fatalf("max_package_bytes = %d, want %d", got, configuredLimit)
+	}
+
+	absurdSize := migrationMaxPackageBytes + 1
+	absurdCount := int((absurdSize + chunkSize - 1) / chunkSize)
+	resp = migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-source", "source-token", map[string]any{
+		"encrypted_size":   absurdSize,
+		"encrypted_sha256": hash,
+		"chunk_size":       chunkSize,
+		"chunk_count":      absurdCount,
+	})
+	if resp.Code != http.StatusBadRequest || !bytes.Contains(resp.Body.Bytes(), []byte("INVALID_INPUT")) {
 		t.Fatalf("absolute-limit create status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
@@ -816,6 +839,9 @@ func TestMigrationAdminSettingsClampAndTenantScope(t *testing.T) {
 	if got := int64(defaults["max_package_bytes"].(float64)); got != migrationDefaultMaxPackageBytes {
 		t.Fatalf("default max bytes = %d, want %d", got, migrationDefaultMaxPackageBytes)
 	}
+	if _, found := defaults["max_compressed_bytes"]; found {
+		t.Fatalf("settings response must expose max_package_bytes, not obsolete max_compressed_bytes: %#v", defaults)
+	}
 
 	below := request(http.MethodPut, "tenant-a", map[string]any{"max_package_bytes": int64(1)})
 	if got := int64(below["max_package_bytes"].(float64)); got != migrationMinPackageBytes {
@@ -834,6 +860,7 @@ func TestMigrationAdminSettingsClampAndTenantScope(t *testing.T) {
 
 	for _, body := range []string{
 		`{"max_package_bytes":104857600,"unknown":true}`,
+		`{"max_compressed_bytes":104857600}`,
 		`{"max_package_bytes":104857600}{"max_package_bytes":209715200}`,
 	} {
 		req := httptest.NewRequest(http.MethodPut, "/api/admin/migration/settings", strings.NewReader(body))
